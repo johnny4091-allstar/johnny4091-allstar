@@ -268,6 +268,8 @@
       const views = await api(userPath('/Views'));
       state.views = views?.Items || [];
     } catch { state.views = []; }
+    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !hasLiveTv()));
+    live.channelIds = [];
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
@@ -306,6 +308,7 @@
       case 'tv': return renderBrowse(page, { type: 'Series', title: 'TV Shows', isCurrent });
       case 'mylist': return renderMyList(page, isCurrent);
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent);
+      case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       default: return renderHome(page, isCurrent);
     }
   }
@@ -352,6 +355,10 @@
     add('Continue Watching', async () =>
       (await api(userPath('/Items/Resume'), { params: { Limit: 20, MediaTypes: 'Video', Recursive: true, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items,
       { showProgress: true });
+    if (hasLiveTv()) {
+      addRow(rows, 'On Now', async () => (await getChannels({ Limit: 20 }))?.Items?.filter((c) => c.CurrentProgram),
+        { isCurrent, createItem: createChannelCard });
+    }
     add('Next Up', async () =>
       (await api('/Shows/NextUp', { params: { UserId: state.userId, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items);
     add('My List', async () =>
@@ -382,7 +389,7 @@
   }
 
   // ---------- Rows & cards ----------
-  function addRow(container, title, loader, { isCurrent, showProgress } = {}) {
+  function addRow(container, title, loader, { isCurrent, showProgress, createItem } = {}) {
     const row = document.createElement('section');
     row.className = 'row';
     row.innerHTML = `<h2 class="row-title">${esc(title)}</h2>
@@ -399,7 +406,7 @@
           <button class="row-arrow right" tabindex="-1" aria-label="Scroll right">&#8250;</button>
         </div>`;
       const track = $('.row-track', row);
-      items.forEach((item) => track.appendChild(createCard(item, { showProgress })));
+      items.forEach((item) => track.appendChild(createItem ? createItem(item) : createCard(item, { showProgress })));
       $('.row-arrow.left', row).addEventListener('click', () => track.scrollBy({ left: -track.clientWidth * 0.9 }));
       $('.row-arrow.right', row).addEventListener('click', () => track.scrollBy({ left: track.clientWidth * 0.9 }));
     }).catch((e) => {
@@ -449,6 +456,8 @@
   }
 
   function openItem(item) {
+    if (item.Type === 'TvChannel') return playItem(item);
+    if (item.Type === 'Program') return openProgram(item.Id);
     if (item.Type === 'Episode' && item.SeriesId) openDetails(item.SeriesId, { focusEpisode: item });
     else if (item.Type === 'Season' && item.SeriesId) openDetails(item.SeriesId, { seasonId: item.Id });
     else openDetails(item.Id);
@@ -780,6 +789,339 @@
     } catch (e) { console.error(e); }
   }
 
+  // ---------- Live TV ----------
+  const GUIDE_HOURS = 6;
+  const GUIDE_PX_PER_MIN = 6;
+  const live = { channelIds: [], tunedId: null }; // tunedId: the channel being watched or switched to
+
+  const hasLiveTv = () => state.views.some((v) => v.CollectionType === 'livetv');
+  // Emby dates can carry 7 fractional digits; trim to milliseconds for Date.parse.
+  const parseDate = (s) => (s ? new Date(String(s).replace(/(\.\d{3})\d+/, '$1')) : null);
+  const clock = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const timeRange = (p) => `${clock(parseDate(p.StartDate))} – ${clock(parseDate(p.EndDate))}`;
+  const channelLabel = (ch) => [ch.ChannelNumber || ch.Number, ch.Name].filter(Boolean).join('  ');
+
+  function programProgress(p) {
+    const start = parseDate(p?.StartDate), end = parseDate(p?.EndDate);
+    if (!start || !end || end <= start) return 0;
+    return Math.min(100, Math.max(0, ((Date.now() - start) / (end - start)) * 100));
+  }
+
+  function getChannels(params = {}) {
+    return api('/LiveTv/Channels', {
+      params: {
+        UserId: state.userId, EnableImageTypes: 'Primary', ImageTypeLimit: 1, EnableUserData: true,
+        AddCurrentProgram: true, EnableFavoriteSorting: true, Fields: 'ChannelInfo', ...params,
+      },
+    });
+  }
+
+  // Ordered channel ids for channel up/down in the player.
+  async function ensureChannelList() {
+    if (live.channelIds.length) return live.channelIds;
+    try {
+      const res = await api('/LiveTv/Channels', { params: { UserId: state.userId, EnableImages: false, Limit: 2000 } });
+      live.channelIds = (res?.Items || []).map((c) => c.Id);
+    } catch { /* channel up/down just won't work */ }
+    return live.channelIds;
+  }
+
+  function createChannelCard(ch) {
+    const card = document.createElement('div');
+    card.className = 'card channel-card';
+    card.tabIndex = 0;
+    const logo = ch.ImageTags?.Primary ? imageUrl(ch.Id, 'Primary', { tag: ch.ImageTags.Primary, maxWidth: 300 }) : '';
+    const prog = ch.CurrentProgram;
+    card.innerHTML = `
+      <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
+      ${ch.UserData?.IsFavorite ? '<div class="badge-watched" title="Favorite">&#9733;</div>' : ''}
+      <div class="card-info">
+        <div>${esc(prog?.Name || ch.Name)}</div>
+        <div class="sub">${esc(channelLabel(ch))}${prog ? ' · ' + esc(timeRange(prog)) : ''}</div>
+      </div>
+      ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}`;
+    card.addEventListener('click', () => playItem(ch));
+    return card;
+  }
+
+  function renderLiveTv(page, tab, isCurrent) {
+    const tabs = [['guide', 'Guide'], ['channels', 'Channels'], ['recordings', 'Recordings']];
+    if (!tabs.some(([id]) => id === tab)) tab = 'guide';
+    page.innerHTML = `
+      <div class="page-pad live-page">
+        <div class="page-head">
+          <h1>Live TV</h1>
+          <div class="tab-bar">
+            ${tabs.map(([id, label]) => `<a href="#/livetv?tab=${id}" class="tab${id === tab ? ' active' : ''}"${id === tab ? ' data-autofocus' : ''}>${label}</a>`).join('')}
+          </div>
+        </div>
+        <div data-live-body></div>
+      </div>`;
+    const body = $('[data-live-body]', page);
+    if (tab === 'channels') renderChannels(body, isCurrent);
+    else if (tab === 'recordings') renderRecordings(body, isCurrent);
+    else renderGuide(body, isCurrent);
+    autoFocus($('.tab.active', page));
+  }
+
+  function renderChannels(body, isCurrent) {
+    body.innerHTML = `
+      <div class="page-head sub-head">
+        <select data-filter>
+          <option value="">All channels</option>
+          <option value="fav">Favorites</option>
+        </select>
+      </div>
+      <div class="grid channel-grid"></div>
+      <div class="sentinel"></div>`;
+    const grid = $('.grid', body), filter = $('[data-filter]', body);
+    const load = async () => {
+      grid.innerHTML = '<div class="spinner" style="grid-column:1/-1"></div>';
+      try {
+        const res = await getChannels({ IsFavorite: filter.value === 'fav' ? true : undefined, Limit: 500 });
+        if (!isCurrent()) return;
+        const items = res?.Items || [];
+        grid.innerHTML = items.length ? '' : '<p class="empty-msg" style="grid-column:1/-1">No channels found.</p>';
+        items.forEach((ch) => grid.appendChild(createChannelCard(ch)));
+        if (!filter.value) live.channelIds = items.map((c) => c.Id);
+      } catch (e) {
+        grid.innerHTML = `<p class="empty-msg" style="grid-column:1/-1">Could not load channels: ${esc(e.message)}</p>`;
+      }
+    };
+    filter.addEventListener('change', load);
+    load();
+  }
+
+  async function renderGuide(body, isCurrent) {
+    const start = new Date();
+    start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
+    const end = new Date(start.getTime() + GUIDE_HOURS * 3600000);
+    const width = GUIDE_HOURS * 60 * GUIDE_PX_PER_MIN;
+    const xOf = (d) => ((d - start) / 60000) * GUIDE_PX_PER_MIN;
+
+    const slots = [];
+    for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
+    body.innerHTML = `
+      <div class="guide" tabindex="-1">
+        <div class="guide-head">
+          <div class="guide-corner"></div>
+          <div class="guide-times" style="width:${width}px">
+            ${slots.map((t) => `<span style="left:${xOf(t)}px">${esc(clock(t))}</span>`).join('')}
+            <div class="guide-now" style="left:${xOf(new Date())}px"></div>
+          </div>
+        </div>
+        <div class="guide-rows"></div>
+        <div class="sentinel"></div>
+      </div>`;
+    const guide = $('.guide', body), rows = $('.guide-rows', body), sentinel = $('.sentinel', body);
+
+    const PAGE = 40;
+    let index = 0, total = Infinity, loading = false;
+    const loadMore = async () => {
+      if (loading || index >= total || !isCurrent()) return;
+      loading = true;
+      const spinner = document.createElement('div');
+      spinner.className = 'spinner';
+      rows.after(spinner);
+      try {
+        const chRes = await getChannels({ StartIndex: index, Limit: PAGE, AddCurrentProgram: false });
+        const channels = chRes?.Items || [];
+        total = chRes?.TotalRecordCount ?? 0;
+        index += PAGE;
+        live.channelIds.push(...channels.map((c) => c.Id).filter((id) => !live.channelIds.includes(id)));
+        let programs = [];
+        if (channels.length) {
+          const pRes = await api('/LiveTv/Programs', {
+            params: {
+              UserId: state.userId, ChannelIds: channels.map((c) => c.Id).join(','),
+              MinEndDate: start.toISOString(), MaxStartDate: end.toISOString(),
+              SortBy: 'StartDate', EnableImages: false, Fields: 'Overview',
+            },
+          });
+          programs = pRes?.Items || [];
+        }
+        if (!isCurrent()) return;
+        if (!channels.length && !rows.children.length) rows.innerHTML = '<p class="empty-msg">No channels found.</p>';
+        for (const ch of channels) rows.appendChild(guideRow(ch, programs.filter((p) => p.ChannelId === ch.Id)));
+      } catch (e) {
+        console.error(e);
+        total = 0;
+        if (!rows.children.length) rows.innerHTML = `<p class="empty-msg">Could not load the guide: ${esc(e.message)}</p>`;
+      } finally {
+        spinner.remove();
+        loading = false;
+      }
+    };
+
+    function guideRow(ch, programs) {
+      const row = document.createElement('div');
+      row.className = 'guide-row';
+      const logo = ch.ImageTags?.Primary ? imageUrl(ch.Id, 'Primary', { tag: ch.ImageTags.Primary, maxWidth: 160 }) : '';
+      row.innerHTML = `
+        <button class="guide-ch" title="Watch ${esc(ch.Name)}">
+          ${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : ''}
+          <span class="guide-ch-num">${esc(ch.ChannelNumber || ch.Number || '')}</span>
+          ${logo ? '' : `<span class="guide-ch-name">${esc(ch.Name)}</span>`}
+        </button>
+        <div class="guide-progs" style="width:${width}px"></div>`;
+      $('.guide-ch', row).addEventListener('click', () => playItem(ch));
+      const lane = $('.guide-progs', row);
+      if (!programs.length) lane.innerHTML = `<div class="guide-empty">${esc(ch.Name)}</div>`;
+      const now = Date.now();
+      for (const p of programs) {
+        const ps = parseDate(p.StartDate), pe = parseDate(p.EndDate);
+        const left = Math.max(0, xOf(ps)), right = Math.min(width, xOf(pe));
+        if (right - left < 4) continue;
+        const btn = document.createElement('button');
+        const airing = ps <= now && pe > now;
+        btn.className = 'guide-prog' + (airing ? ' now' : '') + (p.TimerId ? ' recording' : '');
+        btn.style.left = left + 'px';
+        btn.style.width = (right - left - 3) + 'px';
+        btn.innerHTML = `<strong>${esc(p.Name)}</strong><span>${esc(timeRange(p))}</span>`;
+        btn.addEventListener('click', () => openProgram(p.Id, ch));
+        lane.appendChild(btn);
+      }
+      return row;
+    }
+
+    new IntersectionObserver((entries, io) => {
+      if (!isCurrent()) { io.disconnect(); return; }
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    }, { root: guide, rootMargin: '400px' }).observe(sentinel);
+    await loadMore();
+    // Start the timeline a little before "now".
+    guide.scrollLeft = Math.max(0, xOf(new Date()) - 60);
+  }
+
+  async function openProgram(programId, channel) {
+    const token = ++modalToken;
+    const modal = $('#modal'), content = $('#modal-content');
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = '<div class="spinner" style="margin:6rem auto"></div>';
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    let p;
+    try { p = await api(`/LiveTv/Programs/${programId}`, { params: { UserId: state.userId } }); } catch (e) {
+      if (token === modalToken) content.innerHTML = `<p class="empty-msg">Could not load program: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (token !== modalToken) return;
+    const start = parseDate(p.StartDate), end = parseDate(p.EndDate), now = Date.now();
+    const airing = start <= now && end > now;
+    const img = p.ImageTags?.Primary ? imageUrl(p.Id, 'Primary', { tag: p.ImageTags.Primary, maxWidth: 900 })
+      : p.ImageTags?.Thumb ? imageUrl(p.Id, 'Thumb', { tag: p.ImageTags.Thumb, maxWidth: 900 }) : '';
+    const day = start.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+    content.innerHTML = `
+      <div class="m-body program-body">
+        ${img ? `<div class="program-img" style="background-image:url('${esc(img)}')"></div>` : ''}
+        <h2>${esc(p.Name)}</h2>
+        ${p.EpisodeTitle ? `<p class="overview" style="font-weight:600">${esc(p.EpisodeTitle)}</p>` : ''}
+        <div class="meta">
+          ${airing ? '<span class="live-badge">LIVE</span>' : ''}
+          <span>${esc(channelLabel(channel || { Name: p.ChannelName }))}</span>
+          <span>${esc(day)}, ${esc(timeRange(p))}</span>
+          ${p.OfficialRating ? `<span class="rating">${esc(p.OfficialRating)}</span>` : ''}
+        </div>
+        <p class="overview">${esc(p.Overview || '')}</p>
+        <div class="m-actions program-actions">
+          ${airing ? `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch Live</button>` : ''}
+          <button class="btn btn-gray" data-act="record"></button>
+          ${p.IsSeries ? '<button class="btn btn-gray" data-act="series"></button>' : ''}
+        </div>
+      </div>`;
+    const recBtn = $('[data-act="record"]', content), seriesBtn = $('[data-act="series"]', content);
+    const paint = () => {
+      recBtn.innerHTML = p.TimerId ? '&#9679; Cancel Recording' : '&#9679; Record';
+      if (seriesBtn) seriesBtn.textContent = p.SeriesTimerId ? 'Cancel Series Recording' : 'Record Series';
+    };
+    paint();
+    $('[data-act="watch"]', content)?.addEventListener('click', () => playItem(channel || { Id: p.ChannelId, Type: 'TvChannel' }));
+    recBtn.addEventListener('click', async () => {
+      try {
+        if (p.TimerId) {
+          await api(`/LiveTv/Timers/${p.TimerId}`, { method: 'DELETE' });
+          p.TimerId = null;
+          toast('Recording cancelled');
+        } else {
+          const defaults = await api('/LiveTv/Timers/Defaults', { params: { ProgramId: p.Id } });
+          await api('/LiveTv/Timers', { method: 'POST', body: { ...defaults, ProgramId: p.Id } });
+          const fresh = await api(`/LiveTv/Programs/${p.Id}`, { params: { UserId: state.userId } });
+          p.TimerId = fresh?.TimerId || 'pending';
+          toast('Recording scheduled');
+        }
+        paint();
+      } catch (e) { toast(e.status === 403 ? "Your account isn't allowed to record." : 'Could not update recording: ' + e.message); }
+    });
+    seriesBtn?.addEventListener('click', async () => {
+      try {
+        if (p.SeriesTimerId) {
+          await api(`/LiveTv/SeriesTimers/${p.SeriesTimerId}`, { method: 'DELETE' });
+          p.SeriesTimerId = null;
+          toast('Series recording cancelled');
+        } else {
+          const defaults = await api('/LiveTv/Timers/Defaults', { params: { ProgramId: p.Id } });
+          await api('/LiveTv/SeriesTimers', { method: 'POST', body: { ...defaults, ProgramId: p.Id } });
+          const fresh = await api(`/LiveTv/Programs/${p.Id}`, { params: { UserId: state.userId } });
+          p.SeriesTimerId = fresh?.SeriesTimerId || 'pending';
+          toast('Series recording scheduled');
+        }
+        paint();
+      } catch (e) { toast(e.status === 403 ? "Your account isn't allowed to record." : 'Could not update recording: ' + e.message); }
+    });
+    autoFocus($('.program-actions button', content));
+  }
+
+  async function renderRecordings(body, isCurrent) {
+    body.innerHTML = `
+      <h2 class="row-title flush">Recordings</h2>
+      <div class="grid" data-recordings><div class="spinner" style="grid-column:1/-1"></div></div>
+      <h2 class="row-title flush" style="margin-top:2.5rem">Scheduled</h2>
+      <div class="timer-list" data-timers><div class="spinner"></div></div>`;
+    const grid = $('[data-recordings]', body), timers = $('[data-timers]', body);
+    api('/LiveTv/Recordings', { params: { UserId: state.userId, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }).then((res) => {
+      if (!isCurrent()) return;
+      const items = res?.Items || [];
+      grid.innerHTML = items.length ? '' : '<p class="empty-msg" style="grid-column:1/-1">No recordings yet.</p>';
+      items.forEach((it) => grid.appendChild(createPoster(it)));
+    }).catch((e) => { grid.innerHTML = `<p class="empty-msg" style="grid-column:1/-1">Could not load recordings: ${esc(e.message)}</p>`; });
+
+    const loadTimers = () => api('/LiveTv/Timers', { params: { IsActive: false } }).then((res) => {
+      if (!isCurrent()) return;
+      const items = (res?.Items || []).sort((a, b) => parseDate(a.StartDate) - parseDate(b.StartDate));
+      timers.innerHTML = items.length ? '' : '<p class="empty-msg">Nothing scheduled. Choose a show in the Guide and press Record.</p>';
+      for (const t of items) {
+        const row = document.createElement('div');
+        row.className = 'timer-row';
+        const start = parseDate(t.StartDate);
+        row.innerHTML = `
+          <div class="timer-text">
+            <strong>${esc(t.Name)}</strong>
+            <span>${esc(t.ChannelName || '')} · ${esc(start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}, ${esc(timeRange(t))}</span>
+          </div>
+          <button class="btn btn-gray">Cancel</button>`;
+        $('button', row).addEventListener('click', async () => {
+          try {
+            await api(`/LiveTv/Timers/${t.Id}`, { method: 'DELETE' });
+            toast('Recording cancelled');
+            loadTimers();
+          } catch (e) { toast('Could not cancel: ' + e.message); }
+        });
+        timers.appendChild(row);
+      }
+    }).catch((e) => { timers.innerHTML = `<p class="empty-msg">Could not load scheduled recordings: ${esc(e.message)}</p>`; });
+    loadTimers();
+  }
+
+  async function changeChannel(delta) {
+    const ids = await ensureChannelList();
+    if (!ids.length || !live.tunedId) return;
+    const i = ids.indexOf(live.tunedId);
+    const next = ids[(Math.max(i, 0) + delta + ids.length) % ids.length];
+    // Remember it right away so fast repeated presses keep counting from here.
+    live.tunedId = next;
+    playItem({ Id: next, Type: 'TvChannel' });
+  }
+
   // ---------- Player ----------
   const QUALITY_OPTIONS = [
     { label: 'Auto (best)', bitrate: 120000000 },
@@ -792,8 +1134,9 @@
 
   const player = {
     item: null, hls: null, playSessionId: null, mediaSourceId: null, playMethod: null, source: null,
-    audioIndex: null, subtitleIndex: -1, forceTranscode: false, intro: null,
+    audioIndex: null, subtitleIndex: -1, forceTranscode: false, intro: null, isLive: false, liveStreamId: null,
     progressTimer: null, idleTimer: null, nextEpisode: null, startSeconds: 0, dragging: false,
+    token: 0, // bumped on every playItem so a slower, older request can't take over
   };
 
   // Tells Emby what this browser can play directly; anything else is transcoded to HLS H.264/AAC.
@@ -864,7 +1207,11 @@
   async function playItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false } = {}) {
     const isReload = player.item && rawItem.Id === player.item.Id;
     if (!isReload && $('#player').classList.contains('hidden')) rememberFocus('player');
+    const token = ++player.token;
+    const stale = () => token !== player.token;
+    live.tunedId = rawItem.Type === 'TvChannel' ? rawItem.Id : null;
     await stopPlayback();
+    if (stale()) return;
     const el = $('#player'), video = $('#video'), status = $('#player-status');
     el.classList.remove('hidden');
     nativeApp?.setPlayerMode(true);
@@ -881,16 +1228,25 @@
 
     try {
       const item = await resolvePlayable(rawItem);
-      // Refresh to get accurate resume position, user data and intro markers.
-      const full = await api(userPath(`/Items/${item.Id}`), { params: { Fields: ITEM_FIELDS + ',Chapters' } });
+      if (stale()) return;
+      const isLive = item.Type === 'TvChannel';
+      // Refresh to get accurate resume position, user data and intro markers (or the channel's current program).
+      const full = isLive
+        ? await api(`/LiveTv/Channels/${item.Id}`, { params: { UserId: state.userId } })
+        : await api(userPath(`/Items/${item.Id}`), { params: { Fields: ITEM_FIELDS + ',Chapters' } });
+      if (stale()) return;
       player.item = full;
-      const start = startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0;
+      player.isLive = isLive;
+      el.classList.toggle('live', isLive);
+      const start = isLive ? 0 : (startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0);
       player.startSeconds = start / TICKS_PER_SECOND;
-      player.intro = findIntro(full.Chapters);
+      player.intro = isLive ? null : findIntro(full.Chapters);
 
-      $('#player-title').innerHTML = full.Type === 'Episode'
-        ? `${esc(full.SeriesName)}<span class="sub">${esc(episodeLabel(full))}</span>`
-        : esc(full.Name);
+      $('#player-title').innerHTML = isLive
+        ? `${esc(channelLabel(full))}<span class="sub">${esc(full.CurrentProgram?.Name || '')}</span>`
+        : full.Type === 'Episode'
+          ? `${esc(full.SeriesName)}<span class="sub">${esc(episodeLabel(full))}</span>`
+          : esc(full.Name);
 
       const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: maxBitrate() };
       if (audioIndex != null) params.AudioStreamIndex = audioIndex;
@@ -899,10 +1255,16 @@
       if (forceTranscode) { params.EnableDirectPlay = false; params.EnableDirectStream = false; }
       const info = await api(`/Items/${full.Id}/PlaybackInfo`, { method: 'POST', params, body: { DeviceProfile: deviceProfile() } });
       const source = info?.MediaSources?.[0];
+      if (stale()) {
+        // A newer request took over; release the tuner this one may have opened.
+        if (source?.LiveStreamId) api('/LiveTv/LiveStreams/Close', { method: 'POST', params: { LiveStreamId: source.LiveStreamId } }).catch(() => {});
+        return;
+      }
       if (!source) throw new Error(info?.ErrorCode || 'No playable media source');
       player.playSessionId = info.PlaySessionId;
       player.mediaSourceId = source.Id;
       player.source = source;
+      player.liveStreamId = source.LiveStreamId || null;
       player.forceTranscode = forceTranscode;
       player.audioIndex = audioIndex ?? source.DefaultAudioStreamIndex ?? null;
       player.subtitleIndex = subtitleIndex ?? source.DefaultSubtitleStreamIndex ?? -1;
@@ -935,12 +1297,14 @@
       }
 
       await attachSource(video, url, isHls, player.startSeconds);
+      if (stale()) return;
       status.classList.add('hidden');
       reportPlayback('/Sessions/Playing');
       player.progressTimer = setInterval(() => reportPlayback('/Sessions/Playing/Progress', 'TimeUpdate'), 10000);
       if (full.Type === 'Episode') findNextEpisode(full);
       wakeOsd();
     } catch (e) {
+      if (stale()) return;
       console.error(e);
       status.innerHTML = `<p>Playback failed: ${esc(e.message)}</p><button class="btn btn-white" id="player-err-back">Go Back</button>`;
       $('#player-err-back').addEventListener('click', closePlayer);
@@ -996,6 +1360,7 @@
       IsMuted: video.muted,
       VolumeLevel: Math.round(video.volume * 100),
       PlayMethod: player.playMethod,
+      LiveStreamId: player.liveStreamId || undefined,
       AudioStreamIndex: player.audioIndex ?? undefined,
       SubtitleStreamIndex: player.subtitleIndex,
       CanSeek: true,
@@ -1028,7 +1393,10 @@
     if (player.item) {
       const playSessionId = player.playSessionId;
       const wasTranscoding = player.playMethod === 'Transcode';
+      const liveStreamId = player.liveStreamId;
       await reportPlayback('/Sessions/Playing/Stopped');
+      // Free the tuner.
+      if (liveStreamId) api('/LiveTv/LiveStreams/Close', { method: 'POST', params: { LiveStreamId: liveStreamId } }).catch(() => {});
       if (wasTranscoding) {
         api('/Videos/ActiveEncodings', { method: 'DELETE', params: { DeviceId: state.deviceId, PlaySessionId: playSessionId } }).catch(() => {});
       }
@@ -1040,9 +1408,11 @@
     player.item = null;
     player.nextEpisode = null;
     player.intro = null;
+    player.liveStreamId = null;
   }
 
   async function closePlayer() {
+    player.token++;
     await stopPlayback();
     closeTracks();
     $('#player').classList.add('hidden');
@@ -1087,9 +1457,14 @@
 
   function updateOsd() {
     const video = $('#video'), dur = mediaDuration(), cur = video.currentTime || 0;
-    if (!player.dragging) $('#osd-seek').value = dur ? Math.round((cur / dur) * 1000) : 0;
-    $('#osd-time').textContent = `${formatClock(cur)} / ${formatClock(dur)}`;
-    $('#osd-remaining').textContent = '-' + formatClock(dur - cur);
+    if (player.isLive) {
+      const prog = player.item?.CurrentProgram;
+      $('#osd-time').textContent = prog ? `${prog.Name} · ${timeRange(prog)}` : '';
+    } else if (!player.dragging) $('#osd-seek').value = dur ? Math.round((cur / dur) * 1000) : 0;
+    if (!player.isLive) {
+      $('#osd-time').textContent = `${formatClock(cur)} / ${formatClock(dur)}`;
+      $('#osd-remaining').textContent = '-' + formatClock(dur - cur);
+    }
     $('#osd-play').innerHTML = video.paused ? ICONS.play : ICONS.pause;
     $('#osd-play').setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
     $('#osd-mute').innerHTML = video.muted ? ICONS.muted : ICONS.volume;
@@ -1170,10 +1545,17 @@
       case 'playpause': togglePlay(); wakeOsd(); return true;
       case 'play': video.play().catch(() => {}); wakeOsd(); return true;
       case 'pause': video.pause(); wakeOsd(); return true;
-      case 'ff': seekBy(30); wakeOsd(); return true;
-      case 'rw': seekBy(-10); wakeOsd(); return true;
+      case 'ff': if (!player.isLive) seekBy(30); wakeOsd(); return true;
+      case 'rw': if (!player.isLive) seekBy(-10); wakeOsd(); return true;
       case 'next': playNextEpisode(); return true;
+      case 'chup': if (player.isLive) changeChannel(1); return true;
+      case 'chdown': if (player.isLive) changeChannel(-1); return true;
       default: break;
+    }
+    if (player.isLive && (!osdVisible() || !$('#player').contains(document.activeElement))) {
+      // Live TV: up/down changes channel and left/right moves into the controls (there's nothing to seek).
+      if (action === 'up' || action === 'down') { changeChannel(action === 'up' ? 1 : -1); return true; }
+      if (action === 'left' || action === 'right') { wakeOsd(); focusEl($('#osd-play')); return true; }
     }
     if (!osdVisible()) {
       const skipVisible = !$('#skip-intro').classList.contains('hidden');
@@ -1433,7 +1815,8 @@
   function handleKey(action, fromNative = false) {
     const el = document.activeElement;
     if (action !== 'back') enableNav();
-    if (isPlayerOpen() && handlePlayerKey(action)) return true;
+    if (action === 'guide' && isPlayerOpen()) closePlayer();
+    else if (isPlayerOpen() && handlePlayerKey(action)) return true;
     if (['up', 'down', 'left', 'right'].includes(action)) {
       if (isTextInput(el) && (action === 'left' || action === 'right')) {
         const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
@@ -1453,6 +1836,11 @@
       return true;
     }
     if (action === 'back') return window.embyflixBack();
+    if (action === 'guide' && hasLiveTv()) {
+      closeModal();
+      location.hash = '#/livetv?tab=guide';
+      return true;
+    }
     return false;
   }
 
@@ -1461,6 +1849,7 @@
       ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'select', Escape: 'back',
       MediaPlayPause: 'playpause', MediaPlay: 'play', MediaPause: 'pause',
       MediaFastForward: 'ff', MediaRewind: 'rw', MediaTrackNext: 'next',
+      ChannelUp: 'chup', ChannelDown: 'chdown', PageUp: 'chup', PageDown: 'chdown', Guide: 'guide',
     };
     document.addEventListener('keydown', (e) => {
       if (e.altKey || e.ctrlKey || e.metaKey) return;

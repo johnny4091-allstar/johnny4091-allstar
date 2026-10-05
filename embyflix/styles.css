@@ -294,6 +294,69 @@ img { display: block; }
   #osd-time { display: none; }
 }
 
+/* ---------- Live TV ---------- */
+.tab-bar { display: flex; gap: .4rem; }
+.tab { padding: .4rem 1rem; border-radius: 999px; color: var(--muted); font-weight: 600; border: 1px solid transparent; }
+.tab:hover { color: #fff; }
+.tab.active { color: #000; background: #fff; }
+.sub-head { margin-bottom: 1rem; }
+.row-title.flush { margin: 0 0 1rem; }
+.live-badge { background: var(--red); color: #fff; font-size: .7rem; font-weight: 800; letter-spacing: 1px; padding: .15rem .45rem; border-radius: 3px; }
+.channel-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+.channel-grid .card { flex: none; width: 100%; }
+.channel-logo { position: absolute; inset: 0 0 38% 0; display: flex; align-items: center; justify-content: center; padding: .8rem 1.2rem; background: radial-gradient(circle at 50% 40%, #2c2c2c, #181818); }
+.channel-logo img { max-width: 70%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+.channel-logo span { font-weight: 800; font-size: 1.1rem; text-align: center; }
+.channel-card { background: #181818; }
+
+.guide {
+  position: relative; overflow: auto; height: calc(100vh - 190px); min-height: 300px; border-radius: 6px; background: #181818; scrollbar-width: thin;
+  /* Keep focused programs clear of the sticky channel column and time header. */
+  scroll-padding: 40px 0 0 110px;
+}
+.guide-head { display: flex; position: sticky; top: 0; z-index: 3; background: #222; height: 40px; width: max-content; }
+.guide-corner { position: sticky; left: 0; z-index: 4; width: 110px; flex: none; background: #222; }
+.guide-times { position: relative; height: 40px; }
+.guide-times span { position: absolute; top: 0; line-height: 40px; padding-left: .5rem; font-size: .85rem; color: var(--muted); border-left: 1px solid #333; height: 100%; }
+.guide-now { position: absolute; top: 0; width: 2px; height: 40px; background: var(--red); }
+.guide-row { display: flex; width: max-content; border-bottom: 1px solid #2a2a2a; }
+.guide-ch {
+  position: sticky; left: 0; z-index: 2; width: 110px; height: 64px; flex: none;
+  display: flex; align-items: center; gap: .4rem; padding: 0 .5rem;
+  background: #202020; border: 0; border-right: 1px solid #333; color: #fff; text-align: left;
+}
+.guide-ch img { max-width: 56px; max-height: 40px; object-fit: contain; }
+.guide-ch-num { font-weight: 700; font-size: .85rem; color: var(--muted); }
+.guide-ch-name { font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guide-ch:hover { background: #2c2c2c; }
+.guide-progs { position: relative; height: 64px; }
+.guide-prog, .guide-empty {
+  position: absolute; top: 4px; bottom: 4px; border-radius: 4px; padding: .3rem .5rem;
+  background: #2a2a2a; border: 0; color: #ddd; text-align: left; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: center; gap: .1rem;
+}
+.guide-empty { left: 0; right: 3px; color: var(--dim); background: #1f1f1f; font-size: .85rem; }
+.guide-prog strong { font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.guide-prog span { font-size: .72rem; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.guide-prog.now { background: #3a3a3a; color: #fff; }
+.guide-prog:hover { background: #474747; }
+.guide-prog.recording strong::before { content: '\25CF  '; color: var(--red); }
+.kbd-nav .guide-prog:focus, .kbd-nav .guide-ch:focus { outline: none; background: #fff; color: #000; }
+.kbd-nav .guide-prog:focus span { color: #333; }
+
+.program-body { padding-top: 2.5rem; }
+.program-body h2 { margin: 0 0 .6rem; font-size: 1.8rem; }
+.program-img { aspect-ratio: 16/9; max-height: 280px; background-size: cover; background-position: center; border-radius: 6px; margin-bottom: 1.2rem; }
+.program-actions { margin-top: 1.5rem; flex-wrap: wrap; }
+.timer-list { display: flex; flex-direction: column; gap: .5rem; }
+.timer-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; background: #181818; border-radius: 6px; padding: .8rem 1rem; }
+.timer-text { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+.timer-text span { color: var(--muted); font-size: .85rem; }
+
+.osd-live { display: none; }
+.player.live .osd-live { display: inline-block; margin-left: .4rem; }
+.player.live .osd-seek-row, .player.live #osd-back10, .player.live #osd-fwd10 { display: none; }
+
 /* ---------- Remote / keyboard focus ---------- */
 .kbd-nav :focus { outline: 3px solid #fff; outline-offset: 3px; }
 .kbd-nav .card:focus { outline-offset: 2px; transform: scale(1.12); z-index: 5; box-shadow: 0 8px 24px rgba(0,0,0,.7); }

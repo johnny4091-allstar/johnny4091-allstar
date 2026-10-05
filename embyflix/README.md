@@ -16,6 +16,9 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - Video player that plays files directly when the browser supports them and asks Emby to transcode (HLS) when it doesn't
 - Player controls: play/pause, 10-second skip, seek bar, mute, full screen, audio track, subtitles, streaming quality,
   Skip Intro (when Emby has intro markers) and Next Episode
+- Live TV (when it's set up in Emby and allowed for the user): a TV guide, a channel list, an "On Now" row on Home,
+  live playback with channel up/down, and recording single shows or whole series, plus a Recordings page with
+  scheduled recordings you can cancel
 - Resume where you left off, progress reported back to Emby, and auto-play of the next episode
 - Works on phones, tablets, and desktops
 
@@ -50,7 +53,8 @@ the player and pop-ups.
 
 On Android TV, use the remote's arrows to move around and OK to select. Selecting a text box opens the on-screen
 keyboard. While a video plays: OK pauses, left/right skips 10 seconds, up/down shows the controls, and the remote's
-play/pause, fast-forward and rewind buttons work too.
+play/pause, fast-forward and rewind buttons work too. When watching Live TV, up/down (or the remote's channel
+buttons) change channel, and the remote's Guide button opens the TV guide.
 
 To install on a TV, use an app like Downloader (enter the APK link) or copy the APK over with a USB stick, and allow
 installing from unknown sources when asked.

@@ -180,6 +180,10 @@ public class MainActivity extends Activity {
             case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: return "ff";
             case KeyEvent.KEYCODE_MEDIA_REWIND: return "rw";
             case KeyEvent.KEYCODE_MEDIA_NEXT: return "next";
+            case KeyEvent.KEYCODE_CHANNEL_UP: return "chup";
+            case KeyEvent.KEYCODE_CHANNEL_DOWN: return "chdown";
+            case KeyEvent.KEYCODE_GUIDE:
+            case KeyEvent.KEYCODE_TV: return "guide";
             default: return null;
         }
     }
