@@ -1,4 +1,4 @@
 {
-  "requestsEnabled": false,
-  "requestsServer": ""
+  "requestsEnabled": true,
+  "requestsServer": "https://deviant-strike-permalink-crimes.trycloudflare.com"
 }
