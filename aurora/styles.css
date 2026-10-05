@@ -385,6 +385,45 @@ img { display: block; }
 .player.live .osd-live { display: inline-block; margin-left: .4rem; }
 .player.live .osd-seek-row, .player.live #osd-back10, .player.live #osd-fwd10 { display: none; }
 
+/* ---------- Requests ---------- */
+.requests-page .page-head { justify-content: space-between; }
+.req-search { flex: 1; max-width: 520px; }
+.req-search input { width: 100%; padding: .7rem 1rem; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: var(--bg-3); color: #fff; font-size: 1rem; font-family: inherit; }
+.req-search input:focus { outline: none; border-color: var(--accent); }
+.flush-rows { padding-top: .5rem; }
+.flush-rows .row-title, .flush-rows .row-skeleton { margin-left: 0; padding-left: 0; }
+.flush-rows .row-track { padding-left: 0; padding-right: 0; }
+.seerr-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 1rem; }
+.seerr-grid .card { flex: none; width: 100%; }
+.seerr-card img.contain { object-fit: contain; background: var(--bg-3); }
+.seerr-badge {
+  position: absolute; top: 8px; left: 8px; z-index: 2; padding: .15rem .5rem; border-radius: 999px;
+  font-size: .72rem; font-weight: 700; background: rgba(4,8,22,.85); color: #fff; border: 1px solid rgba(255,255,255,.2);
+}
+.seerr-badge.inline { position: static; }
+.seerr-badge.s-available { background: #127a55; border-color: #2ad4a0; }
+.seerr-badge.s-partly { background: #1c5d7a; border-color: var(--accent); }
+.seerr-badge.s-requested, .seerr-badge.s-waiting, .seerr-badge.s-approved { background: #3f3478; border-color: var(--accent-2); }
+.seerr-badge.s-declined { background: #6e1f2c; border-color: var(--live); }
+.season-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: .6rem; }
+.season-pick {
+  display: flex; flex-direction: column; gap: .2rem; text-align: left; padding: .7rem .9rem; border-radius: 6px;
+  background: var(--bg-3); border: 2px solid transparent; color: var(--muted); font-family: inherit;
+}
+.season-pick strong { color: #fff; }
+.season-pick span { font-size: .8rem; }
+.season-pick.on { border-color: var(--accent); background: #183357; }
+.season-pick.on strong::before { content: '\2713  '; color: var(--accent); }
+.season-pick.taken { opacity: .55; cursor: default; }
+.seerr-actions { margin-top: 1.5rem; }
+.seerr-done { color: var(--muted); font-weight: 600; }
+.req-connect { max-width: 440px; background: var(--bg-2); border-radius: 10px; padding: 1.6rem; }
+.req-connect h2 { margin: 0 0 .5rem; }
+.req-connect p { color: var(--muted); line-height: 1.4; margin: 0 0 1rem; }
+.req-connect label { display: block; color: var(--muted); font-size: .85rem; margin-bottom: .9rem; }
+.req-connect input { display: block; width: 100%; margin-top: .35rem; padding: .7rem .9rem; border-radius: 4px; border: 1px solid var(--bg-3); background: var(--bg-3); color: #fff; font-size: 1rem; }
+.req-connect input[readonly] { color: var(--muted); }
+
 /* ---------- Settings ---------- */
 .settings-page { max-width: 900px; }
 .settings-section { background: var(--bg-2); border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; }

@@ -33,6 +33,7 @@ import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -40,6 +41,10 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 /** Hosts the Aurora web app (bundled in assets/) in a full-screen WebView. */
 public class MainActivity extends Activity {
@@ -51,6 +56,66 @@ public class MainActivity extends Activity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private boolean playerMode;
+    /**
+     * HTTP for services that don't allow cross-site calls from a web page (Jellyseerr).
+     * Result goes to window.auroraHttpDone(id, {status, body, setCookie}); status 0 means a network error.
+     */
+    private void nativeHttp(String id, String method, String url, String headersJson, String body) {
+        JSONObject result = new JSONObject();
+        HttpURLConnection conn = null;
+        try {
+            if (!url.startsWith("https://") && !url.startsWith("http://")) throw new IOException("unsupported address");
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod(method);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            JSONObject headers = new JSONObject(headersJson == null || headersJson.isEmpty() ? "{}" : headersJson);
+            for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
+                String key = it.next();
+                conn.setRequestProperty(key, headers.getString(key));
+            }
+            if (body != null && !body.isEmpty()) {
+                conn.setDoOutput(true);
+                try (OutputStream out = conn.getOutputStream()) {
+                    out.write(body.getBytes(StandardCharsets.UTF_8));
+                }
+            }
+            int status = conn.getResponseCode();
+            InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            result.put("status", status);
+            result.put("body", in == null ? "" : readAll(in));
+            // Keep just the name=value part of each cookie, to send back on later calls.
+            StringBuilder cookies = new StringBuilder();
+            for (Map.Entry<String, List<String>> h : conn.getHeaderFields().entrySet()) {
+                if (h.getKey() == null || !h.getKey().equalsIgnoreCase("Set-Cookie")) continue;
+                for (String c : h.getValue()) {
+                    if (cookies.length() > 0) cookies.append("; ");
+                    cookies.append(c.split(";", 2)[0].trim());
+                }
+            }
+            result.put("setCookie", cookies.toString());
+        } catch (Exception e) {
+            try {
+                result.put("status", 0).put("error", String.valueOf(e.getMessage()));
+            } catch (Exception ignored) {
+                // Leave the result empty.
+            }
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        String js = "window.auroraHttpDone && window.auroraHttpDone(" + JSONObject.quote(id) + "," + result + ")";
+        runOnUiThread(() -> webView.evaluateJavascript(js, null));
+    }
+
+    private static String readAll(InputStream in) throws IOException {
+        try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = input.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toString("UTF-8");
+        }
+    }
+
     /** A downloaded update waiting for the "install unknown apps" permission. */
     private File pendingApk;
 
@@ -364,6 +429,11 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String getVersionName() {
             return versionName();
+        }
+
+        @JavascriptInterface
+        public void httpRequest(String id, String method, String url, String headersJson, String body) {
+            new Thread(() -> nativeHttp(id, method, url, headersJson, body), "aurora-http").start();
         }
 
         /** Downloads the APK at url and opens the system installer. Progress goes to window.auroraUpdate(). */

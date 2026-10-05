@@ -24,6 +24,9 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size and
   background, auto-play, "Are you still watching?" and streaming quality (saved on the device)
 - The Android app checks this repository's Releases for a newer version, offers to update, and installs it itself
+- Requests tab (Android app) for Jellyseerr: browse Trending, Popular and Coming Soon, search, request movies or
+  chosen TV seasons, and follow your requests. People sign in to Jellyseerr with their Emby details automatically.
+  Set `REQUESTS_SERVER` at the top of `app.js` to your Jellyseerr address to turn it on.
 - Resume where you left off, progress reported back to Emby, and auto-play of the next episode
 - Works on phones, tablets, and desktops
 

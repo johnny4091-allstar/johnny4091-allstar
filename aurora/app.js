@@ -3,6 +3,8 @@
   'use strict';
 
   const DEFAULT_SERVER = 'https://emby4836.duckdns.org:8920';
+  // Jellyseerr address for the Requests tab (e.g. 'https://requests.example.com'); empty hides the tab.
+  const REQUESTS_SERVER = '';
   const TICKS_PER_SECOND = 10000000;
   const ITEM_FIELDS = 'Overview,Genres,ProductionYear,OfficialRating,CommunityRating,RunTimeTicks,PrimaryImageAspectRatio,DateCreated';
   const IMAGE_PARAMS = { EnableImageTypes: 'Primary,Backdrop,Thumb,Logo', ImageTypeLimit: 1 };
@@ -182,8 +184,9 @@
   }
   function saveAccounts(list) { store.set('ef.accounts', JSON.stringify(list)); }
   function upsertAccount(user, token) {
+    const old = getAccounts().find((a) => a.userId === user.Id);
     const list = getAccounts().filter((a) => a.userId !== user.Id);
-    list.push({ userId: user.Id, name: user.Name, imageTag: user.PrimaryImageTag || '', token });
+    list.push({ userId: user.Id, name: user.Name, imageTag: user.PrimaryImageTag || '', token, requestsCookie: old?.requestsCookie || '' });
     saveAccounts(list);
   }
   function removeAccount(userId) { saveAccounts(getAccounts().filter((a) => a.userId !== userId)); }
@@ -233,6 +236,8 @@
     store.set('ef.apiKey', state.apiKey);
     store.set('ef.username', username);
     upsertAccount(res.User, res.AccessToken);
+    // Connect Requests with the same details in the background; the tab asks again if this fails.
+    if (hasRequests()) seerrLogin(username, password, res.User.Id).catch(() => {});
     return res.User;
   }
 
@@ -245,6 +250,7 @@
   }
 
   async function signOut() {
+    if (hasRequests() && requestsCookie()) seerr('/auth/logout', { method: 'POST' }).catch(() => {});
     if (state.apiKey) {
       await api('/Sessions/Logout', { method: 'POST' }).catch(() => {});
       state.apiKey = '';
@@ -275,6 +281,7 @@
       state.views = views?.Items || [];
     } catch { state.views = []; }
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !hasLiveTv()));
+    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !hasRequests()));
     live.channelIds = [];
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
@@ -317,6 +324,7 @@
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent);
       case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
+      case 'requests': return renderRequests(page, isCurrent);
       default: return renderHome(page, isCurrent);
     }
   }
@@ -1158,6 +1166,289 @@
     // Remember it right away so fast repeated presses keep counting from here.
     live.tunedId = next;
     playItem({ Id: next, Type: 'TvChannel' });
+  }
+
+  // ---------- Requests (Jellyseerr) ----------
+  // Jellyseerr doesn't allow cross-site calls from a web page, so the Android app makes them natively
+  // (EmbyFlixAndroid.httpRequest). Each person signs in to Jellyseerr with their Emby details, so requests
+  // are made as them and Jellyseerr's own permissions and limits apply.
+  const TMDB_IMG = 'https://image.tmdb.org/t/p/';
+  const hasRequests = () => !!REQUESTS_SERVER && !!nativeApp?.httpRequest;
+  const MEDIA_STATUS = { 2: 'Requested', 3: 'Requested', 4: 'Partly available', 5: 'Available' };
+  const REQUEST_STATUS = { 1: 'Waiting for approval', 2: 'Approved', 3: 'Declined' };
+
+  let httpSeq = 0;
+  const httpPending = new Map();
+  window.auroraHttpDone = (id, res) => {
+    const done = httpPending.get(id);
+    if (done) { httpPending.delete(id); done(res); }
+  };
+  function nativeHttp(method, url, headers, body) {
+    return new Promise((resolve, reject) => {
+      const id = 'h' + (++httpSeq);
+      const timer = setTimeout(() => { httpPending.delete(id); reject(new Error('The request server took too long to answer.')); }, 30000);
+      httpPending.set(id, (res) => { clearTimeout(timer); resolve(res); });
+      nativeApp.httpRequest(id, method, url, JSON.stringify(headers || {}), body == null ? '' : body);
+    });
+  }
+
+  const requestsCookie = (userId = state.userId) => getAccounts().find((a) => a.userId === userId)?.requestsCookie || '';
+  function setRequestsCookie(cookie, userId = state.userId) {
+    const list = getAccounts(), acc = list.find((a) => a.userId === userId);
+    if (!acc) return;
+    acc.requestsCookie = cookie;
+    saveAccounts(list);
+  }
+
+  async function seerr(path, { method = 'GET', body, userId } = {}) {
+    const headers = { Accept: 'application/json' };
+    const cookie = requestsCookie(userId);
+    if (cookie) headers.Cookie = cookie;
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await nativeHttp(method, REQUESTS_SERVER + '/api/v1' + path, headers, body === undefined ? null : JSON.stringify(body));
+    if (!res || !res.status) throw new Error('Could not reach the request server.');
+    let data = null;
+    try { data = res.body ? JSON.parse(res.body) : null; } catch { /* not JSON */ }
+    if (res.status >= 400) {
+      const err = new Error(data?.message || data?.error || `Request server error (${res.status})`);
+      err.status = res.status;
+      throw err;
+    }
+    return { data, setCookie: res.setCookie || '' };
+  }
+
+  // Signs in to Jellyseerr with the same Emby username and password.
+  async function seerrLogin(username, password, userId = state.userId) {
+    setRequestsCookie('', userId);
+    const { setCookie } = await seerr('/auth/jellyfin', { method: 'POST', body: { username, password }, userId });
+    if (!setCookie) throw new Error('The request server did not start a session.');
+    setRequestsCookie(setCookie, userId);
+  }
+
+  async function seerrMe() {
+    if (!requestsCookie()) return null;
+    try {
+      return (await seerr('/auth/me')).data;
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) { setRequestsCookie(''); return null; }
+      throw e;
+    }
+  }
+
+  const tmdbImage = (path, size) => (path ? TMDB_IMG + size + path : '');
+  const seerrTitle = (m) => m.title || m.name || '';
+  const seerrYear = (m) => (m.releaseDate || m.firstAirDate || '').slice(0, 4);
+
+  function seerrStatus(m) {
+    const req = m.request; // set for "My Requests" cards
+    if (req?.status === 3) return 'Declined';
+    if (MEDIA_STATUS[m.mediaInfo?.status]) return MEDIA_STATUS[m.mediaInfo.status];
+    if (req) return REQUEST_STATUS[req.status] || 'Requested';
+    return '';
+  }
+
+  function createSeerrCard(m) {
+    const card = document.createElement('div');
+    card.className = 'card seerr-card';
+    card.tabIndex = 0;
+    const img = tmdbImage(m.backdropPath, 'w500') || tmdbImage(m.posterPath, 'w342');
+    const status = seerrStatus(m);
+    const kind = m.mediaType === 'tv' ? 'Series' : 'Movie';
+    card.innerHTML = `
+      ${img ? `<img loading="lazy" src="${esc(img)}" alt=""${m.backdropPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
+      ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
+      <div class="card-info"><div>${esc(seerrTitle(m))}</div><div class="sub">${esc([seerrYear(m), kind].filter(Boolean).join(' • '))}</div></div>`;
+    card.addEventListener('click', () => openSeerrItem(m.mediaType, m.id));
+    return card;
+  }
+
+  const onlyMedia = (results) => (results || []).filter((m) => m.mediaType === 'movie' || m.mediaType === 'tv');
+
+  async function myRequests(me) {
+    const { data } = await seerr(`/request?take=20&skip=0&sort=added&filter=all&requestedBy=${me.id}`);
+    const reqs = data?.results || [];
+    // Requests only carry the TMDB id; fetch titles and pictures alongside.
+    const detailed = await Promise.allSettled(reqs.map(async (r) => {
+      const type = r.media?.mediaType || r.type;
+      const { data: m } = await seerr(`/${type}/${r.media.tmdbId}`);
+      return { ...m, mediaType: type, request: r };
+    }));
+    return detailed.filter((d) => d.status === 'fulfilled').map((d) => d.value);
+  }
+
+  async function renderRequests(page, isCurrent) {
+    page.innerHTML = `
+      <div class="page-pad requests-page">
+        <div class="page-head">
+          <h1>Requests</h1>
+          <div class="req-search hidden"><input type="search" placeholder="Search for a movie or show to request" autocomplete="off"></div>
+        </div>
+        <div data-req-body><div class="spinner"></div></div>
+      </div>`;
+    const body = $('[data-req-body]', page);
+    let me;
+    try { me = await seerrMe(); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(e.message)}</p>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    if (!me) return renderRequestsConnect(page, body, isCurrent);
+
+    const searchBox = $('.req-search', page), input = $('input', searchBox);
+    searchBox.classList.remove('hidden');
+    const showBrowse = () => {
+      body.innerHTML = '';
+      const rows = document.createElement('div');
+      rows.className = 'rows flush-rows';
+      body.appendChild(rows);
+      const add = (title, loader) => addRow(rows, title, loader, { isCurrent, createItem: createSeerrCard });
+      add('My Requests', () => myRequests(me));
+      add('Trending', async () => onlyMedia((await seerr('/discover/trending?page=1')).data?.results));
+      add('Popular Movies', async () => onlyMedia((await seerr('/discover/movies?page=1')).data?.results));
+      add('Popular TV Shows', async () => onlyMedia((await seerr('/discover/tv?page=1')).data?.results));
+      add('Coming Soon', async () => onlyMedia((await seerr('/discover/movies/upcoming?page=1')).data?.results));
+    };
+    let timer, searchToken = 0;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = input.value.trim(), token = ++searchToken;
+        if (!q) return showBrowse();
+        body.innerHTML = '<div class="spinner"></div>';
+        try {
+          const { data } = await seerr(`/search?query=${encodeURIComponent(q)}&page=1`);
+          if (token !== searchToken || !isCurrent()) return;
+          const results = onlyMedia(data?.results);
+          body.innerHTML = results.length ? '<div class="grid seerr-grid"></div>' : `<p class="empty-msg">Nothing found for "${esc(q)}".</p>`;
+          results.forEach((m) => $('.grid', body)?.appendChild(createSeerrCard(m)));
+        } catch (e) {
+          if (token === searchToken) body.innerHTML = `<p class="empty-msg">Search failed: ${esc(e.message)}</p>`;
+        }
+      }, 450);
+    });
+    showBrowse();
+    autoFocus(input);
+  }
+
+  // People who signed in before Requests existed (or whose Jellyseerr session expired) enter their password once.
+  function renderRequestsConnect(page, body, isCurrent) {
+    body.innerHTML = `
+      <form class="req-connect">
+        <h2>Request movies and shows</h2>
+        <p>Enter your password once to connect your account to requests. Use the same password you sign in with.</p>
+        <label>Username<input type="text" value="${esc(state.user?.Name || '')}" readonly></label>
+        <label>Password<input type="password" data-pw autocomplete="current-password"></label>
+        <p class="error hidden" data-err></p>
+        <button class="btn btn-red" type="submit" data-autofocus>Connect</button>
+      </form>`;
+    const form = $('form', body), err = $('[data-err]', body);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('button', form);
+      btn.disabled = true; btn.textContent = 'Connecting…';
+      try {
+        await seerrLogin(state.user?.Name || '', $('[data-pw]', form).value);
+        if (isCurrent()) route();
+      } catch (ex) {
+        err.textContent = ex.status === 401 || ex.status === 403 ? 'That password was not accepted.' : ex.message;
+        err.classList.remove('hidden');
+        btn.disabled = false; btn.textContent = 'Connect';
+      }
+    });
+    autoFocus($('[data-pw]', form));
+  }
+
+  async function openSeerrItem(type, tmdbId) {
+    const token = ++modalToken;
+    const modal = $('#modal'), content = $('#modal-content');
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = '<div class="spinner" style="margin:6rem auto"></div>';
+    modal.classList.remove('hidden');
+    modal.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+    let m;
+    try { m = (await seerr(`/${type}/${tmdbId}`)).data; } catch (e) {
+      if (token === modalToken) content.innerHTML = `<p class="empty-msg">Could not load details: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (token !== modalToken) return;
+    const isTv = type === 'tv';
+    const status = m.mediaInfo?.status || 1;
+    const seasons = isTv ? (m.seasons || []).filter((s) => s.seasonNumber > 0) : [];
+    // Seasons already available or requested can't be requested again.
+    const taken = new Map();
+    (m.mediaInfo?.seasons || []).forEach((s) => { if (s.status > 1) taken.set(s.seasonNumber, MEDIA_STATUS[s.status] || 'Requested'); });
+    (m.mediaInfo?.requests || []).forEach((r) => {
+      if (r.status !== 3) (r.seasons || []).forEach((s) => { if (!taken.has(s.seasonNumber)) taken.set(s.seasonNumber, REQUEST_STATUS[r.status] || 'Requested'); });
+    });
+    const meta = [seerrYear(m), isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? formatRuntime(m.runtime * 60 * TICKS_PER_SECOND) : ''),
+      (m.genres || []).slice(0, 3).map((g) => g.name).join(', ')].filter(Boolean);
+    const backdrop = tmdbImage(m.backdropPath, 'w1280');
+    content.innerHTML = `
+      <div class="m-hero" style="background-image:url('${esc(backdrop)}')">
+        <div class="m-hero-content"><h2>${esc(seerrTitle(m))}</h2></div>
+      </div>
+      <div class="m-body">
+        <div class="meta">${meta.map((t) => `<span>${esc(t)}</span>`).join('')}${MEDIA_STATUS[status] ? `<span class="seerr-badge inline s-${MEDIA_STATUS[status].split(' ')[0].toLowerCase()}">${MEDIA_STATUS[status]}</span>` : ''}</div>
+        <p class="overview">${esc(m.overview || '')}</p>
+        ${isTv && seasons.length ? `<div class="m-section-head"><h3>Seasons</h3></div><div class="season-picks">${seasons.map((s) => {
+          const t = taken.get(s.seasonNumber);
+          return `<button class="season-pick${t ? ' taken' : ' on'}" data-season="${s.seasonNumber}"${t ? ' disabled' : ''}>
+            <strong>Season ${s.seasonNumber}</strong><span>${t ? esc(t) : `${s.episodeCount || '?'} episodes`}</span></button>`;
+        }).join('')}</div>` : ''}
+        <p class="error hidden" data-err></p>
+        <div class="m-actions seerr-actions"></div>
+      </div>`;
+    const actions = $('.seerr-actions', content), err = $('[data-err]', content);
+    const picks = () => $$('.season-pick.on', content).map((b) => Number(b.dataset.season));
+    $$('.season-pick:not(.taken)', content).forEach((b) => b.addEventListener('click', () => { b.classList.toggle('on'); paint(); }));
+
+    function paint() {
+      const canRequest = isTv ? seasons.some((s) => !taken.has(s.seasonNumber)) : status < 2;
+      const n = picks().length;
+      actions.innerHTML = '';
+      if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
+      if (canRequest) {
+        actions.insertAdjacentHTML('beforeend', isTv
+          ? `<button class="btn btn-red" data-act="request"${n ? '' : ' disabled'}>Request ${n} season${n === 1 ? '' : 's'}</button>`
+          : '<button class="btn btn-red" data-act="request">Request</button>');
+      } else if (status < 4) {
+        actions.insertAdjacentHTML('beforeend', `<span class="seerr-done">${esc(MEDIA_STATUS[status] || 'Requested')}</span>`);
+      }
+      $('[data-act="watch"]', actions)?.addEventListener('click', () => watchInAurora(m, isTv));
+      $('[data-act="request"]', actions)?.addEventListener('click', submit);
+    }
+
+    async function submit(e) {
+      e.target.disabled = true;
+      err.classList.add('hidden');
+      try {
+        const body = { mediaType: type, mediaId: Number(tmdbId) };
+        if (isTv) body.seasons = picks();
+        await seerr('/request', { method: 'POST', body });
+        toast(`Requested ${seerrTitle(m)}`);
+        if (token === modalToken) openSeerrItem(type, tmdbId);
+      } catch (ex) {
+        err.textContent = ex.status === 403 ? (ex.message && !/permission/i.test(ex.message) ? ex.message : "Your account isn't allowed to make this request.") : ex.message;
+        err.classList.remove('hidden');
+        e.target.disabled = false;
+      }
+    }
+
+    paint();
+    autoFocus($('.seerr-actions button', content) || $('.season-pick:not(.taken)', content));
+  }
+
+  // Finds the requested title in the Emby library and opens it.
+  async function watchInAurora(m, isTv) {
+    try {
+      const res = await getItems({ SearchTerm: seerrTitle(m), IncludeItemTypes: isTv ? 'Series' : 'Movie', Limit: 10 });
+      const items = res?.Items || [];
+      const year = Number(seerrYear(m));
+      const match = items.find((i) => !year || !i.ProductionYear || Math.abs(i.ProductionYear - year) <= 1) || items[0];
+      if (match) openDetails(match.Id);
+      else toast("It's not in the library yet. Try again a little later.");
+    } catch (e) { toast('Could not search the library: ' + e.message); }
   }
 
   // ---------- Settings ----------
