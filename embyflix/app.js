@@ -2,6 +2,7 @@
 (() => {
   'use strict';
 
+  const DEFAULT_SERVER = 'https://emby4836.duckdns.org:8920';
   const TICKS_PER_SECOND = 10000000;
   const ITEM_FIELDS = 'Overview,Genres,ProductionYear,OfficialRating,CommunityRating,RunTimeTicks,PrimaryImageAspectRatio,DateCreated';
   const IMAGE_PARAMS = { EnableImageTypes: 'Primary,Backdrop,Thumb,Logo', ImageTypeLimit: 1 };
@@ -26,7 +27,7 @@
 
   function loadConfig() {
     const cfg = window.EMBYFLIX_CONFIG || {};
-    state.server = normalizeServer(store.get('ef.server') || cfg.serverUrl || '');
+    state.server = normalizeServer(store.get('ef.server') || cfg.serverUrl || DEFAULT_SERVER);
     state.apiKey = store.get('ef.apiKey') || cfg.apiKey || '';
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
@@ -240,6 +241,9 @@
   function connectionErrorMessage(e) {
     if (e.status === 401 || e.status === 403) return 'The API key was rejected by the server.';
     if (e.status) return `Server error: ${e.message}`;
+    if (state.server.startsWith('https:')) {
+      return `Could not reach the server. Check that Emby is running and that ${state.server} opens in this browser without a certificate warning.`;
+    }
     return 'Could not reach the server. Check the address, that Emby is running, and that this device can reach it.';
   }
 

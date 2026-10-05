@@ -20,7 +20,7 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 1. Download this `embyflix` folder.
 2. Open `index.html` in Chrome, Edge, Firefox, or Safari. Double-clicking it works, or you can serve the folder:
    `python3 -m http.server 8080`, then go to http://localhost:8080
-3. Enter your server address (for example `http://192.168.1.10:8096`) and your API key, then pick a profile.
+3. The server address is prefilled with `https://emby4836.duckdns.org:8920`. Enter your API key, then pick a profile.
 
 Create an API key in Emby under **Settings → Advanced → API Keys**.
 
@@ -31,9 +31,11 @@ so your key is never committed. You can also just type them into the connect scr
 
 ## Notes
 
-- **HTTPS pages cannot talk to an HTTP server.** If your Emby server uses `http://`, open EmbyFlix from a local file
-  or over plain HTTP, not from an `https://` host such as GitHub Pages. You can also put Emby behind HTTPS
-  (a reverse proxy, or Emby's own certificate setting).
+- **Use the HTTPS address.** Because the server is reachable over `https://`, EmbyFlix can also be hosted on an
+  `https://` site such as GitHub Pages. An `https://` page cannot talk to an `http://` server, so if you switch back
+  to the `http://...:8096` address, open EmbyFlix from a local file instead.
+- The server's certificate must be valid (for example Let's Encrypt). If opening the server address in your browser
+  shows a certificate warning, the app can't connect until that's fixed.
 - **Keep your API key private.** An Emby API key gives full admin access to your server. Don't publish it in a
   public repository or on a public website. If it has been shared publicly, delete it in Emby and create a new one.
 - If playback won't start for a file, check that transcoding is enabled for your user in Emby.
