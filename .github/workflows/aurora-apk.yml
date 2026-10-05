@@ -28,7 +28,8 @@ jobs:
 
       - name: Build APK
         working-directory: android
-        run: gradle assembleRelease -PversionCode=${{ github.run_number }} --stacktrace
+        # Offset keeps version codes above the EmbyFlix builds (1-4) so installed copies can update.
+        run: gradle assembleRelease -PversionCode=$((${{ github.run_number }} + 100)) --stacktrace
 
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk Aurora.apk
