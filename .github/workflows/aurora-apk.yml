@@ -1,11 +1,11 @@
-name: Build EmbyFlix APK
+name: Build Aurora APK
 
 on:
   push:
     paths:
-      - 'embyflix/**'
+      - 'aurora/**'
       - 'android/**'
-      - '.github/workflows/embyflix-apk.yml'
+      - '.github/workflows/aurora-apk.yml'
   workflow_dispatch:
 
 permissions:
@@ -31,22 +31,22 @@ jobs:
         run: gradle assembleRelease -PversionCode=${{ github.run_number }} --stacktrace
 
       - name: Rename APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk EmbyFlix.apk
+        run: cp android/app/build/outputs/apk/release/app-release.apk Aurora.apk
 
       - uses: actions/upload-artifact@v4
         with:
-          name: EmbyFlix-apk
-          path: EmbyFlix.apk
+          name: Aurora-apk
+          path: Aurora.apk
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: embyflix-v1.1.${{ github.run_number }}
-          name: EmbyFlix 1.1.${{ github.run_number }} for Android
+          tag_name: aurora-v1.2.${{ github.run_number }}
+          name: Aurora 1.2.${{ github.run_number }} for Android and Android TV
           target_commitish: ${{ github.sha }}
           make_latest: true
-          files: EmbyFlix.apk
+          files: Aurora.apk
           body: |
-            Download **EmbyFlix.apk** below on your Android phone or tablet and open it to install.
+            Download **Aurora.apk** below on your Android phone, tablet or Android TV and open it to install.
             You may need to allow installing apps from your browser or file manager the first time.
             Built from ${{ github.ref_name }} at ${{ github.sha }}.

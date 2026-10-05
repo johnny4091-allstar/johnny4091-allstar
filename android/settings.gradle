@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = 'EmbyFlix'
+rootProject.name = 'Aurora'
 include ':app'

@@ -1,4 +1,4 @@
-/* EmbyFlix — a Netflix-style web client for Emby. Plain JS, no build step. */
+/* Aurora — a Netflix-style web client for Emby. Plain JS, no build step. */
 (() => {
   'use strict';
 
@@ -19,7 +19,7 @@
 
   // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
   const state = { server: DEFAULT_SERVER, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
-  const CLIENT = { name: 'EmbyFlix', version: '1.1.0' };
+  const CLIENT = { name: 'Aurora', version: '1.2.0' };
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
@@ -149,7 +149,7 @@
   }
 
   function avatarInfo(user) {
-    const colors = ['#e50914', '#2f80ed', '#f2c94c', '#27ae60', '#9b51e0', '#eb5757'];
+    const colors = ['#18b6d6', '#4f7bff', '#7a5cff', '#2ad4a0', '#c05cff', '#3a8dde'];
     const name = user.Name || '?';
     return {
       color: colors[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length],
@@ -1156,7 +1156,7 @@
     const bitrate = maxBitrate();
 
     return {
-      Name: 'EmbyFlix',
+      Name: 'Aurora',
       MaxStreamingBitrate: bitrate,
       MaxStaticBitrate: bitrate,
       MusicStreamingTranscodingBitrate: 192000,

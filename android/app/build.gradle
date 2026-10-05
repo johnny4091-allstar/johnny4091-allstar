@@ -2,13 +2,13 @@ plugins {
     id 'com.android.application'
 }
 
-// The web app in ../../embyflix is bundled into the APK as assets.
-def webAppDir = file('../../embyflix')
+// The web app in ../../aurora is bundled into the APK as assets.
+def webAppDir = file('../../aurora')
 def webAssetsDir = layout.buildDirectory.dir('generated/webassets').get().asFile
 
 def copyWebApp = tasks.register('copyWebApp', Sync) {
     from(webAppDir) {
-        exclude 'README.md', '.gitignore', 'config.example.js'
+        exclude 'README.md'
     }
     into webAssetsDir
 }
@@ -20,11 +20,12 @@ android {
     compileSdk 35
 
     defaultConfig {
+        // Kept from the EmbyFlix name so installed copies update in place.
         applicationId 'com.johnny4091.embyflix'
         minSdk 26
         targetSdk 34
         versionCode appVersionCode
-        versionName "1.1.${appVersionCode}"
+        versionName "1.2.${appVersionCode}"
     }
 
     signingConfigs {

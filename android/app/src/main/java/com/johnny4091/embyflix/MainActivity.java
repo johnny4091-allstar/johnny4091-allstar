@@ -28,7 +28,7 @@ import android.widget.FrameLayout;
 
 import androidx.webkit.WebViewAssetLoader;
 
-/** Hosts the EmbyFlix web app (bundled in assets/) in a full-screen WebView. */
+/** Hosts the Aurora web app (bundled in assets/) in a full-screen WebView. */
 public class MainActivity extends Activity {
     private static final String APP_HOST = "appassets.androidplatform.net";
     private static final String START_URL = "https://" + APP_HOST + "/assets/index.html";
@@ -45,9 +45,9 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
 
         root = new FrameLayout(this);
-        root.setBackgroundColor(Color.parseColor("#141414"));
+        root.setBackgroundColor(Color.parseColor("#070C1C"));
         webView = new WebView(this);
-        webView.setBackgroundColor(Color.parseColor("#141414"));
+        webView.setBackgroundColor(Color.parseColor("#070C1C"));
         root.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
@@ -58,7 +58,7 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         // Allow http:// Emby servers even though the app itself is served from https://.
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
-        settings.setUserAgentString(settings.getUserAgentString() + " EmbyFlixAndroid/" + versionName());
+        settings.setUserAgentString(settings.getUserAgentString() + " AuroraAndroid/" + versionName());
 
         final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
                 .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))

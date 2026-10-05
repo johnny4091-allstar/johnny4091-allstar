@@ -1,4 +1,4 @@
-# EmbyFlix
+# Aurora
 
 A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScript: no build step, no install.
 
@@ -24,12 +24,12 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 
 ## Run it
 
-1. Download this `embyflix` folder.
+1. Download this `aurora` folder.
 2. Open `index.html` in Chrome, Edge, Firefox, or Safari. Double-clicking it works, or you can serve the folder:
    `python3 -m http.server 8080`, then go to http://localhost:8080
 3. Sign in with your Emby username and password, the same ones you use on Emby's own web page.
 
-EmbyFlix always connects to `https://emby4836.duckdns.org:8920`. To point it at a different server, change
+Aurora always connects to `https://emby4836.duckdns.org:8920`. To point it at a different server, change
 `DEFAULT_SERVER` at the top of `app.js`.
 
 ## Notes
@@ -40,12 +40,12 @@ EmbyFlix always connects to `https://emby4836.duckdns.org:8920`. To point it at 
 
 ## Android and Android TV app
 
-The `android/` folder wraps EmbyFlix in an Android app for phones, tablets and Android TV (Android 8.0 and newer).
-The same APK works on all of them; on a TV it shows up in the apps row with an EmbyFlix banner. Every push that changes
-`embyflix/` or `android/` builds a new APK with GitHub Actions and publishes it on the repository's
-**Releases** page as `EmbyFlix.apk`.
+The `android/` folder wraps Aurora in an Android app for phones, tablets and Android TV (Android 8.0 and newer).
+The same APK works on all of them; on a TV it shows up in the apps row with the Aurora banner. Every push that changes
+`aurora/` or `android/` builds a new APK with GitHub Actions and publishes it on the repository's
+**Releases** page as `Aurora.apk`.
 
-To install: open the latest release on your phone, download `EmbyFlix.apk`, open it, and allow installing
+To install: open the latest release on your phone, download `Aurora.apk`, open it, and allow installing
 apps from that source when Android asks. New versions install over the old one and keep you signed in.
 
 In the app, videos play full screen in landscape, the screen stays on while watching, and the back button closes
@@ -62,7 +62,7 @@ installing from unknown sources when asked.
 To build it yourself, install the Android SDK and Gradle 8.x, then run `gradle assembleRelease` in `android/`.
 
 The signing key (`android/embyflix.keystore`) is in this public repo so every build can update the last one.
-That's fine for a personal app, but anyone could sign an app that installs over it, so only install EmbyFlix
+That's fine for a personal app, but anyone could sign an app that installs over it, so only install Aurora
 APKs from this repo's Releases page.
 
 ## Third-party files
