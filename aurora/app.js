@@ -3,8 +3,11 @@
   'use strict';
 
   const DEFAULT_SERVER = 'https://emby4836.duckdns.org:8920';
-  // Jellyseerr address for the Requests tab (e.g. 'https://requests.example.com'); empty hides the tab.
-  const REQUESTS_SERVER = '';
+  // Jellyseerr address for the Requests tab; empty hides the tab. The live value comes from
+  // aurora-config.json in the GitHub repo (see loadRemoteConfig), so it can change without a new APK.
+  const DEFAULT_REQUESTS_SERVER = 'https://mysterious-logical-gray-labeled.trycloudflare.com';
+  const REMOTE_CONFIG_URLS = ['main', 'ccr-ab072e58-qfaibp']
+    .map((branch) => `https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/${branch}/aurora-config.json`);
   const TICKS_PER_SECOND = 10000000;
   const ITEM_FIELDS = 'Overview,Genres,ProductionYear,OfficialRating,CommunityRating,RunTimeTicks,PrimaryImageAspectRatio,DateCreated';
   const IMAGE_PARAMS = { EnableImageTypes: 'Primary,Backdrop,Thumb,Logo', ImageTypeLimit: 1 };
@@ -20,7 +23,7 @@
   };
 
   // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
-  const state = { server: DEFAULT_SERVER, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
+  const state = { server: DEFAULT_SERVER, requestsServer: '', apiKey: '', userId: '', user: null, deviceId: '', views: [] };
   const CLIENT = { name: 'Aurora', version: '1.2.0' };
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
@@ -30,6 +33,7 @@
     if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
     ['ef.authMode', 'ef.server'].forEach(store.del);
     state.apiKey = store.get('ef.apiKey') || '';
+    state.requestsServer = store.get('ef.requestsServer') || DEFAULT_REQUESTS_SERVER;
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
     if (!deviceId) {
@@ -281,7 +285,7 @@
       state.views = views?.Items || [];
     } catch { state.views = []; }
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !hasLiveTv()));
-    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !hasRequests()));
+    updateRequestsLink();
     live.channelIds = [];
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
@@ -1173,7 +1177,7 @@
   // (EmbyFlixAndroid.httpRequest). Each person signs in to Jellyseerr with their Emby details, so requests
   // are made as them and Jellyseerr's own permissions and limits apply.
   const TMDB_IMG = 'https://image.tmdb.org/t/p/';
-  const hasRequests = () => !!REQUESTS_SERVER && !!nativeApp?.httpRequest;
+  const hasRequests = () => !!state.requestsServer && !!nativeApp?.httpRequest;
   const MEDIA_STATUS = { 2: 'Requested', 3: 'Requested', 4: 'Partly available', 5: 'Available' };
   const REQUEST_STATUS = { 1: 'Waiting for approval', 2: 'Approved', 3: 'Declined' };
 
@@ -1205,7 +1209,7 @@
     const cookie = requestsCookie(userId);
     if (cookie) headers.Cookie = cookie;
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    const res = await nativeHttp(method, REQUESTS_SERVER + '/api/v1' + path, headers, body === undefined ? null : JSON.stringify(body));
+    const res = await nativeHttp(method, state.requestsServer + '/api/v1' + path, headers, body === undefined ? null : JSON.stringify(body));
     if (!res || !res.status) throw new Error('Could not reach the request server.');
     let data = null;
     try { data = res.body ? JSON.parse(res.body) : null; } catch { /* not JSON */ }
@@ -1449,6 +1453,31 @@
       if (match) openDetails(match.Id);
       else toast("It's not in the library yet. Try again a little later.");
     } catch (e) { toast('Could not search the library: ' + e.message); }
+  }
+
+  function updateRequestsLink() {
+    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !hasRequests()));
+  }
+
+  // Reads the current Requests address from aurora-config.json in the repo, so a changed address
+  // (a restarted Cloudflare quick tunnel, say) reaches every installed app without an update.
+  async function loadRemoteConfig() {
+    for (const url of REMOTE_CONFIG_URLS) {
+      try {
+        const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const cfg = await res.json();
+        if (typeof cfg.requestsServer !== 'string') return;
+        const value = cfg.requestsServer.trim().replace(/\/+$/, '');
+        if (value && !/^https?:\/\//.test(value)) return;
+        if (value !== state.requestsServer) {
+          state.requestsServer = value;
+          store.set('ef.requestsServer', value);
+          updateRequestsLink();
+        }
+        return;
+      } catch { /* try the next location */ }
+    }
   }
 
   // ---------- Settings ----------
@@ -2590,6 +2619,7 @@
   // ---------- Boot ----------
   async function boot() {
     loadConfig();
+    loadRemoteConfig();
     applySubtitleStyle();
     setupUi();
     $('#setup-username').value = store.get('ef.username') || '';

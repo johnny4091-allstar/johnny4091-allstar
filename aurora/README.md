@@ -26,7 +26,9 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - The Android app checks this repository's Releases for a newer version, offers to update, and installs it itself
 - Requests tab (Android app) for Jellyseerr: browse Trending, Popular and Coming Soon, search, request movies or
   chosen TV seasons, and follow your requests. People sign in to Jellyseerr with their Emby details automatically.
-  Set `REQUESTS_SERVER` at the top of `app.js` to your Jellyseerr address to turn it on.
+  The Jellyseerr address lives in `aurora-config.json` at the top of the repository; the app reads it at start-up,
+  so if the address changes (for example a restarted Cloudflare quick tunnel), edit that file on GitHub and every
+  installed app picks up the new address the next time it opens. No new APK is needed.
 - Resume where you left off, progress reported back to Emby, and auto-play of the next episode
 - Works on phones, tablets, and desktops
 
