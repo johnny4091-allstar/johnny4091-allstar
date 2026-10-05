@@ -190,7 +190,10 @@
   function upsertAccount(user, token) {
     const old = getAccounts().find((a) => a.userId === user.Id);
     const list = getAccounts().filter((a) => a.userId !== user.Id);
-    list.push({ userId: user.Id, name: user.Name, imageTag: user.PrimaryImageTag || '', token, requestsCookie: old?.requestsCookie || '' });
+    list.push({
+      userId: user.Id, name: user.Name, imageTag: user.PrimaryImageTag || '', token,
+      requestsCookie: old?.requestsCookie || '', loginName: old?.loginName || '', secret: old?.secret || '',
+    });
     saveAccounts(list);
   }
   function removeAccount(userId) { saveAccounts(getAccounts().filter((a) => a.userId !== userId)); }
@@ -240,7 +243,8 @@
     store.set('ef.apiKey', state.apiKey);
     store.set('ef.username', username);
     upsertAccount(res.User, res.AccessToken);
-    // Connect Requests with the same details in the background; the tab asks again if this fails.
+    rememberLogin(res.User.Id, username, password);
+    // Connect Requests with the same details in the background.
     if (hasRequests()) seerrLogin(username, password, res.User.Id).catch(() => {});
     return res.User;
   }
@@ -1203,7 +1207,20 @@
     saveAccounts(list);
   }
 
-  async function seerr(path, { method = 'GET', body, userId } = {}) {
+  async function seerr(path, opts = {}) {
+    try {
+      return await seerrOnce(path, opts);
+    } catch (e) {
+      // The Jellyseerr session ran out while browsing: sign in again quietly and retry once.
+      if ((e.status === 401 || e.status === 403) && !path.startsWith('/auth/') && !opts.userId && !opts.retried
+          && (await silentSeerrLogin())) {
+        return seerrOnce(path, { ...opts, retried: true });
+      }
+      throw e;
+    }
+  }
+
+  async function seerrOnce(path, { method = 'GET', body, userId } = {}) {
     const headers = { Accept: 'application/json' };
     const cookie = requestsCookie(userId);
     if (cookie) headers.Cookie = cookie;
@@ -1228,14 +1245,52 @@
     setRequestsCookie(setCookie, userId);
   }
 
-  async function seerrMe() {
-    if (!requestsCookie()) return null;
+  // The Emby password is kept on the device, encrypted with a key held by Android's secure key store
+  // (the web version keeps nothing), so Requests can sign people in to Jellyseerr without asking.
+  function rememberLogin(userId, username, password) {
+    if (!nativeApp?.encrypt) return;
+    let secret = '';
+    try { secret = nativeApp.encrypt(password) || ''; } catch { return; }
+    if (!secret) return;
+    const list = getAccounts(), acc = list.find((a) => a.userId === userId);
+    if (!acc) return;
+    acc.loginName = username;
+    acc.secret = secret;
+    saveAccounts(list);
+  }
+
+  // Signs in to Jellyseerr in the background with the saved details. Returns false if there are none.
+  async function silentSeerrLogin() {
+    const acc = getAccounts().find((a) => a.userId === state.userId);
+    if (!acc?.secret || !nativeApp?.decrypt) return false;
+    let password = null;
+    try { password = nativeApp.decrypt(acc.secret); } catch { /* treated as no saved password */ }
+    if (password == null) return false; // Android reset its key store; nothing to sign in with
     try {
-      return (await seerr('/auth/me')).data;
+      await seerrLogin(acc.loginName || acc.name, password);
+      return true;
     } catch (e) {
-      if (e.status === 401 || e.status === 403) { setRequestsCookie(''); return null; }
-      throw e;
+      // A changed password: forget the saved one so it isn't retried forever.
+      if (e.status === 401 || e.status === 403) {
+        const list = getAccounts(), a = list.find((x) => x.userId === state.userId);
+        if (a) { a.secret = ''; saveAccounts(list); }
+      }
+      return false;
     }
+  }
+
+  async function seerrMe() {
+    const fetchMe = async () => {
+      if (!requestsCookie()) return null;
+      try {
+        return (await seerr('/auth/me')).data;
+      } catch (e) {
+        if (e.status === 401 || e.status === 403) { setRequestsCookie(''); return null; }
+        throw e;
+      }
+    };
+    // No session yet, or it expired: sign in again quietly before falling back to asking.
+    return (await fetchMe()) || ((await silentSeerrLogin()) ? fetchMe() : null);
   }
 
   const tmdbImage = (path, size) => (path ? TMDB_IMG + size + path : '');
@@ -1364,7 +1419,9 @@
       const btn = $('button', form);
       btn.disabled = true; btn.textContent = 'Connecting…';
       try {
-        await seerrLogin(state.user?.Name || '', $('[data-pw]', form).value);
+        const password = $('[data-pw]', form).value;
+        await seerrLogin(state.user?.Name || '', password);
+        rememberLogin(state.userId, state.user?.Name || '', password);
         if (isCurrent()) route();
       } catch (ex) {
         err.textContent = ex.status === 401 || ex.status === 403 ? 'That password was not accepted.' : ex.message;

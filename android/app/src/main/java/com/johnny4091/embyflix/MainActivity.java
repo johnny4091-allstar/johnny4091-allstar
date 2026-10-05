@@ -14,6 +14,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -42,6 +45,12 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -105,6 +114,24 @@ public class MainActivity extends Activity {
         }
         String js = "window.auroraHttpDone && window.auroraHttpDone(" + JSONObject.quote(id) + "," + result + ")";
         runOnUiThread(() -> webView.evaluateJavascript(js, null));
+    }
+
+    private static final String CREDENTIAL_KEY = "aurora-credentials";
+
+    /** AES key that lives in Android's key store and can't be read out of it, even by this app. */
+    private static SecretKey credentialKey() throws Exception {
+        KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+        keyStore.load(null);
+        if (keyStore.containsAlias(CREDENTIAL_KEY)) {
+            return ((KeyStore.SecretKeyEntry) keyStore.getEntry(CREDENTIAL_KEY, null)).getSecretKey();
+        }
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(CREDENTIAL_KEY,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build());
+        return generator.generateKey();
     }
 
     private static String readAll(InputStream in) throws IOException {
@@ -429,6 +456,32 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String getVersionName() {
             return versionName();
+        }
+
+        /** Encrypts text with the key-store key; returns "iv:ciphertext" in Base64, or null on failure. */
+        @JavascriptInterface
+        public String encrypt(String plain) {
+            try {
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, credentialKey());
+                byte[] sealed = cipher.doFinal(plain.getBytes(StandardCharsets.UTF_8));
+                return Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":" + Base64.encodeToString(sealed, Base64.NO_WRAP);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        /** Reverses encrypt(); null if the text can't be decrypted (for example after the key store was reset). */
+        @JavascriptInterface
+        public String decrypt(String blob) {
+            try {
+                String[] parts = blob.split(":", 2);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, credentialKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
+                return new String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                return null;
+            }
         }
 
         @JavascriptInterface
