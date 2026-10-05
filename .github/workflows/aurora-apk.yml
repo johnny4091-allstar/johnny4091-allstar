@@ -26,10 +26,14 @@ jobs:
         with:
           gradle-version: '8.14.3'
 
+      # Offset keeps version codes above the EmbyFlix builds (1-4) so installed copies can update.
+      # The release tag ends in the version code; the app compares it to its own to find updates.
+      - name: Set version
+        run: echo "VERSION_CODE=$((${{ github.run_number }} + 100))" >> "$GITHUB_ENV"
+
       - name: Build APK
         working-directory: android
-        # Offset keeps version codes above the EmbyFlix builds (1-4) so installed copies can update.
-        run: gradle assembleRelease -PversionCode=$((${{ github.run_number }} + 100)) --stacktrace
+        run: gradle assembleRelease -PversionCode=${{ env.VERSION_CODE }} --stacktrace
 
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk Aurora.apk
@@ -42,8 +46,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: aurora-v1.2.${{ github.run_number }}
-          name: Aurora 1.2.${{ github.run_number }} for Android and Android TV
+          tag_name: aurora-v1.2.${{ env.VERSION_CODE }}
+          name: Aurora 1.2.${{ env.VERSION_CODE }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: Aurora.apk

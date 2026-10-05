@@ -273,6 +273,7 @@
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
+    setTimeout(autoCheckForUpdate, 3000);
   }
 
   function connectionErrorMessage(e) {
@@ -309,6 +310,7 @@
       case 'mylist': return renderMyList(page, isCurrent);
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent);
       case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
+      case 'settings': return renderSettings(page, isCurrent);
       default: return renderHome(page, isCurrent);
     }
   }
@@ -1152,6 +1154,181 @@
     playItem({ Id: next, Type: 'TvChannel' });
   }
 
+  // ---------- Settings ----------
+  // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
+  const PREF_DEFAULTS = { autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi' };
+  const getPref = (key) => store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
+  const setPref = (key, value) => store.set('ef.pref.' + key, value);
+
+  const SUB_SIZES = { s: ['Small', '1.2rem'], m: ['Medium', '1.6rem'], l: ['Large', '2.2rem'], xl: ['Extra large', '2.8rem'] };
+  const SUB_BACKGROUNDS = { none: ['None', 'transparent'], semi: ['See-through', 'rgba(0,0,0,.6)'], solid: ['Solid', '#000'] };
+  const SUBTITLE_MODES = [
+    ['Smart', 'Only when the audio is in another language'], ['Always', 'Always on'],
+    ['OnlyForced', 'Only forced subtitles (signs and foreign dialogue)'], ['None', 'Off'], ['Default', "Use the file's default"],
+  ];
+  const LANGUAGES = [
+    ['', 'Default'], ['eng', 'English'], ['spa', 'Spanish'], ['fre', 'French'], ['ger', 'German'], ['ita', 'Italian'],
+    ['por', 'Portuguese'], ['dut', 'Dutch'], ['swe', 'Swedish'], ['nor', 'Norwegian'], ['dan', 'Danish'], ['fin', 'Finnish'],
+    ['pol', 'Polish'], ['rus', 'Russian'], ['ukr', 'Ukrainian'], ['tur', 'Turkish'], ['gre', 'Greek'], ['ara', 'Arabic'],
+    ['heb', 'Hebrew'], ['hin', 'Hindi'], ['jpn', 'Japanese'], ['kor', 'Korean'], ['chi', 'Chinese'], ['tha', 'Thai'], ['vie', 'Vietnamese'],
+  ];
+
+  function applySubtitleStyle() {
+    const root = document.documentElement.style;
+    root.setProperty('--cue-size', (SUB_SIZES[getPref('subSize')] || SUB_SIZES.m)[1]);
+    root.setProperty('--cue-bg', (SUB_BACKGROUNDS[getPref('subBg')] || SUB_BACKGROUNDS.semi)[1]);
+  }
+
+  const selectHtml = (name, options, value) =>
+    `<select data-setting="${name}">${options.map(([v, label]) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+  const settingRow = (label, help, control) =>
+    `<div class="setting-row"><div class="setting-label"><strong>${esc(label)}</strong>${help ? `<span>${esc(help)}</span>` : ''}</div>${control}</div>`;
+
+  async function renderSettings(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad settings-page"><div class="page-head"><h1>Settings</h1></div><div class="spinner"></div></div>`;
+    let user = state.user;
+    try { user = await api(`/Users/${state.userId}`); state.user = user; } catch { /* fall back to what we have */ }
+    if (!isCurrent()) return;
+    const cfg = user?.Configuration || {};
+    const langs = (value) => (value && !LANGUAGES.some(([v]) => v === value) ? [...LANGUAGES, [value, value]] : LANGUAGES);
+    const version = nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
+
+    $('.settings-page', page).innerHTML = `
+      <div class="page-head"><h1>Settings</h1></div>
+      <section class="settings-section">
+        <h2>Language &amp; subtitles <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
+        ${settingRow('Audio language', 'Pick this language when a title has more than one.', selectHtml('audioLang', langs(cfg.AudioLanguagePreference), cfg.AudioLanguagePreference || ''))}
+        ${settingRow('Subtitles', 'When subtitles turn on by themselves.', selectHtml('subMode', SUBTITLE_MODES.map(([v, l]) => [v, l]), cfg.SubtitleMode || 'Default'))}
+        ${settingRow('Subtitle language', null, selectHtml('subLang', langs(cfg.SubtitleLanguagePreference), cfg.SubtitleLanguagePreference || ''))}
+      </section>
+      <section class="settings-section">
+        <h2>Subtitle appearance <small>This device</small></h2>
+        ${settingRow('Size', null, selectHtml('subSize', Object.entries(SUB_SIZES).map(([k, v]) => [k, v[0]]), getPref('subSize')))}
+        ${settingRow('Background', null, selectHtml('subBg', Object.entries(SUB_BACKGROUNDS).map(([k, v]) => [k, v[0]]), getPref('subBg')))}
+        <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>
+      </section>
+      <section class="settings-section">
+        <h2>Playback <small>This device</small></h2>
+        ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
+        ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
+        ${settingRow('Streaming quality', 'Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
+      </section>
+      <section class="settings-section">
+        <h2>About</h2>
+        ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
+        ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
+        ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
+      </section>`;
+    applySubtitleStyle();
+
+    // Saves run one at a time so quick changes don't overwrite each other.
+    let saving = Promise.resolve();
+    const saveAccount = (changes) => { saving = saving.then(() => doSaveAccount(changes)); };
+    const doSaveAccount = async (changes) => {
+      try {
+        const fresh = await api(`/Users/${state.userId}`);
+        const config = { ...(fresh.Configuration || {}), ...changes };
+        await api(`/Users/${state.userId}/Configuration`, { method: 'POST', body: config });
+        state.user = { ...fresh, Configuration: config };
+        toast('Saved', 1500);
+      } catch (e) {
+        toast(e.status === 403 ? "Your account isn't allowed to change these settings." : 'Could not save: ' + e.message);
+      }
+    };
+    $('.settings-page', page).addEventListener('change', (e) => {
+      const sel = e.target.closest('[data-setting]');
+      if (!sel) return;
+      const v = sel.value;
+      switch (sel.dataset.setting) {
+        case 'audioLang': saveAccount({ AudioLanguagePreference: v }); break;
+        case 'subMode': saveAccount({ SubtitleMode: v }); break;
+        case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
+        case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
+        default: setPref(sel.dataset.setting, v); applySubtitleStyle(); toast('Saved', 1500);
+      }
+    });
+    $('[data-check-update]', page)?.addEventListener('click', async () => {
+      const status = $('[data-update-status]', page);
+      status.textContent = 'Checking…';
+      const result = await checkForUpdate();
+      if (result.status === 'available') { status.textContent = `${result.version} available`; showUpdatePrompt(result); }
+      else status.textContent = result.status === 'current' ? "You're up to date." : "Couldn't check for updates. Try again later.";
+    });
+  }
+
+  // ---------- App updates (Android app only) ----------
+  // Customers install the APK by hand, so the app checks GitHub Releases for a newer build itself.
+  const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest';
+  const UPDATE_CHECK_EVERY = 6 * 3600000;
+
+  async function checkForUpdate() {
+    if (!nativeApp?.getVersionCode) return { status: 'web' };
+    try {
+      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' } });
+      if (!res.ok) throw new Error(res.status);
+      const rel = await res.json();
+      const code = Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0);
+      const apk = (rel.assets || []).find((a) => /\.apk$/i.test(a.name));
+      store.set('ef.updateCheckedAt', String(Date.now()));
+      if (!apk || code <= nativeApp.getVersionCode()) return { status: 'current' };
+      return { status: 'available', code, version: rel.name || rel.tag_name, url: apk.browser_download_url };
+    } catch {
+      return { status: 'error' };
+    }
+  }
+
+  async function autoCheckForUpdate() {
+    if (!nativeApp?.getVersionCode) return;
+    if (Date.now() - Number(store.get('ef.updateCheckedAt') || 0) < UPDATE_CHECK_EVERY) return;
+    const result = await checkForUpdate();
+    if (result.status !== 'available') return;
+    // "Later" hides this version for a day.
+    const [snoozedCode, snoozedAt] = (store.get('ef.updateSnooze') || '').split(':').map(Number);
+    if (snoozedCode === result.code && Date.now() - snoozedAt < 86400000) return;
+    if (isPlayerOpen()) return; // don't interrupt a video; we'll ask next time
+    showUpdatePrompt(result);
+  }
+
+  function showUpdatePrompt(update) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `
+      <div class="m-body update-body">
+        <h2>Update available</h2>
+        <p class="overview">${esc(update.version)} is ready to install. It keeps you signed in.</p>
+        <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
+        <div class="m-actions update-actions">
+          <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>
+          <button class="btn btn-gray" data-act="later">Later</button>
+        </div>
+      </div>`;
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    const msg = $('.update-msg', content), bar = $('.update-bar span', content), progress = $('.update-progress', content);
+    $('[data-act="later"]', content).addEventListener('click', () => {
+      store.set('ef.updateSnooze', `${update.code}:${Date.now()}`);
+      closeModal();
+    });
+    $('[data-act="install"]', content).addEventListener('click', (e) => {
+      e.target.disabled = true;
+      progress.classList.remove('hidden');
+      msg.textContent = 'Downloading…';
+      nativeApp.installUpdate(update.url);
+    });
+    // Progress and results reported by the Android app.
+    window.auroraUpdate = (u) => {
+      if (u.state === 'progress') { bar.style.width = u.pct + '%'; msg.textContent = `Downloading… ${u.pct}%`; }
+      else if (u.state === 'permission') msg.textContent = 'Allow Aurora to install apps in the screen that just opened, then come back. The update continues by itself.';
+      else if (u.state === 'installing') { bar.style.width = '100%'; msg.textContent = 'Opening the installer… choose Install (or Update).'; }
+      else if (u.state === 'error') {
+        msg.textContent = `The download failed (${u.message || 'unknown error'}). Check the internet connection and try again.`;
+        $('[data-act="install"]', content).disabled = false;
+      }
+    };
+    autoFocus($('[data-act="install"]', content));
+  }
+
   // ---------- Player ----------
   const QUALITY_OPTIONS = [
     { label: 'Auto (best)', bitrate: 120000000 },
@@ -1167,6 +1344,9 @@
     audioIndex: null, subtitleIndex: -1, forceTranscode: false, intro: null, isLive: false, liveStreamId: null,
     progressTimer: null, idleTimer: null, nextEpisode: null, startSeconds: 0, dragging: false,
     token: 0, // bumped on every playItem so a slower, older request can't take over
+    creditsAt: null, upNextTimer: null, upNextShown: false, upNextDismissed: false,
+    autoCount: 0, // episodes started automatically in a row with nobody touching the controls
+    lastInput: 0, liveIdleTimer: null,
   };
 
   // Tells Emby what this browser can play directly; anything else is transcoded to HLS H.264/AAC.
@@ -1234,7 +1414,8 @@
   }
 
   // audioIndex / subtitleIndex / forceTranscode are passed when the viewer changes tracks or quality.
-  async function playItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false } = {}) {
+  async function playItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false, auto = false } = {}) {
+    if (!auto) noteInput();
     const isReload = player.item && rawItem.Id === player.item.Id;
     if (!isReload && $('#player').classList.contains('hidden')) rememberFocus('player');
     const token = ++player.token;
@@ -1249,6 +1430,8 @@
     status.classList.remove('hidden');
     $('#player-next').classList.add('hidden');
     $('#skip-intro').classList.add('hidden');
+    hideUpNext();
+    hideStillWatching();
     closeTracks();
     document.body.style.overflow = 'hidden';
     updateOsd();
@@ -1271,6 +1454,9 @@
       const start = isLive ? 0 : (startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0);
       player.startSeconds = start / TICKS_PER_SECOND;
       player.intro = isLive ? null : findIntro(full.Chapters);
+      player.creditsAt = isLive ? null : findCreditsStart(full.Chapters);
+      player.upNextShown = false;
+      player.upNextDismissed = false;
 
       $('#player-title').innerHTML = isLive
         ? `${esc(channelLabel(full))}<span class="sub">${esc(full.CurrentProgram?.Name || '')}</span>`
@@ -1340,6 +1526,11 @@
       $('#player-err-back').addEventListener('click', closePlayer);
       if (nav.on) focusEl($('#player-err-back'));
     }
+  }
+
+  function findCreditsStart(chapters) {
+    const ticks = (chapters || []).find((c) => c.MarkerType === 'CreditsStart')?.StartPositionTicks;
+    return ticks ? ticks / TICKS_PER_SECOND : null;
   }
 
   function findIntro(chapters) {
@@ -1414,7 +1605,124 @@
   }
 
   function playNextEpisode() {
-    if (player.nextEpisode) playItem(player.nextEpisode, { startTicks: 0 });
+    startNextEpisode(false);
+  }
+
+  // auto: started by the countdown or the end of an episode rather than by the viewer.
+  function startNextEpisode(auto) {
+    const next = player.nextEpisode;
+    if (!next) return;
+    hideUpNext();
+    if (auto) {
+      player.autoCount++;
+      // Three episodes in a row with no one touching the remote: check before streaming more.
+      if (getPref('stillWatching') === 'on' && player.autoCount >= 3) {
+        showStillWatching(() => playItem(next, { startTicks: 0 }));
+        return;
+      }
+      playItem(next, { startTicks: 0, auto: true });
+    } else {
+      playItem(next, { startTicks: 0 });
+    }
+  }
+
+  // Called for any viewer input in the player (keys, clicks, taps).
+  function noteInput() {
+    player.autoCount = 0;
+    player.lastInput = Date.now();
+  }
+
+  // ----- Next-episode countdown -----
+  const upNextVisible = () => !$('#up-next').classList.contains('hidden');
+
+  // When the credits start (Emby's credits marker, or the last 20 seconds of a longer episode).
+  function creditsTime() {
+    if (player.creditsAt) return player.creditsAt;
+    const dur = mediaDuration();
+    return dur > 300 ? dur - 20 : null;
+  }
+
+  function showUpNext() {
+    const next = player.nextEpisode, card = $('#up-next');
+    if (!next) return;
+    player.upNextShown = true;
+    const img = landscapeImage(next, 400);
+    const autoplay = getPref('autoplay') === 'on';
+    card.innerHTML = `
+      <div class="up-next-img">${img ? `<img src="${esc(img)}" alt="">` : ''}</div>
+      <div class="up-next-text">
+        <span class="up-next-label">Next Episode</span>
+        <strong>${esc(episodeLabel(next))}</strong>
+        ${autoplay ? '<span class="up-next-count">Playing in <b>10</b></span>' : ''}
+        <div class="up-next-actions">
+          <button class="btn btn-white" data-act="now" data-autofocus>${ICONS.play} Play Now</button>
+          <button class="btn btn-gray" data-act="credits">Watch Credits</button>
+        </div>
+      </div>`;
+    card.classList.remove('hidden');
+    $('[data-act="now"]', card).addEventListener('click', () => startNextEpisode(false));
+    $('[data-act="credits"]', card).addEventListener('click', () => { player.upNextDismissed = true; hideUpNext(); wakeOsd(); });
+    if (nav.on) focusEl($('[data-act="now"]', card));
+    if (autoplay) {
+      let left = 10;
+      player.upNextTimer = setInterval(() => {
+        left--;
+        const n = $('.up-next-count b', card);
+        if (n) n.textContent = left;
+        if (left <= 0) startNextEpisode(true);
+      }, 1000);
+    }
+  }
+
+  function hideUpNext() {
+    clearInterval(player.upNextTimer);
+    player.upNextTimer = null;
+    const card = $('#up-next');
+    if (card.classList.contains('hidden')) return;
+    const hadFocus = card.contains(document.activeElement);
+    card.classList.add('hidden');
+    card.innerHTML = '';
+    if (hadFocus && nav.on && isPlayerOpen()) focusEl($('#osd-play'));
+  }
+
+  function checkUpNext(cur) {
+    if (player.isLive || !player.nextEpisode || player.upNextDismissed) return;
+    const at = creditsTime();
+    if (at == null) return;
+    if (cur >= at && !player.upNextShown) showUpNext();
+    // Seeking back before the credits takes the card away again.
+    else if (cur < at - 1 && player.upNextShown) { player.upNextShown = false; hideUpNext(); }
+  }
+
+  // ----- "Are you still watching?" -----
+  const stillWatchingVisible = () => !$('#still-watching').classList.contains('hidden');
+
+  async function showStillWatching(onContinue) {
+    const name = player.item?.SeriesName || (player.isLive ? channelLabel(player.item || {}) : player.item?.Name) || '';
+    // Stop streaming (and free any Live TV tuner) while we wait for an answer.
+    player.token++;
+    await stopPlayback();
+    hideUpNext();
+    const box = $('#still-watching');
+    box.innerHTML = `
+      <div class="still-box">
+        <h2>Are you still watching${name ? ` <span>${esc(name)}</span>` : ''}?</h2>
+        <div class="still-actions">
+          <button class="btn btn-white" data-act="continue" data-autofocus>Continue Watching</button>
+          <button class="btn btn-gray" data-act="exit">Back to Browse</button>
+        </div>
+      </div>`;
+    box.classList.remove('hidden');
+    $('#player').classList.remove('idle');
+    $('[data-act="continue"]', box).addEventListener('click', () => { noteInput(); hideStillWatching(); onContinue(); });
+    $('[data-act="exit"]', box).addEventListener('click', () => { hideStillWatching(); closePlayer(); });
+    focusEl($('[data-act="continue"]', box));
+  }
+
+  function hideStillWatching() {
+    const box = $('#still-watching');
+    box.classList.add('hidden');
+    box.innerHTML = '';
   }
 
   async function stopPlayback() {
@@ -1444,6 +1752,8 @@
   async function closePlayer() {
     player.token++;
     await stopPlayback();
+    hideUpNext();
+    hideStillWatching();
     closeTracks();
     $('#player').classList.add('hidden');
     nativeApp?.setPlayerMode(false);
@@ -1500,6 +1810,7 @@
     $('#osd-mute').innerHTML = video.muted ? ICONS.muted : ICONS.volume;
     const inIntro = player.intro && cur >= player.intro.start && cur < player.intro.end - 1;
     $('#skip-intro').classList.toggle('hidden', !inIntro);
+    checkUpNext(cur);
   }
 
   function wakeOsd() {
@@ -1510,7 +1821,8 @@
       if (video.paused || tracksOpen() || player.dragging) return;
       el.classList.add('idle');
       // Hidden controls shouldn't keep remote focus.
-      if (el.contains(document.activeElement) && document.activeElement !== $('#skip-intro')) document.activeElement.blur();
+      const keep = document.activeElement === $('#skip-intro') || $('#up-next').contains(document.activeElement);
+      if (el.contains(document.activeElement) && !keep) document.activeElement.blur();
     }, 4000);
   }
 
@@ -1567,6 +1879,16 @@
   // Remote / keyboard handling while the player is open. Returns true when handled.
   function handlePlayerKey(action) {
     const video = $('#video');
+    noteInput();
+    if (stillWatchingVisible()) {
+      if (action === 'back') { hideStillWatching(); closePlayer(); return true; }
+      return false; // move between the two buttons
+    }
+    if (upNextVisible() && $('#up-next').contains(document.activeElement)) {
+      // Arrows move between Play Now and Watch Credits; OK presses the focused one.
+      if (['left', 'right', 'select'].includes(action)) return false;
+      if (action === 'up') { wakeOsd(); focusEl($('#osd-play')); return true; }
+    }
     if (tracksOpen()) {
       if (action === 'back') { closeTracks(); return true; }
       return false;
@@ -1647,9 +1969,18 @@
     video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
     video.addEventListener('play', () => { reportPlayback('/Sessions/Playing/Progress', 'Unpause'); wakeOsd(); });
     video.addEventListener('ended', () => {
-      if (player.nextEpisode) playNextEpisode();
+      if (player.nextEpisode && getPref('autoplay') === 'on') startNextEpisode(true);
       else closePlayer();
     });
+    el.addEventListener('click', noteInput, true);
+    el.addEventListener('touchstart', noteInput, { capture: true, passive: true });
+    // Live TV left on for 4 hours with no input: ask, and free the tuner meanwhile.
+    setInterval(() => {
+      if (!isPlayerOpen() || !player.isLive || stillWatchingVisible() || getPref('stillWatching') !== 'on') return;
+      if (Date.now() - player.lastInput < 4 * 3600000) return;
+      const channel = player.item;
+      showStillWatching(() => playItem(channel));
+    }, 60000);
     el.addEventListener('mousemove', wakeOsd);
     el.addEventListener('touchstart', wakeOsd, { passive: true });
     window.addEventListener('beforeunload', () => { if (player.item) reportPlayback('/Sessions/Playing/Stopped'); });
@@ -1693,6 +2024,7 @@
     document.addEventListener('click', () => $('#profile-dropdown').classList.add('hidden'));
     $('#profile-dropdown').addEventListener('click', (e) => {
       const act = e.target.dataset.action;
+      if (act === 'settings') location.hash = '#/settings';
       if (act === 'switch') switchUser();
       if (act === 'signout') signOut();
     });
@@ -1738,7 +2070,10 @@
   }
 
   function activeLayer() {
-    if (isPlayerOpen()) return tracksOpen() ? $('#tracks-panel') : $('#player');
+    if (isPlayerOpen()) {
+      if (stillWatchingVisible()) return $('#still-watching');
+      return tracksOpen() ? $('#tracks-panel') : $('#player');
+    }
     if (!$('#modal').classList.contains('hidden')) return $('#modal');
     if (!$('#setup').classList.contains('hidden')) return $('#setup');
     return $('#main');
@@ -1909,7 +2244,7 @@
   window.embyflixBack = () => {
     if (isPlayerOpen()) {
       if (tracksOpen()) closeTracks();
-      else closePlayer();
+      else { hideStillWatching(); closePlayer(); }
       return true;
     }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
@@ -1927,6 +2262,7 @@
   // ---------- Boot ----------
   async function boot() {
     loadConfig();
+    applySubtitleStyle();
     setupUi();
     $('#setup-username').value = store.get('ef.username') || '';
     if (!state.apiKey || !state.userId) return showSetup();

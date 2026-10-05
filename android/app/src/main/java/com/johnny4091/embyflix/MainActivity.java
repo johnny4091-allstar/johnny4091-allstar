@@ -11,7 +11,9 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,7 +28,18 @@ import android.webkit.WebViewClient;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
+import androidx.core.content.FileProvider;
 import androidx.webkit.WebViewAssetLoader;
+
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 /** Hosts the Aurora web app (bundled in assets/) in a full-screen WebView. */
 public class MainActivity extends Activity {
@@ -38,6 +51,8 @@ public class MainActivity extends Activity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private boolean playerMode;
+    /** A downloaded update waiting for the "install unknown apps" permission. */
+    private File pendingApk;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -235,6 +250,92 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         webView.onResume();
+        // Back from the "install unknown apps" screen: carry on with the update.
+        if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) installPendingApk();
+    }
+
+    @SuppressWarnings("deprecation")
+    private int versionCode() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? (int) info.getLongVersionCode() : info.versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** Sends update progress to window.auroraUpdate() in the page. */
+    private void notifyUpdate(String state, Object value) {
+        try {
+            JSONObject json = new JSONObject().put("state", state);
+            if (value instanceof Integer) json.put("pct", value);
+            else if (value != null) json.put("message", String.valueOf(value));
+            String js = "window.auroraUpdate && window.auroraUpdate(" + json + ")";
+            runOnUiThread(() -> webView.evaluateJavascript(js, null));
+        } catch (Exception ignored) {
+            // Nothing useful to report.
+        }
+    }
+
+    private void downloadUpdate(String url) {
+        HttpURLConnection conn = null;
+        try {
+            File dir = new File(getCacheDir(), "updates");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("no storage");
+            File apk = new File(dir, "Aurora.apk");
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            int status = conn.getResponseCode();
+            if (status >= 400) throw new IOException("HTTP " + status);
+            long total = conn.getContentLengthLong(), done = 0;
+            int lastPct = -1;
+            try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                    done += n;
+                    int pct = total > 0 ? (int) (done * 100 / total) : -1;
+                    if (pct >= 0 && pct != lastPct) {
+                        lastPct = pct;
+                        notifyUpdate("progress", pct);
+                    }
+                }
+            }
+            pendingApk = apk;
+            runOnUiThread(this::installPendingApk);
+        } catch (Exception e) {
+            notifyUpdate("error", e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private void installPendingApk() {
+        File apk = pendingApk;
+        if (apk == null) return;
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            notifyUpdate("permission", null);
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+                return; // onResume continues once it's allowed
+            } catch (ActivityNotFoundException e) {
+                // Some TV boxes have no such screen; try the installer anyway, which asks on its own.
+            }
+        }
+        pendingApk = null;
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".updates", apk);
+            Intent install = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            notifyUpdate("installing", null);
+            startActivity(install);
+        } catch (Exception e) {
+            notifyUpdate("error", e.getMessage());
+        }
     }
 
     @Override
@@ -251,6 +352,26 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isTv() {
             return tv;
+        }
+
+        @JavascriptInterface
+        public int getVersionCode() {
+            return versionCode();
+        }
+
+        @JavascriptInterface
+        public String getVersionName() {
+            return versionName();
+        }
+
+        /** Downloads the APK at url and opens the system installer. Progress goes to window.auroraUpdate(). */
+        @JavascriptInterface
+        public void installUpdate(String url) {
+            if (url == null || !url.startsWith("https://github.com/")) {
+                notifyUpdate("error", "unexpected download address");
+                return;
+            }
+            new Thread(() -> downloadUpdate(url), "aurora-update").start();
         }
 
         /** Opens the on-screen keyboard for the focused text field (needed with a TV remote). */

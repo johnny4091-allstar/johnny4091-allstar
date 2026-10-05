@@ -19,6 +19,11 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - Live TV (when it's set up in Emby and allowed for the user): a TV guide, a channel list, an "On Now" row on Home,
   live playback with channel up/down, and recording single shows or whole series, plus a Recordings page with
   scheduled recordings you can cancel
+- Next-episode countdown when the credits start (Play Now or Watch Credits), and "Are you still watching?" after
+  3 episodes in a row, or 4 hours of Live TV, with no button pressed (the stream stops so it doesn't use bandwidth or a tuner)
+- Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size and
+  background, auto-play, "Are you still watching?" and streaming quality (saved on the device)
+- The Android app checks this repository's Releases for a newer version, offers to update, and installs it itself
 - Resume where you left off, progress reported back to Emby, and auto-play of the next episode
 - Works on phones, tablets, and desktops
 
