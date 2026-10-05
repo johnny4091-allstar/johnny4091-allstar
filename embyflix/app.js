@@ -17,24 +17,17 @@
     del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
   };
 
-  // authMode 'user': signed in with username/password, apiKey holds that user's access token.
-  // authMode 'key': an admin API key, with a "Who's watching?" picker over all users.
-  const state = { server: '', apiKey: '', authMode: 'user', userId: '', user: null, deviceId: '', views: [] };
+  // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
+  const state = { server: DEFAULT_SERVER, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
   const CLIENT = { name: 'EmbyFlix', version: '1.1.0' };
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
-  function normalizeServer(url) {
-    let u = (url || '').trim().replace(/\/+$/, '');
-    if (u && !/^https?:\/\//i.test(u)) u = 'http://' + u;
-    return u.replace(/\/emby$/i, '');
-  }
-
   function loadConfig() {
-    const cfg = window.EMBYFLIX_CONFIG || {};
-    state.server = normalizeServer(store.get('ef.server') || cfg.serverUrl || DEFAULT_SERVER);
-    state.apiKey = store.get('ef.apiKey') || cfg.apiKey || '';
-    state.authMode = store.get('ef.authMode') || (store.get('ef.apiKey') || cfg.apiKey ? 'key' : 'user');
+    // Older versions could store an admin API key and a custom server; drop those.
+    if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
+    ['ef.authMode', 'ef.server'].forEach(store.del);
+    state.apiKey = store.get('ef.apiKey') || '';
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
     if (!deviceId) {
@@ -165,80 +158,33 @@
     };
   }
 
-  function avatarHtml(user) {
-    const a = avatarInfo(user);
-    return a.image
-      ? `<div class="avatar" style="background-image:url('${esc(a.image)}')"></div>`
-      : `<div class="avatar" style="background:${a.color}">${esc(a.initial)}</div>`;
-  }
-
   // ---------- Screens ----------
   function showScreen(name) {
     $('#setup').classList.toggle('hidden', name !== 'setup');
-    $('#profiles').classList.toggle('hidden', name !== 'profiles');
     $('#main').classList.toggle('hidden', name !== 'main');
   }
 
   function showSetup(errorMsg) {
     showScreen('setup');
-    $('#setup-server').value = state.server;
-    $('#setup-key').value = state.authMode === 'key' ? state.apiKey : '';
     $('#setup-password').value = '';
-    setSetupMode(state.authMode);
     const err = $('#setup-error');
     err.textContent = errorMsg || '';
     err.classList.toggle('hidden', !errorMsg);
-    updateMixedContentWarning();
   }
 
-  function setSetupMode(mode) {
-    $('#setup-form').dataset.mode = mode;
-    $$('#setup-form [data-mode]').forEach((el) => el.classList.toggle('hidden', el.dataset.mode !== mode));
-    $('#setup-username').required = mode === 'user';
-    $('#setup-key').required = mode === 'key';
-    $('#setup-title').textContent = mode === 'user' ? 'Sign In' : 'Connect with an API key';
-    $('#setup-mode-toggle').textContent = mode === 'user' ? 'Use an API key instead' : 'Sign in with username and password instead';
-    $('#setup-form button[type="submit"]').textContent = mode === 'user' ? 'Sign In' : 'Connect';
-  }
-
-  function updateMixedContentWarning() {
-    const server = normalizeServer($('#setup-server').value);
-    const warn = $('#setup-warning');
-    // The Android app allows http:// servers, so only browsers need the warning.
-    const blocked = !nativeApp && location.protocol === 'https:' && server.startsWith('http:');
-    warn.textContent = blocked
-      ? 'This page is loaded over HTTPS but your server uses HTTP, so the browser will block it. Open EmbyFlix from your computer (double-click index.html) or serve it over plain HTTP, or put your Emby server behind HTTPS.'
-      : '';
-    warn.classList.toggle('hidden', !blocked);
-  }
-
-  async function connect(server, apiKey) {
-    state.server = normalizeServer(server);
-    state.apiKey = apiKey.trim();
-    state.authMode = 'key';
-    await api('/System/Info'); // validates server + key
-    store.set('ef.server', state.server);
-    store.set('ef.apiKey', state.apiKey);
-    store.set('ef.authMode', 'key');
-  }
-
-  async function signIn(server, username, password) {
-    state.server = normalizeServer(server);
+  async function signIn(username, password) {
     state.apiKey = '';
     state.userId = '';
     const res = await api('/Users/AuthenticateByName', { method: 'POST', body: { Username: username, Pw: password } });
     if (!res?.AccessToken || !res.User) throw new Error('Unexpected response from server');
     state.apiKey = res.AccessToken;
-    state.authMode = 'user';
-    store.set('ef.server', state.server);
     store.set('ef.apiKey', state.apiKey);
-    store.set('ef.authMode', 'user');
     store.set('ef.username', username);
     return res.User;
   }
 
   async function signOut() {
-    if (state.authMode === 'user' && state.apiKey) {
+    if (state.apiKey) {
       await api('/Sessions/Logout', { method: 'POST' }).catch(() => {});
       state.apiKey = '';
       store.del('ef.apiKey');
@@ -246,30 +192,6 @@
     state.userId = '';
     store.del('ef.userId');
     showSetup();
-  }
-
-  async function showProfiles() {
-    showScreen('profiles');
-    closeModal();
-    const list = $('#profile-list');
-    list.innerHTML = '<div class="spinner"></div>';
-    try {
-      const users = (await api('/Users', { params: { IsHidden: false, IsDisabled: false } })) || [];
-      if (!users.length) {
-        list.innerHTML = '<p class="empty-msg">No users found on this server.</p>';
-        return;
-      }
-      list.innerHTML = users.map((u) => `
-        <button class="profile" data-id="${esc(u.Id)}">
-          ${avatarHtml(u)}
-          <span>${esc(u.Name)}</span>
-        </button>`).join('');
-      $$('.profile', list).forEach((btn) => btn.addEventListener('click', () => {
-        selectUser(users.find((u) => u.Id === btn.dataset.id));
-      }));
-    } catch (e) {
-      showSetup(connectionErrorMessage(e));
-    }
   }
 
   async function selectUser(user) {
@@ -281,7 +203,6 @@
     btn.style.backgroundColor = a.image ? '' : a.color;
     btn.textContent = a.image ? '' : a.initial;
     btn.title = user.Name || '';
-    $('#profile-dropdown [data-action="switch"]').classList.toggle('hidden', state.authMode !== 'key');
     try {
       const views = await api(userPath('/Views'));
       state.views = views?.Items || [];
@@ -292,14 +213,9 @@
   }
 
   function connectionErrorMessage(e) {
-    if (e.status === 401 || e.status === 403) {
-      return state.authMode === 'user' ? 'Incorrect username or password.' : 'The API key was rejected by the server.';
-    }
+    if (e.status === 401 || e.status === 403) return 'Incorrect username or password.';
     if (e.status) return `Server error: ${e.message}`;
-    if (state.server.startsWith('https:')) {
-      return `Could not reach the server. Check that Emby is running and that ${state.server} opens in this browser without a certificate warning.`;
-    }
-    return 'Could not reach the server. Check the address, that Emby is running, and that this device can reach it.';
+    return 'Could not reach the Emby server. Check your internet connection and that the server is running.';
   }
 
   // ---------- Router ----------
@@ -1057,40 +973,24 @@
   }
 
   function setupUi() {
-    $('#setup-server').addEventListener('input', updateMixedContentWarning);
     $('#setup-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = $('button[type="submit"]', e.target);
       btn.disabled = true; btn.textContent = 'Connecting…';
       try {
-        if (e.target.dataset.mode === 'key') {
-          await connect($('#setup-server').value, $('#setup-key').value);
-          state.userId = ''; store.del('ef.userId');
-          await showProfiles();
-        } else {
-          const user = await signIn($('#setup-server').value, $('#setup-username').value.trim(), $('#setup-password').value);
-          await selectUser(user);
-        }
+        const user = await signIn($('#setup-username').value.trim(), $('#setup-password').value);
+        await selectUser(user);
       } catch (err) {
-        const mode = e.target.dataset.mode;
-        state.authMode = mode;
         showSetup(connectionErrorMessage(err));
       } finally {
-        btn.disabled = false;
-        setSetupMode(e.target.dataset.mode);
+        btn.disabled = false; btn.textContent = 'Sign In';
       }
     });
-    $('#setup-mode-toggle').addEventListener('click', () => {
-      setSetupMode($('#setup-form').dataset.mode === 'user' ? 'key' : 'user');
-      $('#setup-error').classList.add('hidden');
-    });
-    $('#profiles-settings').addEventListener('click', () => showSetup());
 
     $('#profile-btn').addEventListener('click', toggleProfileDropdown);
     document.addEventListener('click', () => $('#profile-dropdown').classList.add('hidden'));
     $('#profile-dropdown').addEventListener('click', (e) => {
       const act = e.target.dataset.action;
-      if (act === 'switch') { state.userId = ''; store.del('ef.userId'); showProfiles(); }
       if (act === 'signout') signOut();
     });
 
@@ -1144,17 +1044,15 @@
     loadConfig();
     setupUi();
     $('#setup-username').value = store.get('ef.username') || '';
-    if (!state.server || !state.apiKey) return showSetup();
-    if (!state.userId) return state.authMode === 'key' ? showProfiles() : showSetup();
+    if (!state.apiKey || !state.userId) return showSetup();
     try {
       const user = await api(`/Users/${state.userId}`);
       await selectUser(user);
     } catch (e) {
-      if (state.authMode === 'user' && (e.status === 401 || e.status === 403)) {
+      if (e.status === 401 || e.status === 403) {
         state.apiKey = ''; store.del('ef.apiKey');
         showSetup('Your sign-in has expired. Please sign in again.');
-      } else if (e.status && state.authMode === 'key') { store.del('ef.userId'); state.userId = ''; showProfiles(); }
-      else showSetup(connectionErrorMessage(e));
+      } else showSetup(connectionErrorMessage(e));
     }
   }
 

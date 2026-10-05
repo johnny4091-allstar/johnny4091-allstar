@@ -55,7 +55,7 @@ img { display: block; }
 .circle-btn:hover { border-color: #fff; }
 .circle-btn.active { border-color: #fff; }
 
-/* ---------- Setup / profiles ---------- */
+/* ---------- Sign in ---------- */
 .screen { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem 16px; }
 #setup { background: radial-gradient(ellipse at top, #3a0508 0%, #000 60%); }
 .setup-card { width: 100%; max-width: 440px; background: rgba(0,0,0,.75); padding: 3rem 2.5rem; border-radius: 8px; }
@@ -66,20 +66,9 @@ img { display: block; }
   background: #333; border: 1px solid #333; border-radius: 4px; color: #fff; font-size: 1rem;
 }
 .setup-card input:focus { outline: none; border-color: #fff; }
-.link-btn { background: none; border: 0; color: var(--muted); font-size: .9rem; padding: 0; margin-top: 1rem; text-decoration: underline; }
-.link-btn:hover { color: #fff; }
 .hint { color: var(--dim); font-size: .8rem; margin-top: 1.5rem; line-height: 1.4; }
 .error { color: #ff6b6b; font-size: .9rem; }
-.warning { color: #f5c518; font-size: .85rem; line-height: 1.4; }
 
-#profiles { background: var(--bg); gap: 2rem; }
-.profiles-title { font-size: clamp(2rem, 5vw, 3.5rem); font-weight: 500; margin: 0; }
-.profile-list { display: flex; flex-wrap: wrap; gap: 2vw; justify-content: center; }
-.profile { background: none; border: 0; color: var(--dim); display: flex; flex-direction: column; align-items: center; gap: .8rem; font-size: 1.1rem; }
-.profile .avatar { width: clamp(84px, 10vw, 150px); height: clamp(84px, 10vw, 150px); border-radius: 6px; border: 3px solid transparent; }
-.profile:hover { color: #fff; }
-.profile:hover .avatar { border-color: #fff; }
-.avatar { background-size: cover; background-position: center; display: flex; align-items: center; justify-content: center; font-weight: 800; color: #fff; font-size: 2.5rem; }
 
 /* ---------- Nav ---------- */
 #nav {

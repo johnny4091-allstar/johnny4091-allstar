@@ -8,8 +8,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="styles.css">
-  <!-- Optional local config (gitignored). Copy config.example.js to config.js to prefill your server. -->
-  <script src="config.js"></script>
 </head>
 <body>
   <!-- Connect screen -->
@@ -18,36 +16,17 @@
       <div class="logo big">EMBYFLIX</div>
       <h1 id="setup-title">Sign In</h1>
       <form id="setup-form">
-        <label>Server address
-          <input id="setup-server" type="text" placeholder="https://myserver.example.com:8920" required autocomplete="url">
+        <label>Username
+          <input id="setup-username" type="text" required autocomplete="username" autocapitalize="none" spellcheck="false">
         </label>
-        <div data-mode="user">
-          <label>Username
-            <input id="setup-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
-          </label>
-          <label>Password
-            <input id="setup-password" type="password" autocomplete="current-password">
-          </label>
-        </div>
-        <div data-mode="key" class="hidden">
-          <label>API key
-            <input id="setup-key" type="password" placeholder="Emby API key" autocomplete="off">
-          </label>
-        </div>
-        <p id="setup-warning" class="warning hidden"></p>
+        <label>Password
+          <input id="setup-password" type="password" autocomplete="current-password">
+        </label>
         <p id="setup-error" class="error hidden"></p>
         <button class="btn btn-red btn-block" type="submit">Sign In</button>
       </form>
-      <button id="setup-mode-toggle" class="link-btn" type="button">Use an API key instead</button>
-      <p class="hint">Sign in with the same username and password you use for Emby. Your sign-in is stored only in this browser.</p>
+      <p class="hint">Sign in with the same username and password you use for Emby. Your sign-in is stored only on this device.</p>
     </div>
-  </section>
-
-  <!-- Who's watching -->
-  <section id="profiles" class="screen hidden">
-    <h1 class="profiles-title">Who's watching?</h1>
-    <div id="profile-list" class="profile-list"></div>
-    <button id="profiles-settings" class="btn btn-outline">Change server</button>
   </section>
 
   <!-- Main app -->
@@ -70,7 +49,6 @@
         <div class="profile-menu">
           <button id="profile-btn" class="avatar-btn" aria-label="Profile menu"></button>
           <div id="profile-dropdown" class="dropdown hidden">
-            <button data-action="switch">Switch profile</button>
             <button data-action="signout">Sign out</button>
           </div>
         </div>
