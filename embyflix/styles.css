@@ -66,6 +66,8 @@ img { display: block; }
   background: #333; border: 1px solid #333; border-radius: 4px; color: #fff; font-size: 1rem;
 }
 .setup-card input:focus { outline: none; border-color: #fff; }
+.link-btn { background: none; border: 0; color: var(--muted); font-size: .9rem; padding: 0; margin-top: 1rem; text-decoration: underline; }
+.link-btn:hover { color: #fff; }
 .hint { color: var(--dim); font-size: .8rem; margin-top: 1.5rem; line-height: 1.4; }
 .error { color: #ff6b6b; font-size: .9rem; }
 .warning { color: #f5c518; font-size: .85rem; line-height: 1.4; }

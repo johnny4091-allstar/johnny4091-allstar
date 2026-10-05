@@ -16,19 +16,30 @@
   <section id="setup" class="screen hidden">
     <div class="setup-card">
       <div class="logo big">EMBYFLIX</div>
-      <h1>Connect to your Emby server</h1>
-      <form id="setup-form" autocomplete="off">
+      <h1 id="setup-title">Sign In</h1>
+      <form id="setup-form">
         <label>Server address
-          <input id="setup-server" type="text" placeholder="http://192.168.1.10:8096" required>
+          <input id="setup-server" type="text" placeholder="https://myserver.example.com:8920" required autocomplete="url">
         </label>
-        <label>API key
-          <input id="setup-key" type="password" placeholder="Emby API key" required>
-        </label>
+        <div data-mode="user">
+          <label>Username
+            <input id="setup-username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false">
+          </label>
+          <label>Password
+            <input id="setup-password" type="password" autocomplete="current-password">
+          </label>
+        </div>
+        <div data-mode="key" class="hidden">
+          <label>API key
+            <input id="setup-key" type="password" placeholder="Emby API key" autocomplete="off">
+          </label>
+        </div>
         <p id="setup-warning" class="warning hidden"></p>
         <p id="setup-error" class="error hidden"></p>
-        <button class="btn btn-red btn-block" type="submit">Connect</button>
+        <button class="btn btn-red btn-block" type="submit">Sign In</button>
       </form>
-      <p class="hint">Create an API key in Emby: Settings &rarr; Advanced &rarr; API Keys. Your details are stored only in this browser.</p>
+      <button id="setup-mode-toggle" class="link-btn" type="button">Use an API key instead</button>
+      <p class="hint">Sign in with the same username and password you use for Emby. Your sign-in is stored only in this browser.</p>
     </div>
   </section>
 
@@ -60,7 +71,7 @@
           <button id="profile-btn" class="avatar-btn" aria-label="Profile menu"></button>
           <div id="profile-dropdown" class="dropdown hidden">
             <button data-action="switch">Switch profile</button>
-            <button data-action="settings">Change server</button>
+            <button data-action="signout">Sign out</button>
           </div>
         </div>
       </div>

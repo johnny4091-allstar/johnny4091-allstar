@@ -4,7 +4,7 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 
 ## Features
 
-- "Who's watching?" profile picker using your Emby users
+- Sign in with your Emby username and password, or use an API key with a "Who's watching?" profile picker
 - Home page with a rotating hero banner and rows: Continue Watching, Next Up, My List,
   Recently Added for each library, Top Rated, Popular TV, and random genre rows
 - TV Shows and Movies pages with genre, sort, and watched filters and infinite scroll
@@ -20,9 +20,12 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 1. Download this `embyflix` folder.
 2. Open `index.html` in Chrome, Edge, Firefox, or Safari. Double-clicking it works, or you can serve the folder:
    `python3 -m http.server 8080`, then go to http://localhost:8080
-3. The server address is prefilled with `https://emby4836.duckdns.org:8920`. Enter your API key, then pick a profile.
+3. The server address is prefilled with `https://emby4836.duckdns.org:8920`. Sign in with your Emby username and
+   password, the same ones you use on Emby's own web page.
 
-Create an API key in Emby under **Settings → Advanced → API Keys**.
+Prefer a "Who's watching?" profile picker for the whole household? Choose **Use an API key instead** and enter an
+admin API key (Emby **Settings → Advanced → API Keys**). Signing in with a username is safer, because an API key has
+full admin access to your server.
 
 ### Prefill your server (optional)
 

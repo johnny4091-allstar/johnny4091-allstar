@@ -17,7 +17,10 @@
     del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
   };
 
-  const state = { server: '', apiKey: '', userId: '', user: null, deviceId: '', views: [] };
+  // authMode 'user': signed in with username/password, apiKey holds that user's access token.
+  // authMode 'key': an admin API key, with a "Who's watching?" picker over all users.
+  const state = { server: '', apiKey: '', authMode: 'user', userId: '', user: null, deviceId: '', views: [] };
+  const CLIENT = { name: 'EmbyFlix', version: '1.1.0' };
 
   function normalizeServer(url) {
     let u = (url || '').trim().replace(/\/+$/, '');
@@ -29,6 +32,7 @@
     const cfg = window.EMBYFLIX_CONFIG || {};
     state.server = normalizeServer(store.get('ef.server') || cfg.serverUrl || DEFAULT_SERVER);
     state.apiKey = store.get('ef.apiKey') || cfg.apiKey || '';
+    state.authMode = store.get('ef.authMode') || (store.get('ef.apiKey') || cfg.apiKey ? 'key' : 'user');
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
     if (!deviceId) {
@@ -78,12 +82,12 @@
     for (const [k, v] of Object.entries(params)) {
       if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
     }
-    url.searchParams.set('api_key', state.apiKey);
+    if (state.apiKey) url.searchParams.set('api_key', state.apiKey);
     return url.toString();
   }
 
   async function api(path, { params, method = 'GET', body } = {}) {
-    const opts = { method, headers: { Accept: 'application/json' } };
+    const opts = { method, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
@@ -96,6 +100,11 @@
     }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
+  }
+
+  function authHeader() {
+    const device = /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser';
+    return `Emby UserId="${state.userId || ''}", Client="${CLIENT.name}", Device="${device}", DeviceId="${state.deviceId}", Version="${CLIENT.version}"`;
   }
 
   const userPath = (p) => `/Users/${state.userId}${p}`;
@@ -171,11 +180,23 @@
   function showSetup(errorMsg) {
     showScreen('setup');
     $('#setup-server').value = state.server;
-    $('#setup-key').value = state.apiKey;
+    $('#setup-key').value = state.authMode === 'key' ? state.apiKey : '';
+    $('#setup-password').value = '';
+    setSetupMode(state.authMode);
     const err = $('#setup-error');
     err.textContent = errorMsg || '';
     err.classList.toggle('hidden', !errorMsg);
     updateMixedContentWarning();
+  }
+
+  function setSetupMode(mode) {
+    $('#setup-form').dataset.mode = mode;
+    $$('#setup-form [data-mode]').forEach((el) => el.classList.toggle('hidden', el.dataset.mode !== mode));
+    $('#setup-username').required = mode === 'user';
+    $('#setup-key').required = mode === 'key';
+    $('#setup-title').textContent = mode === 'user' ? 'Sign In' : 'Connect with an API key';
+    $('#setup-mode-toggle').textContent = mode === 'user' ? 'Use an API key instead' : 'Sign in with username and password instead';
+    $('#setup-form button[type="submit"]').textContent = mode === 'user' ? 'Sign In' : 'Connect';
   }
 
   function updateMixedContentWarning() {
@@ -191,9 +212,37 @@
   async function connect(server, apiKey) {
     state.server = normalizeServer(server);
     state.apiKey = apiKey.trim();
+    state.authMode = 'key';
     await api('/System/Info'); // validates server + key
     store.set('ef.server', state.server);
     store.set('ef.apiKey', state.apiKey);
+    store.set('ef.authMode', 'key');
+  }
+
+  async function signIn(server, username, password) {
+    state.server = normalizeServer(server);
+    state.apiKey = '';
+    state.userId = '';
+    const res = await api('/Users/AuthenticateByName', { method: 'POST', body: { Username: username, Pw: password } });
+    if (!res?.AccessToken || !res.User) throw new Error('Unexpected response from server');
+    state.apiKey = res.AccessToken;
+    state.authMode = 'user';
+    store.set('ef.server', state.server);
+    store.set('ef.apiKey', state.apiKey);
+    store.set('ef.authMode', 'user');
+    store.set('ef.username', username);
+    return res.User;
+  }
+
+  async function signOut() {
+    if (state.authMode === 'user' && state.apiKey) {
+      await api('/Sessions/Logout', { method: 'POST' }).catch(() => {});
+      state.apiKey = '';
+      store.del('ef.apiKey');
+    }
+    state.userId = '';
+    store.del('ef.userId');
+    showSetup();
   }
 
   async function showProfiles() {
@@ -229,6 +278,7 @@
     btn.style.backgroundColor = a.image ? '' : a.color;
     btn.textContent = a.image ? '' : a.initial;
     btn.title = user.Name || '';
+    $('#profile-dropdown [data-action="switch"]').classList.toggle('hidden', state.authMode !== 'key');
     try {
       const views = await api(userPath('/Views'));
       state.views = views?.Items || [];
@@ -239,7 +289,9 @@
   }
 
   function connectionErrorMessage(e) {
-    if (e.status === 401 || e.status === 403) return 'The API key was rejected by the server.';
+    if (e.status === 401 || e.status === 403) {
+      return state.authMode === 'user' ? 'Incorrect username or password.' : 'The API key was rejected by the server.';
+    }
     if (e.status) return `Server error: ${e.message}`;
     if (state.server.startsWith('https:')) {
       return `Could not reach the server. Check that Emby is running and that ${state.server} opens in this browser without a certificate warning.`;
@@ -1005,14 +1057,26 @@
       const btn = $('button[type="submit"]', e.target);
       btn.disabled = true; btn.textContent = 'Connecting…';
       try {
-        await connect($('#setup-server').value, $('#setup-key').value);
-        state.userId = ''; store.del('ef.userId');
-        await showProfiles();
+        if (e.target.dataset.mode === 'key') {
+          await connect($('#setup-server').value, $('#setup-key').value);
+          state.userId = ''; store.del('ef.userId');
+          await showProfiles();
+        } else {
+          const user = await signIn($('#setup-server').value, $('#setup-username').value.trim(), $('#setup-password').value);
+          await selectUser(user);
+        }
       } catch (err) {
+        const mode = e.target.dataset.mode;
+        state.authMode = mode;
         showSetup(connectionErrorMessage(err));
       } finally {
-        btn.disabled = false; btn.textContent = 'Connect';
+        btn.disabled = false;
+        setSetupMode(e.target.dataset.mode);
       }
+    });
+    $('#setup-mode-toggle').addEventListener('click', () => {
+      setSetupMode($('#setup-form').dataset.mode === 'user' ? 'key' : 'user');
+      $('#setup-error').classList.add('hidden');
     });
     $('#profiles-settings').addEventListener('click', () => showSetup());
 
@@ -1021,7 +1085,7 @@
     $('#profile-dropdown').addEventListener('click', (e) => {
       const act = e.target.dataset.action;
       if (act === 'switch') { state.userId = ''; store.del('ef.userId'); showProfiles(); }
-      if (act === 'settings') { state.userId = ''; store.del('ef.userId'); showSetup(); }
+      if (act === 'signout') signOut();
     });
 
     // Search
@@ -1060,13 +1124,17 @@
   async function boot() {
     loadConfig();
     setupUi();
+    $('#setup-username').value = store.get('ef.username') || '';
     if (!state.server || !state.apiKey) return showSetup();
-    if (!state.userId) return showProfiles();
+    if (!state.userId) return state.authMode === 'key' ? showProfiles() : showSetup();
     try {
       const user = await api(`/Users/${state.userId}`);
       await selectUser(user);
     } catch (e) {
-      if (e.status) { store.del('ef.userId'); state.userId = ''; showProfiles(); }
+      if (state.authMode === 'user' && (e.status === 401 || e.status === 403)) {
+        state.apiKey = ''; store.del('ef.apiKey');
+        showSetup('Your sign-in has expired. Please sign in again.');
+      } else if (e.status && state.authMode === 'key') { store.del('ef.userId'); state.userId = ''; showProfiles(); }
       else showSetup(connectionErrorMessage(e));
     }
   }
