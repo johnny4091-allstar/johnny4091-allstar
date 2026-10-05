@@ -58,6 +58,10 @@ public class MainActivity extends Activity {
         settings.setMediaPlaybackRequiresUserGesture(false);
         // Allow http:// Emby servers even though the app itself is served from https://.
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        // Honour the page's viewport width so TV mode can lay out on a fixed canvas scaled to the screen.
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
+        settings.setSupportZoom(false);
         settings.setUserAgentString(settings.getUserAgentString() + " AuroraAndroid/" + versionName());
 
         final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
@@ -166,7 +170,9 @@ public class MainActivity extends Activity {
     private boolean detectTv() {
         UiModeManager uiMode = (UiModeManager) getSystemService(UI_MODE_SERVICE);
         return (uiMode != null && uiMode.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
-                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                // Many Android TV boxes report neither of the above, but none has a touchscreen.
+                || !getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
     }
 
     /** Remote buttons the web page can't receive reliably are forwarded to window.embyflixKey(). */

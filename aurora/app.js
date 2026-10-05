@@ -752,7 +752,8 @@
           row.addEventListener('click', () => playItem(ep));
           list.appendChild(row);
         }
-        $('.episode.current', list)?.scrollIntoView({ block: 'nearest' });
+        // With a remote, focus is on the Play button; keep it on screen instead of jumping to the episode.
+        if (!nav.on) $('.episode.current', list)?.scrollIntoView({ block: 'nearest' });
       } catch (e) {
         list.innerHTML = `<p class="empty-msg">Could not load episodes: ${esc(e.message)}</p>`;
       }
@@ -1895,6 +1896,8 @@
       if (!e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
     });
     if (nativeApp?.isTv?.()) {
+      // Lay out on a 1280x720 canvas that the WebView scales to fill the TV, so every box looks the same.
+      document.querySelector('meta[name="viewport"]').setAttribute('content', 'width=1280, user-scalable=no');
       nav.tv = true;
       document.documentElement.classList.add('tv');
       enableNav();

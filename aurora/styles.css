@@ -381,6 +381,27 @@ html.tv { font-size: 18px; }
 .tv .row-arrow, .tv .card-play { display: none; }
 .tv .player-osd { padding: 3rem 5% 2rem; }
 .tv .player-top { padding: 1.5rem 5%; }
+/* Keep the bottom of the page clear of TV overscan. */
+.tv .rows, .tv .page-pad { padding-bottom: 3rem; }
+.tv .live-page { padding-bottom: 1.5rem; }
+.tv .guide { height: calc(100vh - 215px); }
+.tv .modal-box { margin: 1.5rem auto; max-width: 860px; }
+.tv .m-hero { aspect-ratio: 21/9; }
+
+/* Short landscape screens (TVs): the sign-in box must fit without scrolling. */
+@media (orientation: landscape) and (max-height: 800px) {
+  #setup.screen { padding: 1.5rem 16px; justify-content: center; }
+  .setup-card { max-width: 520px; padding: 1.6rem 2.2rem 1.4rem; }
+  .logo.big { margin-bottom: 1rem; }
+  .logo.big .logo-svg { height: 30px; }
+  .setup-card h1 { font-size: 1.35rem; margin-bottom: .9rem; }
+  .setup-card label { margin-bottom: .7rem; }
+  .setup-card input { padding: .65rem .9rem; margin-top: .3rem; }
+  .account-tiles { margin-bottom: 1rem; }
+  .user-tile .avatar { width: 60px; height: 60px; }
+  .setup-subtitle { margin-bottom: .6rem; }
+  .hint { margin-top: .9rem; }
+}
 
 /* ---------- Toast ---------- */
 .toast { position: fixed; bottom: 2rem; left: 50%; transform: translateX(-50%); background: #232f58; color: #fff; padding: .8rem 1.4rem; border-radius: 4px; z-index: 300; box-shadow: 0 4px 16px rgba(0,0,0,.6); max-width: calc(100% - 32px); }
