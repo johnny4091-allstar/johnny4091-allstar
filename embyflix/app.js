@@ -21,6 +21,8 @@
   // authMode 'key': an admin API key, with a "Who's watching?" picker over all users.
   const state = { server: '', apiKey: '', authMode: 'user', userId: '', user: null, deviceId: '', views: [] };
   const CLIENT = { name: 'EmbyFlix', version: '1.1.0' };
+  // Set by the Android wrapper (android/); undefined in a normal browser.
+  const nativeApp = window.EmbyFlixAndroid || null;
 
   function normalizeServer(url) {
     let u = (url || '').trim().replace(/\/+$/, '');
@@ -202,7 +204,8 @@
   function updateMixedContentWarning() {
     const server = normalizeServer($('#setup-server').value);
     const warn = $('#setup-warning');
-    const blocked = location.protocol === 'https:' && server.startsWith('http:');
+    // The Android app allows http:// servers, so only browsers need the warning.
+    const blocked = !nativeApp && location.protocol === 'https:' && server.startsWith('http:');
     warn.textContent = blocked
       ? 'This page is loaded over HTTPS but your server uses HTTP, so the browser will block it. Open EmbyFlix from your computer (double-click index.html) or serve it over plain HTTP, or put your Emby server behind HTTPS.'
       : '';
@@ -857,11 +860,13 @@
     await stopPlayback();
     const el = $('#player'), video = $('#video'), status = $('#player-status');
     el.classList.remove('hidden');
+    nativeApp?.setPlayerMode(true);
     status.innerHTML = '<div class="spinner"></div>';
     status.classList.remove('hidden');
     $('#player-next').classList.add('hidden');
     document.body.style.overflow = 'hidden';
-    try { await el.requestFullscreen?.(); } catch { /* not allowed, fine */ }
+    // The Android app goes full screen natively via setPlayerMode.
+    if (!nativeApp) { try { await el.requestFullscreen?.(); } catch { /* not allowed, fine */ } }
 
     try {
       const item = await resolvePlayable(rawItem);
@@ -1010,6 +1015,7 @@
   async function closePlayer() {
     await stopPlayback();
     $('#player').classList.add('hidden');
+    nativeApp?.setPlayerMode(false);
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
     document.body.style.overflow = $('#modal').classList.contains('hidden') ? '' : 'hidden';
     // Refresh what's on screen so "Continue Watching" and progress bars update.
@@ -1119,6 +1125,19 @@
 
     setupPlayer();
   }
+
+  // ---------- Android app bridge ----------
+  // Called by the Android back button. Returns true when the app handled it.
+  window.embyflixBack = () => {
+    if (!$('#player').classList.contains('hidden')) { closePlayer(); return true; }
+    if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
+    if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
+    if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {
+      location.hash = '#/home';
+      return true;
+    }
+    return false;
+  };
 
   // ---------- Boot ----------
   async function boot() {

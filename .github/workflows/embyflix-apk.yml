@@ -1,0 +1,52 @@
+name: Build EmbyFlix APK
+
+on:
+  push:
+    paths:
+      - 'embyflix/**'
+      - 'android/**'
+      - '.github/workflows/embyflix-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: Build APK
+        working-directory: android
+        run: gradle assembleRelease -PversionCode=${{ github.run_number }} --stacktrace
+
+      - name: Rename APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk EmbyFlix.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EmbyFlix-apk
+          path: EmbyFlix.apk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: embyflix-v1.1.${{ github.run_number }}
+          name: EmbyFlix 1.1.${{ github.run_number }} for Android
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: EmbyFlix.apk
+          body: |
+            Download **EmbyFlix.apk** below on your Android phone or tablet and open it to install.
+            You may need to allow installing apps from your browser or file manager the first time.
+            Built from ${{ github.ref_name }} at ${{ github.sha }}.

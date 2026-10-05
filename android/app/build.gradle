@@ -1,0 +1,68 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The web app in ../../embyflix is bundled into the APK as assets.
+def webAppDir = file('../../embyflix')
+def webAssetsDir = layout.buildDirectory.dir('generated/webassets').get().asFile
+
+def copyWebApp = tasks.register('copyWebApp', Sync) {
+    from(webAppDir) {
+        exclude 'README.md', '.gitignore', 'config.example.js'
+    }
+    into webAssetsDir
+}
+
+def appVersionCode = (findProperty('versionCode') ?: '1') as int
+
+android {
+    namespace 'com.johnny4091.embyflix'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.johnny4091.embyflix'
+        minSdk 26
+        targetSdk 34
+        versionCode appVersionCode
+        versionName "1.1.${appVersionCode}"
+    }
+
+    signingConfigs {
+        release {
+            // A fixed key so each new APK installs as an update over the previous one.
+            storeFile file('../embyflix.keystore')
+            storePassword 'embyflix'
+            keyAlias 'embyflix'
+            keyPassword 'embyflix'
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+        debug {
+            signingConfig signingConfigs.release
+        }
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs += [webAssetsDir]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+tasks.named('preBuild') {
+    dependsOn copyWebApp
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+}

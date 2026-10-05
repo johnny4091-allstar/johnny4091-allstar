@@ -42,3 +42,21 @@ so your key is never committed. You can also just type them into the connect scr
 - **Keep your API key private.** An Emby API key gives full admin access to your server. Don't publish it in a
   public repository or on a public website. If it has been shared publicly, delete it in Emby and create a new one.
 - If playback won't start for a file, check that transcoding is enabled for your user in Emby.
+
+## Android app
+
+The `android/` folder wraps EmbyFlix in an Android app (Android 8.0 and newer). Every push that changes
+`embyflix/` or `android/` builds a new APK with GitHub Actions and publishes it on the repository's
+**Releases** page as `EmbyFlix.apk`.
+
+To install: open the latest release on your phone, download `EmbyFlix.apk`, open it, and allow installing
+apps from that source when Android asks. New versions install over the old one and keep you signed in.
+
+In the app, videos play full screen in landscape, the screen stays on while watching, the back button closes
+the player and pop-ups, and plain `http://` server addresses work too.
+
+To build it yourself, install the Android SDK and Gradle 8.x, then run `gradle assembleRelease` in `android/`.
+
+The signing key (`android/embyflix.keystore`) is in this public repo so every build can update the last one.
+That's fine for a personal app, but anyone could sign an app that installs over it, so only install EmbyFlix
+APKs from this repo's Releases page.
