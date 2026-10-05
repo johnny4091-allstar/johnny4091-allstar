@@ -116,7 +116,7 @@
   }
 
   function getItem(id) {
-    return api(userPath(`/Items/${id}`), { params: { Fields: ITEM_FIELDS + ',People,Studios,Taglines,ChildCount' } });
+    return api(userPath(`/Items/${id}`), { params: { Fields: ITEM_FIELDS + ',People,Studios,Taglines,ChildCount,RemoteTrailers' } });
   }
 
   function imageUrl(id, type, { tag, maxWidth, maxHeight, index } = {}) {
@@ -642,6 +642,7 @@
           <div class="m-actions">
             <button class="btn btn-white" data-act="play">${ICONS.play} <span>${resumeTicks ? 'Resume' : 'Play'}</span></button>
             ${resumeTicks ? `<button class="btn btn-gray" data-act="restart">Start Over</button>` : ''}
+            ${hasTrailer(item) ? `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>` : ''}
             <button class="circle-btn" data-act="fav" title="Add to My List"></button>
             <button class="circle-btn" data-act="played" title="Mark as watched"></button>
           </div>
@@ -727,6 +728,8 @@
       $('[data-act="restart"]', content)?.addEventListener('click', () => playItem(item, { startTicks: 0 }));
       renderSimilar(extra, item, token);
     }
+    $('[data-act="trailer"]', content)?.addEventListener('click', () => playTrailer(item));
+
   }
 
   async function renderSeasons(container, series, selectedSeasonId, currentEpisodeId, token) {
@@ -1458,6 +1461,9 @@
     const meta = [seerrYear(m), isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? formatRuntime(m.runtime * 60 * TICKS_PER_SECOND) : ''),
       (m.genres || []).slice(0, 3).map((g) => g.name).join(', ')].filter(Boolean);
     const backdrop = tmdbImage(m.backdropPath, 'w1280');
+    const video = (m.relatedVideos || []).find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+      || (m.relatedVideos || []).find((v) => v.site === 'YouTube');
+    const trailerUrl = video?.url || (video?.key ? `https://www.youtube.com/watch?v=${video.key}` : '');
     content.innerHTML = `
       <div class="m-hero" style="background-image:url('${esc(backdrop)}')">
         <div class="m-hero-content"><h2>${esc(seerrTitle(m))}</h2></div>
@@ -1482,6 +1488,7 @@
       const n = picks().length;
       actions.innerHTML = '';
       if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
+      if (trailerUrl) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>`);
       if (canRequest) {
         actions.insertAdjacentHTML('beforeend', isTv
           ? `<button class="btn btn-red" data-act="request"${n ? '' : ' disabled'}>Request ${n} season${n === 1 ? '' : 's'}</button>`
@@ -1490,6 +1497,7 @@
         actions.insertAdjacentHTML('beforeend', `<span class="seerr-done">${esc(MEDIA_STATUS[status] || 'Requested')}</span>`);
       }
       $('[data-act="watch"]', actions)?.addEventListener('click', () => watchInAurora(m, isTv));
+      $('[data-act="trailer"]', actions)?.addEventListener('click', () => openYouTube(trailerUrl, seerrTitle(m)));
       $('[data-act="request"]', actions)?.addEventListener('click', submit);
     }
 
@@ -1553,6 +1561,64 @@
         return;
       } catch { /* try the next location */ }
     }
+  }
+
+  // ---------- Trailers ----------
+  // Emby has two kinds: trailer files in the library (played in Aurora's player) and online trailers
+  // (YouTube links, opened in the YouTube app, which handles a TV remote properly).
+  const youTubeTrailers = (item) => (item.RemoteTrailers || []).map((t) => t.Url).filter((u) => youTubeId(u));
+  const hasTrailer = (item) => (item.LocalTrailerCount || 0) > 0 || youTubeTrailers(item).length > 0;
+
+  function youTubeId(url) {
+    const m = String(url || '').match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/);
+    return m ? m[1] : '';
+  }
+
+  async function playTrailer(item) {
+    if ((item.LocalTrailerCount || 0) > 0) {
+      try {
+        const local = await api(userPath(`/Items/${item.Id}/LocalTrailers`));
+        if (local?.length) return playItem(local[0], { startTicks: 0 });
+      } catch { /* fall back to an online trailer */ }
+    }
+    const url = youTubeTrailers(item)[0];
+    if (url) openYouTube(url, item.Name);
+    else toast('No trailer available.');
+  }
+
+  function openYouTube(url, title) {
+    const id = youTubeId(url);
+    if (!id) return toast('No trailer available.');
+    // The Android app hands it to the YouTube app; without one (or in a browser) it plays in a window here.
+    if (nativeApp?.openYouTube?.(id)) return;
+    showTrailerWindow(id, title);
+  }
+
+  function showTrailerWindow(id, title) {
+    rememberFocus('trailer');
+    const box = $('#trailer');
+    box.innerHTML = `
+      <div class="trailer-frame">
+        <div class="trailer-head">
+          <strong>${title ? `${esc(title)} · Trailer` : 'Trailer'}</strong>
+          <button class="btn btn-gray" data-act="close-trailer" data-autofocus>Close</button>
+        </div>
+        <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0&playsinline=1"
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowfullscreen title="Trailer"></iframe>
+      </div>`;
+    box.classList.remove('hidden');
+    $('[data-act="close-trailer"]', box).addEventListener('click', closeTrailerWindow);
+    box.addEventListener('click', (e) => { if (e.target === box) closeTrailerWindow(); }, { once: true });
+    if (nav.on) focusEl($('[data-act="close-trailer"]', box));
+  }
+
+  const trailerOpen = () => !$('#trailer').classList.contains('hidden');
+  function closeTrailerWindow() {
+    const box = $('#trailer');
+    if (box.classList.contains('hidden')) return;
+    box.classList.add('hidden');
+    box.innerHTML = ''; // stops the video
+    restoreFocus('trailer');
   }
 
   // ---------- Settings ----------
@@ -2436,6 +2502,7 @@
   const ICONS = {
     play: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4v16a1 1 0 0 0 1.52.85l13-8a1 1 0 0 0 0-1.7l-13-8A1 1 0 0 0 6 4Z"/></svg>',
     info: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 6v8h-2v-8h2Zm0-4v2h-2V6h2Z"/></svg>',
+    film: '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm1 2v2h2V6H5Zm12 0v2h2V6h-2ZM5 10v4h2v-4H5Zm12 0v4h2v-4h-2ZM5 16v2h2v-2H5Zm12 0v2h2v-2h-2ZM9 6v12h6V6H9Z"/></svg>',
     pause: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>',
     back10: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z"/><text x="12" y="16.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>',
     fwd10: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8Z"/><text x="12" y="16.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>',
@@ -2519,6 +2586,7 @@
       if (stillWatchingVisible()) return $('#still-watching');
       return tracksOpen() ? $('#tracks-panel') : $('#player');
     }
+    if (trailerOpen()) return $('#trailer');
     if (!$('#modal').classList.contains('hidden')) return $('#modal');
     if (!$('#setup').classList.contains('hidden')) return $('#setup');
     return $('#main');
@@ -2692,6 +2760,7 @@
       else { hideStillWatching(); closePlayer(); }
       return true;
     }
+    if (trailerOpen()) { closeTrailerWindow(); return true; }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
     if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {

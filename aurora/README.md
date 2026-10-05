@@ -30,6 +30,8 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
   set `"requestsServer"` to your Jellyseerr address and `"requestsEnabled"` to `true` to switch the tab on.
   While it's off, the tab shows a "Coming soon" page. Edit the file on GitHub and every installed app picks up the
   change the next time it opens; no new APK is needed.
+- Trailers: a Trailer button on movies and shows (and in Requests). Trailer files in the library play in Aurora;
+  online (YouTube) trailers open in the YouTube app, or in a window inside Aurora where there isn't one
 - Resume where you left off, progress reported back to Emby, and auto-play of the next episode
 - Works on phones, tablets, and desktops
 

@@ -458,6 +458,20 @@ public class MainActivity extends Activity {
             return versionName();
         }
 
+        /** Opens a YouTube video in the YouTube app. Returns false if there isn't one (the page then plays it itself). */
+        @JavascriptInterface
+        public boolean openYouTube(String videoId) {
+            if (videoId == null || !videoId.matches("[\\w-]{11}")) return false;
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:" + videoId))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                return true;
+            } catch (ActivityNotFoundException e) {
+                return false;
+            }
+        }
+
         /** Encrypts text with the key-store key; returns "iv:ciphertext" in Base64, or null on failure. */
         @JavascriptInterface
         public String encrypt(String plain) {
