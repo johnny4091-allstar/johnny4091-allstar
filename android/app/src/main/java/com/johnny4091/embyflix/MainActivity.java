@@ -243,6 +243,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        // Save the playback position before the WebView stops running the page.
+        webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
         webView.onPause();
     }
 

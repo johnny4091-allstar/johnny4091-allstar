@@ -81,8 +81,9 @@
     return url.toString();
   }
 
-  async function api(path, { params, method = 'GET', body } = {}) {
-    const opts = { method, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
+  // keepalive lets a request finish even if the app is being closed or sent to the background.
+  async function api(path, { params, method = 'GET', body, keepalive = false } = {}) {
+    const opts = { method, keepalive, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
@@ -264,6 +265,11 @@
     btn.style.backgroundColor = a.image ? '' : a.color;
     btn.textContent = a.image ? '' : a.initial;
     btn.title = user.Name || '';
+    // Tell Emby what this device is (it shows in the dashboard like Emby's own apps).
+    api('/Sessions/Capabilities/Full', {
+      method: 'POST',
+      body: { PlayableMediaTypes: ['Video', 'Audio'], SupportedCommands: [], SupportsMediaControl: false, SupportsPersistentIdentifier: true },
+    }).catch(() => {});
     try {
       const views = await api(userPath('/Views'));
       state.views = views?.Items || [];
@@ -1569,8 +1575,12 @@
     });
   }
 
-  function reportPlayback(path, eventName) {
+  // Emby saves the resume point (and Continue Watching) from these reports.
+  function reportPlayback(path, eventName, { keepalive = false } = {}) {
     if (!player.item) return Promise.resolve();
+    const stopped = path.endsWith('/Stopped');
+    // After the app went to the background we told Emby playback stopped; don't revive the old session.
+    if (player.suspended && !stopped) return Promise.resolve();
     const video = $('#video');
     const body = {
       ItemId: player.item.Id,
@@ -1587,7 +1597,26 @@
       CanSeek: true,
       EventName: eventName,
     };
-    return api(path, { method: 'POST', body }).catch((e) => console.warn('report failed', e));
+    const send = () => api(path, { method: 'POST', body, keepalive });
+    // The final position matters most: retry it once if the network blips.
+    return send().catch(() => (stopped ? new Promise((r) => setTimeout(r, 1500)).then(send) : null))
+      .catch((e) => console.warn('report failed', e));
+  }
+
+  // The app is going to the background (Home button, screen off, box turned off): save the position now
+  // as a finished session, because the app may never get the chance later.
+  function suspendPlayback() {
+    if (!player.item || player.suspended || player.isLive) return;
+    $('#video').pause();
+    reportPlayback('/Sessions/Playing/Stopped', null, { keepalive: true });
+    player.suspended = true;
+  }
+
+  // Back in the app and playing again: start a fresh session from the current position.
+  function resumeSuspended() {
+    if (!player.suspended || !player.item) return;
+    player.suspended = false;
+    reportPlayback('/Sessions/Playing');
   }
 
   async function findNextEpisode(ep) {
@@ -1732,7 +1761,7 @@
       const playSessionId = player.playSessionId;
       const wasTranscoding = player.playMethod === 'Transcode';
       const liveStreamId = player.liveStreamId;
-      await reportPlayback('/Sessions/Playing/Stopped');
+      if (!player.suspended) await reportPlayback('/Sessions/Playing/Stopped');
       // Free the tuner.
       if (liveStreamId) api('/LiveTv/LiveStreams/Close', { method: 'POST', params: { LiveStreamId: liveStreamId } }).catch(() => {});
       if (wasTranscoding) {
@@ -1747,6 +1776,7 @@
     player.nextEpisode = null;
     player.intro = null;
     player.liveStreamId = null;
+    player.suspended = false;
   }
 
   async function closePlayer() {
@@ -1967,7 +1997,11 @@
     video.addEventListener('dblclick', () => $('#osd-fullscreen').click());
     ['timeupdate', 'play', 'pause', 'durationchange', 'volumechange'].forEach((ev) => video.addEventListener(ev, updateOsd));
     video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
-    video.addEventListener('play', () => { reportPlayback('/Sessions/Playing/Progress', 'Unpause'); wakeOsd(); });
+    video.addEventListener('play', () => {
+      if (player.suspended) resumeSuspended();
+      else reportPlayback('/Sessions/Playing/Progress', 'Unpause');
+      wakeOsd();
+    });
     video.addEventListener('ended', () => {
       if (player.nextEpisode && getPref('autoplay') === 'on') startNextEpisode(true);
       else closePlayer();
@@ -1983,7 +2017,10 @@
     }, 60000);
     el.addEventListener('mousemove', wakeOsd);
     el.addEventListener('touchstart', wakeOsd, { passive: true });
-    window.addEventListener('beforeunload', () => { if (player.item) reportPlayback('/Sessions/Playing/Stopped'); });
+    window.addEventListener('pagehide', () => { if (player.item && !player.suspended) reportPlayback('/Sessions/Playing/Stopped', null, { keepalive: true }); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) suspendPlayback(); });
+    // The Android app calls this from onPause, before the WebView is paused.
+    window.auroraPause = suspendPlayback;
     $('#osd-fullscreen').classList.toggle('hidden', !!nativeApp || !document.fullscreenEnabled);
   }
 
