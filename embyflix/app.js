@@ -165,11 +165,62 @@
   }
 
   function showSetup(errorMsg) {
+    closeModal();
     showScreen('setup');
     $('#setup-password').value = '';
     const err = $('#setup-error');
     err.textContent = errorMsg || '';
     err.classList.toggle('hidden', !errorMsg);
+    renderAccountTiles();
+    if (nav.on) focusInitial($('#setup'));
+  }
+
+  // Accounts that have signed in on this device, so people can switch without retyping passwords.
+  function getAccounts() {
+    try { return JSON.parse(store.get('ef.accounts') || '[]'); } catch { return []; }
+  }
+  function saveAccounts(list) { store.set('ef.accounts', JSON.stringify(list)); }
+  function upsertAccount(user, token) {
+    const list = getAccounts().filter((a) => a.userId !== user.Id);
+    list.push({ userId: user.Id, name: user.Name, imageTag: user.PrimaryImageTag || '', token });
+    saveAccounts(list);
+  }
+  function removeAccount(userId) { saveAccounts(getAccounts().filter((a) => a.userId !== userId)); }
+
+  function renderAccountTiles() {
+    const wrap = $('#account-tiles'), accounts = getAccounts();
+    wrap.classList.toggle('hidden', !accounts.length);
+    $('#setup-title').textContent = accounts.length ? "Who's watching?" : 'Sign In';
+    $('#setup-form-title').classList.toggle('hidden', !accounts.length);
+    wrap.innerHTML = accounts.map((a, i) => {
+      const av = avatarInfo({ Id: a.userId, Name: a.name, PrimaryImageTag: a.imageTag });
+      const style = av.image ? `background-image:url('${esc(av.image)}')` : `background:${av.color}`;
+      return `<button class="user-tile" data-i="${i}"${i === 0 ? ' data-autofocus' : ''}>
+        <span class="avatar" style="${style}">${av.image ? '' : esc(av.initial)}</span>
+        <span class="user-name">${esc(a.name)}</span>
+      </button>`;
+    }).join('');
+    $$('.user-tile', wrap).forEach((btn) => btn.addEventListener('click', () => switchToAccount(accounts[btn.dataset.i])));
+  }
+
+  async function switchToAccount(account) {
+    state.apiKey = account.token;
+    state.userId = account.userId;
+    try {
+      const user = await api(`/Users/${account.userId}`);
+      store.set('ef.apiKey', state.apiKey);
+      await selectUser(user);
+      upsertAccount(user, account.token);
+    } catch (e) {
+      state.apiKey = ''; state.userId = '';
+      if (e.status === 401 || e.status === 403) {
+        removeAccount(account.userId);
+        showSetup(`Please sign in again as ${account.name}.`);
+        $('#setup-username').value = account.name;
+      } else {
+        showSetup(connectionErrorMessage(e));
+      }
+    }
   }
 
   async function signIn(username, password) {
@@ -180,7 +231,16 @@
     state.apiKey = res.AccessToken;
     store.set('ef.apiKey', state.apiKey);
     store.set('ef.username', username);
+    upsertAccount(res.User, res.AccessToken);
     return res.User;
+  }
+
+  // Leaves this account signed in on the device and goes back to the account picker.
+  function switchUser() {
+    state.apiKey = ''; state.userId = '';
+    store.del('ef.apiKey'); store.del('ef.userId');
+    $('#setup-username').value = '';
+    showSetup();
   }
 
   async function signOut() {
@@ -189,6 +249,7 @@
       state.apiKey = '';
       store.del('ef.apiKey');
     }
+    removeAccount(state.userId);
     state.userId = '';
     store.del('ef.userId');
     showSetup();
@@ -265,12 +326,14 @@
           ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h1 class="hero-title">${esc(item.Name)}</h1>`}
           <p class="hero-overview">${esc(item.Overview || '')}</p>
           <div class="hero-actions">
-            <button class="btn btn-white" data-act="play">${ICONS.play} Play</button>
+            <button class="btn btn-white" data-act="play" data-autofocus>${ICONS.play} Play</button>
             <button class="btn btn-gray" data-act="info">${ICONS.info} More Info</button>
           </div>
         </div>`;
       $('[data-act="play"]', hero).addEventListener('click', () => playItem(item));
       $('[data-act="info"]', hero).addEventListener('click', () => openDetails(item.Id));
+      const focused = document.activeElement;
+      if (!focused || focused === document.body || !document.contains(focused)) autoFocus($('[data-act="play"]', hero));
     } catch (e) {
       hero.className = 'hero empty';
       console.error(e);
@@ -331,9 +394,9 @@
       if (!items || !items.length) { row.remove(); return; }
       row.innerHTML = `<h2 class="row-title">${esc(title)}</h2>
         <div class="row-wrap">
-          <button class="row-arrow left" aria-label="Scroll left">&#8249;</button>
+          <button class="row-arrow left" tabindex="-1" aria-label="Scroll left">&#8249;</button>
           <div class="row-track"></div>
-          <button class="row-arrow right" aria-label="Scroll right">&#8250;</button>
+          <button class="row-arrow right" tabindex="-1" aria-label="Scroll right">&#8250;</button>
         </div>`;
       const track = $('.row-track', row);
       items.forEach((item) => track.appendChild(createCard(item, { showProgress })));
@@ -348,6 +411,7 @@
   function createCard(item, { showProgress } = {}) {
     const card = document.createElement('div');
     card.className = 'card';
+    card.tabIndex = 0;
     const img = landscapeImage(item);
     const isEpisode = item.Type === 'Episode';
     const title = isEpisode ? (item.SeriesName || item.Name) : item.Name;
@@ -359,6 +423,7 @@
       ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
       <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
       ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}`;
+    $('.card-play', card).tabIndex = -1;
     $('.card-play', card).addEventListener('click', (e) => { e.stopPropagation(); playItem(item); });
     card.addEventListener('click', () => openItem(item));
     return card;
@@ -367,6 +432,7 @@
   function createPoster(item) {
     const el = document.createElement('div');
     el.className = 'poster';
+    el.tabIndex = 0;
     const img = posterImage(item);
     const isEpisode = item.Type === 'Episode';
     const title = isEpisode ? (item.SeriesName || item.Name) : item.Name;
@@ -508,13 +574,16 @@
 
   function closeModal() {
     modalToken++;
+    if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
     document.body.style.overflow = '';
+    restoreFocus('modal');
   }
 
   async function openDetails(id, { focusEpisode, seasonId } = {}) {
     const token = ++modalToken;
     const modal = $('#modal'), content = $('#modal-content');
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
     content.innerHTML = '<div class="spinner" style="margin:6rem auto"></div>';
     modal.classList.remove('hidden');
     modal.scrollTop = 0;
@@ -598,6 +667,7 @@
 
     const extra = $('[data-extra]', content);
     const playBtn = $('[data-act="play"]', content);
+    autoFocus(playBtn);
 
     if (isSeries) {
       // Play button targets the focused episode, else next up, else the first episode.
@@ -655,6 +725,7 @@
         for (const ep of eps) {
           const row = document.createElement('div');
           row.className = 'episode' + (ep.Id === currentEpisodeId ? ' current' : '');
+          row.tabIndex = 0;
           const img = landscapeImage(ep, 320);
           const pct = ep.UserData?.PlayedPercentage;
           row.innerHTML = `
@@ -691,6 +762,7 @@
       for (const s of items) {
         const card = document.createElement('div');
         card.className = 'sim-card';
+        card.tabIndex = 0;
         const img = landscapeImage(s, 400);
         card.innerHTML = `
           <div class="sim-img">${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : ''}</div>
@@ -709,9 +781,19 @@
   }
 
   // ---------- Player ----------
+  const QUALITY_OPTIONS = [
+    { label: 'Auto (best)', bitrate: 120000000 },
+    { label: '1080p (20 Mbps)', bitrate: 20000000 },
+    { label: '1080p (10 Mbps)', bitrate: 10000000 },
+    { label: '720p (4 Mbps)', bitrate: 4000000 },
+    { label: '480p (1.5 Mbps)', bitrate: 1500000 },
+  ];
+  const maxBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
+
   const player = {
-    item: null, hls: null, playSessionId: null, mediaSourceId: null, playMethod: null,
-    progressTimer: null, idleTimer: null, nextEpisode: null, startSeconds: 0,
+    item: null, hls: null, playSessionId: null, mediaSourceId: null, playMethod: null, source: null,
+    audioIndex: null, subtitleIndex: -1, forceTranscode: false, intro: null,
+    progressTimer: null, idleTimer: null, nextEpisode: null, startSeconds: 0, dragging: false,
   };
 
   // Tells Emby what this browser can play directly; anything else is transcoded to HLS H.264/AAC.
@@ -728,11 +810,12 @@
     if (can('audio/mp4; codecs="ec-3"')) mp4Audio.push('eac3');
     if (can('audio/mp4; codecs="flac"')) mp4Audio.push('flac');
     if (can('audio/mp4; codecs="opus"')) mp4Audio.push('opus');
+    const bitrate = maxBitrate();
 
     return {
       Name: 'EmbyFlix',
-      MaxStreamingBitrate: 120000000,
-      MaxStaticBitrate: 120000000,
+      MaxStreamingBitrate: bitrate,
+      MaxStaticBitrate: bitrate,
       MusicStreamingTranscodingBitrate: 192000,
       DirectPlayProfiles: [
         { Container: 'mp4,m4v', Type: 'Video', VideoCodec: mp4Video.join(','), AudioCodec: mp4Audio.join(',') },
@@ -748,13 +831,12 @@
       CodecProfiles: [
         { Type: 'Video', Codec: 'h264', Conditions: [{ Condition: 'LessThanEqual', Property: 'VideoLevel', Value: '52', IsRequired: false }] },
       ],
+      // Text subtitles are converted to WebVTT and shown by the browser; picture-based ones are burned in.
       SubtitleProfiles: [
         { Format: 'vtt', Method: 'External' },
-        { Format: 'srt', Method: 'Encode' },
-        { Format: 'ass', Method: 'Encode' },
-        { Format: 'ssa', Method: 'Encode' },
         { Format: 'pgssub', Method: 'Encode' },
         { Format: 'dvdsub', Method: 'Encode' },
+        { Format: 'dvbsub', Method: 'Encode' },
       ],
       ResponseProfiles: [{ Type: 'Video', Container: 'm4v', MimeType: 'video/mp4' }],
     };
@@ -772,7 +854,16 @@
     return item;
   }
 
-  async function playItem(rawItem, { startTicks } = {}) {
+  function withApiKey(path) {
+    let url = state.server + (path.startsWith('/') ? '' : '/') + path;
+    if (!/[?&]api_key=/i.test(url)) url += (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(state.apiKey);
+    return url;
+  }
+
+  // audioIndex / subtitleIndex / forceTranscode are passed when the viewer changes tracks or quality.
+  async function playItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false } = {}) {
+    const isReload = player.item && rawItem.Id === player.item.Id;
+    if (!isReload && $('#player').classList.contains('hidden')) rememberFocus('player');
     await stopPlayback();
     const el = $('#player'), video = $('#video'), status = $('#player-status');
     el.classList.remove('hidden');
@@ -780,36 +871,45 @@
     status.innerHTML = '<div class="spinner"></div>';
     status.classList.remove('hidden');
     $('#player-next').classList.add('hidden');
+    $('#skip-intro').classList.add('hidden');
+    closeTracks();
     document.body.style.overflow = 'hidden';
+    updateOsd();
+    wakeOsd();
     // The Android app goes full screen natively via setPlayerMode.
-    if (!nativeApp) { try { await el.requestFullscreen?.(); } catch { /* not allowed, fine */ } }
+    if (!nativeApp && !document.fullscreenElement) { try { await el.requestFullscreen?.(); } catch { /* not allowed, fine */ } }
 
     try {
       const item = await resolvePlayable(rawItem);
-      // Refresh to get accurate resume position + user data.
-      const full = await getItem(item.Id);
+      // Refresh to get accurate resume position, user data and intro markers.
+      const full = await api(userPath(`/Items/${item.Id}`), { params: { Fields: ITEM_FIELDS + ',Chapters' } });
       player.item = full;
       const start = startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0;
       player.startSeconds = start / TICKS_PER_SECOND;
+      player.intro = findIntro(full.Chapters);
 
       $('#player-title').innerHTML = full.Type === 'Episode'
         ? `${esc(full.SeriesName)}<span class="sub">${esc(episodeLabel(full))}</span>`
         : esc(full.Name);
 
-      const info = await api(`/Items/${full.Id}/PlaybackInfo`, {
-        method: 'POST',
-        params: { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: 120000000 },
-        body: { DeviceProfile: deviceProfile() },
-      });
+      const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: maxBitrate() };
+      if (audioIndex != null) params.AudioStreamIndex = audioIndex;
+      if (subtitleIndex != null) params.SubtitleStreamIndex = subtitleIndex;
+      // Browsers can't switch audio tracks in a file, so a non-default track needs Emby to remux it.
+      if (forceTranscode) { params.EnableDirectPlay = false; params.EnableDirectStream = false; }
+      const info = await api(`/Items/${full.Id}/PlaybackInfo`, { method: 'POST', params, body: { DeviceProfile: deviceProfile() } });
       const source = info?.MediaSources?.[0];
       if (!source) throw new Error(info?.ErrorCode || 'No playable media source');
       player.playSessionId = info.PlaySessionId;
       player.mediaSourceId = source.Id;
+      player.source = source;
+      player.forceTranscode = forceTranscode;
+      player.audioIndex = audioIndex ?? source.DefaultAudioStreamIndex ?? null;
+      player.subtitleIndex = subtitleIndex ?? source.DefaultSubtitleStreamIndex ?? -1;
 
       let url, isHls = false;
       if (source.TranscodingUrl) {
-        url = state.server + (source.TranscodingUrl.startsWith('/') ? '' : '/') + source.TranscodingUrl;
-        if (!/[?&]api_key=/i.test(url)) url += (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(state.apiKey);
+        url = withApiKey(source.TranscodingUrl);
         isHls = source.TranscodingSubProtocol === 'hls' || /\.m3u8/i.test(url);
         player.playMethod = 'Transcode';
       } else {
@@ -820,19 +920,18 @@
         player.playMethod = source.SupportsDirectPlay ? 'DirectPlay' : 'DirectStream';
       }
 
-      // External VTT subtitles (default track) when available.
+      // Text subtitles come as a separate WebVTT file; burned-in ones are already in the video.
       $$('track', video).forEach((t) => t.remove());
-      for (const s of source.MediaStreams || []) {
-        if (s.Type === 'Subtitle' && s.DeliveryMethod === 'External' && s.DeliveryUrl) {
-          const track = document.createElement('track');
-          track.kind = 'subtitles';
-          track.label = s.DisplayTitle || s.Language || 'Subtitles';
-          track.srclang = s.Language || 'und';
-          track.src = state.server + (s.DeliveryUrl.startsWith('/') ? '' : '/') + s.DeliveryUrl;
-          if (!/[?&]api_key=/i.test(track.src)) track.src += (track.src.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(state.apiKey);
-          if (s.Index === source.DefaultSubtitleStreamIndex) track.default = true;
-          video.appendChild(track);
-        }
+      const sub = (source.MediaStreams || []).find((s) => s.Type === 'Subtitle' && s.Index === player.subtitleIndex);
+      if (sub && sub.DeliveryMethod === 'External' && sub.DeliveryUrl) {
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = sub.DisplayTitle || sub.Language || 'Subtitles';
+        track.srclang = sub.Language || 'und';
+        track.src = withApiKey(sub.DeliveryUrl);
+        track.default = true;
+        video.appendChild(track);
+        track.addEventListener('load', () => { track.track.mode = 'showing'; });
       }
 
       await attachSource(video, url, isHls, player.startSeconds);
@@ -840,11 +939,19 @@
       reportPlayback('/Sessions/Playing');
       player.progressTimer = setInterval(() => reportPlayback('/Sessions/Playing/Progress', 'TimeUpdate'), 10000);
       if (full.Type === 'Episode') findNextEpisode(full);
+      wakeOsd();
     } catch (e) {
       console.error(e);
       status.innerHTML = `<p>Playback failed: ${esc(e.message)}</p><button class="btn btn-white" id="player-err-back">Go Back</button>`;
       $('#player-err-back').addEventListener('click', closePlayer);
+      if (nav.on) focusEl($('#player-err-back'));
     }
+  }
+
+  function findIntro(chapters) {
+    const ticks = (type) => (chapters || []).find((c) => c.MarkerType === type)?.StartPositionTicks;
+    const start = ticks('IntroStart'), end = ticks('IntroEnd');
+    return start != null && end != null && end > start ? { start: start / TICKS_PER_SECOND, end: end / TICKS_PER_SECOND } : null;
   }
 
   function attachSource(video, url, isHls, startSeconds) {
@@ -889,6 +996,8 @@
       IsMuted: video.muted,
       VolumeLevel: Math.round(video.volume * 100),
       PlayMethod: player.playMethod,
+      AudioStreamIndex: player.audioIndex ?? undefined,
+      SubtitleStreamIndex: player.subtitleIndex,
       CanSeek: true,
       EventName: eventName,
     };
@@ -909,6 +1018,10 @@
     } catch { /* ignore */ }
   }
 
+  function playNextEpisode() {
+    if (player.nextEpisode) playItem(player.nextEpisode, { startTicks: 0 });
+  }
+
   async function stopPlayback() {
     clearInterval(player.progressTimer);
     const video = $('#video');
@@ -926,43 +1039,220 @@
     video.load();
     player.item = null;
     player.nextEpisode = null;
+    player.intro = null;
   }
 
   async function closePlayer() {
     await stopPlayback();
+    closeTracks();
     $('#player').classList.add('hidden');
     nativeApp?.setPlayerMode(false);
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-    document.body.style.overflow = $('#modal').classList.contains('hidden') ? '' : 'hidden';
+    const modalOpen = !$('#modal').classList.contains('hidden');
+    document.body.style.overflow = modalOpen ? 'hidden' : '';
     // Refresh what's on screen so "Continue Watching" and progress bars update.
-    if ($('#modal').classList.contains('hidden')) route();
+    if (!modalOpen) route();
+    restoreFocus('player');
+  }
+
+  // ----- On-screen controls -----
+  const isPlayerOpen = () => !$('#player').classList.contains('hidden');
+  const tracksOpen = () => !$('#tracks-panel').classList.contains('hidden');
+  const osdVisible = () => !$('#player').classList.contains('idle');
+
+  function formatClock(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(s).padStart(2, '0');
+  }
+
+  function mediaDuration() {
+    const d = $('#video').duration;
+    if (Number.isFinite(d) && d > 0) return d;
+    return (player.item?.RunTimeTicks || 0) / TICKS_PER_SECOND;
+  }
+
+  function seekTo(sec) {
+    const video = $('#video'), dur = mediaDuration();
+    video.currentTime = Math.max(0, dur ? Math.min(sec, dur - 1) : sec);
+    updateOsd();
+  }
+  const seekBy = (delta) => seekTo(($('#video').currentTime || 0) + delta);
+
+  function togglePlay() {
+    const video = $('#video');
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  }
+
+  function updateOsd() {
+    const video = $('#video'), dur = mediaDuration(), cur = video.currentTime || 0;
+    if (!player.dragging) $('#osd-seek').value = dur ? Math.round((cur / dur) * 1000) : 0;
+    $('#osd-time').textContent = `${formatClock(cur)} / ${formatClock(dur)}`;
+    $('#osd-remaining').textContent = '-' + formatClock(dur - cur);
+    $('#osd-play').innerHTML = video.paused ? ICONS.play : ICONS.pause;
+    $('#osd-play').setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
+    $('#osd-mute').innerHTML = video.muted ? ICONS.muted : ICONS.volume;
+    const inIntro = player.intro && cur >= player.intro.start && cur < player.intro.end - 1;
+    $('#skip-intro').classList.toggle('hidden', !inIntro);
+  }
+
+  function wakeOsd() {
+    const el = $('#player'), video = $('#video');
+    el.classList.remove('idle');
+    clearTimeout(player.idleTimer);
+    player.idleTimer = setTimeout(() => {
+      if (video.paused || tracksOpen() || player.dragging) return;
+      el.classList.add('idle');
+      // Hidden controls shouldn't keep remote focus.
+      if (el.contains(document.activeElement) && document.activeElement !== $('#skip-intro')) document.activeElement.blur();
+    }, 4000);
+  }
+
+  function openTracks() {
+    const panel = $('#tracks-panel'), streams = player.source?.MediaStreams || [];
+    const audio = streams.filter((s) => s.Type === 'Audio');
+    const subs = streams.filter((s) => s.Type === 'Subtitle');
+    const opt = (attr, value, label, selected) =>
+      `<button class="track-opt${selected ? ' selected' : ''}" data-${attr}="${value}">${selected ? '&#10003; ' : ''}${esc(label)}</button>`;
+    panel.innerHTML = `
+      <div class="tracks-cols">
+        <div class="tracks-col"><h4>Audio</h4>
+          ${audio.length ? audio.map((s) => opt('audio', s.Index, s.DisplayTitle || s.Language || `Track ${s.Index}`, s.Index === player.audioIndex)).join('') : '<p>Default</p>'}
+        </div>
+        <div class="tracks-col"><h4>Subtitles</h4>
+          ${opt('sub', -1, 'Off', player.subtitleIndex == null || player.subtitleIndex < 0)}
+          ${subs.map((s) => opt('sub', s.Index, s.DisplayTitle || s.Language || `Subtitle ${s.Index}`, s.Index === player.subtitleIndex)).join('')}
+        </div>
+        <div class="tracks-col"><h4>Quality</h4>
+          ${QUALITY_OPTIONS.map((q) => opt('quality', q.bitrate, q.label, q.bitrate === maxBitrate())).join('')}
+        </div>
+      </div>`;
+    panel.classList.remove('hidden');
+    $('#player').classList.remove('idle');
+    clearTimeout(player.idleTimer);
+    focusEl($('.track-opt.selected', panel) || $('.track-opt', panel));
+  }
+
+  function closeTracks() {
+    const panel = $('#tracks-panel');
+    if (panel.classList.contains('hidden')) return;
+    panel.classList.add('hidden');
+    wakeOsd();
+    if (nav.on) focusEl($('#osd-tracks'));
+  }
+
+  function onTrackChoice(btn) {
+    const video = $('#video'), item = player.item, source = player.source;
+    if (!item) return;
+    const startTicks = Math.floor((video.currentTime || 0) * TICKS_PER_SECOND);
+    let { audioIndex, subtitleIndex, forceTranscode } = player;
+    if (btn.dataset.audio != null) {
+      audioIndex = Number(btn.dataset.audio);
+      forceTranscode = audioIndex !== source?.DefaultAudioStreamIndex;
+    } else if (btn.dataset.sub != null) {
+      subtitleIndex = Number(btn.dataset.sub);
+    } else if (btn.dataset.quality != null) {
+      store.set('ef.maxBitrate', btn.dataset.quality);
+    }
+    closeTracks();
+    playItem(item, { startTicks, audioIndex: audioIndex ?? undefined, subtitleIndex, forceTranscode });
+  }
+
+  // Remote / keyboard handling while the player is open. Returns true when handled.
+  function handlePlayerKey(action) {
+    const video = $('#video');
+    if (tracksOpen()) {
+      if (action === 'back') { closeTracks(); return true; }
+      return false;
+    }
+    switch (action) {
+      case 'playpause': togglePlay(); wakeOsd(); return true;
+      case 'play': video.play().catch(() => {}); wakeOsd(); return true;
+      case 'pause': video.pause(); wakeOsd(); return true;
+      case 'ff': seekBy(30); wakeOsd(); return true;
+      case 'rw': seekBy(-10); wakeOsd(); return true;
+      case 'next': playNextEpisode(); return true;
+      default: break;
+    }
+    if (!osdVisible()) {
+      const skipVisible = !$('#skip-intro').classList.contains('hidden');
+      if (action === 'select') {
+        if (skipVisible) $('#skip-intro').click();
+        else togglePlay();
+        wakeOsd();
+        return true;
+      }
+      if (action === 'left' || action === 'right') { seekBy(action === 'left' ? -10 : 10); wakeOsd(); return true; }
+      if (action === 'up' || action === 'down') { wakeOsd(); focusEl($('#osd-play')); return true; }
+      return false;
+    }
+    wakeOsd();
+    const focused = document.activeElement;
+    if (focused === $('#osd-seek') && (action === 'left' || action === 'right')) {
+      seekBy(action === 'left' ? -10 : 10);
+      return true;
+    }
+    if (!$('#player').contains(focused) && ['up', 'down', 'left', 'right', 'select'].includes(action)) {
+      focusEl($('#osd-play'));
+      return true;
+    }
+    return false;
   }
 
   function setupPlayer() {
-    const el = $('#player'), video = $('#video');
+    const el = $('#player'), video = $('#video'), seek = $('#osd-seek');
     $('#player-back').addEventListener('click', closePlayer);
-    $('#player-next').addEventListener('click', () => { if (player.nextEpisode) playItem(player.nextEpisode, { startTicks: 0 }); });
-    video.addEventListener('pause', () => reportPlayback('/Sessions/Playing/Progress', 'Pause'));
-    video.addEventListener('play', () => reportPlayback('/Sessions/Playing/Progress', 'Unpause'));
+    $('#player-next').addEventListener('click', playNextEpisode);
+    $('#osd-play').addEventListener('click', togglePlay);
+    $('#osd-back10').innerHTML = ICONS.back10;
+    $('#osd-fwd10').innerHTML = ICONS.fwd10;
+    $('#osd-back10').addEventListener('click', () => seekBy(-10));
+    $('#osd-fwd10').addEventListener('click', () => seekBy(10));
+    $('#osd-mute').addEventListener('click', () => { video.muted = !video.muted; updateOsd(); });
+    $('#osd-tracks').addEventListener('click', openTracks);
+    $('#skip-intro').addEventListener('click', () => { if (player.intro) seekTo(player.intro.end); });
+    $('#osd-fullscreen').addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      else el.requestFullscreen?.().catch(() => {});
+    });
+    $('#tracks-panel').addEventListener('click', (e) => {
+      const btn = e.target.closest('.track-opt');
+      if (btn) onTrackChoice(btn);
+    });
+    seek.addEventListener('input', () => {
+      player.dragging = true;
+      const dur = mediaDuration();
+      $('#osd-time').textContent = `${formatClock((seek.value / 1000) * dur)} / ${formatClock(dur)}`;
+    });
+    seek.addEventListener('change', () => {
+      player.dragging = false;
+      seekTo((seek.value / 1000) * mediaDuration());
+    });
+    video.addEventListener('click', () => { if (osdVisible()) togglePlay(); wakeOsd(); });
+    video.addEventListener('dblclick', () => $('#osd-fullscreen').click());
+    ['timeupdate', 'play', 'pause', 'durationchange', 'volumechange'].forEach((ev) => video.addEventListener(ev, updateOsd));
+    video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
+    video.addEventListener('play', () => { reportPlayback('/Sessions/Playing/Progress', 'Unpause'); wakeOsd(); });
     video.addEventListener('ended', () => {
-      if (player.nextEpisode) playItem(player.nextEpisode, { startTicks: 0 });
+      if (player.nextEpisode) playNextEpisode();
       else closePlayer();
     });
-    const wake = () => {
-      el.classList.remove('idle');
-      clearTimeout(player.idleTimer);
-      player.idleTimer = setTimeout(() => { if (!video.paused) el.classList.add('idle'); }, 3000);
-    };
-    el.addEventListener('mousemove', wake);
-    el.addEventListener('touchstart', wake, { passive: true });
-    video.addEventListener('pause', wake);
+    el.addEventListener('mousemove', wakeOsd);
+    el.addEventListener('touchstart', wakeOsd, { passive: true });
     window.addEventListener('beforeunload', () => { if (player.item) reportPlayback('/Sessions/Playing/Stopped'); });
+    $('#osd-fullscreen').classList.toggle('hidden', !!nativeApp || !document.fullscreenEnabled);
   }
 
   // ---------- Icons ----------
   const ICONS = {
     play: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4v16a1 1 0 0 0 1.52.85l13-8a1 1 0 0 0 0-1.7l-13-8A1 1 0 0 0 6 4Z"/></svg>',
     info: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 6v8h-2v-8h2Zm0-4v2h-2V6h2Z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>',
+    back10: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z"/><text x="12" y="16.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>',
+    fwd10: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8Z"/><text x="12" y="16.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>',
+    volume: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4ZM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>',
+    muted: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3Zm13.6 3 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4-2.7-2.7Z"/></svg>',
     eye: '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17Z"/></svg>',
   };
 
@@ -991,6 +1281,7 @@
     document.addEventListener('click', () => $('#profile-dropdown').classList.add('hidden'));
     $('#profile-dropdown').addEventListener('click', (e) => {
       const act = e.target.dataset.action;
+      if (act === 'switch') switchUser();
       if (act === 'signout') signOut();
     });
 
@@ -999,7 +1290,7 @@
     let searchTimer;
     $('#search-toggle').addEventListener('click', () => {
       box.classList.toggle('open');
-      if (box.classList.contains('open')) input.focus();
+      if (box.classList.contains('open')) { input.focus(); nativeApp?.showKeyboard(); }
     });
     input.addEventListener('input', () => {
       clearTimeout(searchTimer);
@@ -1013,23 +1304,193 @@
 
     // Modal
     $$('[data-close]').forEach((el) => el.addEventListener('click', closeModal));
-    document.addEventListener('keydown', (e) => {
-      if (e.key !== 'Escape') return;
-      if (!$('#player').classList.contains('hidden')) { if (!document.fullscreenElement) closePlayer(); }
-      else if (!$('#modal').classList.contains('hidden')) closeModal();
-    });
 
     // Solid nav on scroll
     window.addEventListener('scroll', () => $('#nav').classList.toggle('solid', window.scrollY > 40), { passive: true });
     window.addEventListener('hashchange', () => { closeModal(); route(); });
 
     setupPlayer();
+    setupKeys();
+  }
+
+  // ---------- Remote control & keyboard navigation ----------
+  // Arrow keys move focus to the nearest item in that direction (TV remotes send arrow keys),
+  // OK/Enter activates it and Back closes the top layer.
+  const nav = { on: false, tv: false, returnFocus: {} };
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, [tabindex]';
+
+  function enableNav() {
+    if (nav.on) return;
+    nav.on = true;
+    document.documentElement.classList.add('kbd-nav');
+  }
+
+  function activeLayer() {
+    if (isPlayerOpen()) return tracksOpen() ? $('#tracks-panel') : $('#player');
+    if (!$('#modal').classList.contains('hidden')) return $('#modal');
+    if (!$('#setup').classList.contains('hidden')) return $('#setup');
+    return $('#main');
+  }
+
+  function focusables(layer) {
+    return $$(FOCUSABLE, layer).filter((el) => {
+      if (el.tabIndex < 0) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 1 && r.height > 1 && getComputedStyle(el).visibility !== 'hidden';
+    });
+  }
+
+  function focusEl(el) {
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    // Instant scrolling keeps positions settled for the next remote press.
+    if (el.closest('#nav')) window.scrollTo({ top: 0 });
+    else if (!el.closest('#player')) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+
+  function focusInitial(layer = activeLayer()) {
+    const items = focusables(layer);
+    focusEl(items.find((el) => el.hasAttribute('data-autofocus')) || items[0]);
+  }
+
+  function autoFocus(el) {
+    if (nav.on && el && activeLayer().contains(el)) focusEl(el);
+  }
+
+  function rememberFocus(key) { nav.returnFocus[key] = document.activeElement; }
+  function restoreFocus(key) {
+    const el = nav.returnFocus[key];
+    nav.returnFocus[key] = null;
+    if (!nav.on) return;
+    if (el && document.contains(el) && activeLayer().contains(el)) focusEl(el);
+  }
+
+  function moveFocus(dir) {
+    const layer = activeLayer();
+    const cur = document.activeElement;
+    if (!cur || cur === document.body || !layer.contains(cur)) { focusInitial(layer); return; }
+    const r = cur.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const vertical = dir === 'up' || dir === 'down';
+    const cands = [];
+    for (const el of focusables(layer)) {
+      if (el === cur || el.contains(cur) || cur.contains(el)) continue;
+      const b = el.getBoundingClientRect();
+      const bx = b.left + b.width / 2, by = b.top + b.height / 2;
+      let primary, cross, overlap;
+      if (dir === 'down') { if (b.top < cy) continue; primary = by - cy; }
+      else if (dir === 'up') { if (b.bottom > cy) continue; primary = cy - by; }
+      else if (dir === 'right') { if (b.left < cx) continue; primary = bx - cx; }
+      else { if (b.right > cx) continue; primary = cx - bx; }
+      if (vertical) {
+        cross = Math.max(0, b.left - r.right, r.left - b.right) + Math.abs(bx - cx) * 0.1;
+      } else {
+        overlap = b.top < r.bottom && b.bottom > r.top;
+        cross = Math.abs(by - cy);
+      }
+      cands.push({ el, primary, cross, overlap });
+    }
+    // The fixed top bar is only reached when nothing else lies in that direction (like Netflix).
+    const inPage = cands.filter((c) => !c.el.closest('#nav'));
+    if (inPage.length && !cur.closest('#nav')) cands.splice(0, cands.length, ...inPage);
+    let best = null;
+    if (vertical) {
+      // Go to the nearest line of items first, then the one most in line with the current item.
+      const nearest = Math.min(...cands.map((c) => c.primary));
+      for (const c of cands) {
+        if (c.primary > nearest + 40) continue;
+        if (!best || c.cross < best.cross) best = c;
+      }
+    } else {
+      // Sideways moves stay on the same row.
+      for (const c of cands) {
+        if (!c.overlap) continue;
+        if (!best || c.primary + c.cross * 2 < best.primary + best.cross * 2) best = c;
+      }
+    }
+    if (best) focusEl(best.el);
+  }
+
+  const isTextInput = (el) => el && ((el.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit'].includes(el.type)) || el.tagName === 'TEXTAREA');
+
+  function activate(el) {
+    const layer = activeLayer();
+    if (!el || el === document.body || !layer.contains(el)) { focusInitial(layer); return; }
+    if (isTextInput(el)) { el.focus(); nativeApp?.showKeyboard(); return; }
+    if (el.tagName === 'SELECT') {
+      try { el.showPicker(); } catch {
+        // Older WebViews: step through the options instead.
+        el.selectedIndex = (el.selectedIndex + 1) % el.options.length;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return;
+    }
+    if (el.type === 'range') { if (isPlayerOpen()) togglePlay(); return; }
+    el.click();
+  }
+
+  // action: up/down/left/right/select/back or a media key. fromNative: sent by the Android app.
+  function handleKey(action, fromNative = false) {
+    const el = document.activeElement;
+    if (action !== 'back') enableNav();
+    if (isPlayerOpen() && handlePlayerKey(action)) return true;
+    if (['up', 'down', 'left', 'right'].includes(action)) {
+      if (isTextInput(el) && (action === 'left' || action === 'right')) {
+        const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+        const atEnd = el.selectionEnd === el.value.length;
+        if (action === 'left' ? !atStart : !atEnd) return false; // move the text cursor
+      }
+      moveFocus(action);
+      return true;
+    }
+    if (action === 'select') {
+      if (isTextInput(el) && !fromNative) {
+        // Keyboard Enter submits; an empty field on a TV opens the on-screen keyboard instead.
+        if (nav.tv && !el.value) { nativeApp?.showKeyboard(); return true; }
+        return false;
+      }
+      activate(el);
+      return true;
+    }
+    if (action === 'back') return window.embyflixBack();
+    return false;
+  }
+
+  function setupKeys() {
+    const keys = {
+      ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'select', Escape: 'back',
+      MediaPlayPause: 'playpause', MediaPlay: 'play', MediaPause: 'pause',
+      MediaFastForward: 'ff', MediaRewind: 'rw', MediaTrackNext: 'next',
+    };
+    document.addEventListener('keydown', (e) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      let action = keys[e.key];
+      if (e.key === ' ' && isPlayerOpen() && !isTextInput(document.activeElement)) action = 'playpause';
+      if (!action) return;
+      if (handleKey(action)) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+    // Mouse or touch use turns the focus highlight off again.
+    const pointer = () => { if (!nav.tv && nav.on) { nav.on = false; document.documentElement.classList.remove('kbd-nav'); } };
+    document.addEventListener('mousedown', pointer, true);
+    document.addEventListener('touchstart', pointer, { capture: true, passive: true });
+    document.addEventListener('focusin', (e) => {
+      if (!e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
+    });
+    if (nativeApp?.isTv?.()) {
+      nav.tv = true;
+      document.documentElement.classList.add('tv');
+      enableNav();
+    }
   }
 
   // ---------- Android app bridge ----------
   // Called by the Android back button. Returns true when the app handled it.
   window.embyflixBack = () => {
-    if (!$('#player').classList.contains('hidden')) { closePlayer(); return true; }
+    if (isPlayerOpen()) {
+      if (tracksOpen()) closeTracks();
+      else closePlayer();
+      return true;
+    }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
     if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {
@@ -1039,6 +1500,9 @@
     return false;
   };
 
+  // Called by the Android app for the remote's OK button and media keys.
+  window.embyflixKey = (action) => handleKey(action, true);
+
   // ---------- Boot ----------
   async function boot() {
     loadConfig();
@@ -1047,9 +1511,11 @@
     if (!state.apiKey || !state.userId) return showSetup();
     try {
       const user = await api(`/Users/${state.userId}`);
+      upsertAccount(user, state.apiKey);
       await selectUser(user);
     } catch (e) {
       if (e.status === 401 || e.status === 403) {
+        removeAccount(state.userId);
         state.apiKey = ''; store.del('ef.apiKey');
         showSetup('Your sign-in has expired. Please sign in again.');
       } else showSetup(connectionErrorMessage(e));

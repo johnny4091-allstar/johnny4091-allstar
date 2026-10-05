@@ -2,13 +2,17 @@ package com.johnny4091.embyflix;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.UiModeManager;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -19,6 +23,7 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
 import androidx.webkit.WebViewAssetLoader;
@@ -109,6 +114,10 @@ public class MainActivity extends Activity {
 
         webView.addJavascriptInterface(new NativeBridge(), "EmbyFlixAndroid");
 
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
+        webView.requestFocus();
+
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
         } else {
@@ -154,6 +163,39 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean detectTv() {
+        UiModeManager uiMode = (UiModeManager) getSystemService(UI_MODE_SERVICE);
+        return (uiMode != null && uiMode.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
+                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK);
+    }
+
+    /** Remote buttons the web page can't receive reliably are forwarded to window.embyflixKey(). */
+    private static String remoteAction(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_DPAD_CENTER: return "select";
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_HEADSETHOOK: return "playpause";
+            case KeyEvent.KEYCODE_MEDIA_PLAY: return "play";
+            case KeyEvent.KEYCODE_MEDIA_PAUSE: return "pause";
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: return "ff";
+            case KeyEvent.KEYCODE_MEDIA_REWIND: return "rw";
+            case KeyEvent.KEYCODE_MEDIA_NEXT: return "next";
+            default: return null;
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        String action = customView == null ? remoteAction(event.getKeyCode()) : null;
+        if (action != null) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                webView.evaluateJavascript("window.embyflixKey && window.embyflixKey('" + action + "')", null);
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
@@ -194,6 +236,23 @@ public class MainActivity extends Activity {
 
     /** Methods the web app can call as window.EmbyFlixAndroid.*. */
     private class NativeBridge {
+        private final boolean tv = detectTv();
+
+        @JavascriptInterface
+        public boolean isTv() {
+            return tv;
+        }
+
+        /** Opens the on-screen keyboard for the focused text field (needed with a TV remote). */
+        @JavascriptInterface
+        public void showKeyboard() {
+            runOnUiThread(() -> {
+                webView.requestFocus();
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm != null) imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT);
+            });
+        }
+
         /** Video player open: keep the screen on, hide the system bars and turn to landscape. */
         @JavascriptInterface
         public void setPlayerMode(boolean on) {
