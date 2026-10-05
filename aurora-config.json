@@ -1,3 +1,4 @@
 {
-  "requestsServer": "https://mysterious-logical-gray-labeled.trycloudflare.com"
+  "requestsEnabled": false,
+  "requestsServer": ""
 }

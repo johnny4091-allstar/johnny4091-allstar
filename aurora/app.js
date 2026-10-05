@@ -3,9 +3,8 @@
   'use strict';
 
   const DEFAULT_SERVER = 'https://emby4836.duckdns.org:8920';
-  // Jellyseerr address for the Requests tab; empty hides the tab. The live value comes from
-  // aurora-config.json in the GitHub repo (see loadRemoteConfig), so it can change without a new APK.
-  const DEFAULT_REQUESTS_SERVER = 'https://mysterious-logical-gray-labeled.trycloudflare.com';
+  // Requests (Jellyseerr) are switched on and pointed at a server from aurora-config.json in the GitHub repo
+  // (see loadRemoteConfig), so both can change without a new APK. Until then the tab says "Coming soon".
   const REMOTE_CONFIG_URLS = ['main', 'ccr-ab072e58-qfaibp']
     .map((branch) => `https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/${branch}/aurora-config.json`);
   const TICKS_PER_SECOND = 10000000;
@@ -23,7 +22,7 @@
   };
 
   // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
-  const state = { server: DEFAULT_SERVER, requestsServer: '', apiKey: '', userId: '', user: null, deviceId: '', views: [] };
+  const state = { server: DEFAULT_SERVER, requestsServer: '', requestsEnabled: false, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
   const CLIENT = { name: 'Aurora', version: '1.2.0' };
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
@@ -33,7 +32,8 @@
     if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
     ['ef.authMode', 'ef.server'].forEach(store.del);
     state.apiKey = store.get('ef.apiKey') || '';
-    state.requestsServer = store.get('ef.requestsServer') || DEFAULT_REQUESTS_SERVER;
+    state.requestsServer = store.get('ef.requestsServer') || '';
+    state.requestsEnabled = store.get('ef.requestsEnabled') === '1';
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
     if (!deviceId) {
@@ -1177,7 +1177,7 @@
   // (EmbyFlixAndroid.httpRequest). Each person signs in to Jellyseerr with their Emby details, so requests
   // are made as them and Jellyseerr's own permissions and limits apply.
   const TMDB_IMG = 'https://image.tmdb.org/t/p/';
-  const hasRequests = () => !!state.requestsServer && !!nativeApp?.httpRequest;
+  const hasRequests = () => state.requestsEnabled && !!state.requestsServer && !!nativeApp?.httpRequest;
   const MEDIA_STATUS = { 2: 'Requested', 3: 'Requested', 4: 'Partly available', 5: 'Available' };
   const REQUEST_STATUS = { 1: 'Waiting for approval', 2: 'Approved', 3: 'Declined' };
 
@@ -1281,6 +1281,20 @@
   }
 
   async function renderRequests(page, isCurrent) {
+    if (!hasRequests()) {
+      page.innerHTML = `
+        <div class="page-pad requests-page">
+          <div class="coming-soon">
+            <div class="coming-soon-icon">${ICONS.play}</div>
+            <span class="coming-soon-tag">Coming soon</span>
+            <h1>Request movies and shows</h1>
+            <p>Soon you'll be able to ask for any movie or TV show right here in Aurora, and follow your requests until they're ready to watch.</p>
+            <a href="#/home" class="btn btn-white" data-autofocus>Back to Home</a>
+          </div>
+        </div>`;
+      autoFocus($('.coming-soon .btn', page));
+      return;
+    }
     page.innerHTML = `
       <div class="page-pad requests-page">
         <div class="page-head">
@@ -1456,7 +1470,9 @@
   }
 
   function updateRequestsLink() {
-    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !hasRequests()));
+    // While Requests isn't switched on the tab still shows, with a "Coming soon" page.
+    const comingSoon = !state.requestsEnabled || !state.requestsServer;
+    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !comingSoon && !hasRequests()));
   }
 
   // Reads the current Requests address from aurora-config.json in the repo, so a changed address
@@ -1467,13 +1483,16 @@
         const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) continue;
         const cfg = await res.json();
-        if (typeof cfg.requestsServer !== 'string') return;
-        const value = cfg.requestsServer.trim().replace(/\/+$/, '');
+        const value = typeof cfg.requestsServer === 'string' ? cfg.requestsServer.trim().replace(/\/+$/, '') : '';
         if (value && !/^https?:\/\//.test(value)) return;
-        if (value !== state.requestsServer) {
+        const enabled = cfg.requestsEnabled === true && !!value;
+        if (value !== state.requestsServer || enabled !== state.requestsEnabled) {
           state.requestsServer = value;
+          state.requestsEnabled = enabled;
           store.set('ef.requestsServer', value);
+          store.set('ef.requestsEnabled', enabled ? '1' : '0');
           updateRequestsLink();
+          if (/^#\/requests/.test(location.hash)) route();
         }
         return;
       } catch { /* try the next location */ }
