@@ -290,7 +290,6 @@
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
-    setTimeout(autoCheckForUpdate, 3000);
   }
 
   function connectionErrorMessage(e) {
@@ -1604,17 +1603,20 @@
   // ---------- App updates (Android app only) ----------
   // Customers install the APK by hand, so the app checks GitHub Releases for a newer build itself.
   const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest';
-  const UPDATE_CHECK_EVERY = 6 * 3600000;
+  const RECHECK_AFTER = 15 * 60000; // when coming back to the app
+  const updates = { checking: null, lastCheck: 0, dismissedCode: 0, waiting: null };
 
   async function checkForUpdate() {
     if (!nativeApp?.getVersionCode) return { status: 'web' };
     try {
-      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' } });
+      // Always ask GitHub fresh, and give up after 8 seconds rather than hanging on a slow connection.
+      const res = await fetch(RELEASES_URL, {
+        headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000),
+      });
       if (!res.ok) throw new Error(res.status);
       const rel = await res.json();
       const code = Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0);
       const apk = (rel.assets || []).find((a) => /\.apk$/i.test(a.name));
-      store.set('ef.updateCheckedAt', String(Date.now()));
       if (!apk || code <= nativeApp.getVersionCode()) return { status: 'current' };
       return { status: 'available', code, version: rel.name || rel.tag_name, url: apk.browser_download_url };
     } catch {
@@ -1622,16 +1624,24 @@
     }
   }
 
+  // Runs as soon as the app opens, and again when it comes back to the front after a while.
   async function autoCheckForUpdate() {
-    if (!nativeApp?.getVersionCode) return;
-    if (Date.now() - Number(store.get('ef.updateCheckedAt') || 0) < UPDATE_CHECK_EVERY) return;
-    const result = await checkForUpdate();
-    if (result.status !== 'available') return;
-    // "Later" hides this version for a day.
-    const [snoozedCode, snoozedAt] = (store.get('ef.updateSnooze') || '').split(':').map(Number);
-    if (snoozedCode === result.code && Date.now() - snoozedAt < 86400000) return;
-    if (isPlayerOpen()) return; // don't interrupt a video; we'll ask next time
+    if (!nativeApp?.getVersionCode || updates.checking) return;
+    updates.lastCheck = Date.now();
+    updates.checking = checkForUpdate();
+    const result = await updates.checking;
+    updates.checking = null;
+    if (result.status !== 'available' || result.code === updates.dismissedCode) return;
+    if ($('#modal .update-body')) return; // already asking
+    // Don't interrupt a video; ask as soon as the player closes.
+    if (isPlayerOpen()) { updates.waiting = result; return; }
     showUpdatePrompt(result);
+  }
+
+  function showWaitingUpdate() {
+    const result = updates.waiting;
+    updates.waiting = null;
+    if (result && result.code !== updates.dismissedCode && !$('#modal .update-body')) showUpdatePrompt(result);
   }
 
   function showUpdatePrompt(update) {
@@ -1651,8 +1661,9 @@
     modal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     const msg = $('.update-msg', content), bar = $('.update-bar span', content), progress = $('.update-progress', content);
+    // "Later" skips this version until the app is next opened.
     $('[data-act="later"]', content).addEventListener('click', () => {
-      store.set('ef.updateSnooze', `${update.code}:${Date.now()}`);
+      updates.dismissedCode = update.code;
       closeModal();
     });
     $('[data-act="install"]', content).addEventListener('click', (e) => {
@@ -2132,6 +2143,7 @@
     // Refresh what's on screen so "Continue Watching" and progress bars update.
     if (!modalOpen) route();
     restoreFocus('player');
+    showWaitingUpdate();
   }
 
   // ----- On-screen controls -----
@@ -2638,6 +2650,10 @@
   // ---------- Boot ----------
   async function boot() {
     loadConfig();
+    autoCheckForUpdate();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden && Date.now() - updates.lastCheck > RECHECK_AFTER) autoCheckForUpdate();
+    });
     loadRemoteConfig();
     applySubtitleStyle();
     setupUi();
