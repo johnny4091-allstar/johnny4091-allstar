@@ -461,6 +461,31 @@ img { display: block; }
 .kbd-nav .person:focus { outline: none; color: #fff; }
 .kbd-nav .person:focus .person-img { box-shadow: 0 0 0 3px #fff; }
 
+/* TV search: on-screen keyboard beside the results */
+.tv-search { display: flex; gap: 2.5rem; align-items: flex-start; padding-top: 90px; }
+.tv-kb { flex: 0 0 330px; position: sticky; top: 90px; }
+.tv-query {
+  display: flex; align-items: center; min-height: 52px; padding: .6rem .9rem; margin-bottom: 1rem; border-radius: 8px;
+  background: var(--bg-3); border: 2px solid rgba(255,255,255,.15); font-size: 1.3rem; font-weight: 600; overflow: hidden; white-space: nowrap;
+}
+.tv-query .placeholder { color: var(--dim); font-weight: 500; font-size: 1rem; }
+.tv-caret { display: inline-block; width: 2px; height: 1.4em; background: var(--accent); margin-left: 2px; animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.tv-keys { display: grid; grid-template-columns: repeat(6, 1fr); gap: .35rem; }
+.tv-key {
+  height: 46px; border: 0; border-radius: 6px; background: var(--bg-2); color: #e8ecf8;
+  font-family: inherit; font-size: 1.15rem; font-weight: 600; text-transform: uppercase;
+}
+.tv-key.wide { grid-column: span 2; font-size: .9rem; text-transform: none; }
+.tv-key:hover { background: var(--bg-3); }
+.kbd-nav .tv-key:focus { outline: none; background: #fff; color: #000; transform: scale(1.06); }
+.tv-device-kb { width: 100%; justify-content: center; margin-top: 1rem; font-size: .9rem; }
+.tv-hidden-input { display: block; width: 100%; height: 0; padding: 0; margin: 0; border: 0; opacity: 0; background: var(--bg-3); color: #fff; font-size: 1rem; }
+.tv-hidden-input:focus { height: auto; padding: .6rem .8rem; margin-top: .6rem; opacity: 1; border-radius: 6px; outline: 2px solid var(--accent); }
+.tv-results { flex: 1; min-width: 0; }
+.tv-results-title { margin: 0 0 1rem; font-size: 1.5rem; }
+.tv-results .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+
 /* ---------- Settings ---------- */
 .settings-page { max-width: 900px; }
 .settings-section { background: var(--bg-2); border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; }

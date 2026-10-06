@@ -519,7 +519,14 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 webView.requestFocus();
                 InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
-                if (imm != null) imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT);
+                if (imm == null) return;
+                // Give the page a moment to focus its text box, then ask. Some TV-provider keyboards
+                // ignore a polite request, so fall back to a forced one.
+                webView.postDelayed(() -> {
+                    if (!imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)) {
+                        imm.showSoftInput(webView, InputMethodManager.SHOW_FORCED);
+                    }
+                }, 150);
             });
         }
 

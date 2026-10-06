@@ -590,32 +590,40 @@
 
   // ---------- Search ----------
   function renderSearch(page, q, isCurrent, personId = '', personName = '') {
+    // On a TV, typing goes through Aurora's own on-screen keyboard (box keyboards are unreliable).
+    if (nav.tv && !personId) return renderTvSearch(page, q, isCurrent);
     $('#search-box').classList.add('open');
     const input = $('#search-input');
     // Don't rewrite the box while someone is typing in it (it would move their cursor).
     if (document.activeElement !== input && input.value !== q) input.value = q;
     page.innerHTML = `<div class="page-pad">
       <div class="page-head"><h1></h1></div>
-      <div class="people-row hidden"></div>
-      <div class="grid"></div><div class="sentinel"></div></div>`;
-    const title = $('h1', page), grid = $('.grid', page);
+      <div data-results></div></div>`;
+    const title = $('h1', page), results = $('[data-results]', page);
     if (personId) {
       title.textContent = personName ? `Movies and shows with ${personName}` : 'Movies and shows';
-      makePager(grid, $('.sentinel', page), isCurrent, (start, limit) =>
+      results.innerHTML = '<div class="grid"></div><div class="sentinel"></div>';
+      makePager($('.grid', results), $('.sentinel', results), isCurrent, (start, limit) =>
         getItems({ PersonIds: personId, IncludeItemTypes: 'Movie,Series', SortBy: 'ProductionYear,SortName', SortOrder: 'Descending', StartIndex: start, Limit: limit })).reset();
       return;
     }
     title.textContent = q ? `Results for "${q}"` : 'Search';
+    renderSearchResults(results, q, isCurrent);
+  }
+
+  // Matching people (if any) followed by matching titles.
+  function renderSearchResults(container, q, isCurrent) {
+    container.innerHTML = '<div class="people-row hidden"></div><div class="grid"></div><div class="sentinel"></div>';
+    const grid = $('.grid', container);
     if (!q) {
       grid.innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Type the name of a movie, show or actor.</p>';
       return;
     }
-    // People whose name matches, shown above the titles.
     api('/Persons', { params: { UserId: state.userId, SearchTerm: q, Limit: 12, EnableImageTypes: 'Primary', ImageTypeLimit: 1 } })
       .then((res) => {
         const people = (res?.Items || []).filter((x) => x.Name);
-        if (!isCurrent() || !people.length) return;
-        const row = $('.people-row', page);
+        if (!isCurrent() || !people.length || !container.contains(grid)) return;
+        const row = $('.people-row', container);
         row.innerHTML = '<h2 class="row-title flush">People</h2><div class="people-list"></div>';
         const list = $('.people-list', row);
         for (const person of people) {
@@ -630,8 +638,74 @@
         }
         row.classList.remove('hidden');
       }).catch(() => { /* titles still show */ });
-    makePager(grid, $('.sentinel', page), isCurrent, (start, limit) =>
+    makePager(grid, $('.sentinel', container), isCurrent, (start, limit) =>
       getItems({ SearchTerm: q, IncludeItemTypes: 'Movie,Series,Episode', StartIndex: start, Limit: limit })).reset();
+  }
+
+  // TV search: an on-screen keyboard driven by the remote, with results beside it. The address is
+  // updated without reloading the page, so the highlighted key stays where it is while you type.
+  const TV_KEYS = 'abcdefghijklmnopqrstuvwxyz1234567890'.split('');
+  function renderTvSearch(page, q, isCurrent) {
+    $('#search-box').classList.remove('open');
+    page.innerHTML = `
+      <div class="page-pad tv-search">
+        <div class="tv-kb">
+          <div class="tv-query"><span data-q></span><i class="tv-caret"></i></div>
+          <div class="tv-keys">
+            ${TV_KEYS.map((k) => `<button class="tv-key" data-key="${k}">${k}</button>`).join('')}
+            <button class="tv-key wide" data-key=" ">Space</button>
+            <button class="tv-key wide" data-key="del" aria-label="Delete">&#9003; Delete</button>
+            <button class="tv-key wide" data-key="clear">Clear</button>
+          </div>
+          ${nativeApp?.showKeyboard ? '<button class="btn btn-gray tv-device-kb" data-act="device-kb">Use device keyboard or voice</button><input class="tv-hidden-input" type="search" data-device-input autocomplete="off">' : ''}
+        </div>
+        <div class="tv-results"><h1 class="tv-results-title"></h1><div data-results></div></div>
+      </div>`;
+    let query = q;
+    const qEl = $('[data-q]', page), title = $('.tv-results-title', page), results = $('[data-results]', page);
+    let timer, shown = null;
+    const show = () => {
+      qEl.textContent = query;
+      qEl.classList.toggle('placeholder', !query);
+      if (!query) qEl.textContent = 'Search movies, shows, actors';
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!isCurrent() || shown === query) return;
+        shown = query;
+        history.replaceState(null, '', query ? '#/search?q=' + encodeURIComponent(query) : '#/search');
+        title.textContent = query ? `Results for "${query}"` : 'Search';
+        renderSearchResults(results, query, isCurrent);
+      }, 400);
+    };
+    const type = (key) => {
+      if (key === 'del') query = query.slice(0, -1);
+      else if (key === 'clear') query = '';
+      else if (query.length < 60) query += key;
+      show();
+    };
+    $('.tv-keys', page).addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-key]');
+      if (btn) type(btn.dataset.key);
+    });
+    // Remotes with a built-in keyboard, or a keyboard plugged into the box, can type directly.
+    const onKey = (e) => {
+      if (!isCurrent() || !page.contains($('.tv-keys', page))) { document.removeEventListener('keydown', onKey, true); return; }
+      if (isTextInput(document.activeElement) || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'Backspace') { type('del'); e.preventDefault(); }
+      else if (e.key.length === 1 && /[\p{L}\p{N} '&:.-]/u.test(e.key)) { type(e.key.toLowerCase()); e.preventDefault(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    // The box's own keyboard (and voice typing) as an alternative.
+    const devInput = $('[data-device-input]', page);
+    $('[data-act="device-kb"]', page)?.addEventListener('click', () => {
+      devInput.value = query;
+      devInput.focus();
+      nativeApp.showKeyboard();
+    });
+    devInput?.addEventListener('input', () => { query = devInput.value.slice(0, 60); show(); });
+    devInput?.addEventListener('blur', () => { devInput.value = ''; });
+    show();
+    autoFocus($('.tv-key', page));
   }
 
   // ---------- Details modal ----------
@@ -2581,6 +2655,7 @@
     // first, or the box would close on blur and then reopen on click.
     $('#search-toggle').addEventListener('mousedown', (e) => e.preventDefault());
     $('#search-toggle').addEventListener('click', () => {
+      if (nav.tv) { location.hash = '#/search'; return; } // TV: on-screen keyboard page
       box.classList.add('open');
       input.focus();
       nativeApp?.showKeyboard();
