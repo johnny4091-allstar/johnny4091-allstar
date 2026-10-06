@@ -450,6 +450,17 @@ img { display: block; }
 .trailer-head strong { font-size: 1.2rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trailer iframe { width: 100%; aspect-ratio: 16/9; border: 0; border-radius: 8px; background: #000; display: block; }
 
+/* Search: matching people */
+.people-row { margin-bottom: 2rem; }
+.people-list { display: flex; gap: 1.2rem; overflow-x: auto; padding: .4rem .2rem 1rem; scrollbar-width: none; }
+.person { background: none; border: 0; color: var(--muted); display: flex; flex-direction: column; align-items: center; gap: .5rem; width: 104px; flex: none; padding: 0; font-family: inherit; }
+.person-img { width: 88px; height: 88px; border-radius: 50%; overflow: hidden; background: var(--bg-3); display: flex; align-items: center; justify-content: center; font-size: 2rem; font-weight: 700; color: #fff; }
+.person-img img { width: 100%; height: 100%; object-fit: cover; }
+.person-name { font-size: .85rem; text-align: center; line-height: 1.25; }
+.person:hover { color: #fff; }
+.kbd-nav .person:focus { outline: none; color: #fff; }
+.kbd-nav .person:focus .person-img { box-shadow: 0 0 0 3px #fff; }
+
 /* ---------- Settings ---------- */
 .settings-page { max-width: 900px; }
 .settings-section { background: var(--bg-2); border-radius: 10px; padding: 1.2rem 1.5rem; margin-bottom: 1.5rem; }

@@ -328,7 +328,7 @@
       case 'movies': return renderBrowse(page, { type: 'Movie', title: 'Movies', isCurrent });
       case 'tv': return renderBrowse(page, { type: 'Series', title: 'TV Shows', isCurrent });
       case 'mylist': return renderMyList(page, isCurrent);
-      case 'search': return renderSearch(page, params.get('q') || '', isCurrent);
+      case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
       case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent);
@@ -550,6 +550,9 @@
         if (myGen !== gen || !isCurrent()) return;
         total = res?.TotalRecordCount ?? 0;
         (res?.Items || []).forEach((it) => grid.appendChild(createPoster(it)));
+        // Arriving on a new page with the remote (whatever was focused is gone): start on the first result.
+        const focused = document.activeElement;
+        if (start === 0 && (!focused || focused === document.body || !document.contains(focused))) autoFocus(grid.firstElementChild);
         start += LIMIT;
         if (!grid.children.length) grid.innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Nothing here yet.</p>';
       } catch (e) {
@@ -586,19 +589,49 @@
   }
 
   // ---------- Search ----------
-  function renderSearch(page, q, isCurrent) {
+  function renderSearch(page, q, isCurrent, personId = '', personName = '') {
     $('#search-box').classList.add('open');
     const input = $('#search-input');
-    if (input.value !== q) input.value = q;
-    page.innerHTML = `<div class="page-pad"><div class="page-head"><h1></h1></div><div class="grid"></div><div class="sentinel"></div></div>`;
-    $('h1', page).textContent = q ? `Results for "${q}"` : 'Search';
-    if (!q) {
-      $('.grid', page).innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Type to search your library.</p>';
+    // Don't rewrite the box while someone is typing in it (it would move their cursor).
+    if (document.activeElement !== input && input.value !== q) input.value = q;
+    page.innerHTML = `<div class="page-pad">
+      <div class="page-head"><h1></h1></div>
+      <div class="people-row hidden"></div>
+      <div class="grid"></div><div class="sentinel"></div></div>`;
+    const title = $('h1', page), grid = $('.grid', page);
+    if (personId) {
+      title.textContent = personName ? `Movies and shows with ${personName}` : 'Movies and shows';
+      makePager(grid, $('.sentinel', page), isCurrent, (start, limit) =>
+        getItems({ PersonIds: personId, IncludeItemTypes: 'Movie,Series', SortBy: 'ProductionYear,SortName', SortOrder: 'Descending', StartIndex: start, Limit: limit })).reset();
       return;
     }
-    const pager = makePager($('.grid', page), $('.sentinel', page), isCurrent, (start, limit) =>
-      getItems({ SearchTerm: q, IncludeItemTypes: 'Movie,Series,Episode', StartIndex: start, Limit: limit }));
-    pager.reset();
+    title.textContent = q ? `Results for "${q}"` : 'Search';
+    if (!q) {
+      grid.innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Type the name of a movie, show or actor.</p>';
+      return;
+    }
+    // People whose name matches, shown above the titles.
+    api('/Persons', { params: { UserId: state.userId, SearchTerm: q, Limit: 12, EnableImageTypes: 'Primary', ImageTypeLimit: 1 } })
+      .then((res) => {
+        const people = (res?.Items || []).filter((x) => x.Name);
+        if (!isCurrent() || !people.length) return;
+        const row = $('.people-row', page);
+        row.innerHTML = '<h2 class="row-title flush">People</h2><div class="people-list"></div>';
+        const list = $('.people-list', row);
+        for (const person of people) {
+          const btn = document.createElement('button');
+          btn.className = 'person';
+          const img = person.ImageTags?.Primary ? imageUrl(person.Id, 'Primary', { tag: person.ImageTags.Primary, maxWidth: 200 }) : '';
+          btn.innerHTML = `<span class="person-img">${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : esc(person.Name[0])}</span><span class="person-name">${esc(person.Name)}</span>`;
+          btn.addEventListener('click', () => {
+            location.hash = `#/search?person=${encodeURIComponent(person.Id)}&name=${encodeURIComponent(person.Name)}`;
+          });
+          list.appendChild(btn);
+        }
+        row.classList.remove('hidden');
+      }).catch(() => { /* titles still show */ });
+    makePager(grid, $('.sentinel', page), isCurrent, (start, limit) =>
+      getItems({ SearchTerm: q, IncludeItemTypes: 'Movie,Series,Episode', StartIndex: start, Limit: limit })).reset();
   }
 
   // ---------- Details modal ----------
@@ -2544,19 +2577,26 @@
     // Search
     const box = $('#search-box'), input = $('#search-input');
     let searchTimer;
+    // The magnifier only ever opens the box and puts the cursor in it. Pressing it must not blur the box
+    // first, or the box would close on blur and then reopen on click.
+    $('#search-toggle').addEventListener('mousedown', (e) => e.preventDefault());
     $('#search-toggle').addEventListener('click', () => {
-      box.classList.toggle('open');
-      if (box.classList.contains('open')) { input.focus(); nativeApp?.showKeyboard(); }
+      box.classList.add('open');
+      input.focus();
+      nativeApp?.showKeyboard();
     });
     input.addEventListener('input', () => {
       clearTimeout(searchTimer);
       searchTimer = setTimeout(() => {
+        // Clearing the text stays on the search page (it used to jump to Home and hide the box mid-typing).
         const q = input.value.trim();
-        const target = q ? '#/search?q=' + encodeURIComponent(q) : '#/home';
+        const target = q ? '#/search?q=' + encodeURIComponent(q) : '#/search';
         if (location.hash !== target) location.hash = target;
       }, 350);
     });
-    input.addEventListener('blur', () => { if (!input.value) box.classList.remove('open'); });
+    input.addEventListener('blur', () => {
+      if (!input.value && !/^#\/search/.test(location.hash)) box.classList.remove('open');
+    });
 
     // Modal
     $$('[data-close]').forEach((el) => el.addEventListener('click', closeModal));
@@ -2657,9 +2697,12 @@
     if (vertical) {
       // Go to the nearest line of items first, then the one most in line with the current item.
       const nearest = Math.min(...cands.map((c) => c.primary));
+      // Coming down out of the top bar, start at the left of the line (like Netflix) rather than under the button.
+      const fromNav = dir === 'down' && cur.closest('#nav');
       for (const c of cands) {
         if (c.primary > nearest + 40) continue;
-        if (!best || c.cross < best.cross) best = c;
+        const score = fromNav ? c.el.getBoundingClientRect().left : c.cross;
+        if (!best || score < best.score) best = { ...c, score };
       }
     } else {
       // Sideways moves stay on the same row.
