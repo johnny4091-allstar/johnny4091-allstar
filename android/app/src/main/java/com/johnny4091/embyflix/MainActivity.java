@@ -458,6 +458,16 @@ public class MainActivity extends Activity {
             return versionName();
         }
 
+        /** Maker and model, e.g. "Arris FibeTV", so the admin dashboard can tell devices apart. */
+        @JavascriptInterface
+        public String getDeviceName() {
+            String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
+            String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+            if (!maker.isEmpty() && model.toLowerCase().startsWith(maker.toLowerCase())) return model;
+            String name = (maker.isEmpty() ? "" : Character.toUpperCase(maker.charAt(0)) + maker.substring(1) + " ") + model;
+            return name.trim().isEmpty() ? "Android device" : name.trim();
+        }
+
         /** Opens a YouTube video in the YouTube app. Returns false if there isn't one (the page then plays it itself). */
         @JavascriptInterface
         public boolean openYouTube(String videoId) {

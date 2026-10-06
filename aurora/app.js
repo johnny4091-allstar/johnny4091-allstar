@@ -27,6 +27,28 @@
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
+  // A small log of errors and notable events on this device, shown in the admin dashboard.
+  const appLog = {
+    KEY: 'ef.appLog', MAX: 300,
+    read() { try { return JSON.parse(localStorage.getItem(this.KEY) || '[]'); } catch { return []; } },
+    add(level, msg) {
+      try {
+        const list = this.read();
+        list.push({ t: Date.now(), level, msg: String(msg).slice(0, 600) });
+        localStorage.setItem(this.KEY, JSON.stringify(list.slice(-this.MAX)));
+      } catch { /* storage full or blocked */ }
+    },
+    clear() { try { localStorage.removeItem(this.KEY); } catch { /* ignore */ } },
+  };
+  {
+    const describe = (args) => args.map((a) => (a instanceof Error ? a.message : typeof a === 'object' ? (() => { try { return JSON.stringify(a); } catch { return String(a); } })() : String(a))).join(' ');
+    const origError = console.error.bind(console), origWarn = console.warn.bind(console);
+    console.error = (...args) => { appLog.add('error', describe(args)); origError(...args); };
+    console.warn = (...args) => { appLog.add('warn', describe(args)); origWarn(...args); };
+    window.addEventListener('error', (e) => appLog.add('error', `${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`));
+    window.addEventListener('unhandledrejection', (e) => appLog.add('error', 'Unhandled: ' + (e.reason?.message || e.reason)));
+  }
+
   function loadConfig() {
     // Older versions could store an admin API key and a custom server; drop those.
     if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
@@ -104,9 +126,14 @@
     return text ? JSON.parse(text) : null;
   }
 
+  // Header values must be plain ASCII without quotes or commas.
+  const hdr = (v) => String(v).replace(/[^\x20-\x7E]|[",\\]/g, ' ').replace(/\s+/g, ' ').trim();
+
   function authHeader() {
-    const device = /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser';
-    return `Emby UserId="${state.userId || ''}", Client="${CLIENT.name}", Device="${device}", DeviceId="${state.deviceId}", Version="${CLIENT.version}"`;
+    // The Android app reports its real model and version so they show in the admin dashboard and Emby's.
+    const device = nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser');
+    const version = nativeApp?.getVersionName?.() || CLIENT.version;
+    return `Emby UserId="${state.userId || ''}", Client="${CLIENT.name}", Device="${hdr(device)}", DeviceId="${state.deviceId}", Version="${hdr(version)}"`;
   }
 
   const userPath = (p) => `/Users/${state.userId}${p}`;
@@ -290,6 +317,7 @@
     } catch { state.views = []; }
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !hasLiveTv()));
     updateRequestsLink();
+    $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin());
     live.channelIds = [];
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
@@ -332,6 +360,7 @@
       case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent);
+      case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
       default: return renderHome(page, isCurrent);
     }
   }
@@ -1830,6 +1859,364 @@
     });
   }
 
+  // ---------- Admin dashboard ----------
+  // Only the owner's account sees it. Emby itself also refuses these admin calls for anyone who
+  // isn't a server administrator, so the name check only decides who sees the menu item.
+  const ADMIN_NAMES = ['johnny4091'];
+  const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
+  const ADMIN_TABS = [['overview', 'Overview'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const DAY = 86400000;
+
+  function timeAgo(date) {
+    const t = new Date(date).getTime();
+    if (!t) return '';
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
+    if (s < 86400 * 30) { const d = Math.floor(s / 86400); return d === 1 ? 'yesterday' : `${d} days ago`; }
+    return new Date(t).toLocaleDateString();
+  }
+  const fmtDateTime = (d) => (d ? new Date(d).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((b || 0) / 1024))} KB`);
+  const adminError = (e) => (e.status === 401 || e.status === 403
+    ? 'Emby refused this. Make sure this account is an administrator on the Emby server (Emby dashboard → Users → Johnny4091 → "Allow this user to manage the server").'
+    : `Couldn't load this: ${e.message}`);
+
+  // Text responses (log files) rather than JSON.
+  async function apiText(path, params) {
+    const res = await fetch(apiUrl(path, params), { headers: { 'X-Emby-Authorization': authHeader() } });
+    if (!res.ok) { const err = new Error(`Emby returned ${res.status}`); err.status = res.status; throw err; }
+    return res.text();
+  }
+
+  function renderAdmin(page, tab, isCurrent) {
+    if (!isAdmin()) { location.replace('#/home'); return; }
+    if (!ADMIN_TABS.some(([id]) => id === tab)) tab = 'overview';
+    page.innerHTML = `
+      <div class="page-pad admin-page">
+        <div class="page-head">
+          <h1>Admin</h1>
+          <div class="tab-bar">
+            ${ADMIN_TABS.map(([id, label]) => `<a href="#/admin?tab=${id}" class="tab${id === tab ? ' active' : ''}">${label}</a>`).join('')}
+          </div>
+          <button class="btn btn-gray admin-refresh" data-admin-refresh>Refresh</button>
+        </div>
+        <div data-admin-body><div class="spinner"></div></div>
+      </div>`;
+    const body = $('[data-admin-body]', page);
+    $('[data-admin-refresh]', page).addEventListener('click', () => route());
+    ({ overview: adminOverview, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog })[tab](body, isCurrent);
+    autoFocus($('.tab.active', page));
+  }
+
+  const statTile = (label, value, note = '', cls = '') =>
+    `<div class="stat-tile ${cls}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(String(value))}</div>${note ? `<div class="stat-note">${note}</div>` : ''}</div>`;
+
+  async function latestAuroraRelease() {
+    try {
+      const res = await fetch('https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest',
+        { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return null;
+      const rel = await res.json();
+      return { name: rel.name || rel.tag_name, code: Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0), date: rel.published_at, notes: releaseNotes(rel.body) };
+    } catch { return null; }
+  }
+
+  async function adminOverview(body, isCurrent) {
+    const since = new Date(Date.now() - 14 * DAY);
+    const safe = (p) => p.catch((e) => ({ error: e }));
+    const [info, sessions, users, counts, devices, activity, tasks, release] = await Promise.all([
+      safe(api('/System/Info')), safe(api('/Sessions')), safe(api('/Users')), safe(api('/Items/Counts')),
+      safe(api('/Devices')), safe(api('/System/ActivityLog/Entries', { params: { MinDate: since.toISOString(), Limit: 2000 } })),
+      safe(api('/ScheduledTasks')), latestAuroraRelease(),
+    ]);
+    if (!isCurrent()) return;
+    if (info?.error && sessions?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(info.error))}</p>`; return; }
+
+    const list = (x) => (Array.isArray(x) ? x : x?.Items || []);
+    const active = list(sessions).filter((s) => s.NowPlayingItem);
+    const recent = list(sessions).filter((s) => Date.now() - new Date(s.LastActivityDate).getTime() < 10 * 60000);
+    const transcoding = active.filter((s) => (s.PlayState?.PlayMethod || '') === 'Transcode').length;
+    const aurora = list(devices).filter((d) => /aurora|embyflix/i.test(d.AppName || ''));
+    const auroraActive30 = aurora.filter((d) => Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY);
+    const outdated = release?.code ? auroraActive30.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < release.code) : [];
+    const plays = list(activity).filter((a) => a.Type === 'VideoPlayback');
+    const failedTasks = list(tasks).filter((t) => t.LastExecutionResult?.Status === 'Failed');
+    const errors = list(activity).filter((a) => /error|fatal/i.test(a.Severity || '') || /failed/i.test(a.Type || ''));
+
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('Watching now', active.length, active.length ? `${transcoding} converting (transcode), ${active.length - transcoding} direct` : 'Nobody is watching')}
+        ${statTile('Online now', recent.length, 'Active in the last 10 minutes')}
+        ${statTile('Plays (14 days)', plays.length, plays.length ? `About ${Math.round(plays.length / 14 * 10) / 10} a day` : '')}
+        ${statTile('Users', list(users).length, `${list(users).filter((u) => Date.now() - new Date(u.LastActivityDate).getTime() < 7 * DAY).length} active this week`)}
+        ${statTile('Aurora devices', auroraActive30.length, 'Used in the last 30 days')}
+        ${statTile('Library', counts?.error ? '—' : (counts.MovieCount || 0) + (counts.SeriesCount || 0),
+          counts?.error ? '' : `${counts.MovieCount || 0} movies · ${counts.SeriesCount || 0} shows · ${counts.EpisodeCount || 0} episodes`)}
+      </div>
+
+      <section class="admin-card">
+        <h2>Watching now</h2>
+        ${active.length ? `<div class="admin-list">${active.map(sessionRow).join('')}</div>` : '<p class="muted">Nobody is watching right now.</p>'}
+      </section>
+
+      <section class="admin-card">
+        <h2>Plays per day <small>Last 14 days</small></h2>
+        ${playsChart(plays)}
+      </section>
+
+      <div class="admin-cols">
+        <section class="admin-card">
+          <h2>Most watched <small>Last 14 days</small></h2>
+          ${topList(plays.map((a) => parsePlayback(a).title))}
+        </section>
+        <section class="admin-card">
+          <h2>Most active viewers <small>Last 14 days</small></h2>
+          ${topList(plays.map((a) => parsePlayback(a).user))}
+        </section>
+      </div>
+
+      <div class="admin-cols">
+        <section class="admin-card">
+          <h2>Server</h2>
+          ${info?.error ? `<p class="muted">${esc(adminError(info.error))}</p>` : `
+          <dl class="admin-dl">
+            <dt>Name</dt><dd>${esc(info.ServerName || '')}</dd>
+            <dt>Emby version</dt><dd>${esc(info.Version || '')}${info.HasUpdateAvailable ? ' <span class="pill warn">Update available</span>' : ''}</dd>
+            <dt>System</dt><dd>${esc(info.OperatingSystemDisplayName || info.OperatingSystem || '')}</dd>
+            <dt>Restart needed</dt><dd>${info.HasPendingRestart ? '<span class="pill warn">Yes</span>' : 'No'}</dd>
+            <dt>Scheduled tasks</dt><dd>${failedTasks.length ? `<span class="pill bad">${failedTasks.length} failed</span> ${esc(failedTasks.map((t) => t.Name).join(', '))}` : 'All OK'}</dd>
+            <dt>Problems (14 days)</dt><dd>${errors.length ? `<a href="#/admin?tab=activity&filter=errors">${errors.length} in the activity log</a>` : 'None'}</dd>
+          </dl>
+          <button class="btn btn-gray" data-scan>Scan all libraries</button>`}
+        </section>
+        <section class="admin-card">
+          <h2>Aurora app</h2>
+          <dl class="admin-dl">
+            <dt>Latest version</dt><dd>${release ? `${esc(release.name)} <span class="muted">(${esc(timeAgo(release.date))})</span>` : "Couldn't check GitHub"}</dd>
+            <dt>This device</dt><dd>${esc(nativeApp?.getVersionName ? 'Aurora ' + nativeApp.getVersionName() : 'Web browser')}</dd>
+            <dt>Devices behind</dt><dd>${outdated.length ? `<a href="#/admin?tab=devices">${outdated.length} on an older version</a>` : 'None'}</dd>
+            <dt>Requests tab</dt><dd>${state.requestsEnabled && state.requestsServer ? `On · ${esc(state.requestsServer)}` : 'Coming soon (off)'}</dd>
+          </dl>
+          ${release?.notes?.length ? `<h3 class="admin-sub">In the latest version</h3><ul class="admin-notes">${release.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+        </section>
+      </div>`;
+
+    $('[data-scan]', body)?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try { await api('/Library/Refresh', { method: 'POST' }); toast('Library scan started'); } catch (err) { toast(adminError(err)); }
+      e.target.disabled = false;
+    });
+  }
+
+  // Aurora reports its version as 1.2.<build>; the build number orders versions.
+  const auroraVersionCode = (v) => Number(String(v || '').match(/^\d+\.\d+\.(\d+)$/)?.[1] || 0);
+
+  function sessionRow(s) {
+    const it = s.NowPlayingItem, ps = s.PlayState || {};
+    const title = it.SeriesName ? `${it.SeriesName} · ${episodeLabel(it)}` : it.Name;
+    const pct = it.RunTimeTicks ? Math.min(100, (ps.PositionTicks || 0) / it.RunTimeTicks * 100) : 0;
+    const method = ps.PlayMethod === 'Transcode' ? 'Converting' : ps.PlayMethod ? 'Direct' : '';
+    return `<div class="admin-row session-row">
+      <div class="admin-row-main"><strong>${esc(s.UserName || 'Someone')}</strong> · ${esc(title || '')}${ps.IsPaused ? ' <span class="pill">Paused</span>' : ''}
+        <div class="muted">${esc(s.DeviceName || '')} · ${esc(s.Client || '')} ${esc(s.ApplicationVersion || '')}${method ? ' · ' + method : ''}${s.TranscodingInfo?.TranscodeReasons?.length ? ' (' + esc(s.TranscodingInfo.TranscodeReasons.join(', ')) + ')' : ''}</div>
+        ${pct ? `<div class="session-bar"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
+      </div></div>`;
+  }
+
+  // "Johnny is playing Movie on Living Room TV" → who and what.
+  function parsePlayback(a) {
+    const m = (a.Name || '').match(/^(.+?) (?:is playing|has finished playing|started playing) (.+?)(?: on (.+))?$/i);
+    return m ? { user: m[1], title: m[2], device: m[3] || '' } : { user: '', title: a.Name || '', device: '' };
+  }
+
+  function topList(names) {
+    const counts = new Map();
+    names.filter(Boolean).forEach((n) => counts.set(n, (counts.get(n) || 0) + 1));
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (!top.length) return '<p class="muted">No plays yet.</p>';
+    const max = top[0][1];
+    return `<ol class="top-list">${top.map(([n, c]) => `<li><span class="top-name">${esc(n)}</span><span class="top-bar"><span style="width:${(c / max * 100).toFixed(1)}%"></span></span><span class="top-count">${c}</span></li>`).join('')}</ol>`;
+  }
+
+  function playsChart(plays) {
+    const days = [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    for (let i = 13; i >= 0; i--) days.push({ date: new Date(today.getTime() - i * DAY), count: 0 });
+    plays.forEach((a) => {
+      const d = new Date(a.Date); d.setHours(0, 0, 0, 0);
+      const slot = days.find((x) => x.date.getTime() === d.getTime());
+      if (slot) slot.count++;
+    });
+    const max = Math.max(1, ...days.map((d) => d.count));
+    const label = (d) => d.date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    return `<div class="plays-chart" role="img" aria-label="Plays per day for the last 14 days">
+      ${days.map((d, i) => `<div class="pc-col" title="${esc(label(d))}: ${d.count} play${d.count === 1 ? '' : 's'}">
+        <span class="pc-val">${d.count || ''}</span>
+        <span class="pc-bar" style="height:${Math.round(d.count / max * 130)}px"></span>
+        <span class="pc-day">${i % 2 === 1 || days.length < 8 ? esc(d.date.toLocaleDateString([], { month: 'numeric', day: 'numeric' })) : ''}</span>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  const ACTIVITY_FILTERS = [['all', 'All'], ['playback', 'Playback'], ['signin', 'Sign-ins'], ['errors', 'Problems']];
+  function activityMatches(a, filter) {
+    if (filter === 'playback') return /playback/i.test(a.Type || '');
+    if (filter === 'signin') return /authentication|session|login|user/i.test(a.Type || '');
+    if (filter === 'errors') return /error|fatal|warn/i.test(a.Severity || '') || /fail/i.test(a.Type || '');
+    return true;
+  }
+
+  async function adminActivity(body, isCurrent) {
+    const filter = new URLSearchParams(location.hash.split('?')[1] || '').get('filter') || 'all';
+    body.innerHTML = `
+      <div class="chip-row">${ACTIVITY_FILTERS.map(([id, l]) => `<a class="chip${id === filter ? ' active' : ''}" href="#/admin?tab=activity&filter=${id}">${l}</a>`).join('')}</div>
+      <div class="admin-card"><div class="admin-list" data-list><div class="spinner"></div></div>
+      <button class="btn btn-gray hidden" data-more>Show more</button></div>`;
+    const listEl = $('[data-list]', body), more = $('[data-more]', body);
+    let start = 0, shown = 0;
+    const load = async () => {
+      more.classList.add('hidden');
+      try {
+        const res = await api('/System/ActivityLog/Entries', { params: { StartIndex: start, Limit: 200 } });
+        if (!isCurrent()) return;
+        if (start === 0) listEl.innerHTML = '';
+        const items = (res?.Items || []).filter((a) => activityMatches(a, filter));
+        start += res?.Items?.length || 0;
+        listEl.insertAdjacentHTML('beforeend', items.map((a) => {
+          const sev = /error|fatal/i.test(a.Severity || '') ? 'bad' : /warn/i.test(a.Severity || '') ? 'warn' : '';
+          return `<div class="admin-row" tabindex="-1">
+            <div class="admin-row-main">${sev ? `<span class="pill ${sev}">${esc(a.Severity)}</span> ` : ''}${esc(a.Name || '')}
+              ${a.ShortOverview || a.Overview ? `<div class="muted">${esc(a.ShortOverview || a.Overview)}</div>` : ''}</div>
+            <div class="admin-row-time" title="${esc(new Date(a.Date).toLocaleString())}">${esc(fmtDateTime(a.Date))}</div>
+          </div>`;
+        }).join(''));
+        shown += items.length;
+        if (!shown && start >= (res?.TotalRecordCount || 0)) listEl.innerHTML = '<p class="muted">Nothing here.</p>';
+        if (start < (res?.TotalRecordCount || 0)) more.classList.remove('hidden');
+      } catch (e) { if (isCurrent()) listEl.innerHTML = `<p class="muted">${esc(adminError(e))}</p>`; }
+    };
+    more.addEventListener('click', load);
+    await load();
+  }
+
+  async function adminDevices(body, isCurrent) {
+    const [devices, users, release] = await Promise.all([
+      api('/Devices').catch((e) => ({ error: e })), api('/Users').catch((e) => ({ error: e })), latestAuroraRelease(),
+    ]);
+    if (!isCurrent()) return;
+    if (devices?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(devices.error))}</p>`; return; }
+    const all = (devices.Items || devices || []).slice().sort((a, b) => new Date(b.DateLastActivity) - new Date(a.DateLastActivity));
+    const isAurora = (d) => /aurora|embyflix/i.test(d.AppName || '');
+    const aurora = all.filter(isAurora);
+    const versions = new Map();
+    aurora.forEach((d) => versions.set(d.AppVersion || '?', (versions.get(d.AppVersion || '?') || 0) + 1));
+    const deviceRow = (d) => {
+      const code = auroraVersionCode(d.AppVersion);
+      const behind = isAurora(d) && release?.code && code && code < release.code;
+      return `<div class="admin-row" tabindex="-1">
+        <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
+          <div class="muted">${esc(d.AppName || '')} ${esc(d.AppVersion || '')}${behind ? ' <span class="pill warn">Needs update</span>' : ''}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div>
+      </div>`;
+    };
+    const userList = users?.error ? [] : (users || []).slice().sort((a, b) => new Date(b.LastActivityDate || 0) - new Date(a.LastActivityDate || 0));
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Aurora versions in use</h2>
+        ${versions.size ? `<div class="chip-row static">${[...versions.entries()].sort().reverse().map(([v, c]) => `<span class="chip${release && auroraVersionCode(v) >= release.code ? ' active' : ''}">${esc(v)} · ${c} device${c === 1 ? '' : 's'}</span>`).join('')}</div>` : '<p class="muted">No Aurora devices yet.</p>'}
+        ${release ? `<p class="muted">Latest is ${esc(release.name)}. Older copies are offered the update when they open.</p>` : ''}
+      </section>
+      <div class="admin-cols">
+        <section class="admin-card">
+          <h2>Devices <small>${all.length}</small></h2>
+          <div class="admin-list">${all.map(deviceRow).join('') || '<p class="muted">No devices.</p>'}</div>
+        </section>
+        <section class="admin-card">
+          <h2>Users <small>${userList.length}</small></h2>
+          <div class="admin-list">${userList.map((u) => `<div class="admin-row" tabindex="-1">
+            <div class="admin-row-main"><strong>${esc(u.Name)}</strong>${u.Policy?.IsAdministrator ? ' <span class="pill">Admin</span>' : ''}${u.Policy?.IsDisabled ? ' <span class="pill bad">Disabled</span>' : ''}
+              <div class="muted">${u.LastLoginDate ? 'Last signed in ' + esc(timeAgo(u.LastLoginDate)) : 'Never signed in'}</div></div>
+            <div class="admin-row-time">${u.LastActivityDate ? 'Active ' + esc(timeAgo(u.LastActivityDate)) : ''}</div>
+          </div>`).join('') || `<p class="muted">${users?.error ? esc(adminError(users.error)) : 'No users.'}</p>`}</div>
+        </section>
+      </div>`;
+  }
+
+  async function adminLogs(body, isCurrent) {
+    let files;
+    try {
+      const res = await api('/System/Logs/Query').catch(() => api('/System/Logs'));
+      files = (Array.isArray(res) ? res : res?.Items || []).sort((a, b) => new Date(b.DateModified) - new Date(a.DateModified));
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    body.innerHTML = `
+      <div class="admin-logs">
+        <section class="admin-card log-files">
+          <h2>Log files</h2>
+          <div class="admin-list">${files.map((f) => `<button class="log-file" data-name="${esc(f.Name)}">
+            <span>${esc(f.Name)}</span><span class="muted">${esc(fmtSize(f.Size))} · ${esc(timeAgo(f.DateModified))}</span></button>`).join('') || '<p class="muted">No log files.</p>'}</div>
+        </section>
+        <section class="admin-card log-view" data-view><p class="muted">Pick a log file to read it.</p></section>
+      </div>`;
+    const view = $('[data-view]', body);
+    $$('.log-file', body).forEach((btn) => btn.addEventListener('click', () => {
+      $$('.log-file', body).forEach((b) => b.classList.toggle('active', b === btn));
+      showLog(view, btn.dataset.name, isCurrent);
+    }));
+  }
+
+  const LOG_PAGE = 150;
+  async function showLog(view, name, isCurrent) {
+    view.innerHTML = `<h2>${esc(name)}</h2><div class="spinner"></div>`;
+    let lines;
+    try {
+      const text = await apiText(`/System/Logs/${encodeURIComponent(name)}`).catch(() => apiText('/System/Logs/Log', { name }));
+      lines = text.split(/\r?\n/).filter((l) => l.length);
+    } catch (e) { if (isCurrent()) view.innerHTML = `<h2>${esc(name)}</h2><p class="muted">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    let only = 'all', end = lines.length; // newest lines are at the end; show the last page first
+    const draw = () => {
+      const pool = only === 'problems' ? lines.filter((l) => /\b(error|warn|exception|fatal)\b/i.test(l)) : lines;
+      end = Math.min(end, pool.length);
+      const startAt = Math.max(0, end - LOG_PAGE);
+      view.innerHTML = `
+        <h2>${esc(name)} <small>${pool.length} lines</small></h2>
+        <div class="log-tools">
+          <button class="chip${only === 'all' ? ' active' : ''}" data-only="all">All lines</button>
+          <button class="chip${only === 'problems' ? ' active' : ''}" data-only="problems">Errors &amp; warnings</button>
+          <span class="osd-spacer"></span>
+          <button class="btn btn-gray" data-older ${startAt === 0 ? 'disabled' : ''}>Older</button>
+          <button class="btn btn-gray" data-newer ${end >= pool.length ? 'disabled' : ''}>Newer</button>
+        </div>
+        <pre class="log-text">${pool.slice(startAt, end).map((l) => {
+          const cls = /\b(error|exception|fatal)\b/i.test(l) ? 'bad' : /\bwarn/i.test(l) ? 'warn' : '';
+          return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+        }).join('\n') || 'Nothing to show.'}</pre>`;
+      const pre = $('.log-text', view);
+      pre.scrollTop = pre.scrollHeight;
+      $$('[data-only]', view).forEach((b) => b.addEventListener('click', () => { only = b.dataset.only; end = Infinity; draw(); focusEl($(`[data-only="${only}"]`, view)); }));
+      $('[data-older]', view).addEventListener('click', () => { end = Math.max(LOG_PAGE, startAt); draw(); focusEl($('[data-older]:not([disabled])', view) || $('[data-newer]', view)); });
+      $('[data-newer]', view).addEventListener('click', () => { end += LOG_PAGE; draw(); focusEl($('[data-newer]:not([disabled])', view) || $('[data-older]', view)); });
+    };
+    draw();
+  }
+
+  function adminAppLog(body) {
+    const entries = appLog.read().slice().reverse();
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>App log <small>Aurora on this device · ${esc(nativeApp?.getVersionName ? 'Aurora ' + nativeApp.getVersionName() : 'web')}</small></h2>
+        <p class="muted">Errors and events Aurora recorded on this device: playback problems, failed requests, updates and crashes. Each device keeps its own.</p>
+        <div class="log-tools"><span class="osd-spacer"></span><button class="btn btn-gray" data-clear-log>Clear</button></div>
+        <div class="admin-list">${entries.map((e) => `<div class="admin-row" tabindex="-1">
+          <div class="admin-row-main">${e.level === 'error' ? '<span class="pill bad">Error</span> ' : e.level === 'warn' ? '<span class="pill warn">Warning</span> ' : ''}${esc(e.msg)}</div>
+          <div class="admin-row-time">${esc(fmtDateTime(e.t))}</div></div>`).join('') || '<p class="muted">Nothing recorded yet.</p>'}</div>
+      </section>`;
+    $('[data-clear-log]', body).addEventListener('click', () => { appLog.clear(); adminAppLog(body); toast('App log cleared', 1500); });
+  }
+
   // ---------- App updates (Android app only) ----------
   // Customers install the APK by hand, so the app checks GitHub Releases for a newer build itself.
   // Recent releases, so the update prompt can list what changed in every version the person missed.
@@ -1917,6 +2304,7 @@
       e.target.disabled = true;
       progress.classList.remove('hidden');
       msg.textContent = 'Downloading…';
+      appLog.add('info', `Installing update ${update.version}`);
       nativeApp.installUpdate(update.url);
     });
     // Progress and results reported by the Android app.
@@ -1925,6 +2313,7 @@
       else if (u.state === 'permission') msg.textContent = 'Allow Aurora to install apps in the screen that just opened, then come back. The update continues by itself.';
       else if (u.state === 'installing') { bar.style.width = '100%'; msg.textContent = 'Opening the installer… choose Install (or Update).'; }
       else if (u.state === 'error') {
+        appLog.add('error', `Update download failed: ${u.message || 'unknown error'}`);
         msg.textContent = `The download failed (${u.message || 'unknown error'}). Check the internet connection and try again.`;
         $('[data-act="install"]', content).disabled = false;
       }
@@ -2690,6 +3079,7 @@
     $('#profile-dropdown').addEventListener('click', (e) => {
       const act = e.target.dataset.action;
       if (act === 'settings') location.hash = '#/settings';
+      if (act === 'admin') location.hash = '#/admin';
       if (act === 'switch') switchUser();
       if (act === 'signout') signOut();
     });

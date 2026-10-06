@@ -1,2 +1,2 @@
-- New Settings button in the player: change the language, subtitles, playback speed (0.5x to 2x) and resolution while you watch.
-- A 360p option for slow connections.
+- Admin dashboard for the owner: who's watching, statistics, activity, devices, server logs and the app log.
+- Aurora now tells the server each device's model and app version.
