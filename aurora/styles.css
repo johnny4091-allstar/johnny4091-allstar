@@ -594,3 +594,6 @@ html.tv { font-size: 18px; }
   .rows, .page-pad { padding-bottom: 5rem; }
 }
 @media (hover: none) { .row-arrow { display: none; } }
+.update-notes-title { margin: 1.3rem 0 .5rem; font-size: 1rem; }
+.update-notes { margin: 0; padding-left: 1.2rem; max-height: 40vh; overflow-y: auto; color: #d5dcef; line-height: 1.45; }
+.update-notes li { margin: .3rem 0; }

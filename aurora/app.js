@@ -1832,9 +1832,17 @@
 
   // ---------- App updates (Android app only) ----------
   // Customers install the APK by hand, so the app checks GitHub Releases for a newer build itself.
-  const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest';
+  // Recent releases, so the update prompt can list what changed in every version the person missed.
+  const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases?per_page=30';
   const RECHECK_AFTER = 15 * 60000; // when coming back to the app
   const updates = { checking: null, lastCheck: 0, dismissedCode: 0, waiting: null };
+
+  // The build puts the lines of aurora/whats-new.md between these markers in each release's notes.
+  function releaseNotes(body) {
+    const m = (body || '').match(/<!-- notes -->([\s\S]*?)<!-- \/notes -->/);
+    if (!m) return [];
+    return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l)).map((l) => l.slice(2).trim()).filter(Boolean);
+  }
 
   async function checkForUpdate() {
     if (!nativeApp?.getVersionCode) return { status: 'web' };
@@ -1844,11 +1852,18 @@
         headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000),
       });
       if (!res.ok) throw new Error(res.status);
-      const rel = await res.json();
-      const code = Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0);
-      const apk = (rel.assets || []).find((a) => /\.apk$/i.test(a.name));
-      if (!apk || code <= nativeApp.getVersionCode()) return { status: 'current' };
-      return { status: 'available', code, version: rel.name || rel.tag_name, url: apk.browser_download_url };
+      const installed = nativeApp.getVersionCode();
+      const newer = (await res.json())
+        .filter((rel) => !rel.draft && !rel.prerelease && /^aurora-v/.test(rel.tag_name || ''))
+        .map((rel) => ({ rel, code: Number(rel.tag_name.match(/(\d+)$/)?.[1] || 0) }))
+        .filter((r) => r.code > installed)
+        .sort((a, b) => b.code - a.code);
+      const latest = newer[0];
+      const apk = latest && (latest.rel.assets || []).find((a) => /\.apk$/i.test(a.name));
+      if (!apk) return { status: 'current' };
+      // Newest first, without repeating a line that appears in more than one version.
+      const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 12);
+      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes };
     } catch {
       return { status: 'error' };
     }
@@ -1882,6 +1897,8 @@
       <div class="m-body update-body">
         <h2>Update available</h2>
         <p class="overview">${esc(update.version)} is ready to install. It keeps you signed in.</p>
+        ${update.notes?.length ? `<h3 class="update-notes-title">What's new</h3>
+        <ul class="update-notes">${update.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
         <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
         <div class="m-actions update-actions">
           <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>

@@ -43,6 +43,20 @@ jobs:
           name: Aurora-apk
           path: Aurora.apk
 
+      # The app shows the lines between the notes markers in its update prompt.
+      - name: Write release notes
+        run: |
+          {
+            echo "## What's new"
+            echo '<!-- notes -->'
+            cat aurora/whats-new.md
+            echo '<!-- /notes -->'
+            echo
+            echo 'Download **Aurora.apk** below on your Android phone, tablet or Android TV and open it to install.'
+            echo 'You may need to allow installing apps from your browser or file manager the first time.'
+            echo "Built from ${{ github.ref_name }} at ${{ github.sha }}."
+          } > release-notes.md
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -51,7 +65,4 @@ jobs:
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: Aurora.apk
-          body: |
-            Download **Aurora.apk** below on your Android phone, tablet or Android TV and open it to install.
-            You may need to allow installing apps from your browser or file manager the first time.
-            Built from ${{ github.ref_name }} at ${{ github.sha }}.
+          body_path: release-notes.md

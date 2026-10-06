@@ -1,0 +1,2 @@
+- The update screen now shows what's new in each update.
+- TV: search has its own on-screen keyboard, so it works on every Android TV box (including Bell Fibe TV boxes).
