@@ -1939,12 +1939,15 @@
     { label: '1080p (10 Mbps)', bitrate: 10000000 },
     { label: '720p (4 Mbps)', bitrate: 4000000 },
     { label: '480p (1.5 Mbps)', bitrate: 1500000 },
+    { label: '360p (0.7 Mbps)', bitrate: 720000 },
   ];
+  const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  const speedLabel = (r) => (r === 1 ? 'Normal' : `${r}x`);
   const maxBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
 
   const player = {
     item: null, hls: null, playSessionId: null, mediaSourceId: null, playMethod: null, source: null,
-    audioIndex: null, subtitleIndex: -1, forceTranscode: false, intro: null, isLive: false, liveStreamId: null,
+    audioIndex: null, subtitleIndex: -1, forceTranscode: false, speed: 1, intro: null, isLive: false, liveStreamId: null,
     progressTimer: null, idleTimer: null, nextEpisode: null, startSeconds: 0, dragging: false,
     token: 0, // bumped on every playItem so a slower, older request can't take over
     creditsAt: null, upNextTimer: null, upNextShown: false, upNextDismissed: false,
@@ -2382,6 +2385,7 @@
     hideUpNext();
     hideStillWatching();
     closeTracks();
+    player.speed = 1; // each new title starts at normal speed
     $('#player').classList.add('hidden');
     nativeApp?.setPlayerMode(false);
     if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
@@ -2455,28 +2459,41 @@
   }
 
   function openTracks() {
-    const panel = $('#tracks-panel'), streams = player.source?.MediaStreams || [];
+    const panel = $('#tracks-panel'), streams = player.source?.MediaStreams || [], video = $('#video');
     const audio = streams.filter((s) => s.Type === 'Audio');
     const subs = streams.filter((s) => s.Type === 'Subtitle');
     const opt = (attr, value, label, selected) =>
       `<button class="track-opt${selected ? ' selected' : ''}" data-${attr}="${value}">${selected ? '&#10003; ' : ''}${esc(label)}</button>`;
+    const nowPlaying = video.videoHeight ? `<p class="tracks-now">Now playing ${video.videoHeight >= 2000 ? '4K' : video.videoHeight + 'p'}</p>` : '';
     panel.innerHTML = `
+      <h3 class="tracks-title">Playback settings</h3>
       <div class="tracks-cols">
-        <div class="tracks-col"><h4>Audio</h4>
+        <div class="tracks-col"><h4>Language</h4>
           ${audio.length ? audio.map((s) => opt('audio', s.Index, s.DisplayTitle || s.Language || `Track ${s.Index}`, s.Index === player.audioIndex)).join('') : '<p>Default</p>'}
         </div>
         <div class="tracks-col"><h4>Subtitles</h4>
           ${opt('sub', -1, 'Off', player.subtitleIndex == null || player.subtitleIndex < 0)}
           ${subs.map((s) => opt('sub', s.Index, s.DisplayTitle || s.Language || `Subtitle ${s.Index}`, s.Index === player.subtitleIndex)).join('')}
         </div>
-        <div class="tracks-col"><h4>Quality</h4>
+        ${player.isLive ? '' : `<div class="tracks-col"><h4>Speed</h4>
+          ${SPEED_OPTIONS.map((r) => opt('speed', r, speedLabel(r), r === player.speed)).join('')}
+        </div>`}
+        <div class="tracks-col"><h4>Resolution</h4>
           ${QUALITY_OPTIONS.map((q) => opt('quality', q.bitrate, q.label, q.bitrate === maxBitrate())).join('')}
+          ${nowPlaying}
         </div>
       </div>`;
     panel.classList.remove('hidden');
     $('#player').classList.remove('idle');
     clearTimeout(player.idleTimer);
     focusEl($('.track-opt.selected', panel) || $('.track-opt', panel));
+  }
+
+  // Speed resets when a new video loads, so it's put back every time.
+  function applySpeed() {
+    const video = $('#video');
+    video.defaultPlaybackRate = player.speed;
+    video.playbackRate = player.speed;
   }
 
   function closeTracks() {
@@ -2492,6 +2509,16 @@
     if (!item) return;
     const startTicks = Math.floor((video.currentTime || 0) * TICKS_PER_SECOND);
     let { audioIndex, subtitleIndex, forceTranscode } = player;
+    // Picking what's already chosen just closes the panel.
+    if (btn.classList.contains('selected')) { closeTracks(); return; }
+    if (btn.dataset.speed != null) {
+      // Speed changes on the spot; no need to restart the stream.
+      player.speed = Number(btn.dataset.speed);
+      applySpeed();
+      closeTracks();
+      toast(`Speed: ${speedLabel(player.speed)}`, 1500);
+      return;
+    }
     if (btn.dataset.audio != null) {
       audioIndex = Number(btn.dataset.audio);
       forceTranscode = audioIndex !== source?.DefaultAudioStreamIndex;
@@ -2594,6 +2621,8 @@
     video.addEventListener('click', () => { if (osdVisible()) togglePlay(); wakeOsd(); });
     video.addEventListener('dblclick', () => $('#osd-fullscreen').click());
     ['timeupdate', 'play', 'pause', 'durationchange', 'volumechange'].forEach((ev) => video.addEventListener(ev, updateOsd));
+    video.addEventListener('loadedmetadata', () => { if (video.playbackRate !== player.speed) applySpeed(); });
+    video.addEventListener('playing', () => { if (video.playbackRate !== player.speed) applySpeed(); });
     video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
     video.addEventListener('play', () => {
       if (player.suspended) resumeSuspended();

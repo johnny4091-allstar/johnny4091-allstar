@@ -1,2 +1,2 @@
-- The update screen now shows what's new in each update.
-- TV: search has its own on-screen keyboard, so it works on every Android TV box (including Bell Fibe TV boxes).
+- New Settings button in the player: change the language, subtitles, playback speed (0.5x to 2x) and resolution while you watch.
+- A 360p option for slow connections.
