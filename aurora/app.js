@@ -214,7 +214,7 @@
     if (store.get('ef.pref.splashSound') === 'off' || document.hidden) return;
     try {
       const audio = new Audio('sounds/aurora-intro.mp3');
-      audio.volume = 0.8;
+      audio.volume = 0.7;
       audio.play().catch(() => { /* blocked until the page is tapped; stay quiet */ });
       // Going straight to another app shouldn't leave it playing.
       document.addEventListener('visibilitychange', () => { if (document.hidden) audio.pause(); }, { once: true });

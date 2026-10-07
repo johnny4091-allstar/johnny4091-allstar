@@ -1,1 +1,1 @@
-- A new, richer Aurora intro sound when the app opens. You can turn it off in Settings.
+- A softer, quieter intro sound when the app opens. You can turn it off in Settings.
