@@ -1,1 +1,1 @@
-- New Aurora splash screen when the app opens.
+- The opening animation now has its own Aurora intro sound. You can turn it off in Settings.

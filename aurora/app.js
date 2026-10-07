@@ -209,6 +209,18 @@
   }
 
   // Home is ready once the hero or a row has something in it (or after a few seconds regardless).
+  // The intro sound, timed to the splash animation. Android lets it play without a tap; a normal browser may not.
+  function playSplashSound() {
+    if (store.get('ef.pref.splashSound') === 'off' || document.hidden) return;
+    try {
+      const audio = new Audio('sounds/aurora-intro.mp3');
+      audio.volume = 0.8;
+      audio.play().catch(() => { /* blocked until the page is tapped; stay quiet */ });
+      // Going straight to another app shouldn't leave it playing.
+      document.addEventListener('visibilitychange', () => { if (document.hidden) audio.pause(); }, { once: true });
+    } catch { /* no audio support */ }
+  }
+
   function hideSplashWhenHomeReady() {
     const t0 = Date.now();
     const check = () => {
@@ -1787,7 +1799,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi' };
   const getPref = (key) => store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
@@ -1840,6 +1852,7 @@
       </section>
       <section class="settings-section">
         <h2>Playback <small>This device</small></h2>
+        ${settingRow('Sound when Aurora opens', 'Play the Aurora intro sound with the opening animation.', selectHtml('splashSound', [['on', 'On'], ['off', 'Off']], getPref('splashSound')))}
         ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
         ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
         ${settingRow('Streaming quality', 'Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
@@ -3358,6 +3371,7 @@
   // ---------- Boot ----------
   async function boot() {
     setTimeout(hideSplash, SPLASH_MAX); // never leave anyone stuck on the splash
+    if ($('#splash')) playSplashSound();
     loadConfig();
     autoCheckForUpdate();
     document.addEventListener('visibilitychange', () => {
