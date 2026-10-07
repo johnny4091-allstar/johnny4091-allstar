@@ -1,1 +1,1 @@
-- The opening animation now has its own Aurora intro sound. You can turn it off in Settings.
+- A new, richer Aurora intro sound when the app opens. You can turn it off in Settings.
