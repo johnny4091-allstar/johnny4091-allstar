@@ -1,2 +1,1 @@
-- Admin dashboard for the owner: who's watching, statistics, activity, devices, server logs and the app log.
-- Aurora now tells the server each device's model and app version.
+- New Aurora splash screen when the app opens.

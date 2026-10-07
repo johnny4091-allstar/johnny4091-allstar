@@ -192,6 +192,33 @@
     };
   }
 
+  // ---------- Splash ----------
+  // Plays its animation at least once, then fades when the first screen is ready.
+  const SPLASH_MIN = 2000, SPLASH_MAX = 10000;
+  let splashDone = false;
+  function hideSplash() {
+    if (splashDone) return;
+    splashDone = true;
+    const el = $('#splash');
+    if (!el) return;
+    setTimeout(() => {
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 600);
+      if (nav.on && (!document.activeElement || document.activeElement === document.body)) focusInitial();
+    }, Math.max(0, SPLASH_MIN - performance.now()));
+  }
+
+  // Home is ready once the hero or a row has something in it (or after a few seconds regardless).
+  function hideSplashWhenHomeReady() {
+    const t0 = Date.now();
+    const check = () => {
+      if (splashDone) return;
+      if ($('.hero-content, .hero.empty, .row-track .card, #page .grid > *, #page .empty-msg') || Date.now() - t0 > 4000) hideSplash();
+      else setTimeout(check, 100);
+    };
+    check();
+  }
+
   // ---------- Screens ----------
   function showScreen(name) {
     $('#setup').classList.toggle('hidden', name !== 'setup');
@@ -201,6 +228,7 @@
   function showSetup(errorMsg) {
     closeModal();
     showScreen('setup');
+    hideSplash();
     $('#setup-password').value = '';
     const err = $('#setup-error');
     err.textContent = errorMsg || '';
@@ -3329,6 +3357,7 @@
 
   // ---------- Boot ----------
   async function boot() {
+    setTimeout(hideSplash, SPLASH_MAX); // never leave anyone stuck on the splash
     loadConfig();
     autoCheckForUpdate();
     document.addEventListener('visibilitychange', () => {
@@ -3343,6 +3372,7 @@
       const user = await api(`/Users/${state.userId}`);
       upsertAccount(user, state.apiKey);
       await selectUser(user);
+      hideSplashWhenHomeReady();
     } catch (e) {
       if (e.status === 401 || e.status === 403) {
         removeAccount(state.userId);
