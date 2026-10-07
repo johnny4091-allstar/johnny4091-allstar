@@ -1,1 +1,2 @@
-- A softer, quieter intro sound when the app opens. You can turn it off in Settings.
+- Requests now has its own Requested and Available lists, showing who asked for each title and its status.
+- Titles that have been requested or are already in the library no longer appear in Discover.

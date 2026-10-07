@@ -399,7 +399,7 @@
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
       case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
-      case 'requests': return renderRequests(page, isCurrent);
+      case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
       case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
       default: return renderHome(page, isCurrent);
     }
@@ -1477,43 +1477,92 @@
   const seerrYear = (m) => (m.releaseDate || m.firstAirDate || '').slice(0, 4);
 
   function seerrStatus(m) {
-    const req = m.request; // set for "My Requests" cards
+    const req = m.request; // set for cards in the Requested and Available lists
     if (req?.status === 3) return 'Declined';
-    if (MEDIA_STATUS[m.mediaInfo?.status]) return MEDIA_STATUS[m.mediaInfo.status];
+    if ((m.mediaInfo?.status || 0) >= 4) return MEDIA_STATUS[m.mediaInfo.status];
     if (req) return REQUEST_STATUS[req.status] || 'Requested';
-    return '';
+    return MEDIA_STATUS[m.mediaInfo?.status] || '';
   }
 
   function createSeerrCard(m) {
     const card = document.createElement('div');
     card.className = 'card seerr-card';
     card.tabIndex = 0;
+    card.dataset.seerr = `${m.mediaType}:${m.id}`;
     const img = tmdbImage(m.backdropPath, 'w500') || tmdbImage(m.posterPath, 'w342');
     const status = seerrStatus(m);
     const kind = m.mediaType === 'tv' ? 'Series' : 'Movie';
+    const req = m.request;
+    const who = req ? (req.requestedBy?.id === seerrMeId ? 'you' : req.requestedBy?.displayName || req.requestedBy?.username || '') : '';
+    const sub = req ? [who && `Requested by ${who}`, timeAgo(req.createdAt)].filter(Boolean).join(' · ') : [seerrYear(m), kind].filter(Boolean).join(' • ');
     card.innerHTML = `
       ${img ? `<img loading="lazy" src="${esc(img)}" alt=""${m.backdropPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
       ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
-      <div class="card-info"><div>${esc(seerrTitle(m))}</div><div class="sub">${esc([seerrYear(m), kind].filter(Boolean).join(' • '))}</div></div>`;
+      <div class="card-info"><div>${esc(seerrTitle(m))}</div><div class="sub">${esc(sub)}</div></div>`;
     card.addEventListener('click', () => openSeerrItem(m.mediaType, m.id));
     return card;
   }
 
   const onlyMedia = (results) => (results || []).filter((m) => m.mediaType === 'movie' || m.mediaType === 'tv');
 
-  async function myRequests(me) {
-    const { data } = await seerr(`/request?take=20&skip=0&sort=added&filter=all&requestedBy=${me.id}`);
-    const reqs = data?.results || [];
-    // Requests only carry the TMDB id; fetch titles and pictures alongside.
-    const detailed = await Promise.allSettled(reqs.map(async (r) => {
-      const type = r.media?.mediaType || r.type;
-      const { data: m } = await seerr(`/${type}/${r.media.tmdbId}`);
-      return { ...m, mediaType: type, request: r };
-    }));
-    return detailed.filter((d) => d.status === 'fulfilled').map((d) => d.value);
+  // Requests only carry the TMDB id, so titles and pictures are looked up (and remembered for the session).
+  const seerrDetails = new Map();
+  let seerrMeId = null;
+  function seerrDetail(type, tmdbId) {
+    const key = `${type}:${tmdbId}`;
+    if (!seerrDetails.has(key)) {
+      seerrDetails.set(key, seerr(`/${type}/${tmdbId}`).then(({ data }) => data).catch((e) => { seerrDetails.delete(key); throw e; }));
+    }
+    return seerrDetails.get(key);
   }
 
-  async function renderRequests(page, isCurrent) {
+  // Everyone's requests that this account may see (Jellyseerr shows people without request-management rights only
+  // their own), one entry per title, newest first, split into still-requested and ready-to-watch.
+  async function loadRequestLists() {
+    const { data } = await seerr('/request?take=100&skip=0&sort=added&filter=all');
+    const byMedia = new Map();
+    (data?.results || []).forEach((r) => {
+      const type = r.media?.mediaType || r.type;
+      const key = `${type}:${r.media?.tmdbId}`;
+      if (!r.media?.tmdbId || byMedia.has(key)) return; // the newest request for a title stands for it
+      byMedia.set(key, { r, type });
+    });
+    const requested = [], available = [];
+    [...byMedia.values()].forEach((e) => ((e.r.media?.status || 0) >= 4 ? available : requested).push(e));
+    // Declined requests go to the end of the requested list.
+    requested.sort((a, b) => (a.r.status === 3) - (b.r.status === 3));
+    return { requested, available };
+  }
+
+  // Fills a grid with request cards, loading a few titles at a time.
+  async function fillRequestGrid(grid, entries, isCurrent) {
+    let next = 0;
+    const slots = entries.map(() => {
+      const ph = document.createElement('div');
+      ph.className = 'card seerr-card placeholder';
+      grid.appendChild(ph);
+      return ph;
+    });
+    const worker = async () => {
+      while (next < entries.length && isCurrent()) {
+        const i = next++, { r, type } = entries[i];
+        try {
+          const m = await seerrDetail(type, r.media.tmdbId);
+          if (!isCurrent()) return;
+          const card = createSeerrCard({ ...m, mediaType: type, request: r, mediaInfo: { ...(m.mediaInfo || {}), status: r.media.status } });
+          const hadFocus = slots[i] === document.activeElement;
+          slots[i].replaceWith(card);
+          if (hadFocus) focusEl(card);
+        } catch { slots[i].remove(); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3, 4, 5].map(worker));
+  }
+
+  const REQUEST_TABS = [['discover', 'Discover'], ['requested', 'Requested'], ['available', 'Available']];
+
+  async function renderRequests(page, isCurrent, tab = 'discover') {
+    if (!REQUEST_TABS.some(([id]) => id === tab)) tab = 'discover';
     if (!hasRequests()) {
       page.innerHTML = `
         <div class="page-pad requests-page">
@@ -1532,6 +1581,9 @@
       <div class="page-pad requests-page">
         <div class="page-head">
           <h1>Requests</h1>
+          <div class="tab-bar req-tabs hidden">
+            ${REQUEST_TABS.map(([id, label]) => `<a href="#/requests?tab=${id}" class="tab${id === tab ? ' active' : ''}" data-tab="${id}">${label}<span class="tab-count"></span></a>`).join('')}
+          </div>
           <div class="req-search hidden"><input type="search" placeholder="Search for a movie or show to request" autocomplete="off"></div>
         </div>
         <div data-req-body><div class="spinner"></div></div>
@@ -1544,20 +1596,53 @@
     }
     if (!isCurrent()) return;
     if (!me) return renderRequestsConnect(page, body, isCurrent);
+    seerrMeId = me.id;
+
+    const tabs = $('.req-tabs', page);
+    tabs.classList.remove('hidden');
+    const lists = loadRequestLists();
+    lists.then(({ requested, available }) => {
+      if (!isCurrent()) return;
+      $('[data-tab="requested"] .tab-count', tabs).textContent = requested.length ? ` ${requested.length}` : '';
+      $('[data-tab="available"] .tab-count', tabs).textContent = available.length ? ` ${available.length}` : '';
+    }).catch(() => {});
+
+    if (tab !== 'discover') {
+      autoFocus($('.tab.active', page));
+      let data;
+      try { data = await lists; } catch (e) {
+        if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load requests: ${esc(e.message)}</p>`;
+        return;
+      }
+      if (!isCurrent()) return;
+      const entries = data[tab];
+      if (!entries.length) {
+        body.innerHTML = `<p class="empty-msg">${tab === 'requested'
+          ? 'Nothing is waiting. Find something in Discover and request it.'
+          : "Nothing requested is ready yet. Titles show up here once they're in the library."}</p>`;
+        return;
+      }
+      body.innerHTML = `<p class="req-list-note">${tab === 'requested'
+        ? 'Requested titles stay here until they arrive in the library.'
+        : 'Requested titles that are now in the library. Open one to watch it in Aurora.'}</p><div class="grid seerr-grid"></div>`;
+      fillRequestGrid($('.grid', body), entries, isCurrent);
+      return;
+    }
 
     const searchBox = $('.req-search', page), input = $('input', searchBox);
     searchBox.classList.remove('hidden');
+    // Anything already requested or in the library lives in its own tab, not in Discover.
+    const fresh = (results) => onlyMedia(results).filter((m) => (m.mediaInfo?.status || 1) < 2);
     const showBrowse = () => {
       body.innerHTML = '';
       const rows = document.createElement('div');
       rows.className = 'rows flush-rows';
       body.appendChild(rows);
       const add = (title, loader) => addRow(rows, title, loader, { isCurrent, createItem: createSeerrCard });
-      add('My Requests', () => myRequests(me));
-      add('Trending', async () => onlyMedia((await seerr('/discover/trending?page=1')).data?.results));
-      add('Popular Movies', async () => onlyMedia((await seerr('/discover/movies?page=1')).data?.results));
-      add('Popular TV Shows', async () => onlyMedia((await seerr('/discover/tv?page=1')).data?.results));
-      add('Coming Soon', async () => onlyMedia((await seerr('/discover/movies/upcoming?page=1')).data?.results));
+      add('Trending', async () => fresh((await seerr('/discover/trending?page=1')).data?.results));
+      add('Popular Movies', async () => fresh((await seerr('/discover/movies?page=1')).data?.results));
+      add('Popular TV Shows', async () => fresh((await seerr('/discover/tv?page=1')).data?.results));
+      add('Coming Soon', async () => fresh((await seerr('/discover/movies/upcoming?page=1')).data?.results));
     };
     let timer, searchToken = 0;
     input.addEventListener('input', () => {
@@ -1684,7 +1769,11 @@
         const body = { mediaType: type, mediaId: Number(tmdbId) };
         if (isTv) body.seasons = picks();
         await seerr('/request', { method: 'POST', body });
-        toast(`Requested ${seerrTitle(m)}`);
+        toast(`Requested ${seerrTitle(m)}. It's now in the Requested list.`);
+        // It now belongs in the Requested list, so take it out of Discover.
+        if (!isTv) $$(`#page .seerr-card[data-seerr="${type}:${tmdbId}"]`).forEach((c) => c.remove());
+        const count = $('#page .req-tabs [data-tab="requested"] .tab-count');
+        if (count && !isTv) count.textContent = ` ${(Number(count.textContent) || 0) + 1}`;
         if (token === modalToken) openSeerrItem(type, tmdbId);
       } catch (ex) {
         err.textContent = ex.status === 403 ? (ex.message && !/permission/i.test(ex.message) ? ex.message : "Your account isn't allowed to make this request.") : ex.message;
