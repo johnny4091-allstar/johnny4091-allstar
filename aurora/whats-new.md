@@ -1,3 +1,2 @@
-- TV guide for M3U and Xtream channels: a new Guide tab, plus what's on now on every channel and in the player.
-- Channel logos now also come from the TV guide when the playlist doesn't include them.
-- Admin: an optional TV guide (XMLTV) link, and the Test button checks the guide too.
+- Phones: the big banner on the home screen has a new layout. The picture sits on top and the show's logo, description and buttons sit underneath it, so they no longer run into the Aurora header or over the picture.
+- Tall show logos now shrink to fit on TVs and sideways phones instead of reaching up into the header.
