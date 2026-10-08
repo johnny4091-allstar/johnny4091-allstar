@@ -355,7 +355,13 @@
       const views = await api(userPath('/Views'));
       state.views = views?.Items || [];
     } catch { state.views = []; }
-    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !hasLiveTv()));
+    loadIptvConfigLocal();
+    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+    refreshIptvConfig().then(() => {
+      topUpIptvConfig();
+      // If the Live TV source changed while the Live TV page or Home was showing, redraw it.
+      if (/^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
+    });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin());
     live.channelIds = [];
@@ -397,7 +403,7 @@
       case 'tv': return renderBrowse(page, { type: 'Series', title: 'TV Shows', isCurrent });
       case 'mylist': return renderMyList(page, isCurrent);
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
-      case 'livetv': return renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
+      case 'livetv': return iptvOn() ? renderIptvLive(page, params.get('tab') || 'channels', isCurrent) : renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
       case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
@@ -447,7 +453,13 @@
     add('Continue Watching', async () =>
       (await api(userPath('/Items/Resume'), { params: { Limit: 20, MediaTypes: 'Video', Recursive: true, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items,
       { showProgress: true });
-    if (hasLiveTv()) {
+    if (iptvOn()) {
+      const recent = iptvRecent();
+      if (recent.length) {
+        addRow(rows, 'Recently Watched Channels', async () => recent,
+          { isCurrent, createItem: (ch) => createIptvTile(ch, () => playIptv(recent, recent.indexOf(ch), 'Recently watched')) });
+      }
+    } else if (hasLiveTv()) {
       addRow(rows, 'On Now', async () => (await getChannels({ Limit: 20 }))?.Items?.filter((c) => c.CurrentProgram),
         { isCurrent, createItem: createChannelCard });
     }
@@ -992,6 +1004,377 @@
     } catch (e) { console.error(e); }
   }
 
+  // ---------- Live TV from an M3U playlist or Xtream Codes account ----------
+  // The admin sets the source in the Admin dashboard. It's saved into every account's Aurora settings on the
+  // Emby server (display preferences), so each customer's app picks it up when they sign in.
+  const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
+  const iptv = { config: null, lists: new Map(), epg: new Map(), all: null };
+  const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
+  const showLiveLink = () => hasLiveTv() || iptvOn();
+
+  function iptvLocalKey() { return 'ef.iptv.' + state.userId; }
+  function loadIptvConfigLocal() {
+    try { iptv.config = JSON.parse(store.get(iptvLocalKey()) || 'null'); } catch { iptv.config = null; }
+  }
+  // Reads this account's copy from Emby; quietly keeps the saved copy if the server can't be reached.
+  async function refreshIptvConfig() {
+    try {
+      const prefs = await api(`/DisplayPreferences/${IPTV_PREFS.id}`, { params: { userId: state.userId, client: IPTV_PREFS.client } });
+      const raw = prefs?.CustomPrefs?.config;
+      const cfg = raw ? JSON.parse(raw) : null;
+      if (JSON.stringify(cfg) !== JSON.stringify(iptv.config)) {
+        if ((cfg?.v || 0) !== (iptv.config?.v || 0)) { iptv.lists.clear(); iptv.all = null; iptv.epg.clear(); }
+        iptv.config = cfg;
+        if (cfg) store.set(iptvLocalKey(), JSON.stringify(cfg)); else store.del(iptvLocalKey());
+      }
+    } catch (e) { console.warn('Live TV settings', e); }
+    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+  }
+
+  function writeIptvConfigFor(userId, cfg) {
+    return api(`/DisplayPreferences/${IPTV_PREFS.id}`, {
+      method: 'POST', params: { userId, client: IPTV_PREFS.client },
+      body: {
+        Id: IPTV_PREFS.id, Client: IPTV_PREFS.client, SortBy: 'SortName', SortOrder: 'Ascending',
+        RememberIndexing: false, RememberSorting: false, ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false,
+        PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: cfg ? JSON.stringify(cfg) : '' },
+      },
+    });
+  }
+
+  // Puts the admin's Live TV settings on every account that doesn't have the current version yet.
+  async function syncIptvConfig(cfg, { force = false } = {}) {
+    const users = await api('/Users');
+    let saved = 0, failed = 0;
+    const queue = (users || []).slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try {
+          if (!force) {
+            const prefs = await api(`/DisplayPreferences/${IPTV_PREFS.id}`, { params: { userId: u.Id, client: IPTV_PREFS.client } });
+            const have = prefs?.CustomPrefs?.config ? JSON.parse(prefs.CustomPrefs.config) : null;
+            if ((have?.v || 0) === (cfg?.v || 0)) { saved++; continue; }
+          }
+          await writeIptvConfigFor(u.Id, cfg);
+          saved++;
+        } catch (e) { failed++; console.warn('Live TV settings for', u.Name, e); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return { saved, failed, total: (users || []).length };
+  }
+
+  // Accounts created after the admin saved still need the settings; the admin's app tops them up now and then.
+  async function topUpIptvConfig() {
+    if (!isAdmin() || !iptv.config) return;
+    const last = Number(store.get('ef.iptv.sync') || 0);
+    if (Date.now() - last < 6 * 3600000) return;
+    store.set('ef.iptv.sync', String(Date.now()));
+    try { await syncIptvConfig(iptv.config); } catch (e) { console.warn('Live TV settings top-up', e); }
+  }
+
+  const withScheme = (u) => (/^https?:\/\//i.test(u) ? u : 'http://' + u).replace(/\/+$/, '');
+
+  async function iptvText(url, cfg = iptv.config, timeoutMs = 60000) {
+    const headers = cfg?.userAgent ? { 'User-Agent': cfg.userAgent } : {};
+    if (nativeApp?.httpRequest) {
+      const r = await nativeHttp('GET', url, headers, null, timeoutMs);
+      if (r.status === 0) throw new Error(r.error || "Couldn't reach the TV provider.");
+      if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
+      return r.body || '';
+    }
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) throw new Error(`The TV provider answered ${res.status}.`);
+    return res.text();
+  }
+
+  // Xtream Codes player API.
+  function xtUrl(cfg, params = {}) {
+    const q = new URLSearchParams({ username: cfg.username, password: cfg.password || '', ...params });
+    return `${withScheme(cfg.server)}/player_api.php?${q}`;
+  }
+  async function xtJson(cfg, params) {
+    const text = await iptvText(xtUrl(cfg, params), cfg);
+    try { return JSON.parse(text); } catch { throw new Error("The TV provider's answer wasn't understood. Check the server address."); }
+  }
+  function xtChannel(cfg, st) {
+    const ext = cfg.format === 'hls' ? 'm3u8' : 'ts';
+    return {
+      id: 'x' + st.stream_id, streamId: st.stream_id, name: st.name || 'Channel', logo: st.stream_icon || '',
+      num: st.num != null ? String(st.num) : '', group: st.category_id,
+      url: `${withScheme(cfg.server)}/live/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password || '')}/${st.stream_id}.${ext}`,
+    };
+  }
+
+  // M3U playlist: #EXTINF lines with tvg-* attributes and group-title, each followed by the stream address.
+  function parseM3u(text) {
+    const groups = new Map(), all = [];
+    let info = null, extGroup = '';
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('#EXTINF')) {
+        const attrs = {};
+        line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ''; });
+        // The name follows the first comma that isn't inside quotes.
+        let quoted = false, cut = -1;
+        for (let i = 0; i < line.length; i++) {
+          if (line[i] === '"') quoted = !quoted;
+          else if (line[i] === ',' && !quoted) { cut = i; break; }
+        }
+        info = { attrs, name: (cut >= 0 ? line.slice(cut + 1) : '').trim() };
+      } else if (line.startsWith('#EXTGRP:')) {
+        extGroup = line.slice(8).trim();
+      } else if (!line.startsWith('#') && info) {
+        const group = info.attrs['group-title'] || extGroup || 'Channels';
+        const ch = {
+          id: 'm' + all.length, name: info.name || info.attrs['tvg-name'] || 'Channel', logo: info.attrs['tvg-logo'] || '',
+          num: info.attrs['tvg-chno'] || '', group, url: line,
+        };
+        all.push(ch);
+        if (!groups.has(group)) groups.set(group, []);
+        groups.get(group).push(ch);
+        info = null; extGroup = '';
+      }
+    }
+    return { all, groups };
+  }
+
+  // One loaded copy of the source per session (M3U playlists can be large).
+  async function iptvSource(cfg = iptv.config) {
+    const key = `src:${cfg.type}:${cfg.v || 0}`;
+    if (iptv.lists.has(key)) return iptv.lists.get(key);
+    const p = (async () => {
+      if (cfg.type === 'm3u') {
+        const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000);
+        if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) throw new Error("That address didn't return an M3U playlist.");
+        const { all, groups } = parseM3u(text);
+        return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all };
+      }
+      const cats = await xtJson(cfg, { action: 'get_live_categories' });
+      if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
+      return { categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })), groups: new Map(), all: null };
+    })();
+    iptv.lists.set(key, p);
+    p.catch(() => iptv.lists.delete(key));
+    return p;
+  }
+
+  async function iptvChannels(catId, cfg = iptv.config) {
+    const src = await iptvSource(cfg);
+    if (catId === '__all') return iptvAllChannels(cfg);
+    if (src.groups.has(catId)) return src.groups.get(catId);
+    if (cfg.type === 'xtream') {
+      const list = await xtJson(cfg, { action: 'get_live_streams', category_id: catId });
+      const chans = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
+      src.groups.set(catId, chans);
+      return chans;
+    }
+    return [];
+  }
+
+  async function iptvAllChannels(cfg = iptv.config) {
+    const src = await iptvSource(cfg);
+    if (!src.all) {
+      const list = await xtJson(cfg, { action: 'get_live_streams' });
+      src.all = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
+    }
+    return src.all;
+  }
+
+  // What's on now (Xtream only), fetched for the channels on screen and kept for 10 minutes.
+  const b64 = (s) => { try { return new TextDecoder().decode(Uint8Array.from(atob(s || ''), (c) => c.charCodeAt(0))); } catch { return s || ''; } };
+  async function iptvNow(ch) {
+    if (iptv.config?.type !== 'xtream' || !ch.streamId) return null;
+    const hit = iptv.epg.get(ch.streamId);
+    if (hit && Date.now() - hit.t < 600000) return hit.v;
+    const v = await xtJson(iptv.config, { action: 'get_short_epg', stream_id: ch.streamId, limit: 2 }).then((r) => {
+      const now = Date.now() / 1000;
+      const list = (r?.epg_listings || []).map((e) => ({ title: b64(e.title), start: Number(e.start_timestamp), end: Number(e.stop_timestamp) }));
+      const cur = list.find((e) => e.start <= now && e.end > now) || list[0];
+      return cur ? { title: cur.title, start: cur.start * 1000, end: cur.end * 1000 } : null;
+    }).catch(() => null);
+    iptv.epg.set(ch.streamId, { t: Date.now(), v });
+    return v;
+  }
+  const iptvNowCached = (ch) => iptv.epg.get(ch.streamId)?.v?.title || '';
+
+  // Recently watched channels, newest first, for the Live TV page and Home.
+  const RECENT_MAX = 30;
+  function iptvRecent() {
+    try {
+      const r = JSON.parse(store.get('ef.iptv.recent.' + state.userId) || '{}');
+      return r.v === (iptv.config?.v || 0) ? r.list || [] : [];
+    } catch { return []; }
+  }
+  function rememberChannel(ch) {
+    const list = [ch, ...iptvRecent().filter((c) => c.id !== ch.id)].slice(0, RECENT_MAX)
+      .map(({ id, streamId, name, logo, num, url, group }) => ({ id, streamId, name, logo, num, url, group }));
+    store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ v: iptv.config?.v || 0, list }));
+  }
+
+  // Opens the native player with the list the channel came from, so up/down flips through it.
+  let iptvPlaying = null;
+  function playIptv(list, index, groupName) {
+    const ch = list[index];
+    if (!ch) return;
+    rememberChannel(ch);
+    if (!nativeApp?.playLive) { toast('Live TV channels play in the Aurora app for Android and Android TV.'); return; }
+    // Keep the hand-over a sensible size for very long lists.
+    let from = 0, to = list.length;
+    if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
+    const slice = list.slice(from, to);
+    iptvPlaying = { list: slice, offset: from, group: groupName };
+    nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: c.logo, num: c.num, now: iptvNowCached(c) }))),
+      index - from, groupName || '', iptv.config?.userAgent || '');
+  }
+  // The native player closed: remember the channel it ended on and put the focus back on it.
+  window.auroraLiveClosed = (index) => {
+    const p = iptvPlaying;
+    iptvPlaying = null;
+    if (!p || index < 0) return;
+    const ch = p.list[index];
+    if (!ch) return;
+    rememberChannel(ch);
+    const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`);
+    if (tile) focusEl(tile);
+  };
+
+  function createIptvTile(ch, onPlay) {
+    const tile = document.createElement('div');
+    tile.className = 'card iptv-tile';
+    tile.tabIndex = 0;
+    tile.dataset.id = ch.id;
+    const now = iptvNowCached(ch);
+    tile.innerHTML = `
+      <div class="iptv-logo">${ch.logo ? `<img loading="lazy" src="${esc(ch.logo)}" alt="" referrerpolicy="no-referrer">` : ''}<span class="iptv-fallback">${esc(ch.name)}</span></div>
+      <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now>${esc([ch.num, now].filter(Boolean).join(' · '))}</div></div>`;
+    const img = $('img', tile);
+    if (img) {
+      img.addEventListener('load', () => tile.classList.add('has-logo'));
+      img.addEventListener('error', () => img.remove());
+    }
+    tile.addEventListener('click', onPlay);
+    return tile;
+  }
+
+  // Fetches what's on for tiles as they scroll into view.
+  let epgObserver = null;
+  function watchNow(tile, ch) {
+    if (iptv.config?.type !== 'xtream') return;
+    if (!epgObserver) {
+      epgObserver = new IntersectionObserver((entries) => entries.forEach((en) => {
+        if (!en.isIntersecting) return;
+        epgObserver.unobserve(en.target);
+        const c = en.target.__ch;
+        iptvNow(c).then((now) => {
+          if (now?.title) $('[data-now]', en.target).textContent = [c.num, now.title].filter(Boolean).join(' · ');
+        });
+      }), { rootMargin: '200px' });
+    }
+    tile.__ch = ch;
+    epgObserver.observe(tile);
+  }
+
+  function renderIptvLive(page, tab, isCurrent) {
+    const tabs = [['channels', 'Channels'], ...(hasLiveTv() ? [['recordings', 'Recordings']] : [])];
+    if (!tabs.some(([id]) => id === tab)) tab = 'channels';
+    page.innerHTML = `
+      <div class="page-pad live-page iptv-page">
+        <div class="page-head">
+          <h1>Live TV</h1>
+          ${tabs.length > 1 ? `<div class="tab-bar">${tabs.map(([id, label]) => `<a href="#/livetv?tab=${id}" class="tab${id === tab ? ' active' : ''}">${label}</a>`).join('')}</div>` : ''}
+          ${tab === 'channels' ? '<div class="iptv-search"><input type="search" placeholder="Search channels" autocomplete="off"></div>' : ''}
+        </div>
+        <div data-live-body><div class="spinner"></div></div>
+      </div>`;
+    const body = $('[data-live-body]', page);
+    if (tab === 'recordings') { renderRecordings(body, isCurrent); autoFocus($('.tab.active', page)); return; }
+    renderIptvChannels(page, body, isCurrent);
+  }
+
+  async function renderIptvChannels(page, body, isCurrent) {
+    let src;
+    try { src = await iptvSource(); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load the channels: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const recent = iptvRecent();
+    const cats = [
+      ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
+      ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
+      ...src.categories,
+    ];
+    if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
+    let current = store.get('ef.iptv.group');
+    if (!cats.some((c) => c.id === current)) current = cats[0].id;
+    body.innerHTML = `
+      <div class="iptv-layout">
+        <nav class="iptv-cats">${cats.map((c) => `<button class="iptv-cat${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">
+          <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</button>`).join('')}</nav>
+        <section class="iptv-main"><h2 class="iptv-title"></h2><div class="grid iptv-grid"></div><div class="sentinel"></div></section>
+      </div>`;
+    const grid = $('.iptv-grid', body), title = $('.iptv-title', body), sentinel = $('.sentinel', body);
+    let shown = [], drawn = 0, groupName = '', token = 0;
+    const PAGE = 90;
+    const drawMore = () => {
+      const end = Math.min(shown.length, drawn + PAGE);
+      for (let i = drawn; i < end; i++) {
+        const ch = shown[i], list = shown, idx = i, g = groupName;
+        const tile = createIptvTile(ch, () => playIptv(list, idx, g));
+        grid.appendChild(tile);
+        watchNow(tile, ch);
+      }
+      drawn = end;
+    };
+    new IntersectionObserver((en) => { if (en[0].isIntersecting && drawn < shown.length) drawMore(); }, { rootMargin: '600px' }).observe(sentinel);
+    const show = (list, name) => {
+      shown = list; drawn = 0; groupName = name;
+      grid.innerHTML = '';
+      title.textContent = name;
+      if (!list.length) { grid.innerHTML = '<p class="empty-msg">No channels here.</p>'; return; }
+      drawMore();
+    };
+    const openCat = async (id, { focus = false } = {}) => {
+      const t = ++token;
+      current = id;
+      store.set('ef.iptv.group', id);
+      $$('.iptv-cat', body).forEach((b) => b.classList.toggle('active', b.dataset.cat === id));
+      const cat = cats.find((c) => c.id === id);
+      grid.innerHTML = '<div class="spinner"></div>';
+      try {
+        const list = id === '__recent' ? iptvRecent() : await iptvChannels(id);
+        if (t !== token || !isCurrent()) return;
+        show(list, cat?.name || '');
+        if (focus) focusEl($('.iptv-tile', grid));
+      } catch (e) {
+        if (t === token) grid.innerHTML = `<p class="empty-msg">Couldn't load these channels: ${esc(e.message)}</p>`;
+      }
+    };
+    $$('.iptv-cat', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, { focus: nav.on })));
+    // Search across every channel.
+    const input = $('.iptv-search input', page);
+    let timer;
+    input?.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = input.value.trim().toLowerCase();
+        if (!q) return openCat(current);
+        const t = ++token;
+        grid.innerHTML = '<div class="spinner"></div>';
+        try {
+          const all = await iptvAllChannels();
+          if (t !== token || !isCurrent()) return;
+          show(all.filter((c) => c.name.toLowerCase().includes(q) || c.num === q), `Results for "${input.value.trim()}"`);
+        } catch (e) { if (t === token) grid.innerHTML = `<p class="empty-msg">Search failed: ${esc(e.message)}</p>`; }
+      }, 300);
+    });
+    await openCat(current);
+    autoFocus($('.iptv-cat.active', body));
+  }
+
   // ---------- Live TV ----------
   const GUIDE_HOURS = 6;
   const GUIDE_PX_PER_MIN = 6;
@@ -1369,10 +1752,10 @@
     const done = httpPending.get(id);
     if (done) { httpPending.delete(id); done(res); }
   };
-  function nativeHttp(method, url, headers, body) {
+  function nativeHttp(method, url, headers, body, timeoutMs = 30000) {
     return new Promise((resolve, reject) => {
       const id = 'h' + (++httpSeq);
-      const timer = setTimeout(() => { httpPending.delete(id); reject(new Error('The request server took too long to answer.')); }, 30000);
+      const timer = setTimeout(() => { httpPending.delete(id); reject(new Error('The server took too long to answer.')); }, timeoutMs);
       httpPending.set(id, (res) => { clearTimeout(timer); resolve(res); });
       nativeApp.httpRequest(id, method, url, JSON.stringify(headers || {}), body == null ? '' : body);
     });
@@ -1994,7 +2377,7 @@
   // isn't a server administrator, so the name check only decides who sees the menu item.
   const ADMIN_NAMES = ['johnny4091'];
   const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
-  const ADMIN_TABS = [['overview', 'Overview'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['livetv', 'Live TV'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -2036,7 +2419,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
   }
 
@@ -2136,6 +2519,123 @@
     $('[data-scan]', body)?.addEventListener('click', async (e) => {
       e.target.disabled = true;
       try { await api('/Library/Refresh', { method: 'POST' }); toast('Library scan started'); } catch (err) { toast(adminError(err)); }
+      e.target.disabled = false;
+    });
+  }
+
+  // Live TV source: Emby's own Live TV, an M3U playlist, or an Xtream Codes account. Saved for every account.
+  async function adminLiveTv(body, isCurrent) {
+    await refreshIptvConfig();
+    if (!isCurrent()) return;
+    const cfg = iptv.config || { type: 'emby' };
+    const field = (label, name, value, type = 'text', hint = '') => `
+      <label class="admin-field"><span>${label}</span>
+        <input type="${type}" data-f="${name}" value="${esc(value || '')}" autocomplete="off" autocapitalize="none" spellcheck="false">
+        ${hint ? `<small>${hint}</small>` : ''}</label>`;
+    body.innerHTML = `
+      <section class="admin-card live-source">
+        <h2>Live TV source</h2>
+        <p class="muted">Pick where Live TV comes from. Saving applies it to every account, and each customer's app switches over the next time it opens.
+          M3U and Xtream channels play in Aurora's own TV player straight from your provider, without going through Emby.</p>
+        <div class="chip-row source-pick">
+          <button class="chip${cfg.type === 'emby' || !cfg.type ? ' active' : ''}" data-type="emby">Emby Live TV</button>
+          <button class="chip${cfg.type === 'm3u' ? ' active' : ''}" data-type="m3u">M3U playlist</button>
+          <button class="chip${cfg.type === 'xtream' ? ' active' : ''}" data-type="xtream">Xtream Codes</button>
+        </div>
+        <div class="source-fields" data-for="emby"><p class="muted">Uses the channels and guide set up in Emby (Emby dashboard → Live TV).</p></div>
+        <div class="source-fields" data-for="m3u">
+          ${field('Playlist address (M3U link)', 'm3uUrl', cfg.m3uUrl, 'url', 'For example http://provider.com:8080/get.php?username=…&password=…&type=m3u_plus')}
+        </div>
+        <div class="source-fields" data-for="xtream">
+          ${field('Server address', 'server', cfg.server, 'url', 'For example http://provider.com:8080')}
+          ${field('Username', 'username', cfg.username)}
+          ${field('Password', 'password', cfg.password, 'password')}
+          <label class="admin-field"><span>Stream type</span>
+            <select data-f="format">
+              <option value="ts"${cfg.format !== 'hls' ? ' selected' : ''}>MPEG-TS (recommended)</option>
+              <option value="hls"${cfg.format === 'hls' ? ' selected' : ''}>HLS (m3u8)</option>
+            </select><small>Try HLS if channels won't start with MPEG-TS.</small></label>
+        </div>
+        <div class="source-fields" data-for="m3u xtream">
+          ${field('User agent (optional)', 'userAgent', cfg.userAgent, 'text', 'Only if your provider asks for a particular player name.')}
+        </div>
+        <div class="m-actions">
+          <button class="btn btn-gray" data-test>Test</button>
+          <button class="btn btn-red" data-save>Save for everyone</button>
+        </div>
+        <div class="live-result" data-result></div>
+      </section>`;
+    let type = cfg.type || 'emby';
+    const showFields = () => {
+      $$('.source-pick .chip', body).forEach((c) => c.classList.toggle('active', c.dataset.type === type));
+      $$('.source-fields', body).forEach((f) => f.classList.toggle('hidden', !f.dataset.for.split(' ').includes(type)));
+      $('[data-test]', body).classList.toggle('hidden', type === 'emby');
+    };
+    $$('.source-pick .chip', body).forEach((c) => c.addEventListener('click', () => { type = c.dataset.type; showFields(); }));
+    showFields();
+    const result = $('[data-result]', body);
+    const draft = () => {
+      const v = (n) => ($(`[data-f="${n}"]`, body)?.value || '').trim();
+      if (type === 'emby') return { type: 'emby', v: Date.now() };
+      const d = { type, userAgent: v('userAgent'), v: Date.now() };
+      if (type === 'm3u') d.m3uUrl = v('m3uUrl');
+      else Object.assign(d, { server: v('server'), username: v('username'), password: v('password'), format: v('format') || 'ts' });
+      return d;
+    };
+    const check = (d) => {
+      if (d.type === 'm3u' && !d.m3uUrl) return 'Enter the playlist address.';
+      if (d.type === 'xtream' && (!d.server || !d.username)) return 'Enter the server address, username and password.';
+      return '';
+    };
+    const say = (html, cls = '') => { result.className = 'live-result ' + cls; result.innerHTML = html; };
+
+    async function test(d) {
+      say('<div class="spinner"></div>');
+      let account = '';
+      if (d.type === 'xtream') {
+        const info = await xtJson(d, {});
+        const u = info?.user_info;
+        if (!u || Number(u.auth) === 0) throw new Error('The Xtream account was not accepted. Check the username and password.');
+        const exp = u.exp_date ? new Date(Number(u.exp_date) * 1000).toLocaleDateString() : 'never';
+        account = `Account ${esc(u.status || 'active')} · expires ${esc(exp)} · ${esc(u.active_cons ?? 0)} of ${esc(u.max_connections ?? '?')} connections in use`;
+      }
+      const src = await iptvSource(d);
+      const count = d.type === 'm3u' ? src.all.length : null;
+      return `<strong>It works.</strong> ${src.categories.length} categor${src.categories.length === 1 ? 'y' : 'ies'}${count != null ? `, ${count} channels` : ''}.${account ? `<br>${account}` : ''}`;
+    }
+
+    $('[data-test]', body).addEventListener('click', async () => {
+      const d = draft(), problem = check(d);
+      if (problem) return say(esc(problem), 'bad');
+      try { say(await test(d), 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+    });
+    $('[data-save]', body).addEventListener('click', async (e) => {
+      const d = draft(), problem = check(d);
+      if (problem) return say(esc(problem), 'bad');
+      e.target.disabled = true;
+      try {
+        let tested = '';
+        if (d.type !== 'emby') {
+          try { tested = await test(d); } catch (err) {
+            say(`${esc(err.message)}<br>Not saved. Fix the details above, or press Save again to save anyway.`, 'bad');
+            e.target.disabled = false;
+            if (e.target.dataset.force !== '1') { e.target.dataset.force = '1'; return; }
+          }
+        }
+        say('<div class="spinner"></div> Saving for every account…');
+        const cfgToSave = d.type === 'emby' ? null : d;
+        const res = await syncIptvConfig(cfgToSave, { force: true });
+        iptv.config = cfgToSave;
+        if (cfgToSave) store.set(iptvLocalKey(), JSON.stringify(cfgToSave)); else store.del(iptvLocalKey());
+        iptv.lists.clear(); iptv.all = null; iptv.epg.clear();
+        store.set('ef.iptv.sync', String(Date.now()));
+        $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+        say(`${tested ? tested + '<br>' : ''}<strong>Saved for ${res.saved} of ${res.total} accounts.</strong>${res.failed ? ` ${res.failed} couldn't be updated; they'll be retried later.` : ''}
+          Customers' apps switch over the next time they open Aurora.`, res.failed ? 'warn' : 'good');
+        e.target.dataset.force = '';
+      } catch (err) {
+        say(esc(adminError(err)), 'bad');
+      }
       e.target.disabled = false;
     });
   }
@@ -3398,9 +3898,9 @@
       return true;
     }
     if (action === 'back') return window.embyflixBack();
-    if (action === 'guide' && hasLiveTv()) {
+    if (action === 'guide' && showLiveLink()) {
       closeModal();
-      location.hash = '#/livetv?tab=guide';
+      location.hash = iptvOn() ? '#/livetv' : '#/livetv?tab=guide';
       return true;
     }
     return false;

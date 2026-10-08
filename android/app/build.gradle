@@ -67,4 +67,8 @@ tasks.named('preBuild') {
 dependencies {
     implementation 'androidx.webkit:webkit:1.12.1'
     implementation 'androidx.core:core:1.13.1'
+    // Native live TV player for M3U / Xtream streams (MPEG-TS and HLS).
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.4.1'
+    implementation 'androidx.media3:media3-ui:1.4.1'
 }

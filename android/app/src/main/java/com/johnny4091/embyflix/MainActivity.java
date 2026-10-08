@@ -116,6 +116,19 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
+    private static final int REQUEST_LIVE = 7;
+
+    /** Tells the page which channel was last watched when the native live player closes. */
+    @SuppressWarnings("deprecation")
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_LIVE) return;
+        LivePlayerActivity.pendingChannels = null;
+        int index = data == null ? -1 : data.getIntExtra(LivePlayerActivity.RESULT_INDEX, -1);
+        webView.evaluateJavascript("window.auroraLiveClosed && window.auroraLiveClosed(" + index + ")", null);
+    }
+
     private static final String CREDENTIAL_KEY = "aurora-credentials";
 
     /** AES key that lives in Android's key store and can't be read out of it, even by this app. */
@@ -466,6 +479,19 @@ public class MainActivity extends Activity {
             if (!maker.isEmpty() && model.toLowerCase().startsWith(maker.toLowerCase())) return model;
             String name = (maker.isEmpty() ? "" : Character.toUpperCase(maker.charAt(0)) + maker.substring(1) + " ") + model;
             return name.trim().isEmpty() ? "Android device" : name.trim();
+        }
+
+        /** Plays M3U / Xtream live channels in the native player. channelsJson: [{name, url, logo, num, now}]. */
+        @JavascriptInterface
+        public void playLive(String channelsJson, int index, String group, String userAgent) {
+            runOnUiThread(() -> {
+                LivePlayerActivity.pendingChannels = channelsJson;
+                Intent intent = new Intent(MainActivity.this, LivePlayerActivity.class);
+                intent.putExtra(LivePlayerActivity.EXTRA_INDEX, index);
+                intent.putExtra(LivePlayerActivity.EXTRA_GROUP, group);
+                intent.putExtra(LivePlayerActivity.EXTRA_USER_AGENT, userAgent);
+                startActivityForResult(intent, REQUEST_LIVE);
+            });
         }
 
         /** Opens a YouTube video in the YouTube app. Returns false if there isn't one (the page then plays it itself). */

@@ -1,2 +1,3 @@
-- Requests now has its own Requested and Available lists, showing who asked for each title and its status.
-- Titles that have been requested or are already in the library no longer appear in Discover.
+- Live TV can now come straight from an M3U playlist or Xtream Codes account, set by the admin.
+- New built-in TV player for those channels: Up/Down changes channel, OK opens the channel list, and number keys jump to a channel.
+- Channels are grouped by category, with search and a "Recently watched" list (also on Home).
