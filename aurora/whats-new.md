@@ -1,3 +1,3 @@
-- Live TV can now come straight from an M3U playlist or Xtream Codes account, set by the admin.
-- New built-in TV player for those channels: Up/Down changes channel, OK opens the channel list, and number keys jump to a channel.
-- Channels are grouped by category, with search and a "Recently watched" list (also on Home).
+- TV guide for M3U and Xtream channels: a new Guide tab, plus what's on now on every channel and in the player.
+- Channel logos now also come from the TV guide when the playlist doesn't include them.
+- Admin: an optional TV guide (XMLTV) link, and the Test button checks the guide too.

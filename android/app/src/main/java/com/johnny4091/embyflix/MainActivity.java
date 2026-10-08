@@ -481,6 +481,56 @@ public class MainActivity extends Activity {
             return name.trim().isEmpty() ? "Android device" : name.trim();
         }
 
+        /**
+         * Loads an XMLTV guide in the background. Result goes to window.auroraEpgDone(id, data) where data is
+         * EpgLoader's JSON, or {error} if it failed.
+         */
+        @JavascriptInterface
+        public void loadEpg(String id, String url, String userAgent, int hoursAhead, String wantedJson) {
+            new Thread(() -> {
+                String result;
+                try {
+                    result = EpgLoader.load(MainActivity.this, url, userAgent, hoursAhead, wantedJson);
+                } catch (Throwable e) {
+                    result = "{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+                }
+                String js = "window.auroraEpgDone && window.auroraEpgDone(" + JSONObject.quote(id) + "," + result + ")";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            }, "aurora-epg").start();
+        }
+
+        /** Fetches a picture the page couldn't load itself; window.auroraImageDone(id, dataUrl or ""). */
+        @JavascriptInterface
+        public void fetchImage(String id, String url, String userAgent) {
+            new Thread(() -> {
+                String dataUrl = "";
+                HttpURLConnection conn = null;
+                try {
+                    conn = (HttpURLConnection) new URL(url).openConnection();
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(8000);
+                    conn.setInstanceFollowRedirects(true);
+                    if (userAgent != null && !userAgent.isEmpty()) conn.setRequestProperty("User-Agent", userAgent);
+                    if (conn.getResponseCode() < 400) {
+                        String type = conn.getContentType();
+                        if (type == null || !type.startsWith("image/")) type = "image/png";
+                        try (InputStream in = conn.getInputStream()) {
+                            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                            byte[] chunk = new byte[16384];
+                            for (int n; (n = in.read(chunk)) > 0 && buf.size() < 600_000; ) buf.write(chunk, 0, n);
+                            if (buf.size() < 600_000) dataUrl = "data:" + type.split(";")[0] + ";base64," + Base64.encodeToString(buf.toByteArray(), Base64.NO_WRAP);
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // No picture.
+                } finally {
+                    if (conn != null) conn.disconnect();
+                }
+                String js = "window.auroraImageDone && window.auroraImageDone(" + JSONObject.quote(id) + "," + JSONObject.quote(dataUrl) + ")";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            }, "aurora-image").start();
+        }
+
         /** Plays M3U / Xtream live channels in the native player. channelsJson: [{name, url, logo, num, now}]. */
         @JavascriptInterface
         public void playLive(String channelsJson, int index, String group, String userAgent) {

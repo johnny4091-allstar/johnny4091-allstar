@@ -1008,7 +1008,7 @@
   // The admin sets the source in the Admin dashboard. It's saved into every account's Aurora settings on the
   // Emby server (display preferences), so each customer's app picks it up when they sign in.
   const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
-  const iptv = { config: null, lists: new Map(), epg: new Map(), all: null };
+  const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null };
   const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
   const showLiveLink = () => hasLiveTv() || iptvOn();
 
@@ -1023,7 +1023,7 @@
       const raw = prefs?.CustomPrefs?.config;
       const cfg = raw ? JSON.parse(raw) : null;
       if (JSON.stringify(cfg) !== JSON.stringify(iptv.config)) {
-        if ((cfg?.v || 0) !== (iptv.config?.v || 0)) { iptv.lists.clear(); iptv.all = null; iptv.epg.clear(); }
+        if ((cfg?.v || 0) !== (iptv.config?.v || 0)) resetIptvCaches();
         iptv.config = cfg;
         if (cfg) store.set(iptvLocalKey(), JSON.stringify(cfg)); else store.del(iptvLocalKey());
       }
@@ -1074,6 +1074,10 @@
     try { await syncIptvConfig(iptv.config); } catch (e) { console.warn('Live TV settings top-up', e); }
   }
 
+  function resetIptvCaches() {
+    iptv.lists.clear(); iptv.all = null; iptv.epg.clear(); iptv.guide = null; iptv.guideLoad = null;
+  }
+
   const withScheme = (u) => (/^https?:\/\//i.test(u) ? u : 'http://' + u).replace(/\/+$/, '');
 
   async function iptvText(url, cfg = iptv.config, timeoutMs = 60000) {
@@ -1102,7 +1106,7 @@
     const ext = cfg.format === 'hls' ? 'm3u8' : 'ts';
     return {
       id: 'x' + st.stream_id, streamId: st.stream_id, name: st.name || 'Channel', logo: st.stream_icon || '',
-      num: st.num != null ? String(st.num) : '', group: st.category_id,
+      num: st.num != null ? String(st.num) : '', group: st.category_id, epgId: st.epg_channel_id || '',
       url: `${withScheme(cfg.server)}/live/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password || '')}/${st.stream_id}.${ext}`,
     };
   }
@@ -1110,11 +1114,15 @@
   // M3U playlist: #EXTINF lines with tvg-* attributes and group-title, each followed by the stream address.
   function parseM3u(text) {
     const groups = new Map(), all = [];
-    let info = null, extGroup = '';
+    let info = null, extGroup = '', guideUrl = '';
     for (const raw of text.split(/\r?\n/)) {
       const line = raw.trim();
       if (!line) continue;
-      if (line.startsWith('#EXTINF')) {
+      if (line.startsWith('#EXTM3U')) {
+        // The playlist may name its guide: url-tvg="…" or x-tvg-url="…" (sometimes several, comma-separated).
+        const m = line.match(/(?:url-tvg|x-tvg-url)="([^"]+)"/i);
+        if (m) guideUrl = m[1].split(',')[0].trim();
+      } else if (line.startsWith('#EXTINF')) {
         const attrs = {};
         line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ''; });
         // The name follows the first comma that isn't inside quotes.
@@ -1130,7 +1138,7 @@
         const group = info.attrs['group-title'] || extGroup || 'Channels';
         const ch = {
           id: 'm' + all.length, name: info.name || info.attrs['tvg-name'] || 'Channel', logo: info.attrs['tvg-logo'] || '',
-          num: info.attrs['tvg-chno'] || '', group, url: line,
+          num: info.attrs['tvg-chno'] || '', group, url: line, epgId: info.attrs['tvg-id'] || '',
         };
         all.push(ch);
         if (!groups.has(group)) groups.set(group, []);
@@ -1138,7 +1146,7 @@
         info = null; extGroup = '';
       }
     }
-    return { all, groups };
+    return { all, groups, guideUrl };
   }
 
   // One loaded copy of the source per session (M3U playlists can be large).
@@ -1149,8 +1157,8 @@
       if (cfg.type === 'm3u') {
         const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000);
         if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) throw new Error("That address didn't return an M3U playlist.");
-        const { all, groups } = parseM3u(text);
-        return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all };
+        const { all, groups, guideUrl } = parseM3u(text);
+        return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, guideUrl };
       }
       const cats = await xtJson(cfg, { action: 'get_live_categories' });
       if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
@@ -1198,7 +1206,101 @@
     iptv.epg.set(ch.streamId, { t: Date.now(), v });
     return v;
   }
-  const iptvNowCached = (ch) => iptv.epg.get(ch.streamId)?.v?.title || '';
+  const iptvNowCached = (ch) => guideNow(ch)?.title || iptv.epg.get(ch.streamId)?.v?.title || '';
+
+  // ----- TV guide (XMLTV) -----
+  // Xtream accounts publish one at xmltv.php; M3U playlists may name one in their header; the admin can set any.
+  async function iptvGuideUrl(cfg = iptv.config) {
+    if (cfg.epgUrl) return withScheme(cfg.epgUrl);
+    if (cfg.type === 'xtream') {
+      const q = new URLSearchParams({ username: cfg.username, password: cfg.password || '' });
+      return `${withScheme(cfg.server)}/xmltv.php?${q}`;
+    }
+    return (await iptvSource(cfg)).guideUrl || '';
+  }
+
+  const normalName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  let epgSeq = 0;
+  const epgPending = new Map();
+  window.auroraEpgDone = (id, data) => { const done = epgPending.get(id); if (done) { epgPending.delete(id); done(data); } };
+
+  // Loads the guide once per session (the Android app downloads and reads it; it keeps a copy for six hours).
+  function loadIptvGuide(cfg = iptv.config) {
+    if (cfg === iptv.config && iptv.guideLoad) return iptv.guideLoad;
+    const p = (async () => {
+      if (!nativeApp?.loadEpg) return null;
+      const url = await iptvGuideUrl(cfg);
+      if (!url) return null;
+      const chans = cfg.type === 'xtream' ? await iptvAllChannels(cfg) : (await iptvSource(cfg)).all;
+      const wanted = { ids: [...new Set(chans.map((c) => c.epgId).filter(Boolean))], names: [...new Set(chans.map((c) => c.name))] };
+      const data = await new Promise((resolve, reject) => {
+        const id = 'e' + (++epgSeq);
+        const timer = setTimeout(() => { epgPending.delete(id); reject(new Error('The TV guide took too long to download.')); }, 240000);
+        epgPending.set(id, (d) => { clearTimeout(timer); resolve(d); });
+        nativeApp.loadEpg(id, url, cfg.userAgent || '', 12, JSON.stringify(wanted));
+      });
+      if (data?.error) throw new Error(data.error);
+      const byId = new Map(), byName = new Map();
+      for (const [id, ch] of Object.entries(data?.channels || {})) {
+        const entry = { name: ch.n, icon: ch.i, progs: [] };
+        byId.set(id.trim().toLowerCase(), entry);
+        if (ch.n && !byName.has(normalName(ch.n))) byName.set(normalName(ch.n), entry);
+      }
+      for (const [id, list] of Object.entries(data?.programmes || {})) {
+        let entry = byId.get(id.trim().toLowerCase());
+        if (!entry) { entry = { name: '', icon: '', progs: [] }; byId.set(id.trim().toLowerCase(), entry); }
+        entry.progs = list.map(([start, end, title, desc]) => ({ start, end, title, desc })).sort((a, b) => a.start - b.start);
+      }
+      return { byId, byName, url };
+    })();
+    if (cfg === iptv.config) {
+      iptv.guideLoad = p;
+      p.then((g) => { iptv.guide = g; }, (e) => { console.warn('TV guide', e); iptv.guideLoad = null; });
+    }
+    return p;
+  }
+
+  function guideFor(ch) {
+    const g = iptv.guide;
+    if (!g || !ch) return null;
+    return (ch.epgId && g.byId.get(ch.epgId.trim().toLowerCase())) || g.byName.get(normalName(ch.name)) || null;
+  }
+  function guideNow(ch, at = Date.now()) {
+    return guideFor(ch)?.progs.find((p) => p.start <= at && p.end > at) || null;
+  }
+  const channelLogo = (ch) => ch.logo || guideFor(ch)?.icon || '';
+
+  // Some logo hosts refuse the web view; the Android app can fetch those itself.
+  const imgCache = new Map(), imgPending = new Map();
+  let imgSeq = 0, imgActive = 0;
+  const imgQueue = [];
+  window.auroraImageDone = (id, dataUrl) => { const done = imgPending.get(id); if (done) { imgPending.delete(id); done(dataUrl); } };
+  function nativeImage(url) {
+    if (imgCache.has(url)) return imgCache.get(url);
+    const p = new Promise((resolve) => imgQueue.push({ url, resolve }));
+    imgCache.set(url, p);
+    pumpImages();
+    return p;
+  }
+  function pumpImages() {
+    while (imgActive < 4 && imgQueue.length) {
+      const { url, resolve } = imgQueue.shift();
+      imgActive++;
+      const id = 'i' + (++imgSeq);
+      imgPending.set(id, (d) => { imgActive--; resolve(d || ''); pumpImages(); });
+      nativeApp.fetchImage(id, url, iptv.config?.userAgent || '');
+    }
+  }
+  function setLogo(img, url, onDone) {
+    if (!url) return;
+    img.addEventListener('load', () => onDone(true), { once: true });
+    img.addEventListener('error', () => {
+      if (!nativeApp?.fetchImage || img.dataset.native) return onDone(false);
+      img.dataset.native = '1';
+      nativeImage(url).then((d) => { if (d) img.src = d; else onDone(false); });
+    }, { once: false });
+    img.src = url;
+  }
 
   // Recently watched channels, newest first, for the Live TV page and Home.
   const RECENT_MAX = 30;
@@ -1226,7 +1328,7 @@
     if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
     const slice = list.slice(from, to);
     iptvPlaying = { list: slice, offset: from, group: groupName };
-    nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: c.logo, num: c.num, now: iptvNowCached(c) }))),
+    nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }))),
       index - from, groupName || '', iptv.config?.userAgent || '');
   }
   // The native player closed: remember the channel it ended on and put the focus back on it.
@@ -1246,23 +1348,35 @@
     tile.className = 'card iptv-tile';
     tile.tabIndex = 0;
     tile.dataset.id = ch.id;
-    const now = iptvNowCached(ch);
+    tile.__ch = ch;
     tile.innerHTML = `
-      <div class="iptv-logo">${ch.logo ? `<img loading="lazy" src="${esc(ch.logo)}" alt="" referrerpolicy="no-referrer">` : ''}<span class="iptv-fallback">${esc(ch.name)}</span></div>
-      <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now>${esc([ch.num, now].filter(Boolean).join(' · '))}</div></div>`;
-    const img = $('img', tile);
-    if (img) {
-      img.addEventListener('load', () => tile.classList.add('has-logo'));
-      img.addEventListener('error', () => img.remove());
-    }
+      <div class="iptv-logo"><span class="iptv-fallback">${esc(ch.name)}</span></div>
+      <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now></div></div>`;
+    paintTile(tile);
     tile.addEventListener('click', onPlay);
     return tile;
   }
 
+  // Fills in the logo and what's on; called again once the guide arrives.
+  function paintTile(tile) {
+    const ch = tile.__ch;
+    const now = iptvNowCached(ch);
+    $('[data-now]', tile).textContent = [ch.num, now].filter(Boolean).join(' · ');
+    const logo = channelLogo(ch);
+    if (logo && !$('img', tile)) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      $('.iptv-logo', tile).prepend(img);
+      setLogo(img, logo, (ok) => { if (ok) tile.classList.add('has-logo'); else img.remove(); });
+    }
+  }
+  function repaintTiles() { $$('#page .iptv-tile').forEach(paintTile); }
+
   // Fetches what's on for tiles as they scroll into view.
   let epgObserver = null;
   function watchNow(tile, ch) {
-    if (iptv.config?.type !== 'xtream') return;
+    if (iptv.config?.type !== 'xtream' || guideNow(ch)) return;
     if (!epgObserver) {
       epgObserver = new IntersectionObserver((entries) => entries.forEach((en) => {
         if (!en.isIntersecting) return;
@@ -1277,8 +1391,136 @@
     epgObserver.observe(tile);
   }
 
+  // Guide grid for one category at a time: channels down the side, the next six hours across.
+  async function renderIptvGuide(body, isCurrent) {
+    body.innerHTML = '<div class="spinner"></div>';
+    let src;
+    try { src = await iptvSource(); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load the channels: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    body.innerHTML = '<p class="guide-loading"><span class="spinner"></span> Loading the TV guide… The first time can take a minute.</p>';
+    let guide;
+    try { guide = await loadIptvGuide(); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load the TV guide: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    if (!guide) {
+      body.innerHTML = `<p class="empty-msg">${nativeApp?.loadEpg
+        ? 'No TV guide has been set up for these channels yet.' + (isAdmin() ? ' Add a guide (XMLTV) link in Admin → Live TV.' : '')
+        : 'The TV guide is available in the Aurora app for Android and Android TV.'}</p>`;
+      return;
+    }
+    const cats = src.categories;
+    let current = store.get('ef.iptv.group');
+    if (!cats.some((c) => c.id === current)) current = cats[0]?.id;
+    const start = new Date();
+    start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
+    const end = new Date(start.getTime() + GUIDE_HOURS * 3600000);
+    const width = GUIDE_HOURS * 60 * GUIDE_PX_PER_MIN;
+    const xOf = (t) => ((t - start) / 60000) * GUIDE_PX_PER_MIN;
+    const slots = [];
+    for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
+    body.innerHTML = `
+      <div class="chip-row iptv-guide-cats">${cats.map((c) => `<button class="chip${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`).join('')}</div>
+      <div class="guide" tabindex="-1">
+        <div class="guide-head">
+          <div class="guide-corner"></div>
+          <div class="guide-times" style="width:${width}px">
+            ${slots.map((t) => `<span style="left:${xOf(t)}px">${esc(clock(t))}</span>`).join('')}
+            <div class="guide-now" style="left:${xOf(Date.now())}px"></div>
+          </div>
+        </div>
+        <div class="guide-rows"></div>
+        <div class="sentinel"></div>
+      </div>`;
+    const rows = $('.guide-rows', body), sentinel = $('.sentinel', body), guideEl = $('.guide', body);
+    let list = [], drawn = 0, groupName = '', token = 0;
+    const PAGE = 30;
+
+    const row = (ch, idx) => {
+      const el = document.createElement('div');
+      el.className = 'guide-row';
+      const logo = channelLogo(ch);
+      el.innerHTML = `
+        <button class="guide-ch" title="Watch ${esc(ch.name)}">
+          ${logo ? '<img alt="">' : ''}
+          <span class="guide-ch-num">${esc(ch.num || '')}</span>
+          <span class="guide-ch-name">${esc(ch.name)}</span>
+        </button>
+        <div class="guide-progs" style="width:${width}px"></div>`;
+      const img = $('img', el);
+      if (img) setLogo(img, logo, (ok) => { if (ok) el.classList.add('has-logo'); else img.remove(); });
+      const play = () => playIptv(list, idx, groupName);
+      $('.guide-ch', el).addEventListener('click', play);
+      const lane = $('.guide-progs', el), now = Date.now();
+      const progs = (guideFor(ch)?.progs || []).filter((p) => p.end > start.getTime() && p.start < end.getTime());
+      if (!progs.length) lane.innerHTML = `<button class="guide-empty">${esc(ch.name)}</button>`;
+      $('.guide-empty', lane)?.addEventListener('click', play);
+      for (const p of progs) {
+        const left = Math.max(0, xOf(p.start)), right = Math.min(width, xOf(p.end));
+        if (right - left < 4) continue;
+        const btn = document.createElement('button');
+        const airing = p.start <= now && p.end > now;
+        btn.className = 'guide-prog' + (airing ? ' now' : '');
+        btn.style.left = left + 'px';
+        btn.style.width = (right - left - 3) + 'px';
+        btn.innerHTML = `<strong>${esc(p.title)}</strong><span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span>`;
+        btn.addEventListener('click', () => (airing ? play() : showIptvProgram(p, ch, play)));
+        lane.appendChild(btn);
+      }
+      return el;
+    };
+    const drawMore = () => {
+      const stop = Math.min(list.length, drawn + PAGE);
+      for (let i = drawn; i < stop; i++) rows.appendChild(row(list[i], i));
+      drawn = stop;
+    };
+    new IntersectionObserver((en) => { if (en[0].isIntersecting && drawn < list.length) drawMore(); }, { root: guideEl, rootMargin: '400px' }).observe(sentinel);
+    const openCat = async (id, focus) => {
+      const t = ++token;
+      current = id;
+      store.set('ef.iptv.group', id);
+      $$('.iptv-guide-cats .chip', body).forEach((b) => b.classList.toggle('active', b.dataset.cat === id));
+      rows.innerHTML = '<div class="spinner"></div>';
+      try {
+        const chans = await iptvChannels(id);
+        if (t !== token || !isCurrent()) return;
+        list = chans; drawn = 0; groupName = cats.find((c) => c.id === id)?.name || '';
+        rows.innerHTML = list.length ? '' : '<p class="empty-msg">No channels here.</p>';
+        guideEl.scrollTop = 0;
+        drawMore();
+        if (focus) focusEl($('.guide-ch', rows));
+      } catch (e) { if (t === token) rows.innerHTML = `<p class="empty-msg">Couldn't load these channels: ${esc(e.message)}</p>`; }
+    };
+    $$('.iptv-guide-cats .chip', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, nav.on)));
+    await openCat(current);
+    autoFocus($('.iptv-guide-cats .chip.active', body));
+  }
+
+  function showIptvProgram(p, ch, play) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    const day = new Date(p.start).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+    content.innerHTML = `
+      <div class="m-body program-body">
+        <h2>${esc(p.title)}</h2>
+        <div class="meta"><span>${esc([ch.num, ch.name].filter(Boolean).join('  '))}</span><span>${esc(day)}</span>
+          <span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span></div>
+        ${p.desc ? `<p class="overview">${esc(p.desc)}</p>` : ''}
+        <div class="m-actions"><button class="btn btn-white" data-act="watch">${ICONS.play} Watch ${esc(ch.name)}</button></div>
+      </div>`;
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    $('[data-act="watch"]', content).addEventListener('click', () => { closeModal(); play(); });
+    autoFocus($('[data-act="watch"]', content));
+  }
+
   function renderIptvLive(page, tab, isCurrent) {
-    const tabs = [['channels', 'Channels'], ...(hasLiveTv() ? [['recordings', 'Recordings']] : [])];
+    const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ...(hasLiveTv() ? [['recordings', 'Recordings']] : [])];
     if (!tabs.some(([id]) => id === tab)) tab = 'channels';
     page.innerHTML = `
       <div class="page-pad live-page iptv-page">
@@ -1291,7 +1533,10 @@
       </div>`;
     const body = $('[data-live-body]', page);
     if (tab === 'recordings') { renderRecordings(body, isCurrent); autoFocus($('.tab.active', page)); return; }
+    if (tab === 'guide') { renderIptvGuide(body, isCurrent); return; }
     renderIptvChannels(page, body, isCurrent);
+    // Logos and what's on fill in when the guide arrives.
+    loadIptvGuide().then(() => { if (isCurrent()) repaintTiles(); }).catch(() => {});
   }
 
   async function renderIptvChannels(page, body, isCurrent) {
@@ -2557,6 +2802,7 @@
             </select><small>Try HLS if channels won't start with MPEG-TS.</small></label>
         </div>
         <div class="source-fields" data-for="m3u xtream">
+          ${field('TV guide link (XMLTV, optional)', 'epgUrl', cfg.epgUrl, 'url', 'Leave empty to use the guide from your provider: Xtream accounts have one built in, and many M3U playlists name theirs. .xml and .xml.gz both work.')}
           ${field('User agent (optional)', 'userAgent', cfg.userAgent, 'text', 'Only if your provider asks for a particular player name.')}
         </div>
         <div class="m-actions">
@@ -2577,7 +2823,7 @@
     const draft = () => {
       const v = (n) => ($(`[data-f="${n}"]`, body)?.value || '').trim();
       if (type === 'emby') return { type: 'emby', v: Date.now() };
-      const d = { type, userAgent: v('userAgent'), v: Date.now() };
+      const d = { type, userAgent: v('userAgent'), epgUrl: v('epgUrl'), v: Date.now() };
       if (type === 'm3u') d.m3uUrl = v('m3uUrl');
       else Object.assign(d, { server: v('server'), username: v('username'), password: v('password'), format: v('format') || 'ts' });
       return d;
@@ -2601,7 +2847,24 @@
       }
       const src = await iptvSource(d);
       const count = d.type === 'm3u' ? src.all.length : null;
-      return `<strong>It works.</strong> ${src.categories.length} categor${src.categories.length === 1 ? 'y' : 'ies'}${count != null ? `, ${count} channels` : ''}.${account ? `<br>${account}` : ''}`;
+      let guideNote = '';
+      if (nativeApp?.loadEpg) {
+        say('<div class="spinner"></div> Channels found. Checking the TV guide…');
+        try {
+          const g = await loadIptvGuide(d);
+          if (!g) guideNote = 'No TV guide found. Add a guide link above to get one.';
+          else {
+            const chans = d.type === 'xtream' ? await iptvAllChannels(d) : src.all;
+            const saved = iptv.guide;
+            iptv.guide = g; // match against the guide being tested
+            const matched = chans.filter((c) => guideFor(c)?.progs.length).length;
+            const logos = chans.filter((c) => channelLogo(c)).length;
+            iptv.guide = saved;
+            guideNote = `TV guide: listings for ${matched} of ${chans.length} channels · logos for ${logos}.`;
+          }
+        } catch (e) { guideNote = `TV guide: ${esc(e.message)}`; }
+      }
+      return `<strong>It works.</strong> ${src.categories.length} categor${src.categories.length === 1 ? 'y' : 'ies'}${count != null ? `, ${count} channels` : ''}.${account ? `<br>${account}` : ''}${guideNote ? `<br>${guideNote}` : ''}`;
     }
 
     $('[data-test]', body).addEventListener('click', async () => {
@@ -2627,7 +2890,7 @@
         const res = await syncIptvConfig(cfgToSave, { force: true });
         iptv.config = cfgToSave;
         if (cfgToSave) store.set(iptvLocalKey(), JSON.stringify(cfgToSave)); else store.del(iptvLocalKey());
-        iptv.lists.clear(); iptv.all = null; iptv.epg.clear();
+        resetIptvCaches();
         store.set('ef.iptv.sync', String(Date.now()));
         $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
         say(`${tested ? tested + '<br>' : ''}<strong>Saved for ${res.saved} of ${res.total} accounts.</strong>${res.failed ? ` ${res.failed} couldn't be updated; they'll be retried later.` : ''}

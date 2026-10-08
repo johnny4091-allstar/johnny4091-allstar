@@ -722,3 +722,11 @@ html.tv { font-size: 18px; }
 .live-result.bad { color: #ffb3bb; }
 .live-result .spinner { display: inline-block; width: 18px; height: 18px; vertical-align: -3px; margin: 0 .4rem 0 0; }
 .iptv-tile:not(.has-logo) .card-info > div:first-child { display: none; }
+.iptv-guide-cats { flex-wrap: nowrap; overflow-x: auto; padding: 4px; }
+.iptv-guide-cats .chip { flex: none; }
+.guide-row.has-logo .guide-ch-name { display: none; }
+.guide-loading { color: var(--muted); display: flex; align-items: center; gap: .8rem; padding: 2rem 0; }
+.guide-loading .spinner { width: 22px; height: 22px; margin: 0; border-width: 3px; }
+button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85rem; text-align: left; }
+.iptv-tile .iptv-logo img { width: 100%; height: 100%; max-width: none; object-fit: contain; }
+.iptv-tile .iptv-logo { inset: 0 0 36% 0; padding: 10px 12%; }
