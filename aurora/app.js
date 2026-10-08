@@ -193,8 +193,8 @@
   }
 
   // ---------- Splash ----------
-  // Plays its animation at least once, then fades when the first screen is ready.
-  const SPLASH_MIN = 2000, SPLASH_MAX = 10000;
+  // Stays up for 10 seconds while its loading bar fills, then fades into the first screen.
+  const SPLASH_MIN = 10000, SPLASH_MAX = 10000;
   let splashDone = false;
   function hideSplash() {
     if (splashDone) return;

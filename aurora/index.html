@@ -16,15 +16,17 @@
     #splash .streak { stroke-dasharray: 60; stroke-dashoffset: 60; animation: splash-draw .9s cubic-bezier(.6,0,.2,1) .15s forwards; }
     #splash .a { stroke-dasharray: 75; stroke-dashoffset: 75; animation: splash-draw .8s cubic-bezier(.6,0,.2,1) .45s forwards; }
     #splash .word { width: min(62vw, 420px); height: auto; margin-top: min(5vmin, 34px); opacity: 0; transform: translateY(8px); animation: splash-rise .7s ease-out .9s forwards; }
-    #splash .loading { position: absolute; bottom: 12vh; width: 140px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.08); overflow: hidden; opacity: 0; animation: splash-rise .4s ease-out 1.9s forwards; }
-    #splash .loading span { position: absolute; inset: 0 auto 0 0; width: 40%; border-radius: 2px; background: linear-gradient(90deg, #18b6d6, #4f7bff, #7a5cff); animation: splash-load 1.1s ease-in-out infinite; }
+    /* Fills from empty to full over the splash's 10 seconds (app.js keeps the splash up exactly that long). */
+    #splash .loading { position: absolute; bottom: max(7vh, 36px); width: min(64vw, 380px); height: 4px; border-radius: 2px; background: rgba(255,255,255,.1); overflow: hidden; opacity: 0; animation: splash-rise .4s ease-out .3s forwards; }
+    #splash .loading span { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 2px; background: linear-gradient(90deg, #18b6d6, #4f7bff, #7a5cff); box-shadow: 0 0 10px rgba(79,123,255,.6); animation: splash-fill 10s linear forwards; }
     @keyframes splash-draw { to { stroke-dashoffset: 0; } }
     @keyframes splash-rise { to { opacity: 1; transform: none; } }
     @keyframes splash-glow { to { opacity: 1; } }
     @keyframes splash-drift { to { transform: translate(6vmax, -4vmax) scale(1.08); } }
-    @keyframes splash-load { 0% { left: -40%; } 100% { left: 100%; } }
+    @keyframes splash-fill { to { width: 100%; } }
     @media (prefers-reduced-motion: reduce) {
       #splash *, #splash .glow { animation: none !important; opacity: 1 !important; stroke-dashoffset: 0 !important; transform: none !important; }
+      #splash .loading span { animation: splash-fill 10s linear forwards !important; }
     }
   </style>
 </head>

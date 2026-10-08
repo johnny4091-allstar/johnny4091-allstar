@@ -1,2 +1,3 @@
+- The opening screen now stays up for 10 seconds, with a loading bar along the bottom that fills up as it goes.
 - Phones: the big banner on the home screen has a new layout. The picture sits on top and the show's logo, description and buttons sit underneath it, so they no longer run into the Aurora header or over the picture.
 - Tall show logos now shrink to fit on TVs and sideways phones instead of reaching up into the header.
