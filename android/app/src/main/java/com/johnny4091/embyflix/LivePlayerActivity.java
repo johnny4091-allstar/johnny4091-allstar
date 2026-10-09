@@ -2,6 +2,7 @@ package com.johnny4091.embyflix;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -44,6 +45,7 @@ import androidx.media3.ui.PlayerView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -51,6 +53,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 
 /**
  * Full-screen live TV player for M3U / Xtream channels. ExoPlayer plays the provider's streams directly
@@ -84,6 +87,7 @@ public class LivePlayerActivity extends Activity {
     private int retries;
     private boolean stopped;
     private String group = "";
+    private String userAgent;
 
     private ExoPlayer player;
     private PlayerView playerView;
@@ -125,17 +129,30 @@ public class LivePlayerActivity extends Activity {
         if (channels.isEmpty()) { finish(); return; }
         index = Math.max(0, Math.min(intent.getIntExtra(EXTRA_INDEX, 0), channels.size() - 1));
         group = intent.getStringExtra(EXTRA_GROUP) == null ? "" : intent.getStringExtra(EXTRA_GROUP);
-        String userAgent = intent.getStringExtra(EXTRA_USER_AGENT);
+        userAgent = intent.getStringExtra(EXTRA_USER_AGENT);
         if (TextUtils.isEmpty(userAgent)) userAgent = "Aurora/" + versionName() + " (Android)";
 
         buildViews();
-        buildPlayer(userAgent);
+        buildPlayer();
         tune(index);
     }
 
     // ---------- Player ----------
 
-    private void buildPlayer(String userAgent) {
+    /**
+     * How much video to hold in memory. ExoPlayer's default allows about 130 MB, which together with the app's
+     * own screens is more than many TV boxes give an app, so Android closed Aurora. A quarter of what this
+     * device allows the app (16-64 MB) is still tens of seconds of HD.
+     */
+    private int bufferBytes() {
+        ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+        int heapMb = am == null ? 128 : Math.max(am.getMemoryClass(), am.getLargeMemoryClass());
+        int mb = Math.max(16, Math.min(64, heapMb / 4));
+        if (am != null && am.isLowRamDevice()) mb = 16;
+        return mb * 1024 * 1024;
+    }
+
+    private void buildPlayer() {
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
                 .setUserAgent(userAgent)
                 .setAllowCrossProtocolRedirects(true)
@@ -143,7 +160,9 @@ public class LivePlayerActivity extends Activity {
                 .setReadTimeoutMs(20000);
         // A deeper buffer than the default: live IPTV streams often arrive in bursts.
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(15000, 60000, 2000, 4000)
+                .setBufferDurationsMs(15000, 50000, 2000, 4000)
+                .setTargetBufferBytes(bufferBytes())
+                .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
         player = new ExoPlayer.Builder(this)
                 .setLoadControl(loadControl)
@@ -167,8 +186,16 @@ public class LivePlayerActivity extends Activity {
         playerView.setPlayer(player);
     }
 
+    private void releasePlayer() {
+        handler.removeCallbacks(retryRunnable);
+        if (player == null) return;
+        if (playerView != null) playerView.setPlayer(null);
+        player.release();
+        player = null;
+    }
+
     private void tune(int i) {
-        if (channels.isEmpty()) return;
+        if (channels.isEmpty() || player == null) return;
         index = (i + channels.size()) % channels.size();
         retries = 0;
         handler.removeCallbacks(retryRunnable);
@@ -365,33 +392,51 @@ public class LivePlayerActivity extends Activity {
         if (TextUtils.isEmpty(url) || !(url.startsWith("http://") || url.startsWith("https://"))) return;
         Bitmap cached = logoCache.get(url);
         if (cached != null) { into.setImageBitmap(cached); return; }
-        logoLoader.execute(() -> {
-            Bitmap bmp = null;
-            HttpURLConnection conn = null;
-            try {
-                conn = (HttpURLConnection) new URL(url).openConnection();
-                conn.setConnectTimeout(8000);
-                conn.setReadTimeout(8000);
-                conn.setInstanceFollowRedirects(true);
-                try (InputStream in = conn.getInputStream()) {
+        if (isFinishing()) return;
+        try {
+            logoLoader.execute(() -> {
+                Bitmap bmp = null;
+                HttpURLConnection conn = null;
+                try {
+                    conn = (HttpURLConnection) new URL(url).openConnection();
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(8000);
+                    conn.setInstanceFollowRedirects(true);
+                    byte[] data;
+                    try (InputStream in = conn.getInputStream(); ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+                        byte[] chunk = new byte[16 * 1024];
+                        for (int n; (n = in.read(chunk)) > 0; ) {
+                            buf.write(chunk, 0, n);
+                            if (buf.size() > 2 * 1024 * 1024) throw new java.io.IOException("logo too big");
+                        }
+                        data = buf.toByteArray();
+                    }
+                    // Decode big logos at a reduced size straight away instead of full size first.
                     BitmapFactory.Options opts = new BitmapFactory.Options();
-                    opts.inPreferredConfig = Bitmap.Config.ARGB_8888;
-                    bmp = BitmapFactory.decodeStream(in, null, opts);
+                    opts.inJustDecodeBounds = true;
+                    BitmapFactory.decodeByteArray(data, 0, data.length, opts);
+                    int sample = 1;
+                    while (opts.outWidth / (sample * 2) >= 240 && opts.outHeight / (sample * 2) >= 60) sample *= 2;
+                    opts = new BitmapFactory.Options();
+                    opts.inSampleSize = sample;
+                    bmp = BitmapFactory.decodeByteArray(data, 0, data.length, opts);
+                    if (bmp != null && bmp.getWidth() > 240) {
+                        int h = Math.max(1, Math.round(bmp.getHeight() * 240f / bmp.getWidth()));
+                        bmp = Bitmap.createScaledBitmap(bmp, 240, h, true);
+                    }
+                } catch (Exception | OutOfMemoryError ignored) {
+                    // No logo; the name is enough.
+                } finally {
+                    if (conn != null) conn.disconnect();
                 }
-                if (bmp != null && bmp.getWidth() > 240) {
-                    int h = Math.max(1, Math.round(bmp.getHeight() * 240f / bmp.getWidth()));
-                    bmp = Bitmap.createScaledBitmap(bmp, 240, h, true);
-                }
-            } catch (Exception ignored) {
-                // No logo; the name is enough.
-            } finally {
-                if (conn != null) conn.disconnect();
-            }
-            if (bmp == null) return;
-            final Bitmap result = bmp;
-            logoCache.put(url, result);
-            handler.post(() -> { if (url.equals(into.getTag())) into.setImageBitmap(result); });
-        });
+                if (bmp == null) return;
+                final Bitmap result = bmp;
+                logoCache.put(url, result);
+                handler.post(() -> { if (url.equals(into.getTag())) into.setImageBitmap(result); });
+            });
+        } catch (RejectedExecutionException ignored) {
+            // Closing.
+        }
     }
 
     private final class ChannelAdapter extends BaseAdapter {
@@ -459,7 +504,8 @@ public class LivePlayerActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event);
+        // Closing early (no channels): nothing on screen to steer.
+        if (listPanel == null || event.getAction() != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event);
         int code = event.getKeyCode();
         if (listOpen()) {
             if (code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_DPAD_RIGHT || code == KeyEvent.KEYCODE_ESCAPE) {
@@ -503,6 +549,7 @@ public class LivePlayerActivity extends Activity {
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
             case KeyEvent.KEYCODE_MEDIA_PAUSE:
             case KeyEvent.KEYCODE_MEDIA_PLAY:
+                if (player == null) return true;
                 if (player.isPlaying()) player.pause();
                 else { player.seekToDefaultPosition(); player.play(); }
                 showBanner();
@@ -515,11 +562,15 @@ public class LivePlayerActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
-        if (listOpen()) { hideList(); return; }
+        if (listPanel != null && listOpen()) { hideList(); return; }
         finishWithResult();
     }
 
     private void finishWithResult() {
+        // Free the video memory now, before the app's main screen comes back, rather than whenever
+        // Android gets round to destroying this screen.
+        releasePlayer();
+        logoCache.evictAll();
         Intent result = new Intent();
         result.putExtra(RESULT_INDEX, index);
         setResult(RESULT_OK, result);
@@ -531,20 +582,26 @@ public class LivePlayerActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
-        if (player != null && stopped) {
+        if (stopped && !isFinishing() && listPanel != null) {
+            // Coming back to live TV: start the channel again at "now".
             stopped = false;
-            // Coming back to live TV: jump to now rather than resuming from where it paused.
-            player.seekToDefaultPosition();
-            player.prepare();
-            player.play();
+            buildPlayer();
+            tune(index);
         }
     }
 
     @Override
     protected void onStop() {
         super.onStop();
-        if (player != null) player.pause();
+        // Out of sight (Home button, another app): let go of the stream and its memory entirely.
+        releasePlayer();
         stopped = true;
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        logoCache.evictAll();
     }
 
     @Override
@@ -557,10 +614,7 @@ public class LivePlayerActivity extends Activity {
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         logoLoader.shutdownNow();
-        if (player != null) {
-            player.release();
-            player = null;
-        }
+        releasePlayer();
         super.onDestroy();
     }
 

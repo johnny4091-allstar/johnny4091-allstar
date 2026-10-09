@@ -1,3 +1,4 @@
-- The opening screen now stays up for 10 seconds, with a loading bar along the bottom that fills up as it goes.
-- Phones: the big banner on the home screen has a new layout. The picture sits on top and the show's logo, description and buttons sit underneath it, so they no longer run into the Aurora header or over the picture.
-- Tall show logos now shrink to fit on TVs and sideways phones instead of reaching up into the header.
+- Fixed Aurora closing when you press Back after watching live TV, on phones and TVs.
+- The live TV player now uses much less memory and frees it the moment you leave it, so the app has room to come back.
+- If Android stops the app's screen to save memory, Aurora now reloads it instead of closing.
+- If Aurora ever does close unexpectedly, the details are saved and show up in Admin → App log and in the Emby server logs.

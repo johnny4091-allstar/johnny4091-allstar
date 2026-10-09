@@ -337,6 +337,26 @@
     showSetup();
   }
 
+  // If the Android app closed unexpectedly last time, it saved the details. Keep them in the app log and send
+  // them to Emby's server logs (Admin → Server logs), where the admin can see them from any device.
+  (() => {
+    let crash = '';
+    try { crash = nativeApp?.getLastCrash?.() || ''; } catch { /* older app */ }
+    if (crash) {
+      appLog.add('error', 'Aurora closed unexpectedly: ' + crash.slice(0, 1500));
+      store.set('ef.pendingCrash', crash);
+    }
+  })();
+  function sendCrashReport() {
+    const crash = store.get('ef.pendingCrash');
+    if (!crash) return;
+    fetch(apiUrl('/ClientLog/Document'), {
+      method: 'POST',
+      headers: { 'X-Emby-Authorization': authHeader(), 'Content-Type': 'text/plain' },
+      body: `Aurora crash report · ${state.user?.Name || ''} · ${nativeApp?.getDeviceName?.() || ''}\n${crash}`,
+    }).then((res) => { if (res.ok) store.del('ef.pendingCrash'); }).catch(() => {});
+  }
+
   async function selectUser(user) {
     state.userId = user.Id;
     state.user = user;
@@ -351,6 +371,7 @@
       method: 'POST',
       body: { PlayableMediaTypes: ['Video', 'Audio'], SupportedCommands: [], SupportsMediaControl: false, SupportsPersistentIdentifier: true },
     }).catch(() => {});
+    sendCrashReport();
     try {
       const views = await api(userPath('/Views'));
       state.views = views?.Items || [];

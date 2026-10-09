@@ -22,6 +22,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -163,14 +164,27 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        CrashRecorder.install(this);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#070C1C"));
+        setContentView(root);
+        createWebView();
+
+        if (savedInstanceState != null) {
+            webView.restoreState(savedInstanceState);
+        } else {
+            webView.loadUrl(START_URL);
+        }
+    }
+
+    /** Builds the WebView that shows the app. Also used to start over if Android stops the WebView's engine. */
+    @SuppressLint("SetJavaScriptEnabled")
+    private void createWebView() {
         webView = new WebView(this);
         webView.setBackgroundColor(Color.parseColor("#070C1C"));
-        root.addView(webView, new FrameLayout.LayoutParams(
+        root.addView(webView, 0, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setContentView(root);
 
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
@@ -192,6 +206,12 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                 return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                restartWebView(view);
+                return true; // handled: keep the app running
             }
 
             @Override
@@ -241,11 +261,27 @@ public class MainActivity extends Activity {
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
         webView.requestFocus();
+    }
 
-        if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState);
-        } else {
-            webView.loadUrl(START_URL);
+    /**
+     * Android stopped the WebView's engine, usually to free memory for the live TV player on a TV box. Without
+     * this the whole app would close; instead start the app page again in a fresh WebView.
+     */
+    private void restartWebView(WebView gone) {
+        if (gone != webView || isFinishing() || isDestroyed()) return;
+        if (customView != null) {
+            root.removeView(customView);
+            customView = null;
+            customViewCallback = null;
+        }
+        root.removeView(gone);
+        gone.destroy();
+        createWebView();
+        webView.loadUrl(START_URL);
+        if (playerMode) {
+            playerMode = false;
+            setSystemBarsHidden(false);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
         }
     }
 
@@ -529,6 +565,12 @@ public class MainActivity extends Activity {
                 String js = "window.auroraImageDone && window.auroraImageDone(" + JSONObject.quote(id) + "," + JSONObject.quote(dataUrl) + ")";
                 runOnUiThread(() -> webView.evaluateJavascript(js, null));
             }, "aurora-image").start();
+        }
+
+        /** Details of a crash from the last time the app ran ("" if none); reading clears it. */
+        @JavascriptInterface
+        public String getLastCrash() {
+            return CrashRecorder.take(MainActivity.this);
         }
 
         /** Plays M3U / Xtream live channels in the native player. channelsJson: [{name, url, logo, num, now}]. */
