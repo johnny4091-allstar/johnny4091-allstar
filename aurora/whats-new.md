@@ -1,5 +1,3 @@
-- New TV guide, styled like TiviMate:
-  - A details panel along the top shows the channel, the show's title, time, time left and description as you move around, with a clock.
-  - A compact grid with channel number, logo and name down the side, more channels on screen, and a line marking the current time. Shows that are on now are shaded for how far along they are.
-  - Press Left from the channel list (or tap the ☰ group button) to open the channel groups panel, including All channels and Recently watched. Back closes it.
-- The guide no longer loses your place when listings arrive while you're moving around in it.
+- Fixed Aurora reloading and showing the opening screen again when you press Back after watching live TV. Android was shutting down Aurora's screens to save memory while the live player was showing; Aurora now asks Android to keep them running.
+- If Android shuts them down anyway, Aurora now goes straight back to the page you were on, with no opening screen.
+- The TV guide no longer loads into the app while you're watching live TV; it waits until you're back, so it doesn't use extra memory during playback.

@@ -66,6 +66,24 @@ public class MainActivity extends Activity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private boolean playerMode;
+    /** False while another screen (the live TV player) is in front. */
+    private boolean inFront;
+    /** Big results held back until this screen is in front again (see runWhenInFront). */
+    private final java.util.ArrayList<String> heldScripts = new java.util.ArrayList<>();
+
+    /**
+     * Runs a script in the page now, or once this screen is back in front. Used for the TV guide, which can be
+     * megabytes: handing it to the page while the live player covers it can push Android into stopping the page.
+     */
+    private void runWhenInFront(String js) {
+        runOnUiThread(() -> {
+            if (inFront) webView.evaluateJavascript(js, null);
+            else {
+                heldScripts.clear(); // only the latest guide matters
+                heldScripts.add(js);
+            }
+        });
+    }
     /**
      * HTTP for services that don't allow cross-site calls from a web page (Jellyseerr).
      * Result goes to window.auroraHttpDone(id, {status, body, setCookie}); status 0 means a network error.
@@ -182,6 +200,12 @@ public class MainActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private void createWebView() {
         webView = new WebView(this);
+        // Keep the page's engine at full priority while the live TV player covers it. By default Android
+        // treats it as background work and stops it first when memory runs short, and the app then had to
+        // load everything again when the viewer pressed Back.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
         webView.setBackgroundColor(Color.parseColor("#070C1C"));
         root.addView(webView, 0, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -384,6 +408,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        inFront = false;
         // Save the playback position before the WebView stops running the page.
         webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
         webView.onPause();
@@ -392,7 +417,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        inFront = true;
         webView.onResume();
+        for (String js : heldScripts) webView.evaluateJavascript(js, null);
+        heldScripts.clear();
         // Back from the "install unknown apps" screen: carry on with the update.
         if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) installPendingApk();
     }
@@ -531,7 +559,7 @@ public class MainActivity extends Activity {
                     result = "{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
                 }
                 String js = "window.auroraEpgDone && window.auroraEpgDone(" + JSONObject.quote(id) + "," + result + ")";
-                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+                runWhenInFront(js);
             }, "aurora-epg").start();
         }
 

@@ -196,6 +196,18 @@
   // Stays up for 10 seconds while its loading bar fills, then fades into the first screen.
   const SPLASH_MIN = 10000, SPLASH_MAX = 10000;
   let splashDone = false;
+  // Android may stop the app's page to free memory while the native live TV player is in front, and the app
+  // then loads it again. That's no time for the opening screen: go straight back to where the viewer was.
+  const liveReturn = (() => {
+    try {
+      const r = JSON.parse(store.get('ef.liveReturn') || 'null');
+      return r && Date.now() - r.t < 6 * 3600000 ? r : null;
+    } catch { return null; }
+  })();
+  if (liveReturn) {
+    splashDone = true;
+    $('#splash')?.remove();
+  }
   function hideSplash() {
     if (splashDone) return;
     splashDone = true;
@@ -1284,29 +1296,42 @@
       const wanted = { ids: [...new Set(chans.map((c) => c.epgId).filter(Boolean))], names: [...new Set(chans.map((c) => c.name))] };
       const data = await new Promise((resolve, reject) => {
         const id = 'e' + (++epgSeq);
-        const timer = setTimeout(() => { epgPending.delete(id); reject(new Error('The TV guide took too long to download.')); }, 240000);
-        epgPending.set(id, (d) => { clearTimeout(timer); resolve(d); });
+        let late = false;
+        const timer = setTimeout(() => { late = true; reject(new Error('The TV guide took too long to download.')); }, 240000);
+        epgPending.set(id, (d) => {
+          clearTimeout(timer);
+          if (!late) return resolve(d);
+          // Arrived after we stopped waiting (the app holds it back while the live player is in front): use it anyway.
+          if (!d?.error && cfg === iptv.config) {
+            const g = buildGuide(d, url);
+            iptv.guide = g;
+            iptv.guideLoad = Promise.resolve(g);
+          }
+        });
         nativeApp.loadEpg(id, url, cfg.userAgent || '', 12, JSON.stringify(wanted));
       });
       if (data?.error) throw new Error(data.error);
-      const byId = new Map(), byName = new Map();
-      for (const [id, ch] of Object.entries(data?.channels || {})) {
-        const entry = { name: ch.n, icon: ch.i, progs: [] };
-        byId.set(id.trim().toLowerCase(), entry);
-        if (ch.n && !byName.has(normalName(ch.n))) byName.set(normalName(ch.n), entry);
-      }
-      for (const [id, list] of Object.entries(data?.programmes || {})) {
-        let entry = byId.get(id.trim().toLowerCase());
-        if (!entry) { entry = { name: '', icon: '', progs: [] }; byId.set(id.trim().toLowerCase(), entry); }
-        entry.progs = list.map(([start, end, title, desc]) => ({ start, end, title, desc })).sort((a, b) => a.start - b.start);
-      }
-      return { byId, byName, url };
+      return buildGuide(data, url);
     })();
     if (cfg === iptv.config) {
       iptv.guideLoad = p;
-      p.then((g) => { iptv.guide = g; }, (e) => { console.warn('TV guide', e); iptv.guideLoad = null; });
+      p.then((g) => { iptv.guide = g; }, (e) => { console.warn('TV guide', e); if (iptv.guideLoad === p) iptv.guideLoad = null; });
     }
     return p;
+  }
+  function buildGuide(data, url) {
+    const byId = new Map(), byName = new Map();
+    for (const [id, ch] of Object.entries(data?.channels || {})) {
+      const entry = { name: ch.n, icon: ch.i, progs: [] };
+      byId.set(id.trim().toLowerCase(), entry);
+      if (ch.n && !byName.has(normalName(ch.n))) byName.set(normalName(ch.n), entry);
+    }
+    for (const [id, list] of Object.entries(data?.programmes || {})) {
+      let entry = byId.get(id.trim().toLowerCase());
+      if (!entry) { entry = { name: '', icon: '', progs: [] }; byId.set(id.trim().toLowerCase(), entry); }
+      entry.progs = list.map(([start, end, title, desc]) => ({ start, end, title, desc })).sort((a, b) => a.start - b.start);
+    }
+    return { byId, byName, url };
   }
 
   function guideFor(ch) {
@@ -1377,11 +1402,13 @@
     if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
     const slice = list.slice(from, to);
     iptvPlaying = { list: slice, offset: from, group: groupName };
+    store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }))),
       index - from, groupName || '', iptv.config?.userAgent || '');
   }
   // The native player closed: remember the channel it ended on and put the focus back on it.
   window.auroraLiveClosed = (index) => {
+    store.del('ef.liveReturn');
     const p = iptvPlaying;
     iptvPlaying = null;
     if (!p || index < 0) return;
@@ -4465,6 +4492,7 @@
   async function boot() {
     setTimeout(hideSplash, SPLASH_MAX); // never leave anyone stuck on the splash
     if ($('#splash')) playSplashSound();
+    if (liveReturn?.hash?.startsWith('#/') && (!location.hash || location.hash === '#' || location.hash === '#/')) history.replaceState(null, '', liveReturn.hash);
     loadConfig();
     autoCheckForUpdate();
     document.addEventListener('visibilitychange', () => {
