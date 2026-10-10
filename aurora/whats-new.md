@@ -1,3 +1,5 @@
-- Live TV guide opens straight away. Channels show at once and listings fill in as they arrive, instead of waiting for the whole guide first.
-- The TV guide is now saved on your device, so after the first time it opens in a moment. It updates itself in the background every couple of hours.
-- Aurora starts getting the TV guide ready in the background shortly after it opens, so it's usually ready before you get to Live TV.
+- New TV guide, styled like TiviMate:
+  - A details panel along the top shows the channel, the show's title, time, time left and description as you move around, with a clock.
+  - A compact grid with channel number, logo and name down the side, more channels on screen, and a line marking the current time. Shows that are on now are shaded for how far along they are.
+  - Press Left from the channel list (or tap the ☰ group button) to open the channel groups panel, including All channels and Recently watched. Back closes it.
+- The guide no longer loses your place when listings arrive while you're moving around in it.

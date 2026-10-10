@@ -1440,7 +1440,9 @@
     epgObserver.observe(tile);
   }
 
-  // Guide grid for one category at a time: channels down the side, the next six hours across.
+  // TV guide in the style of TiviMate: details of the selected show along the top, a compact grid of channels
+  // and the next six hours below, and the channel groups in a panel that slides out on the left
+  // (Left from the channel column, or the group button).
   async function renderIptvGuide(body, isCurrent) {
     body.innerHTML = '<div class="spinner"></div>';
     let src;
@@ -1451,10 +1453,17 @@
     if (!isCurrent()) return;
     // The grid shows straight away; listings fill in when the full guide is ready (Xtream channels on screen
     // get theirs from the provider one by one in the meantime).
-    let guide = iptv.guide, guidePending = !guide;
-    const cats = src.categories;
+    let guidePending = !iptv.guide;
+    const recent = iptvRecent();
+    const cats = [
+      ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
+      ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
+      ...src.categories,
+    ];
+    if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
-    if (!cats.some((c) => c.id === current)) current = cats[0]?.id;
+    if (!cats.some((c) => c.id === current)) current = cats[0].id;
+    const CH_W = nav.tv ? 260 : (window.innerWidth < 600 ? 120 : 220);
     const start = new Date();
     start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
     const end = new Date(start.getTime() + GUIDE_HOURS * 3600000);
@@ -1462,40 +1471,140 @@
     const xOf = (t) => ((t - start) / 60000) * GUIDE_PX_PER_MIN;
     const slots = [];
     for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
+    const dayLabel = (d) => (new Date().toDateString() === d.toDateString() ? 'Today' : d.toLocaleDateString([], { weekday: 'short' }));
     body.innerHTML = `
-      <p class="guide-status hidden"></p>
-      <div class="chip-row iptv-guide-cats">${cats.map((c) => `<button class="chip${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`).join('')}</div>
-      <div class="guide" tabindex="-1">
-        <div class="guide-head">
-          <div class="guide-corner"></div>
-          <div class="guide-times" style="width:${width}px">
-            ${slots.map((t) => `<span style="left:${xOf(t)}px">${esc(clock(t))}</span>`).join('')}
-            <div class="guide-now" style="left:${xOf(Date.now())}px"></div>
+      <div class="tm-guide" style="--tm-ch:${CH_W}px">
+        <section class="tm-info">
+          <div class="tm-info-logo"></div>
+          <div class="tm-info-text">
+            <div class="tm-info-ch"></div>
+            <h2 class="tm-info-title"></h2>
+            <div class="tm-info-time"><span></span><div class="tm-info-bar"><i></i></div></div>
+            <p class="tm-info-desc"></p>
           </div>
+          <div class="tm-clock"><strong></strong><span></span></div>
+        </section>
+        <p class="guide-status hidden"></p>
+        <div class="guide tm-grid" tabindex="-1">
+          <div class="guide-head">
+            <button class="guide-corner tm-group-btn" title="Channel groups"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 6h18v2H3V6Zm0 5h18v2H3v-2Zm0 5h18v2H3v-2Z"/></svg><span></span></button>
+            <div class="guide-times" style="width:${width}px">
+              ${slots.map((t) => `<span style="left:${xOf(t)}px">${t.getMinutes() === 0 && t.getHours() === 0 ? esc(dayLabel(t)) + ' ' : ''}${esc(clock(t))}</span>`).join('')}
+            </div>
+          </div>
+          <div class="tm-body"><div class="guide-rows"></div><div class="tm-now-line"></div></div>
+          <div class="sentinel"></div>
         </div>
-        <div class="guide-rows"></div>
-        <div class="sentinel"></div>
+        <aside class="tm-groups" data-nav-zone aria-label="Channel groups">
+          <h3>Groups</h3>
+          <div class="tm-groups-list">${cats.map((c) => `<button class="tm-group${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}"><span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</button>`).join('')}</div>
+        </aside>
       </div>`;
+    const root = $('.tm-guide', body);
     const rows = $('.guide-rows', body), sentinel = $('.sentinel', body), guideEl = $('.guide', body), status = $('.guide-status', body);
-    const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); };
+    const nowLine = $('.tm-now-line', body), groupsEl = $('.tm-groups', body), groupBtn = $('.tm-group-btn', body);
+    const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); requestAnimationFrame(() => fit()); };
     let list = [], drawn = 0, groupName = '', token = 0;
     const PAGE = 30;
 
+    // ----- Details panel -----
+    const info = {
+      logo: $('.tm-info-logo', root), ch: $('.tm-info-ch', root), title: $('.tm-info-title', root),
+      time: $('.tm-info-time span', root), bar: $('.tm-info-bar', root), fill: $('.tm-info-bar i', root), desc: $('.tm-info-desc', root),
+    };
+    let shownInfo = null;
+    const showInfo = (ch, p) => {
+      if (!ch) return;
+      shownInfo = { ch, p };
+      const logo = channelLogo(ch);
+      if (info.logo.dataset.src !== logo) {
+        info.logo.dataset.src = logo;
+        info.logo.innerHTML = logo ? '<img alt="">' : `<span>${esc(ch.name)}</span>`;
+        const img = $('img', info.logo);
+        if (img) setLogo(img, logo, (ok) => { if (!ok) info.logo.innerHTML = `<span>${esc(ch.name)}</span>`; });
+      }
+      info.ch.textContent = [ch.num, ch.name].filter(Boolean).join('  ');
+      info.title.textContent = p?.title || ch.name;
+      const now = Date.now();
+      if (p) {
+        const airing = p.start <= now && p.end > now;
+        const left = Math.max(0, Math.round((p.end - now) / 60000));
+        const day = new Date(p.start).toDateString() === new Date().toDateString() ? '' : new Date(p.start).toLocaleDateString([], { weekday: 'long' }) + ' · ';
+        info.time.textContent = `${day}${clock(new Date(p.start))} – ${clock(new Date(p.end))}` + (airing ? ` · ${left} min left` : '');
+        info.bar.classList.toggle('hidden', !airing);
+        info.fill.style.width = airing ? `${Math.min(100, ((now - p.start) / (p.end - p.start)) * 100)}%` : '0';
+      } else {
+        info.time.textContent = guidePending ? 'Loading the TV guide…' : 'No listings for this channel';
+        info.bar.classList.add('hidden');
+      }
+      info.desc.textContent = p?.desc || '';
+    };
+    const progsOf = (el) => el.__guide.progs || [];
+    const nowOf = (el) => progsOf(el).find((p) => p.start <= Date.now() && p.end > Date.now()) || null;
+    root.addEventListener('focusin', (e) => {
+      const el = e.target.closest('.guide-row');
+      if (!el) return;
+      showInfo(el.__guide.ch, e.target.__prog || nowOf(el));
+    });
+    // Mouse and touch: hovering a show previews it too.
+    root.addEventListener('mouseover', (e) => {
+      if (nav.on) return;
+      const t = e.target.closest('.guide-prog, .guide-ch, .guide-empty'), el = t?.closest('.guide-row');
+      if (el) showInfo(el.__guide.ch, t.__prog || nowOf(el));
+    });
+
+    // ----- Clock and the "now" line -----
+    const clockEl = $('.tm-clock', root);
+    const tick = () => {
+      if (!root.isConnected) { clearInterval(timer); return; }
+      const d = new Date();
+      $('strong', clockEl).textContent = clock(d);
+      $('span', clockEl).textContent = d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+      const x = xOf(Date.now());
+      nowLine.style.left = `${CH_W + x}px`;
+      nowLine.classList.toggle('hidden', x < 0 || x > width);
+      $$('.guide-prog.now', rows).forEach((b) => {
+        const p = b.__prog;
+        if (p.end <= Date.now()) b.classList.remove('now');
+        else b.style.setProperty('--done', `${Math.min(100, ((Date.now() - Math.max(p.start, start.getTime())) / (p.end - Math.max(p.start, start.getTime()))) * 100)}%`);
+      });
+      if (shownInfo) showInfo(shownInfo.ch, shownInfo.p);
+    };
+    const timer = setInterval(tick, 30000);
+
+    // ----- Rows -----
     // Fills (or refills) one channel's line of programmes.
-    const fillLane = (el, progsIn) => {
+    const fillLane = (el) => {
       const { ch, play } = el.__guide;
       const lane = $('.guide-progs', el), now = Date.now();
-      const all = progsIn || guideFor(ch)?.progs || el.__shortList || [];
+      const logoSlot = $('.tm-ch-logo', el), logo = channelLogo(ch);
+      if (logo && !$('img', logoSlot) && !el.__logoTried) {
+        el.__logoTried = true;
+        const img = document.createElement('img');
+        img.alt = '';
+        logoSlot.appendChild(img);
+        setLogo(img, logo, (ok) => { if (!ok) img.remove(); });
+      }
+      const all = guideFor(ch)?.progs || el.__shortList || [];
+      el.__guide.progs = all;
       const progs = all.filter((p) => p.end > start.getTime() && p.start < end.getTime());
+      // Redrawing removes the show the remote is on; put it back on the one at the same spot afterwards.
+      const had = lane.contains(document.activeElement) ? document.activeElement.getBoundingClientRect().left : null;
+      const refocus = () => {
+        if (had == null) return;
+        const pick = [...$$('.guide-prog, .guide-empty', lane)].find((b) => b.getBoundingClientRect().right > had + 4) || $('.guide-ch', el);
+        pick?.focus({ preventScroll: true });
+      };
       lane.innerHTML = '';
       if (!progs.length) {
         const waiting = guidePending; // the full guide may still have this channel
-        lane.innerHTML = `<button class="guide-empty${waiting ? ' waiting' : ''}">${waiting ? 'Loading…' : esc(ch.name)}</button>`;
+        lane.innerHTML = `<button class="guide-empty${waiting ? ' waiting' : ''}">${waiting ? 'Loading…' : 'No information'}</button>`;
         $('.guide-empty', lane).addEventListener('click', play);
         if (waiting && !el.__short) {
           el.__short = true;
           iptvShortGuide(ch).then((list) => { el.__shortList = list?.length ? list : null; if (el.isConnected) fillLane(el); });
         }
+        refocus();
         return;
       }
       for (const p of progs) {
@@ -1504,12 +1613,17 @@
         const btn = document.createElement('button');
         const airing = p.start <= now && p.end > now;
         btn.className = 'guide-prog' + (airing ? ' now' : '');
+        btn.__prog = p;
         btn.style.left = left + 'px';
-        btn.style.width = (right - left - 3) + 'px';
+        btn.style.width = (right - left - 2) + 'px';
+        if (airing) btn.style.setProperty('--done', `${Math.min(100, ((now - Math.max(p.start, start.getTime())) / (p.end - Math.max(p.start, start.getTime()))) * 100)}%`);
         btn.innerHTML = `<strong>${esc(p.title)}</strong><span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span>`;
         btn.addEventListener('click', () => (airing ? play() : showIptvProgram(p, ch, play)));
         lane.appendChild(btn);
       }
+      refocus();
+      // Keep the details panel current if it's showing this channel.
+      if (shownInfo?.ch === ch) showInfo(ch, (el.contains(document.activeElement) && document.activeElement.__prog) || nowOf(el));
     };
     const row = (ch, idx) => {
       const el = document.createElement('div');
@@ -1517,16 +1631,16 @@
       const logo = channelLogo(ch);
       el.innerHTML = `
         <button class="guide-ch" title="Watch ${esc(ch.name)}">
-          ${logo ? '<img alt="">' : ''}
           <span class="guide-ch-num">${esc(ch.num || '')}</span>
+          <span class="tm-ch-logo"></span>
           <span class="guide-ch-name">${esc(ch.name)}</span>
         </button>
         <div class="guide-progs" style="width:${width}px"></div>`;
-      const img = $('img', el);
-      if (img) setLogo(img, logo, (ok) => { if (ok) el.classList.add('has-logo'); else img.remove(); });
       const play = () => playIptv(list, idx, groupName);
       el.__guide = { ch, play };
-      $('.guide-ch', el).addEventListener('click', play);
+      const chBtn = $('.guide-ch', el);
+      chBtn.addEventListener('click', play);
+      chBtn.__onLeftEdge = openGroups; // Left from the channel column opens the groups, as in TiviMate
       fillLane(el);
       return el;
     };
@@ -1536,40 +1650,67 @@
       drawn = stop;
     };
     new IntersectionObserver((en) => { if (en[0].isIntersecting && drawn < list.length) drawMore(); }, { root: guideEl, rootMargin: '400px' }).observe(sentinel);
+
+    // ----- Groups -----
+    function openGroups() {
+      groupsEl.classList.add('open');
+      root.classList.add('groups-open');
+      // Once it's visible (it can't take the focus before that).
+      if (nav.on) requestAnimationFrame(() => focusEl($('.tm-group.active', groupsEl) || $('.tm-group', groupsEl)));
+    }
+    function closeGroups(refocus = true) {
+      if (!groupsEl.classList.contains('open')) return false;
+      groupsEl.classList.remove('open');
+      root.classList.remove('groups-open');
+      if (refocus && nav.on) focusEl($('.guide-ch', rows) || groupBtn);
+      return true;
+    }
+    root.__closeGroups = closeGroups;
+    // The grid runs to the bottom of the screen, like a full-screen guide.
+    function fit() {
+      if (!root.isConnected) { window.removeEventListener('resize', fit); return; }
+      const top = guideEl.getBoundingClientRect().top + window.scrollY;
+      guideEl.style.height = `${Math.max(260, window.innerHeight - top - (nav.tv ? 24 : (window.innerWidth <= 560 ? 76 : 16)))}px`;
+    }
+    window.addEventListener('resize', fit);
+    requestAnimationFrame(fit);
+    groupBtn.addEventListener('click', () => (groupsEl.classList.contains('open') ? closeGroups() : openGroups()));
+    // Right from the groups goes back to the channels.
+    $$('.tm-group', groupsEl).forEach((b) => { b.__onRightEdge = () => closeGroups(); });
+    root.addEventListener('click', (e) => { if (groupsEl.classList.contains('open') && !e.target.closest('.tm-groups, .tm-group-btn')) closeGroups(false); });
+
     const openCat = async (id, focus) => {
       const t = ++token;
       current = id;
       store.set('ef.iptv.group', id);
-      $$('.iptv-guide-cats .chip', body).forEach((b) => b.classList.toggle('active', b.dataset.cat === id));
+      $$('.tm-group', groupsEl).forEach((b) => b.classList.toggle('active', b.dataset.cat === id));
+      const cat = cats.find((c) => c.id === id);
+      $('span', groupBtn).textContent = cat?.name || '';
       rows.innerHTML = '<div class="spinner"></div>';
       try {
-        const chans = await iptvChannels(id);
+        const chans = id === '__recent' ? iptvRecent() : await iptvChannels(id);
         if (t !== token || !isCurrent()) return;
-        list = chans; drawn = 0; groupName = cats.find((c) => c.id === id)?.name || '';
+        list = chans; drawn = 0; groupName = cat?.name || '';
         rows.innerHTML = list.length ? '' : '<p class="empty-msg">No channels here.</p>';
         guideEl.scrollTop = 0;
+        guideEl.scrollLeft = 0;
         drawMore();
-        if (focus) focusEl($('.guide-ch', rows));
+        const first = $('.guide-row', rows);
+        if (first) showInfo(first.__guide.ch, nowOf(first));
+        if (focus) focusEl($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows));
       } catch (e) { if (t === token) rows.innerHTML = `<p class="empty-msg">Couldn't load these channels: ${esc(e.message)}</p>`; }
     };
-    $$('.iptv-guide-cats .chip', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, nav.on)));
+    $$('.tm-group', groupsEl).forEach((b) => b.addEventListener('click', () => { closeGroups(false); openCat(b.dataset.cat, nav.on); }));
+
     if (guidePending) {
       setStatus('<span class="spinner"></span> Getting the full TV guide…');
       loadIptvGuide().then((g) => {
         if (!isCurrent()) return;
-        guide = g; guidePending = false;
+        guidePending = false;
         setStatus(g ? '' : nativeApp?.loadEpg
           ? 'No TV guide has been set up for these channels yet.' + (isAdmin() ? ' Add a guide (XMLTV) link in Admin → Live TV.' : '')
           : 'The TV guide is available in the Aurora app for Android and Android TV.');
-        // Redraw the listings without moving the remote's place.
-        const focused = document.activeElement, lane = focused?.closest('.guide-row');
-        const col = focused?.classList.contains('guide-prog') ? focused.getBoundingClientRect().left : null;
         $$('.guide-row', rows).forEach((el) => fillLane(el));
-        if (lane && col != null) {
-          const pick = [...$$('.guide-prog, .guide-empty', lane)].find((b) => b.getBoundingClientRect().right > col + 4);
-          if (pick) pick.focus({ preventScroll: true });
-          else focusEl($('.guide-ch', lane));
-        }
       }).catch((e) => {
         if (!isCurrent()) return;
         guidePending = false;
@@ -1578,7 +1719,8 @@
       });
     }
     await openCat(current);
-    if (!body.contains(document.activeElement)) autoFocus($('.iptv-guide-cats .chip.active', body));
+    tick();
+    if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
   }
 
   function showIptvProgram(p, ch, play) {
@@ -1604,7 +1746,7 @@
     const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ...(hasLiveTv() ? [['recordings', 'Recordings']] : [])];
     if (!tabs.some(([id]) => id === tab)) tab = 'channels';
     page.innerHTML = `
-      <div class="page-pad live-page iptv-page">
+      <div class="page-pad live-page iptv-page${tab === 'guide' ? ' guide-tab' : ''}">
         <div class="page-head">
           <h1>Live TV</h1>
           ${tabs.length > 1 ? `<div class="tab-bar">${tabs.map(([id, label]) => `<a href="#/livetv?tab=${id}" class="tab${id === tab ? ' active' : ''}">${label}</a>`).join('')}</div>` : ''}
@@ -4210,6 +4352,9 @@
       const zone = best.el.closest('[data-nav-zone]');
       if (zone && !zone.contains(cur)) best = { el: zone.querySelector('.active') || best.el };
     }
+    // Some items do something when there's nowhere further to go (the guide's channel column opens the groups).
+    if (!best && dir === 'left' && cur.__onLeftEdge) { cur.__onLeftEdge(); return; }
+    if (dir === 'right' && cur.__onRightEdge && (!best || !best.el.closest('[data-nav-zone]'))) { cur.__onRightEdge(); return; }
     if (best) focusEl(best.el);
   }
 
@@ -4303,6 +4448,7 @@
       return true;
     }
     if (trailerOpen()) { closeTrailerWindow(); return true; }
+    if ($('#page .tm-guide')?.__closeGroups?.()) return true;
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
     if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {

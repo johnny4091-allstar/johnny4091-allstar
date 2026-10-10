@@ -751,3 +751,84 @@ button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85re
 .guide-status { color: var(--muted); display: flex; align-items: center; gap: .7rem; margin: 0 0 .8rem; font-size: .9rem; }
 .guide-status .spinner { width: 18px; height: 18px; margin: 0; border-width: 3px; }
 .guide-empty.waiting { color: var(--dim); font-style: italic; }
+
+/* ---------- Live TV guide, TiviMate style ---------- */
+.tm-guide { position: relative; display: flex; flex-direction: column; gap: .6rem; }
+.tm-info { display: flex; align-items: stretch; gap: 1.2rem; height: 132px; padding: .9rem 1.1rem; border-radius: 8px;
+  background: linear-gradient(90deg, #121b3a 0%, #0c1330 100%); }
+.tm-info-logo { flex: none; width: 170px; border-radius: 6px; background: rgba(255,255,255,.04); display: flex; align-items: center; justify-content: center; padding: 10px; overflow: hidden; }
+.tm-info-logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.tm-info-logo span { font-weight: 700; text-align: center; color: var(--muted); }
+.tm-info-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .25rem; }
+.tm-info-ch { color: var(--accent); font-size: .8rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-info-title { margin: 0; font-size: 1.45rem; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-info-time { display: flex; align-items: center; gap: .8rem; color: var(--muted); font-size: .85rem; }
+.tm-info-bar { width: 140px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.15); overflow: hidden; }
+.tm-info-bar i { display: block; height: 100%; background: var(--accent); }
+.tm-info-desc { margin: .2rem 0 0; color: #c9cfdf; font-size: .85rem; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.tm-clock { flex: none; text-align: right; display: flex; flex-direction: column; justify-content: flex-start; }
+.tm-clock strong { font-size: 1.6rem; font-weight: 600; }
+.tm-clock span { color: var(--muted); font-size: .8rem; }
+.tm-guide .guide-status { margin: 0; }
+
+.tm-grid { --row: 50px; height: calc(100vh - 380px); min-height: 260px; border-radius: 8px; background: #0a1027; scroll-padding: 38px 0 0 var(--tm-ch); }
+.tm-grid .guide-head { height: 38px; background: #0f1736; }
+.tm-grid .guide-times { height: 38px; }
+.tm-grid .guide-times span { line-height: 38px; font-size: .8rem; border-left-color: #1d2752; }
+.tm-group-btn { width: var(--tm-ch); display: flex; align-items: center; gap: .5rem; padding: 0 .9rem; border: 0; border-right: 1px solid #1d2752;
+  background: #0f1736; color: #fff; font: inherit; font-size: .85rem; font-weight: 700; cursor: pointer; text-align: left; }
+.tm-group-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-group-btn svg { flex: none; color: var(--accent); }
+.tm-grid .guide-rows { position: relative; }
+.tm-grid .guide-row { border-bottom: 1px solid #141c3d; }
+.tm-grid .guide-ch { width: var(--tm-ch); height: var(--row); gap: .6rem; padding: 0 .8rem; background: #0e1533; border-right-color: #1d2752; }
+.tm-grid .guide-ch-num { flex: none; min-width: 2.2em; text-align: right; font-size: .85rem; color: var(--muted); }
+.tm-ch-logo { flex: none; width: 54px; height: 34px; display: flex; align-items: center; justify-content: center; }
+.tm-ch-logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.tm-grid .guide-ch-name { display: block; flex: 1; min-width: 0; font-size: .85rem; font-weight: 600; }
+.tm-grid .guide-progs { height: var(--row); }
+.tm-grid .guide-prog, .tm-grid .guide-empty { top: 1px; bottom: 1px; border-radius: 2px; padding: 0 .6rem; background: #131c3e; gap: 0; }
+.tm-grid .guide-empty { background: #0f1736; }
+.tm-grid .guide-prog strong { font-size: .85rem; font-weight: 600; }
+.tm-grid .guide-prog span { font-size: .7rem; }
+/* What's on now: lighter, with the part already shown shaded. */
+.tm-grid .guide-prog.now { background: linear-gradient(90deg, #26346a var(--done, 0%), #1c2753 var(--done, 0%)); }
+.tm-grid .guide-prog:hover, .tm-grid .guide-ch:hover { background: #2b3a72; }
+.kbd-nav .tm-grid .guide-prog:focus, .kbd-nav .tm-grid .guide-empty:focus, .kbd-nav .tm-grid .guide-ch:focus,
+.kbd-nav .tm-group-btn:focus { outline: none; background: var(--accent); color: #031317; }
+.kbd-nav .tm-grid .guide-prog:focus span, .kbd-nav .tm-grid .guide-ch:focus .guide-ch-num { color: #0b3b3b; }
+.tm-body { position: relative; width: max-content; min-width: 100%; }
+.tm-now-line { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); box-shadow: 0 0 8px rgba(42,212,208,.6); z-index: 1; pointer-events: none; }
+
+.tm-groups { position: absolute; left: 0; top: 0; bottom: 0; z-index: 20; width: min(320px, 85vw); padding: 1rem .6rem; border-radius: 8px;
+  background: rgba(8,13,32,.97); box-shadow: 12px 0 30px rgba(0,0,0,.5); display: flex; flex-direction: column;
+  transform: translateX(-12px); opacity: 0; visibility: hidden; transition: opacity .15s, transform .15s, visibility .15s; }
+.tm-groups.open { transform: none; opacity: 1; visibility: visible; transition: opacity .15s, transform .15s; }
+.tm-groups h3 { margin: 0 0 .6rem .6rem; font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); }
+.tm-groups-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.tm-group { display: flex; justify-content: space-between; align-items: center; gap: .6rem; padding: .6rem .8rem; border: 0; border-radius: 6px;
+  background: none; color: var(--muted); font: inherit; font-size: .95rem; text-align: left; cursor: pointer; }
+.tm-group span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tm-group small { color: var(--dim); }
+.tm-group.active { color: #fff; font-weight: 700; }
+.tm-group.active { box-shadow: inset 3px 0 0 var(--accent); }
+.tm-group:hover { background: rgba(255,255,255,.06); color: #fff; }
+.kbd-nav .tm-group:focus { outline: none; background: var(--accent); color: #031317; }
+.kbd-nav .tm-group:focus small { color: #0b3b3b; }
+
+@media (max-width: 700px) {
+  .tm-info { height: auto; min-height: 96px; padding: .7rem; gap: .7rem; }
+  .tm-info-logo { width: 72px; padding: 6px; }
+  .tm-info-title { font-size: 1.05rem; }
+  .tm-info-desc, .tm-clock { display: none; }
+  .tm-info-bar { width: 70px; }
+  .tm-grid { height: calc(100vh - 330px); --row: 50px; }
+  .tm-grid .guide-ch { gap: .3rem; padding: 0 .4rem; }
+  .tm-grid .guide-ch-num { display: none; }
+  .tm-ch-logo { width: 40px; height: 28px; }
+  .tm-grid .guide-ch-name { font-size: .72rem; }
+}
+/* A compact page header on the Guide tab leaves more room for channels. */
+.iptv-page.guide-tab .page-head { margin-bottom: .6rem; }
+.iptv-page.guide-tab .page-head h1 { font-size: 1.6rem; }
+.tv .iptv-page.guide-tab { padding-bottom: 0; }
