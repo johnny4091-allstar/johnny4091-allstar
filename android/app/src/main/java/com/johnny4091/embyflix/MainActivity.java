@@ -66,24 +66,6 @@ public class MainActivity extends Activity {
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private boolean playerMode;
-    /** False while another screen (the live TV player) is in front. */
-    private boolean inFront;
-    /** Big results held back until this screen is in front again (see runWhenInFront). */
-    private final java.util.ArrayList<String> heldScripts = new java.util.ArrayList<>();
-
-    /**
-     * Runs a script in the page now, or once this screen is back in front. Used for the TV guide, which can be
-     * megabytes: handing it to the page while the live player covers it can push Android into stopping the page.
-     */
-    private void runWhenInFront(String js) {
-        runOnUiThread(() -> {
-            if (inFront) webView.evaluateJavascript(js, null);
-            else {
-                heldScripts.clear(); // only the latest guide matters
-                heldScripts.add(js);
-            }
-        });
-    }
     /**
      * HTTP for services that don't allow cross-site calls from a web page (Jellyseerr).
      * Result goes to window.auroraHttpDone(id, {status, body, setCookie}); status 0 means a network error.
@@ -408,7 +390,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
-        inFront = false;
         // Save the playback position before the WebView stops running the page.
         webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
         webView.onPause();
@@ -417,10 +398,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        inFront = true;
         webView.onResume();
-        for (String js : heldScripts) webView.evaluateJavascript(js, null);
-        heldScripts.clear();
         // Back from the "install unknown apps" screen: carry on with the update.
         if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) installPendingApk();
     }
@@ -546,21 +524,34 @@ public class MainActivity extends Activity {
         }
 
         /**
-         * Loads an XMLTV guide in the background. Result goes to window.auroraEpgDone(id, data) where data is
-         * EpgLoader's JSON, or {error} if it failed.
+         * Makes the XMLTV guide at url ready in the background. Then window.auroraEpgDone(id, data) gets a short
+         * summary ({channels, programmes}) or {error}; the page asks for listings with epgLookup.
          */
         @JavascriptInterface
-        public void loadEpg(String id, String url, String userAgent, int hoursAhead, String wantedJson) {
+        public void loadEpg(String id, String url, String userAgent) {
             new Thread(() -> {
                 String result;
                 try {
-                    result = EpgLoader.load(MainActivity.this, url, userAgent, hoursAhead, wantedJson);
+                    String ua = userAgent == null || userAgent.isEmpty() ? "Aurora/" + versionName() + " (Android)" : userAgent;
+                    result = EpgLoader.load(MainActivity.this, url, ua);
                 } catch (Throwable e) {
-                    result = "{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+                    result = "{\"error\":" + JSONObject.quote(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()) + "}";
                 }
                 String js = "window.auroraEpgDone && window.auroraEpgDone(" + JSONObject.quote(id) + "," + result + ")";
-                runWhenInFront(js);
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
             }, "aurora-epg").start();
+        }
+
+        /** Guide entries for the channels the page is showing; see EpgLoader.lookup. */
+        @JavascriptInterface
+        public String epgLookup(String url, String requestJson) {
+            return EpgLoader.lookup(url, requestJson);
+        }
+
+        /** How many of the given channels the guide covers; see EpgLoader.count. */
+        @JavascriptInterface
+        public String epgCount(String url, String requestJson) {
+            return EpgLoader.count(url, requestJson);
         }
 
         /** Fetches a picture the page couldn't load itself; window.auroraImageDone(id, dataUrl or ""). */

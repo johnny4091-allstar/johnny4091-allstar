@@ -1285,33 +1285,22 @@
   const epgPending = new Map();
   window.auroraEpgDone = (id, data) => { const done = epgPending.get(id); if (done) { epgPending.delete(id); done(data); } };
 
-  // Loads the guide once per session (the Android app downloads and reads it; it keeps a copy for six hours).
+  // Gets the guide ready once per session. The Android app downloads and reads it and keeps it (the page
+  // only ever asks it for the channels on screen: see guideFor), so this resolves to a small handle.
   function loadIptvGuide(cfg = iptv.config) {
     if (cfg === iptv.config && iptv.guideLoad) return iptv.guideLoad;
     const p = (async () => {
-      if (!nativeApp?.loadEpg) return null;
+      if (!nativeApp?.loadEpg || !nativeApp.epgLookup) return null;
       const url = await iptvGuideUrl(cfg);
       if (!url) return null;
-      const chans = cfg.type === 'xtream' ? await iptvAllChannels(cfg) : (await iptvSource(cfg)).all;
-      const wanted = { ids: [...new Set(chans.map((c) => c.epgId).filter(Boolean))], names: [...new Set(chans.map((c) => c.name))] };
-      const data = await new Promise((resolve, reject) => {
+      const data = await new Promise((resolve) => {
         const id = 'e' + (++epgSeq);
-        let late = false;
-        const timer = setTimeout(() => { late = true; reject(new Error('The TV guide took too long to download.')); }, 240000);
-        epgPending.set(id, (d) => {
-          clearTimeout(timer);
-          if (!late) return resolve(d);
-          // Arrived after we stopped waiting (the app holds it back while the live player is in front): use it anyway.
-          if (!d?.error && cfg === iptv.config) {
-            const g = buildGuide(d, url);
-            iptv.guide = g;
-            iptv.guideLoad = Promise.resolve(g);
-          }
-        });
-        nativeApp.loadEpg(id, url, cfg.userAgent || '', 12, JSON.stringify(wanted));
+        epgPending.set(id, resolve);
+        nativeApp.loadEpg(id, url, cfg.userAgent || '');
       });
       if (data?.error) throw new Error(data.error);
-      return buildGuide(data, url);
+      if (!data?.channels) throw new Error("The guide link didn't return a TV guide (XMLTV).");
+      return { url, channels: data.channels, programmes: data.programmes, cache: new Map() };
     })();
     if (cfg === iptv.config) {
       iptv.guideLoad = p;
@@ -1319,25 +1308,34 @@
     }
     return p;
   }
-  function buildGuide(data, url) {
-    const byId = new Map(), byName = new Map();
-    for (const [id, ch] of Object.entries(data?.channels || {})) {
-      const entry = { name: ch.n, icon: ch.i, progs: [] };
-      byId.set(id.trim().toLowerCase(), entry);
-      if (ch.n && !byName.has(normalName(ch.n))) byName.set(normalName(ch.n), entry);
+
+  // Looks up many channels in one go (a long channel list one at a time would be slow on a TV box).
+  function guidePrefetch(chans, g = iptv.guide) {
+    if (!g || !chans?.length) return;
+    const todo = chans.filter((ch) => ch && !g.cache.has(ch.id || ch.name));
+    for (let i = 0; i < todo.length; i += 500) {
+      const part = todo.slice(i, i + 500);
+      let res = null;
+      try { res = JSON.parse(nativeApp.epgLookup(g.url, JSON.stringify(part.map((ch) => ({ id: ch.epgId || '', name: ch.name || '' }))))); } catch { /* none */ }
+      part.forEach((ch, k) => {
+        const e = res?.[k];
+        g.cache.set(ch.id || ch.name, e ? { name: e.n, icon: e.i, progs: e.p.map(([start, end, title, desc]) => ({ start, end, title, desc })) } : null);
+      });
     }
-    for (const [id, list] of Object.entries(data?.programmes || {})) {
-      let entry = byId.get(id.trim().toLowerCase());
-      if (!entry) { entry = { name: '', icon: '', progs: [] }; byId.set(id.trim().toLowerCase(), entry); }
-      entry.progs = list.map(([start, end, title, desc]) => ({ start, end, title, desc })).sort((a, b) => a.start - b.start);
-    }
-    return { byId, byName, url };
   }
 
-  function guideFor(ch) {
-    const g = iptv.guide;
+  // A channel's guide entry {name, icon, progs: [{start, end, title, desc}]}, asked of the Android app and kept.
+  function guideFor(ch, g = iptv.guide) {
     if (!g || !ch) return null;
-    return (ch.epgId && g.byId.get(ch.epgId.trim().toLowerCase())) || g.byName.get(normalName(ch.name)) || null;
+    const key = ch.id || ch.name;
+    if (g.cache.has(key)) return g.cache.get(key);
+    let entry = null;
+    try {
+      const [e] = JSON.parse(nativeApp.epgLookup(g.url, JSON.stringify([{ id: ch.epgId || '', name: ch.name || '' }]))) || [];
+      if (e) entry = { name: e.n, icon: e.i, progs: e.p.map(([start, end, title, desc]) => ({ start, end, title, desc })) };
+    } catch { /* no entry */ }
+    g.cache.set(key, entry);
+    return entry;
   }
   function guideNow(ch, at = Date.now()) {
     return guideFor(ch)?.progs.find((p) => p.start <= at && p.end > at) || null;
@@ -1401,6 +1399,7 @@
     let from = 0, to = list.length;
     if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
     const slice = list.slice(from, to);
+    guidePrefetch(slice);
     iptvPlaying = { list: slice, offset: from, group: groupName };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }))),
@@ -1447,7 +1446,11 @@
       setLogo(img, logo, (ok) => { if (ok) tile.classList.add('has-logo'); else img.remove(); });
     }
   }
-  function repaintTiles() { $$('#page .iptv-tile').forEach(paintTile); }
+  function repaintTiles() {
+    const tiles = $$('#page .iptv-tile');
+    guidePrefetch(tiles.map((t) => t.__ch).filter(Boolean));
+    tiles.forEach(paintTile);
+  }
 
   // Fetches what's on for tiles as they scroll into view.
   let epgObserver = null;
@@ -1673,6 +1676,7 @@
     };
     const drawMore = () => {
       const stop = Math.min(list.length, drawn + PAGE);
+      guidePrefetch(list.slice(drawn, stop));
       for (let i = drawn; i < stop; i++) rows.appendChild(row(list[i], i));
       drawn = stop;
     };
@@ -1730,10 +1734,11 @@
     $$('.tm-group', groupsEl).forEach((b) => b.addEventListener('click', () => { closeGroups(false); openCat(b.dataset.cat, nav.on); }));
 
     if (guidePending) {
-      setStatus('<span class="spinner"></span> Getting the full TV guide…');
+      setStatus('<span class="spinner"></span> Getting the full TV guide… The first time can take a few minutes.');
       loadIptvGuide().then((g) => {
         if (!isCurrent()) return;
         guidePending = false;
+        guidePrefetch($$('.guide-row', rows).map((el) => el.__guide.ch));
         setStatus(g ? '' : nativeApp?.loadEpg
           ? 'No TV guide has been set up for these channels yet.' + (isAdmin() ? ' Add a guide (XMLTV) link in Admin → Live TV.' : '')
           : 'The TV guide is available in the Aurora app for Android and Android TV.');
@@ -1816,6 +1821,7 @@
     const PAGE = 90;
     const drawMore = () => {
       const end = Math.min(shown.length, drawn + PAGE);
+      guidePrefetch(shown.slice(drawn, end));
       for (let i = drawn; i < end; i++) {
         const ch = shown[i], list = shown, idx = i, g = groupName;
         const tile = createIptvTile(ch, () => playIptv(list, idx, g));
@@ -3106,12 +3112,18 @@
           if (!g) guideNote = 'No TV guide found. Add a guide link above to get one.';
           else {
             const chans = d.type === 'xtream' ? await iptvAllChannels(d) : src.all;
-            const saved = iptv.guide;
-            iptv.guide = g; // match against the guide being tested
-            const matched = chans.filter((c) => guideFor(c)?.progs.length).length;
-            const logos = chans.filter((c) => channelLogo(c)).length;
-            iptv.guide = saved;
-            guideNote = `TV guide: listings for ${matched} of ${chans.length} channels · logos for ${logos}.`;
+            let matched = 0, logos = chans.filter((c) => c.logo).length;
+            for (let i = 0; i < chans.length; i += 2000) {
+              const part = chans.slice(i, i + 2000);
+              const c = JSON.parse(nativeApp.epgCount(g.url, JSON.stringify(part.map((ch) => ({ id: ch.epgId || '', name: ch.name || '' })))));
+              matched += c.listings;
+              // Logos: from the playlist, or else from the guide.
+              const noLogo = part.filter((ch) => !ch.logo);
+              if (noLogo.length) logos += JSON.parse(nativeApp.epgCount(g.url, JSON.stringify(noLogo.map((ch) => ({ id: ch.epgId || '', name: ch.name || '' }))))).logos;
+            }
+            guideNote = `TV guide: ${Number(g.channels).toLocaleString()} channels in the guide · listings for ${matched} of ${chans.length} of your channels · logos for ${logos}.`;
+            // The test made this guide the app's current one; switch back to the saved settings' guide.
+            iptv.guideLoad = null; iptv.guide = null;
           }
         } catch (e) { guideNote = `TV guide: ${esc(e.message)}`; }
       }

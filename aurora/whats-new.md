@@ -1,3 +1,4 @@
-- Fixed Aurora reloading and showing the opening screen again when you press Back after watching live TV. Android was shutting down Aurora's screens to save memory while the live player was showing; Aurora now asks Android to keep them running.
-- If Android shuts them down anyway, Aurora now goes straight back to the page you were on, with no opening screen.
-- The TV guide no longer loads into the app while you're watching live TV; it waits until you're back, so it doesn't use extra memory during playback.
+- Fixed the TV guide not loading on TVs and phones. The app now reads and keeps the guide itself and gives each screen only the channels it's showing, instead of loading the whole guide (often tens of megabytes) into the app's screens.
+- The guide now follows redirects from the provider (for example from http to https), and is requested as "Aurora" like the channel streams.
+- The guide no longer needs the full channel list downloaded first, and has no time limit for very large guides. The first load can take a few minutes for a big guide; after that it opens in moments.
+- Admin → Live TV → Test now also says how many channels the guide has, so it's clear whether the guide link works.
