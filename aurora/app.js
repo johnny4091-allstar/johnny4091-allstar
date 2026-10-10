@@ -380,6 +380,8 @@
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
+      // Get the TV guide ready in the background (after Home has loaded) so the Guide opens quickly.
+      if (iptvOn() && nativeApp?.loadEpg) setTimeout(() => { if (iptvOn()) loadIptvGuide().catch(() => {}); }, 12000);
       // If the Live TV source changed while the Live TV page or Home was showing, redraw it.
       if (/^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
     });
@@ -1229,6 +1231,32 @@
   }
   const iptvNowCached = (ch) => guideNow(ch)?.title || iptv.epg.get(ch.streamId)?.v?.title || '';
 
+  // The next few programmes for one Xtream channel, used by the Guide while the full guide is still loading.
+  // A few at a time, kept for 10 minutes.
+  const shortGuide = new Map(), shortQueue = [];
+  let shortActive = 0;
+  function iptvShortGuide(ch) {
+    if (iptv.config?.type !== 'xtream' || !ch.streamId) return Promise.resolve(null);
+    const hit = shortGuide.get(ch.streamId);
+    if (hit && Date.now() - hit.t < 600000) return hit.p;
+    const p = new Promise((resolve) => shortQueue.push({ ch, resolve }));
+    shortGuide.set(ch.streamId, { t: Date.now(), p });
+    pumpShortGuide();
+    return p;
+  }
+  function pumpShortGuide() {
+    while (shortActive < 4 && shortQueue.length) {
+      const { ch, resolve } = shortQueue.shift();
+      shortActive++;
+      xtJson(iptv.config, { action: 'get_short_epg', stream_id: ch.streamId, limit: 10 })
+        .then((r) => (r?.epg_listings || []).map((e) => ({
+          title: b64(e.title), desc: b64(e.description || ''), start: Number(e.start_timestamp) * 1000, end: Number(e.stop_timestamp) * 1000,
+        })).filter((e) => e.end > e.start).sort((a, b) => a.start - b.start))
+        .catch(() => null)
+        .then((list) => { shortActive--; resolve(list); pumpShortGuide(); });
+    }
+  }
+
   // ----- TV guide (XMLTV) -----
   // Xtream accounts publish one at xmltv.php; M3U playlists may name one in their header; the admin can set any.
   async function iptvGuideUrl(cfg = iptv.config) {
@@ -1421,19 +1449,9 @@
       return;
     }
     if (!isCurrent()) return;
-    body.innerHTML = '<p class="guide-loading"><span class="spinner"></span> Loading the TV guide… The first time can take a minute.</p>';
-    let guide;
-    try { guide = await loadIptvGuide(); } catch (e) {
-      if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load the TV guide: ${esc(e.message)}</p>`;
-      return;
-    }
-    if (!isCurrent()) return;
-    if (!guide) {
-      body.innerHTML = `<p class="empty-msg">${nativeApp?.loadEpg
-        ? 'No TV guide has been set up for these channels yet.' + (isAdmin() ? ' Add a guide (XMLTV) link in Admin → Live TV.' : '')
-        : 'The TV guide is available in the Aurora app for Android and Android TV.'}</p>`;
-      return;
-    }
+    // The grid shows straight away; listings fill in when the full guide is ready (Xtream channels on screen
+    // get theirs from the provider one by one in the meantime).
+    let guide = iptv.guide, guidePending = !guide;
     const cats = src.categories;
     let current = store.get('ef.iptv.group');
     if (!cats.some((c) => c.id === current)) current = cats[0]?.id;
@@ -1445,6 +1463,7 @@
     const slots = [];
     for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
     body.innerHTML = `
+      <p class="guide-status hidden"></p>
       <div class="chip-row iptv-guide-cats">${cats.map((c) => `<button class="chip${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">${esc(c.name)}</button>`).join('')}</div>
       <div class="guide" tabindex="-1">
         <div class="guide-head">
@@ -1457,10 +1476,41 @@
         <div class="guide-rows"></div>
         <div class="sentinel"></div>
       </div>`;
-    const rows = $('.guide-rows', body), sentinel = $('.sentinel', body), guideEl = $('.guide', body);
+    const rows = $('.guide-rows', body), sentinel = $('.sentinel', body), guideEl = $('.guide', body), status = $('.guide-status', body);
+    const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); };
     let list = [], drawn = 0, groupName = '', token = 0;
     const PAGE = 30;
 
+    // Fills (or refills) one channel's line of programmes.
+    const fillLane = (el, progsIn) => {
+      const { ch, play } = el.__guide;
+      const lane = $('.guide-progs', el), now = Date.now();
+      const all = progsIn || guideFor(ch)?.progs || el.__shortList || [];
+      const progs = all.filter((p) => p.end > start.getTime() && p.start < end.getTime());
+      lane.innerHTML = '';
+      if (!progs.length) {
+        const waiting = guidePending; // the full guide may still have this channel
+        lane.innerHTML = `<button class="guide-empty${waiting ? ' waiting' : ''}">${waiting ? 'Loading…' : esc(ch.name)}</button>`;
+        $('.guide-empty', lane).addEventListener('click', play);
+        if (waiting && !el.__short) {
+          el.__short = true;
+          iptvShortGuide(ch).then((list) => { el.__shortList = list?.length ? list : null; if (el.isConnected) fillLane(el); });
+        }
+        return;
+      }
+      for (const p of progs) {
+        const left = Math.max(0, xOf(p.start)), right = Math.min(width, xOf(p.end));
+        if (right - left < 4) continue;
+        const btn = document.createElement('button');
+        const airing = p.start <= now && p.end > now;
+        btn.className = 'guide-prog' + (airing ? ' now' : '');
+        btn.style.left = left + 'px';
+        btn.style.width = (right - left - 3) + 'px';
+        btn.innerHTML = `<strong>${esc(p.title)}</strong><span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span>`;
+        btn.addEventListener('click', () => (airing ? play() : showIptvProgram(p, ch, play)));
+        lane.appendChild(btn);
+      }
+    };
     const row = (ch, idx) => {
       const el = document.createElement('div');
       el.className = 'guide-row';
@@ -1475,23 +1525,9 @@
       const img = $('img', el);
       if (img) setLogo(img, logo, (ok) => { if (ok) el.classList.add('has-logo'); else img.remove(); });
       const play = () => playIptv(list, idx, groupName);
+      el.__guide = { ch, play };
       $('.guide-ch', el).addEventListener('click', play);
-      const lane = $('.guide-progs', el), now = Date.now();
-      const progs = (guideFor(ch)?.progs || []).filter((p) => p.end > start.getTime() && p.start < end.getTime());
-      if (!progs.length) lane.innerHTML = `<button class="guide-empty">${esc(ch.name)}</button>`;
-      $('.guide-empty', lane)?.addEventListener('click', play);
-      for (const p of progs) {
-        const left = Math.max(0, xOf(p.start)), right = Math.min(width, xOf(p.end));
-        if (right - left < 4) continue;
-        const btn = document.createElement('button');
-        const airing = p.start <= now && p.end > now;
-        btn.className = 'guide-prog' + (airing ? ' now' : '');
-        btn.style.left = left + 'px';
-        btn.style.width = (right - left - 3) + 'px';
-        btn.innerHTML = `<strong>${esc(p.title)}</strong><span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span>`;
-        btn.addEventListener('click', () => (airing ? play() : showIptvProgram(p, ch, play)));
-        lane.appendChild(btn);
-      }
+      fillLane(el);
       return el;
     };
     const drawMore = () => {
@@ -1517,6 +1553,30 @@
       } catch (e) { if (t === token) rows.innerHTML = `<p class="empty-msg">Couldn't load these channels: ${esc(e.message)}</p>`; }
     };
     $$('.iptv-guide-cats .chip', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, nav.on)));
+    if (guidePending) {
+      setStatus('<span class="spinner"></span> Getting the full TV guide…');
+      loadIptvGuide().then((g) => {
+        if (!isCurrent()) return;
+        guide = g; guidePending = false;
+        setStatus(g ? '' : nativeApp?.loadEpg
+          ? 'No TV guide has been set up for these channels yet.' + (isAdmin() ? ' Add a guide (XMLTV) link in Admin → Live TV.' : '')
+          : 'The TV guide is available in the Aurora app for Android and Android TV.');
+        // Redraw the listings without moving the remote's place.
+        const focused = document.activeElement, lane = focused?.closest('.guide-row');
+        const col = focused?.classList.contains('guide-prog') ? focused.getBoundingClientRect().left : null;
+        $$('.guide-row', rows).forEach((el) => fillLane(el));
+        if (lane && col != null) {
+          const pick = [...$$('.guide-prog, .guide-empty', lane)].find((b) => b.getBoundingClientRect().right > col + 4);
+          if (pick) pick.focus({ preventScroll: true });
+          else focusEl($('.guide-ch', lane));
+        }
+      }).catch((e) => {
+        if (!isCurrent()) return;
+        guidePending = false;
+        setStatus(`Couldn't load the full TV guide: ${esc(e.message)}`);
+        $$('.guide-row', rows).forEach((el) => fillLane(el));
+      });
+    }
     await openCat(current);
     if (!body.contains(document.activeElement)) autoFocus($('.iptv-guide-cats .chip.active', body));
   }

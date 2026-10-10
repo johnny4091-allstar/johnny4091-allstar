@@ -748,3 +748,6 @@ html.tv { font-size: 18px; }
 button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85rem; text-align: left; }
 .iptv-tile .iptv-logo img { width: 100%; height: 100%; max-width: none; object-fit: contain; }
 .iptv-tile .iptv-logo { inset: 0 0 36% 0; padding: 10px 12%; }
+.guide-status { color: var(--muted); display: flex; align-items: center; gap: .7rem; margin: 0 0 .8rem; font-size: .9rem; }
+.guide-status .spinner { width: 18px; height: 18px; margin: 0; border-width: 3px; }
+.guide-empty.waiting { color: var(--dim); font-style: italic; }

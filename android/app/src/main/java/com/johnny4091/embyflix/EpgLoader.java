@@ -37,10 +37,84 @@ import java.util.zip.GZIPInputStream;
  */
 final class EpgLoader {
     private static final long CACHE_MS = 6 * 3600_000L;
+    /** A saved result is used straight away for this long without checking for a newer guide... */
+    private static final long RESULT_FRESH_MS = 2 * 3600_000L;
+    /** ...and up to this long while a newer one is fetched in the background for next time. */
+    private static final long RESULT_STALE_MS = 8 * 3600_000L;
+    private static final Set<String> refreshing = new HashSet<>();
 
     private EpgLoader() {}
 
+    /**
+     * The guide for the wanted channels. Reading a big guide takes a while on a TV box, so the result is
+     * saved: later calls return it at once and refresh it in the background when it's getting old.
+     */
     static String load(Context context, String url, String userAgent, int hoursAhead, String wantedJson) throws Exception {
+        File dir = cacheDir(context);
+        String key = Integer.toHexString((url + "|" + hoursAhead + "|" + wantedJson).hashCode());
+        File saved = new File(dir, key + ".json");
+        long age = System.currentTimeMillis() - saved.lastModified();
+        if (saved.exists() && saved.length() > 0 && age < RESULT_STALE_MS) {
+            String result = readText(saved);
+            if (result != null) {
+                if (age > RESULT_FRESH_MS) refreshLater(context, url, userAgent, hoursAhead, wantedJson, saved, key);
+                return result;
+            }
+        }
+        String result = build(context, url, userAgent, hoursAhead, wantedJson);
+        save(saved, result);
+        return result;
+    }
+
+    private static void refreshLater(Context context, String url, String userAgent, int hoursAhead, String wantedJson, File saved, String key) {
+        synchronized (refreshing) {
+            if (!refreshing.add(key)) return;
+        }
+        Thread t = new Thread(() -> {
+            try {
+                save(saved, build(context, url, userAgent, hoursAhead, wantedJson));
+            } catch (Throwable ignored) {
+                // Keep using the saved guide.
+            } finally {
+                synchronized (refreshing) { refreshing.remove(key); }
+            }
+        }, "aurora-epg-refresh");
+        t.setPriority(Thread.MIN_PRIORITY);
+        t.start();
+    }
+
+    private static void save(File file, String text) {
+        File tmp = new File(file.getPath() + ".part");
+        try (OutputStream out = new FileOutputStream(tmp)) {
+            out.write(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            tmp.delete();
+            return;
+        }
+        if (!tmp.renameTo(file)) tmp.delete();
+    }
+
+    private static String readText(File file) {
+        try (InputStream in = new FileInputStream(file); java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream((int) file.length())) {
+            byte[] buf = new byte[65536];
+            for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+            return out.toString("UTF-8");
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static File cacheDir(Context context) throws IOException {
+        File dir = new File(context.getCacheDir(), "epg");
+        if (!dir.exists() && !dir.mkdirs()) throw new IOException("no cache folder");
+        // Clear out guides nobody has asked for in a couple of days (old links, changed channel lists).
+        File[] old = dir.listFiles();
+        long cutoff = System.currentTimeMillis() - 48 * 3600_000L;
+        for (int i = 0; old != null && i < old.length; i++) if (old[i].lastModified() < cutoff) old[i].delete();
+        return dir;
+    }
+
+    private static String build(Context context, String url, String userAgent, int hoursAhead, String wantedJson) throws Exception {
         File file = download(context, url, userAgent);
         Set<String> wantedIds = new HashSet<>(), wantedNames = new HashSet<>();
         if (wantedJson != null && !wantedJson.isEmpty()) {
@@ -165,12 +239,12 @@ final class EpgLoader {
 
     /** Downloads the guide to the app's cache, reusing a copy less than six hours old. */
     private static File download(Context context, String url, String userAgent) throws IOException {
-        File dir = new File(context.getCacheDir(), "epg");
-        if (!dir.exists() && !dir.mkdirs()) throw new IOException("no cache folder");
+        File dir = cacheDir(context);
         File file = new File(dir, Integer.toHexString(url.hashCode()) + ".xml");
         if (file.exists() && System.currentTimeMillis() - file.lastModified() < CACHE_MS && file.length() > 0) return file;
         HttpURLConnection conn = null;
-        File tmp = new File(dir, file.getName() + ".part");
+        // Separate name per download so a background refresh and a first load never write the same file.
+        File tmp = new File(dir, file.getName() + "." + Thread.currentThread().getId() + ".part");
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
             conn.setConnectTimeout(20000);

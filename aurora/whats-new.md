@@ -1,2 +1,3 @@
-- Live TV: scrolling down through channels with the remote no longer jumps into the category list and back. Up and Down now move row by row through the channels, and Left takes you to the category you're in.
-- Live TV no longer pulls the focus back to the categories if you start moving before all the channels have loaded.
+- Live TV guide opens straight away. Channels show at once and listings fill in as they arrive, instead of waiting for the whole guide first.
+- The TV guide is now saved on your device, so after the first time it opens in a moment. It updates itself in the background every couple of hours.
+- Aurora starts getting the TV guide ready in the background shortly after it opens, so it's usually ready before you get to Live TV.
