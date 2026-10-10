@@ -1,4 +1,2 @@
-- Fixed Aurora closing when you press Back after watching live TV, on phones and TVs.
-- The live TV player now uses much less memory and frees it the moment you leave it, so the app has room to come back.
-- If Android stops the app's screen to save memory, Aurora now reloads it instead of closing.
-- If Aurora ever does close unexpectedly, the details are saved and show up in Admin → App log and in the Emby server logs.
+- Live TV: scrolling down through channels with the remote no longer jumps into the category list and back. Up and Down now move row by row through the channels, and Left takes you to the category you're in.
+- Live TV no longer pulls the focus back to the categories if you start moving before all the channels have loaded.

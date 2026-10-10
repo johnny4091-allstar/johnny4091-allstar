@@ -1518,7 +1518,7 @@
     };
     $$('.iptv-guide-cats .chip', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, nav.on)));
     await openCat(current);
-    autoFocus($('.iptv-guide-cats .chip.active', body));
+    if (!body.contains(document.activeElement)) autoFocus($('.iptv-guide-cats .chip.active', body));
   }
 
   function showIptvProgram(p, ch, play) {
@@ -1578,7 +1578,7 @@
     if (!cats.some((c) => c.id === current)) current = cats[0].id;
     body.innerHTML = `
       <div class="iptv-layout">
-        <nav class="iptv-cats">${cats.map((c) => `<button class="iptv-cat${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">
+        <nav class="iptv-cats" data-nav-zone>${cats.map((c) => `<button class="iptv-cat${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">
           <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</button>`).join('')}</nav>
         <section class="iptv-main"><h2 class="iptv-title"></h2><div class="grid iptv-grid"></div><div class="sentinel"></div></section>
       </div>`;
@@ -1638,7 +1638,8 @@
       }, 300);
     });
     await openCat(current);
-    autoFocus($('.iptv-cat.active', body));
+    // Only if the remote hasn't already moved somewhere on this page while the channels loaded.
+    if (!body.contains(document.activeElement)) autoFocus($('.iptv-cat.active', body));
   }
 
   // ---------- Live TV ----------
@@ -4070,6 +4071,7 @@
     el.focus({ preventScroll: true });
     // Instant scrolling keeps positions settled for the next remote press.
     if (el.closest('#nav')) window.scrollTo({ top: 0 });
+    else if (el.closest('[data-nav-zone]')) el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // scroll the side list, not the page
     else if (!el.closest('#player')) el.scrollIntoView({ block: 'center', inline: 'nearest' });
   }
 
@@ -4118,6 +4120,13 @@
     // The fixed top bar is only reached when nothing else lies in that direction (like Netflix).
     const inPage = cands.filter((c) => !c.el.closest('#nav'));
     if (inPage.length && !cur.closest('#nav')) cands.splice(0, cands.length, ...inPage);
+    // A side list (data-nav-zone, like the live TV categories) keeps up/down to itself, and up/down in the
+    // grid beside it never lands in it: otherwise Down from a channel picks the nearer category.
+    if (vertical) {
+      const zone = cur.closest('[data-nav-zone]');
+      const same = cands.filter((c) => c.el.closest('[data-nav-zone]') === zone);
+      if (same.length || (!zone && cur.closest('.card'))) cands.splice(0, cands.length, ...same);
+    }
     let best = null;
     if (vertical) {
       // Go to the nearest line of items first, then the one most in line with the current item.
@@ -4135,6 +4144,11 @@
         if (!c.overlap) continue;
         if (!best || c.primary + c.cross * 2 < best.primary + best.cross * 2) best = c;
       }
+    }
+    // Stepping sideways into a side list lands on its selected item (the category being shown).
+    if (best && !vertical) {
+      const zone = best.el.closest('[data-nav-zone]');
+      if (zone && !zone.contains(cur)) best = { el: zone.querySelector('.active') || best.el };
     }
     if (best) focusEl(best.el);
   }
