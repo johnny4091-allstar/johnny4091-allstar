@@ -390,6 +390,7 @@
     } catch { state.views = []; }
     loadIptvConfigLocal();
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+    refreshRequestsConfig();
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has loaded) so the Guide opens quickly.
@@ -2339,6 +2340,8 @@
         const list = getAccounts(), a = list.find((x) => x.userId === state.userId);
         if (a) { a.secret = ''; saveAccounts(list); }
       }
+      // The server can't be reached at all: say so, rather than asking the viewer to sign in.
+      if (!e.status) throw e;
       return false;
     }
   }
@@ -2476,7 +2479,19 @@
     const body = $('[data-req-body]', page);
     let me;
     try { me = await seerrMe(); } catch (e) {
-      if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(e.message)}</p>`;
+      if (!isCurrent()) return;
+      const unreachable = !e.status;
+      body.innerHTML = `<div class="req-down">
+        <h2>${unreachable ? "Requests can't be reached right now" : 'Requests ran into a problem'}</h2>
+        <p class="muted">${unreachable
+          ? `Aurora couldn't connect to the request server${isAdmin() ? ` at <strong>${esc(state.requestsServer)}</strong>` : ''}. ${isAdmin()
+            ? "If Jellyseerr is running, its address has probably changed (a Cloudflare quick tunnel gets a new address each time it restarts). Put the new one in Admin → Requests."
+            : 'Please try again later.'}`
+          : esc(e.message)}</p>
+        <div class="m-actions"><button class="btn btn-white" data-retry>Try again</button>${isAdmin() ? '<a class="btn btn-gray" href="#/admin?tab=requests">Admin → Requests</a>' : ''}</div>
+      </div>`;
+      $('[data-retry]', body).addEventListener('click', () => route());
+      autoFocus($('[data-retry]', body));
       return;
     }
     if (!isCurrent()) return;
@@ -2689,9 +2704,65 @@
     $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !comingSoon && !hasRequests()));
   }
 
+  // The admin can set the Requests address in the app (Admin → Requests). It's kept on the Emby server for
+  // every account, like the Live TV settings, and wins over aurora-config.json.
+  const REQ_PREFS = { id: 'aurora-requests', client: 'aurora' };
+  let requestsOverride = null; // {server, on, t} from Emby, or null to use aurora-config.json
+
+  async function readAuroraPref(prefsId, userId = state.userId) {
+    const prefs = await api(`/DisplayPreferences/${prefsId}`, { params: { userId, client: 'aurora' } });
+    const raw = prefs?.CustomPrefs?.config;
+    return raw ? JSON.parse(raw) : null;
+  }
+  function writeAuroraPref(prefsId, userId, value) {
+    return api(`/DisplayPreferences/${prefsId}`, {
+      method: 'POST', params: { userId, client: 'aurora' },
+      body: {
+        Id: prefsId, Client: 'aurora', SortBy: 'SortName', SortOrder: 'Ascending',
+        RememberIndexing: false, RememberSorting: false, ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false,
+        PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: value ? JSON.stringify(value) : '' },
+      },
+    });
+  }
+  // Puts a setting on every account. Returns {saved, failed, total}.
+  async function writeAuroraPrefForAll(prefsId, value) {
+    const users = await api('/Users');
+    let saved = 0, failed = 0;
+    const queue = (users || []).slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try { await writeAuroraPref(prefsId, u.Id, value); saved++; } catch (e) { failed++; console.warn('Setting for', u.Name, e); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return { saved, failed, total: (users || []).length };
+  }
+
+  function applyRequestsServer(value, enabled) {
+    if (value === state.requestsServer && enabled === state.requestsEnabled) return;
+    state.requestsServer = value;
+    state.requestsEnabled = enabled;
+    store.set('ef.requestsServer', value);
+    store.set('ef.requestsEnabled', enabled ? '1' : '0');
+    updateRequestsLink();
+    if (/^#\/requests/.test(location.hash)) route();
+  }
+
+  // After sign-in: the address the admin set in the app, if any.
+  async function refreshRequestsConfig() {
+    try {
+      const cfg = await readAuroraPref(REQ_PREFS.id);
+      requestsOverride = cfg?.server ? cfg : null;
+      if (requestsOverride) applyRequestsServer(requestsOverride.server, requestsOverride.on !== false);
+      else loadRemoteConfig();
+    } catch (e) { console.warn('Requests settings', e); }
+  }
+
   // Reads the current Requests address from aurora-config.json in the repo, so a changed address
   // (a restarted Cloudflare quick tunnel, say) reaches every installed app without an update.
   async function loadRemoteConfig() {
+    if (requestsOverride) return;
     for (const url of REMOTE_CONFIG_URLS) {
       try {
         const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
@@ -2699,15 +2770,8 @@
         const cfg = await res.json();
         const value = typeof cfg.requestsServer === 'string' ? cfg.requestsServer.trim().replace(/\/+$/, '') : '';
         if (value && !/^https?:\/\//.test(value)) return;
-        const enabled = cfg.requestsEnabled === true && !!value;
-        if (value !== state.requestsServer || enabled !== state.requestsEnabled) {
-          state.requestsServer = value;
-          state.requestsEnabled = enabled;
-          store.set('ef.requestsServer', value);
-          store.set('ef.requestsEnabled', enabled ? '1' : '0');
-          updateRequestsLink();
-          if (/^#\/requests/.test(location.hash)) route();
-        }
+        if (requestsOverride) return;
+        applyRequestsServer(value, cfg.requestsEnabled === true && !!value);
         return;
       } catch { /* try the next location */ }
     }
@@ -2879,7 +2943,7 @@
   // isn't a server administrator, so the name check only decides who sees the menu item.
   const ADMIN_NAMES = ['johnny4091'];
   const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
-  const ADMIN_TABS = [['overview', 'Overview'], ['livetv', 'Live TV'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -2921,7 +2985,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
   }
 
@@ -3026,6 +3090,85 @@
   }
 
   // Live TV source: Emby's own Live TV, an M3U playlist, or an Xtream Codes account. Saved for every account.
+  async function adminRequests(body, isCurrent) {
+    await refreshRequestsConfig();
+    if (!isCurrent()) return;
+    const fromApp = !!requestsOverride;
+    body.innerHTML = `
+      <section class="admin-card req-admin">
+        <h2>Request server (Jellyseerr)</h2>
+        <p class="muted">The address everyone's Requests tab connects to. Saving applies it to every account; apps pick it up the next time they open.</p>
+        <dl class="admin-dl">
+          <dt>In use now</dt><dd>${state.requestsServer ? esc(state.requestsServer) : 'None'} <span class="pill">${fromApp ? 'set here' : 'from the app settings file'}</span></dd>
+        </dl>
+        <label class="admin-field"><span>Jellyseerr address</span>
+          <input type="url" data-f="server" value="${esc(state.requestsServer)}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://….trycloudflare.com">
+          <small>Using a Cloudflare quick tunnel? It gets a new address every time cloudflared restarts. Find the new one in cloudflared's output,
+            on the line "Your quick Tunnel has been created! Visit it at https://….trycloudflare.com", and paste it here.</small></label>
+        <label class="admin-check"><input type="checkbox" data-f="on"${state.requestsEnabled || !fromApp ? ' checked' : ''}> Show the Requests tab</label>
+        <div class="m-actions">
+          <button class="btn btn-gray" data-test>Test</button>
+          <button class="btn btn-red" data-save>Save for everyone</button>
+          ${fromApp ? '<button class="btn btn-gray" data-reset>Use the settings file instead</button>' : ''}
+        </div>
+        <div class="live-result" data-result></div>
+      </section>
+      <section class="admin-card">
+        <h2>A steadier address</h2>
+        <p class="muted">Quick tunnels change address whenever they restart, which is why Requests can suddenly stop working. A permanent address avoids that:
+          a free <strong>named</strong> Cloudflare Tunnel (with a Cloudflare account) keeps the same address, or Jellyseerr can be reached on your DuckDNS name
+          the same way Emby is (for example https://emby4836.duckdns.org:5055, with that port forwarded on your router).</p>
+      </section>`;
+    const input = $('[data-f="server"]', body), on = $('[data-f="on"]', body), result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const value = () => { let v = input.value.trim().replace(/\/+$/, ''); if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v; return v; };
+    const test = async (v) => {
+      if (!v) throw new Error('Enter the Jellyseerr address first.');
+      if (!nativeApp?.httpRequest) throw new Error('Testing works in the Aurora app for Android.');
+      const r = await nativeHttp('GET', v + '/api/v1/status', { Accept: 'application/json' }, null, 20000).catch((e) => ({ status: 0, error: e.message }));
+      if (!r.status) throw new Error(`Couldn't connect to ${esc(v)}. ${r.error ? esc(r.error) + '. ' : ''}Check the address, and that Jellyseerr and its tunnel are running.`);
+      let data = null; try { data = JSON.parse(r.body); } catch { /* not JSON */ }
+      if (r.status >= 400 || !data?.version) throw new Error(`${esc(v)} answered, but it doesn't look like Jellyseerr (status ${r.status}).`);
+      return `<strong>It works.</strong> Jellyseerr ${esc(data.version)}${data.updateAvailable ? ' (an update is available)' : ''}.`;
+    };
+    $('[data-test]', body).addEventListener('click', async () => {
+      say('<div class="spinner"></div>');
+      try { say(await test(value()), 'good'); } catch (e) { say(e.message, 'bad'); }
+    });
+    let confirmUnreachable = false;
+    $('[data-save]', body).addEventListener('click', async () => {
+      const v = value();
+      say('<div class="spinner"></div> Checking the address…');
+      let note = '';
+      try { note = await test(v); } catch (e) {
+        if (!v || !confirmUnreachable) {
+          confirmUnreachable = !!v;
+          return say(`${e.message}${v ? '<br>Press <strong>Save for everyone</strong> again to save it anyway.' : ''}`, 'bad');
+        }
+      }
+      confirmUnreachable = false;
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        const cfg = { server: v, on: on.checked, t: Date.now() };
+        const r = await writeAuroraPrefForAll(REQ_PREFS.id, cfg);
+        requestsOverride = cfg;
+        applyRequestsServer(v, on.checked);
+        $('.req-admin dd', body).innerHTML = `${esc(v)} <span class="pill">set here</span>`;
+        say(`${note ? note + '<br>' : ''}Saved for ${r.saved} of ${r.total} accounts.${r.failed ? ` ${r.failed} couldn't be updated.` : ''} Everyone's app uses it the next time it opens.`, r.failed ? 'bad' : 'good');
+      } catch (e) { say(`Couldn't save: ${esc(e.message)}`, 'bad'); }
+    });
+    $('[data-reset]', body)?.addEventListener('click', async () => {
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        await writeAuroraPrefForAll(REQ_PREFS.id, null);
+        requestsOverride = null;
+        await loadRemoteConfig();
+        adminRequests(body, isCurrent);
+      } catch (e) { say(`Couldn't save: ${esc(e.message)}`, 'bad'); }
+    });
+    autoFocus(input);
+  }
+
   async function adminLiveTv(body, isCurrent) {
     await refreshIptvConfig();
     if (!isCurrent()) return;

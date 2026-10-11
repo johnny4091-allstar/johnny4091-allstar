@@ -1,4 +1,2 @@
-- Fixed the TV guide not loading on TVs and phones. The app now reads and keeps the guide itself and gives each screen only the channels it's showing, instead of loading the whole guide (often tens of megabytes) into the app's screens.
-- The guide now follows redirects from the provider (for example from http to https), and is requested as "Aurora" like the channel streams.
-- The guide no longer needs the full channel list downloaded first, and has no time limit for very large guides. The first load can take a few minutes for a big guide; after that it opens in moments.
-- Admin → Live TV → Test now also says how many channels the guide has, so it's clear whether the guide link works.
+- Admin → Requests: change the Jellyseerr address from inside the app, with a Test button. Saving applies it to every account. Handy when a Cloudflare quick tunnel restarts and gets a new address.
+- When the request server can't be reached, the Requests tab now says so (with a Try again button, and for the admin a link to fix the address), instead of asking you to sign in.

@@ -832,3 +832,8 @@ button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85re
 .iptv-page.guide-tab .page-head { margin-bottom: .6rem; }
 .iptv-page.guide-tab .page-head h1 { font-size: 1.6rem; }
 .tv .iptv-page.guide-tab { padding-bottom: 0; }
+.admin-check { display: flex; align-items: center; gap: .6rem; margin: .4rem 0 1rem; color: var(--muted); }
+.admin-check input { width: 18px; height: 18px; accent-color: var(--accent); }
+.req-down { max-width: 640px; margin: 2rem auto; text-align: center; }
+.req-down h2 { margin: 0 0 .6rem; }
+.req-down .m-actions { justify-content: center; margin-top: 1.2rem; }
