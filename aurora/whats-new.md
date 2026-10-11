@@ -1,2 +1,1 @@
-- Admin → Requests: change the Jellyseerr address from inside the app, with a Test button. Saving applies it to every account. Handy when a Cloudflare quick tunnel restarts and gets a new address.
-- When the request server can't be reached, the Requests tab now says so (with a Try again button, and for the admin a link to fix the address), instead of asking you to sign in.
+- Countryboy89 is now an Aurora admin too, with access to the Admin page.

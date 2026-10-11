@@ -2941,7 +2941,7 @@
   // ---------- Admin dashboard ----------
   // Only the owner's account sees it. Emby itself also refuses these admin calls for anyone who
   // isn't a server administrator, so the name check only decides who sees the menu item.
-  const ADMIN_NAMES = ['johnny4091'];
+  const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
   const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
   const ADMIN_TABS = [['overview', 'Overview'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
