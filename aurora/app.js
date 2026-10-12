@@ -1118,8 +1118,39 @@
 
   const withScheme = (u) => (/^https?:\/\//i.test(u) ? u : 'http://' + u).replace(/\/+$/, '');
 
-  async function iptvText(url, cfg = iptv.config, timeoutMs = 60000) {
+  // Channel lists go through the Android app (IptvFetcher): it follows the provider's redirects, keeps the last
+  // good copy to fall back on when the provider has a hiccup, leaves movies and series out of M3U playlists,
+  // and hands the text over in pieces. A draft being tested in Admin never uses a saved copy.
+  let iptvFetchSeq = 0;
+  const iptvFetchPending = new Map();
+  window.auroraIptvDone = (id, r) => { const done = iptvFetchPending.get(id); if (done) { iptvFetchPending.delete(id); done(r); } };
+  const LIST_MAX_AGE = 30 * 60000;
+  let staleNoticeShown = false;
+
+  async function iptvText(url, cfg = iptv.config, timeoutMs = 60000, { maxAge = 0, liveOnly = false, saved = false } = {}) {
     const headers = cfg?.userAgent ? { 'User-Agent': cfg.userAgent } : {};
+    if (saved && nativeApp?.iptvFetch) {
+      const useSaved = cfg === iptv.config;
+      const r = await new Promise((resolve) => {
+        const id = 'f' + (++iptvFetchSeq);
+        iptvFetchPending.set(id, resolve);
+        nativeApp.iptvFetch(id, url, cfg?.userAgent || '', useSaved ? maxAge : 0, useSaved, liveOnly, timeoutMs);
+      });
+      if (!r?.status) throw new Error(`Couldn't reach the TV provider${r?.error ? ` (${r.error})` : ''}.`);
+      if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
+      if (r.stale && !staleNoticeShown) {
+        staleNoticeShown = true;
+        console.warn('TV provider not answering, using the saved list:', r.error);
+        toast("The TV provider isn't answering right now, so Aurora is showing the last saved channel list.", 5000);
+      }
+      const handle = nativeApp.iptvOpen(url, liveOnly);
+      if (!handle) throw new Error("Couldn't read the channel list.");
+      const parts = [];
+      try {
+        for (;;) { const chunk = nativeApp.iptvRead(handle, 1 << 20); if (!chunk) break; parts.push(chunk); }
+      } finally { nativeApp.iptvClose(handle); }
+      return parts.join('');
+    }
     if (nativeApp?.httpRequest) {
       const r = await nativeHttp('GET', url, headers, null, timeoutMs);
       if (r.status === 0) throw new Error(r.error || "Couldn't reach the TV provider.");
@@ -1136,8 +1167,8 @@
     const q = new URLSearchParams({ username: cfg.username, password: cfg.password || '', ...params });
     return `${withScheme(cfg.server)}/player_api.php?${q}`;
   }
-  async function xtJson(cfg, params) {
-    const text = await iptvText(xtUrl(cfg, params), cfg);
+  async function xtJson(cfg, params, opts) {
+    const text = await iptvText(xtUrl(cfg, params), cfg, 60000, opts);
     try { return JSON.parse(text); } catch { throw new Error("The TV provider's answer wasn't understood. Check the server address."); }
   }
   function xtChannel(cfg, st) {
@@ -1193,12 +1224,12 @@
     if (iptv.lists.has(key)) return iptv.lists.get(key);
     const p = (async () => {
       if (cfg.type === 'm3u') {
-        const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000);
+        const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000, { saved: true, liveOnly: true, maxAge: LIST_MAX_AGE });
         if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) throw new Error("That address didn't return an M3U playlist.");
         const { all, groups, guideUrl } = parseM3u(text);
         return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, guideUrl };
       }
-      const cats = await xtJson(cfg, { action: 'get_live_categories' });
+      const cats = await xtJson(cfg, { action: 'get_live_categories' }, { saved: true, maxAge: LIST_MAX_AGE });
       if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
       return { categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })), groups: new Map(), all: null };
     })();
@@ -1212,7 +1243,7 @@
     if (catId === '__all') return iptvAllChannels(cfg);
     if (src.groups.has(catId)) return src.groups.get(catId);
     if (cfg.type === 'xtream') {
-      const list = await xtJson(cfg, { action: 'get_live_streams', category_id: catId });
+      const list = await xtJson(cfg, { action: 'get_live_streams', category_id: catId }, { saved: true, maxAge: LIST_MAX_AGE });
       const chans = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
       src.groups.set(catId, chans);
       return chans;
@@ -1223,7 +1254,7 @@
   async function iptvAllChannels(cfg = iptv.config) {
     const src = await iptvSource(cfg);
     if (!src.all) {
-      const list = await xtJson(cfg, { action: 'get_live_streams' });
+      const list = await xtJson(cfg, { action: 'get_live_streams' }, { saved: true, maxAge: LIST_MAX_AGE });
       src.all = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
     }
     return src.all;
@@ -1391,6 +1422,13 @@
     store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ v: iptv.config?.v || 0, list }));
   }
 
+  // A loading error with a Try again button (the provider may just have had a hiccup).
+  function liveError(el, text, retry) {
+    el.innerHTML = `<div class="live-error"><p class="empty-msg">${text}</p><button class="btn btn-gray" data-retry>Try again</button></div>`;
+    $('[data-retry]', el).addEventListener('click', retry);
+    if (nav.on && (!document.activeElement || document.activeElement === document.body || !document.contains(document.activeElement))) focusEl($('[data-retry]', el));
+  }
+
   // Opens the native player with the list the channel came from, so up/down flips through it.
   let iptvPlaying = null;
   function playIptv(list, index, groupName) {
@@ -1480,7 +1518,7 @@
     body.innerHTML = '<div class="spinner"></div>';
     let src;
     try { src = await iptvSource(); } catch (e) {
-      if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load the channels: ${esc(e.message)}</p>`;
+      if (isCurrent()) liveError(body, `Couldn't load the channels: ${esc(e.message)}`, () => route());
       return;
     }
     if (!isCurrent()) return;
@@ -1732,7 +1770,7 @@
         const first = $('.guide-row', rows);
         if (first) showInfo(first.__guide.ch, nowOf(first));
         if (focus) focusEl($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows));
-      } catch (e) { if (t === token) rows.innerHTML = `<p class="empty-msg">Couldn't load these channels: ${esc(e.message)}</p>`; }
+      } catch (e) { if (t === token) liveError(rows, `Couldn't load these channels: ${esc(e.message)}`, () => openCat(id, nav.on)); }
     };
     $$('.tm-group', groupsEl).forEach((b) => b.addEventListener('click', () => { closeGroups(false); openCat(b.dataset.cat, nav.on); }));
 
@@ -1749,7 +1787,8 @@
       }).catch((e) => {
         if (!isCurrent()) return;
         guidePending = false;
-        setStatus(`Couldn't load the full TV guide: ${esc(e.message)}`);
+        setStatus(`Couldn't load the full TV guide: ${esc(e.message)} <button class="btn btn-gray btn-small" data-guide-retry>Try again</button>`);
+        $('[data-guide-retry]', status)?.addEventListener('click', () => route());
         $$('.guide-row', rows).forEach((el) => fillLane(el));
       });
     }
@@ -1801,7 +1840,7 @@
   async function renderIptvChannels(page, body, isCurrent) {
     let src;
     try { src = await iptvSource(); } catch (e) {
-      if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load the channels: ${esc(e.message)}</p>`;
+      if (isCurrent()) liveError(body, `Couldn't load the channels: ${esc(e.message)}`, () => route());
       return;
     }
     if (!isCurrent()) return;
@@ -1855,7 +1894,7 @@
         show(list, cat?.name || '');
         if (focus) focusEl($('.iptv-tile', grid));
       } catch (e) {
-        if (t === token) grid.innerHTML = `<p class="empty-msg">Couldn't load these channels: ${esc(e.message)}</p>`;
+        if (t === token) liveError(grid, `Couldn't load these channels: ${esc(e.message)}`, () => openCat(id, { focus: nav.on }));
       }
     };
     $$('.iptv-cat', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, { focus: nav.on })));

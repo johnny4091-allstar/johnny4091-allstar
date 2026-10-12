@@ -30,6 +30,7 @@ import android.widget.ListView;
 import android.widget.TextView;
 
 import androidx.annotation.OptIn;
+import androidx.media3.common.C;
 import androidx.media3.common.MediaItem;
 import androidx.media3.common.MimeTypes;
 import androidx.media3.common.PlaybackException;
@@ -38,6 +39,7 @@ import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
+import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
 import androidx.media3.ui.PlayerView;
@@ -85,6 +87,9 @@ public class LivePlayerActivity extends Activity {
     private final List<Channel> channels = new ArrayList<>();
     private int index;
     private int retries;
+    /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
+    private boolean failed;
+    private long bufferingSince;
     private boolean stopped;
     private String group = "";
     private String userAgent;
@@ -101,6 +106,8 @@ public class LivePlayerActivity extends Activity {
 
     static final class Channel {
         String name, url, logo, num, now;
+        /** The same channel in the other format (MPEG-TS / HLS), tried when the first keeps failing. */
+        boolean triedOther;
     }
 
     @Override
@@ -164,8 +171,12 @@ public class LivePlayerActivity extends Activity {
                 .setTargetBufferBytes(bufferBytes())
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
-        player = new ExoPlayer.Builder(this)
+        // If a TV box's preferred video decoder can't handle a channel, try its others rather than failing.
+        DefaultRenderersFactory renderers = new DefaultRenderersFactory(this).setEnableDecoderFallback(true);
+        player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
+                // Keep Wi-Fi awake while watching; some boxes otherwise let it doze and the stream drops.
+                .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this)
                         .setDataSourceFactory(new DefaultDataSource.Factory(this, http)))
                 .build();
@@ -174,7 +185,14 @@ public class LivePlayerActivity extends Activity {
             public void onPlaybackStateChanged(int state) {
                 if (state == Player.STATE_READY) {
                     retries = 0;
+                    failed = false;
+                    bufferingSince = 0;
                     status.setVisibility(View.GONE);
+                } else if (state == Player.STATE_BUFFERING) {
+                    if (bufferingSince == 0) bufferingSince = System.currentTimeMillis();
+                } else if (state == Player.STATE_ENDED) {
+                    // A live channel shouldn't end; the provider closed the stream. Connect again.
+                    retryAfterError(null);
                 }
             }
 
@@ -188,6 +206,7 @@ public class LivePlayerActivity extends Activity {
 
     private void releasePlayer() {
         handler.removeCallbacks(retryRunnable);
+        handler.removeCallbacks(watchdog);
         if (player == null) return;
         if (playerView != null) playerView.setPlayer(null);
         player.release();
@@ -198,38 +217,98 @@ public class LivePlayerActivity extends Activity {
         if (channels.isEmpty() || player == null) return;
         index = (i + channels.size()) % channels.size();
         retries = 0;
+        failed = false;
+        bufferingSince = 0;
         handler.removeCallbacks(retryRunnable);
         status.setVisibility(View.GONE);
         Channel c = channels.get(index);
-        MediaItem.Builder item = new MediaItem.Builder().setUri(c.url);
-        String lower = c.url.toLowerCase();
-        if (lower.contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
-        player.setMediaItem(item.build());
+        player.setMediaItem(mediaItem(c.url));
         player.prepare();
         player.setPlayWhenReady(true);
+        handler.removeCallbacks(watchdog);
+        handler.postDelayed(watchdog, WATCHDOG_MS);
         showBanner();
         if (adapter != null) adapter.notifyDataSetChanged();
     }
 
+    private static MediaItem mediaItem(String url) {
+        MediaItem.Builder item = new MediaItem.Builder().setUri(url);
+        if (url.toLowerCase().contains(".m3u8")) item.setMimeType(MimeTypes.APPLICATION_M3U8);
+        return item.build();
+    }
+
+    /** An Xtream channel's address in the other format: /live/…/123.ts ⇄ /live/…/123.m3u8. Null if there isn't one. */
+    static String otherFormat(String url) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?i)^(.*/live/.+)\\.(ts|m3u8)(\\?.*)?$").matcher(url);
+        if (!m.matches()) return null;
+        return m.group(1) + ("ts".equalsIgnoreCase(m.group(2)) ? ".m3u8" : ".ts") + (m.group(3) == null ? "" : m.group(3));
+    }
+
     private final Runnable retryRunnable = () -> {
         if (player == null) return;
+        bufferingSince = 0;
         player.seekToDefaultPosition();
         player.prepare();
         player.setPlayWhenReady(true);
     };
 
-    // Live streams drop now and then; reconnect a few times before giving up.
+    /** A stream can stall without any error (the provider stops sending but keeps the connection open). */
+    private static final long WATCHDOG_MS = 5000, STALL_MS = 25000;
+    private final Runnable watchdog = new Runnable() {
+        @Override public void run() {
+            if (player == null) return;
+            if (player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING
+                    && bufferingSince > 0 && System.currentTimeMillis() - bufferingSince > STALL_MS) {
+                retryAfterError(null);
+            }
+            handler.postDelayed(this, WATCHDOG_MS);
+        }
+    };
+
+    /** After the quick retries, keep trying now and then (about five minutes) in case the channel comes back. */
+    private static final int SLOW_RETRIES = 20;
+    private static final long SLOW_RETRY_MS = 15000;
+
+    // Live streams drop now and then; reconnect, and if a channel keeps failing try it in the other format.
     private void retryAfterError(PlaybackException error) {
-        if (retries < MAX_RETRIES) {
-            retries++;
+        if (player == null) return;
+        retries++;
+        bufferingSince = 0;
+        handler.removeCallbacks(retryRunnable);
+        Channel c = channels.get(index);
+        String other = c.triedOther ? null : otherFormat(c.url);
+        if (retries == 3 && other != null) {
+            // Some providers only serve a channel properly as HLS (or as MPEG-TS): switch and keep that.
+            c.triedOther = true;
+            c.url = other;
+            status.setText("Reconnecting…");
+            status.setVisibility(View.VISIBLE);
+            player.setMediaItem(mediaItem(other));
+            handler.postDelayed(retryRunnable, 1000);
+            return;
+        }
+        if (retries <= MAX_RETRIES) {
             status.setText(retries == 1 ? "Reconnecting…" : "Reconnecting… (" + retries + ")");
             status.setVisibility(View.VISIBLE);
-            handler.removeCallbacks(retryRunnable);
             handler.postDelayed(retryRunnable, Math.min(1000L * retries, 5000L));
+        } else if (retries <= MAX_RETRIES + SLOW_RETRIES) {
+            failed = true;
+            status.setText("This channel isn't working right now. Still trying…\nPress OK to try again now, or pick another channel.");
+            status.setVisibility(View.VISIBLE);
+            handler.postDelayed(retryRunnable, SLOW_RETRY_MS);
         } else {
-            status.setText("This channel isn't working right now.\nTry another channel.");
+            failed = true;
+            status.setText("This channel isn't working right now.\nPress OK to try again, or pick another channel.");
             status.setVisibility(View.VISIBLE);
         }
+    }
+
+    /** OK while a channel is failing: try again straight away. */
+    private void retryNow() {
+        retries = MAX_RETRIES; // stay in the slow-retry phase if this attempt fails too
+        status.setText("Trying again…");
+        handler.removeCallbacks(retryRunnable);
+        retryRunnable.run();
     }
 
     // ---------- Views ----------
@@ -294,6 +373,7 @@ public class LivePlayerActivity extends Activity {
         pill.setCornerRadius(dp(10));
         status.setBackground(pill);
         status.setVisibility(View.GONE);
+        status.setOnClickListener(v -> { if (failed) retryNow(); }); // tap on a phone
         root.addView(status, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
 
         // Typed channel number, top right.
@@ -536,6 +616,10 @@ public class LivePlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_CENTER:
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                if (failed) { retryNow(); return true; }
+                showBanner();
+                showList();
+                return true;
             case KeyEvent.KEYCODE_DPAD_LEFT:
             case KeyEvent.KEYCODE_GUIDE:
             case KeyEvent.KEYCODE_MENU:

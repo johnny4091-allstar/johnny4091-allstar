@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- In-app updates: the app downloads the new APK and opens the system installer. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Keeps Wi-Fi awake while live TV plays (ExoPlayer wake mode). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- One APK for phones, tablets and Android TV. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

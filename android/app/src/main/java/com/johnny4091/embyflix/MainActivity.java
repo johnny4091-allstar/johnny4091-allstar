@@ -74,23 +74,33 @@ public class MainActivity extends Activity {
         JSONObject result = new JSONObject();
         HttpURLConnection conn = null;
         try {
-            if (!url.startsWith("https://") && !url.startsWith("http://")) throw new IOException("unsupported address");
-            conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setRequestMethod(method);
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(30000);
             JSONObject headers = new JSONObject(headersJson == null || headersJson.isEmpty() ? "{}" : headersJson);
-            for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
-                String key = it.next();
-                conn.setRequestProperty(key, headers.getString(key));
-            }
-            if (body != null && !body.isEmpty()) {
-                conn.setDoOutput(true);
-                try (OutputStream out = conn.getOutputStream()) {
-                    out.write(body.getBytes(StandardCharsets.UTF_8));
+            String at = url;
+            int status;
+            for (int hop = 0; ; hop++) {
+                if (!at.startsWith("https://") && !at.startsWith("http://")) throw new IOException("unsupported address");
+                conn = (HttpURLConnection) new URL(at).openConnection();
+                conn.setRequestMethod(method);
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                // Followed below, so a move between http and https (common with TV providers) works too.
+                conn.setInstanceFollowRedirects(false);
+                for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
+                    String key = it.next();
+                    conn.setRequestProperty(key, headers.getString(key));
                 }
+                if (body != null && !body.isEmpty()) {
+                    conn.setDoOutput(true);
+                    try (OutputStream out = conn.getOutputStream()) {
+                        out.write(body.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                status = conn.getResponseCode();
+                String next = status >= 300 && status < 400 && "GET".equals(method) && hop < 5 ? conn.getHeaderField("Location") : null;
+                if (next == null) break;
+                conn.disconnect();
+                at = new URL(new URL(at), next).toString();
             }
-            int status = conn.getResponseCode();
             InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
             result.put("status", status);
             result.put("body", in == null ? "" : readAll(in));
@@ -650,6 +660,35 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void httpRequest(String id, String method, String url, String headersJson, String body) {
             new Thread(() -> nativeHttp(id, method, url, headersJson, body), "aurora-http").start();
+        }
+
+        /**
+         * Gets a channel list from the TV provider (see IptvFetcher). Then window.auroraIptvDone(id, {status, stale,
+         * error}); the page reads the text with iptvOpen / iptvRead.
+         */
+        @JavascriptInterface
+        public void iptvFetch(String id, String url, String userAgent, double maxAgeMs, boolean allowStale, boolean liveOnly, int timeoutMs) {
+            new Thread(() -> {
+                String ua = userAgent == null || userAgent.isEmpty() ? "Aurora/" + versionName() + " (Android)" : userAgent;
+                JSONObject r = IptvFetcher.fetch(MainActivity.this, url, ua, (long) maxAgeMs, allowStale, liveOnly, timeoutMs);
+                String js = "window.auroraIptvDone && window.auroraIptvDone(" + JSONObject.quote(id) + "," + r + ")";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            }, "aurora-iptv").start();
+        }
+
+        @JavascriptInterface
+        public int iptvOpen(String url, boolean liveOnly) {
+            return IptvFetcher.open(MainActivity.this, url, liveOnly);
+        }
+
+        @JavascriptInterface
+        public String iptvRead(int handle, int maxChars) {
+            return IptvFetcher.read(handle, maxChars);
+        }
+
+        @JavascriptInterface
+        public void iptvClose(int handle) {
+            IptvFetcher.close(handle);
         }
 
         /** Downloads the APK at url and opens the system installer. Progress goes to window.auroraUpdate(). */

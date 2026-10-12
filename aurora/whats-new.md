@@ -1,3 +1,10 @@
-- Smoother app: the TV guide no longer sits in memory all the time. Aurora keeps it on the device and reads only the channels on screen, so the app stops pausing to tidy up memory.
-- Reading the TV guide now happens at low priority, so it doesn't slow down scrolling, the remote or video, and it's refreshed less often.
-- The TV guide is only prepared in the background for people who have used Live TV in the last two weeks.
+- Live TV is steadier:
+  - When the TV provider has a hiccup, Aurora shows the last saved channel list instead of an error.
+  - Movies and series are left out of M3U playlists, so big playlists load much faster and use less memory.
+  - Channel lists and guides follow the provider's redirects (for example from http to https).
+  - Every Live TV loading error now has a Try again button.
+- The live player is more reliable:
+  - A stream that freezes without an error is restarted automatically after 25 seconds.
+  - A channel that keeps failing is tried in the other stream format (MPEG-TS or HLS).
+  - If a channel stays down, the player keeps trying for about five minutes; press OK (or tap the message) to try straight away.
+  - Better support for TV boxes whose video decoder can't handle a channel, and Wi-Fi is kept awake while you watch.
