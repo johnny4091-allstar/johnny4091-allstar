@@ -1,2 +1,1 @@
-- Admin → Live TV: choose which categories customers see. Press "Choose categories", tick the ones to show (there's a search box, Show all and Hide all), then Save for everyone. Hidden categories disappear everywhere: the category list, All channels, search and the guide.
-- New categories the provider adds stay hidden until you tick them, or turn on "Show new categories automatically" to have them appear by themselves.
+- Admin: see who's watching live TV (M3U / Xtream channels). Admin → Live TV shows each person watching, the channel and show, their device and how long, plus the channels watched recently. They're also counted in Overview → Watching now. Both update every 30 seconds.

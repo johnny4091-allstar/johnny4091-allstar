@@ -606,13 +606,14 @@ public class MainActivity extends Activity {
 
         /** Plays M3U / Xtream live channels in the native player. channelsJson: [{name, url, logo, num, now}]. */
         @JavascriptInterface
-        public void playLive(String channelsJson, int index, String group, String userAgent) {
+        public void playLive(String channelsJson, int index, String group, String userAgent, String reportJson) {
             runOnUiThread(() -> {
                 LivePlayerActivity.pendingChannels = channelsJson;
                 Intent intent = new Intent(MainActivity.this, LivePlayerActivity.class);
                 intent.putExtra(LivePlayerActivity.EXTRA_INDEX, index);
                 intent.putExtra(LivePlayerActivity.EXTRA_GROUP, group);
                 intent.putExtra(LivePlayerActivity.EXTRA_USER_AGENT, userAgent);
+                intent.putExtra(LivePlayerActivity.EXTRA_REPORT, reportJson);
                 startActivityForResult(intent, REQUEST_LIVE);
             });
         }

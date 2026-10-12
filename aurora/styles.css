@@ -856,3 +856,7 @@ button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85re
 .cat-row small { color: var(--dim); }
 .kbd-nav .cat-row input:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .kbd-nav .cat-row:focus-within { background: rgba(42,212,208,.15); }
+.pill.live { background: #6e1620; color: #ffd0d6; }
+.live-row { display: flex; align-items: center; gap: .9rem; }
+.live-row-logo { width: 56px; height: 36px; object-fit: contain; flex: none; }
+.admin-sub { margin: 1.2rem 0 .5rem; font-size: 1rem; color: var(--muted); }

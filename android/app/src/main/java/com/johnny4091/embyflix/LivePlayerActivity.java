@@ -71,6 +71,7 @@ public class LivePlayerActivity extends Activity {
     static final String EXTRA_INDEX = "index";
     static final String EXTRA_GROUP = "group";         // category name, shown above the channel list
     static final String EXTRA_USER_AGENT = "userAgent";
+    static final String EXTRA_REPORT = "report";       // Emby details for telling the admin what's playing
     static final String RESULT_INDEX = "index";
 
     private static final int ACCENT = Color.parseColor("#2AD4D0");
@@ -93,6 +94,7 @@ public class LivePlayerActivity extends Activity {
     private boolean stopped;
     private String group = "";
     private String userAgent;
+    private LiveReporter reporter;
 
     private ExoPlayer player;
     private PlayerView playerView;
@@ -139,6 +141,7 @@ public class LivePlayerActivity extends Activity {
         userAgent = intent.getStringExtra(EXTRA_USER_AGENT);
         if (TextUtils.isEmpty(userAgent)) userAgent = "Aurora/" + versionName() + " (Android)";
 
+        reporter = LiveReporter.from(intent.getStringExtra(EXTRA_REPORT));
         buildViews();
         buildPlayer();
         tune(index);
@@ -227,6 +230,9 @@ public class LivePlayerActivity extends Activity {
         player.setPlayWhenReady(true);
         handler.removeCallbacks(watchdog);
         handler.postDelayed(watchdog, WATCHDOG_MS);
+        // Report the channel once the viewer settles on it (not every channel while flicking through).
+        handler.removeCallbacks(reportChannel);
+        handler.postDelayed(reportChannel, 4000);
         showBanner();
         if (adapter != null) adapter.notifyDataSetChanged();
     }
@@ -250,6 +256,21 @@ public class LivePlayerActivity extends Activity {
         player.seekToDefaultPosition();
         player.prepare();
         player.setPlayWhenReady(true);
+    };
+
+    private static final long HEARTBEAT_MS = 60000;
+    private final Runnable heartbeat = new Runnable() {
+        @Override public void run() {
+            if (reporter != null) reporter.heartbeat();
+            handler.postDelayed(this, HEARTBEAT_MS);
+        }
+    };
+    private final Runnable reportChannel = () -> {
+        if (reporter == null || channels.isEmpty()) return;
+        Channel c = channels.get(index);
+        reporter.playing(c.name, c.num, c.logo, group, c.now);
+        handler.removeCallbacks(heartbeat);
+        handler.postDelayed(heartbeat, HEARTBEAT_MS);
     };
 
     /** A stream can stall without any error (the provider stops sending but keeps the connection open). */
@@ -677,6 +698,9 @@ public class LivePlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        handler.removeCallbacks(reportChannel);
+        handler.removeCallbacks(heartbeat);
+        if (reporter != null) reporter.stopped();
         // Out of sight (Home button, another app): let go of the stream and its memory entirely.
         releasePlayer();
         stopped = true;
@@ -698,6 +722,7 @@ public class LivePlayerActivity extends Activity {
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
         logoLoader.shutdownNow();
+        if (reporter != null) reporter.close();
         releasePlayer();
         super.onDestroy();
     }

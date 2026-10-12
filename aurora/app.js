@@ -1462,7 +1462,10 @@
     iptvPlaying = { list: slice, offset: from, group: groupName };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }))),
-      index - from, groupName || '', iptv.config?.userAgent || '');
+      index - from, groupName || '', iptv.config?.userAgent || '',
+      // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
+      JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader() }));
   }
   // The native player closed: remember the channel it ended on and put the focus back on it.
   window.auroraLiveClosed = (index) => {
@@ -3062,6 +3065,24 @@
     } catch { return null; }
   }
 
+  function watchingHtml(active, liveNow) {
+    return active.length || liveNow.length
+      ? `<div class="admin-list">${liveNow.map(liveRow).join('')}${active.map(sessionRow).join('')}</div>`
+      : '<p class="muted">Nobody is watching right now.</p>';
+  }
+  // Keeps the "Watching now" list current while the Overview is open.
+  function refreshWatching(body, isCurrent, users) {
+    const timer = setInterval(async () => {
+      const el = $('[data-watching]', body);
+      if (!isCurrent() || !el) { clearInterval(timer); return; }
+      try {
+        const [sessions, live] = await Promise.all([api('/Sessions'), liveWatching(users)]);
+        if (!isCurrent() || !el.isConnected) return;
+        el.innerHTML = watchingHtml((Array.isArray(sessions) ? sessions : []).filter((s) => s.NowPlayingItem), live.now);
+      } catch { /* keep what's shown */ }
+    }, 30000);
+  }
+
   async function adminOverview(body, isCurrent) {
     const since = new Date(Date.now() - 14 * DAY);
     const safe = (p) => p.catch((e) => ({ error: e }));
@@ -3072,6 +3093,8 @@
     ]);
     if (!isCurrent()) return;
     if (info?.error && sessions?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(info.error))}</p>`; return; }
+    const live = users?.error ? { now: [], history: [] } : await liveWatching(users);
+    if (!isCurrent()) return;
 
     const list = (x) => (Array.isArray(x) ? x : x?.Items || []);
     const active = list(sessions).filter((s) => s.NowPlayingItem);
@@ -3086,7 +3109,8 @@
 
     body.innerHTML = `
       <div class="stat-grid">
-        ${statTile('Watching now', active.length, active.length ? `${transcoding} converting (transcode), ${active.length - transcoding} direct` : 'Nobody is watching')}
+        ${statTile('Watching now', active.length + live.now.length, active.length + live.now.length
+          ? `${live.now.length} live TV · ${transcoding} converting (transcode), ${active.length - transcoding} direct` : 'Nobody is watching')}
         ${statTile('Online now', recent.length, 'Active in the last 10 minutes')}
         ${statTile('Plays (14 days)', plays.length, plays.length ? `About ${Math.round(plays.length / 14 * 10) / 10} a day` : '')}
         ${statTile('Users', list(users).length, `${list(users).filter((u) => Date.now() - new Date(u.LastActivityDate).getTime() < 7 * DAY).length} active this week`)}
@@ -3096,8 +3120,8 @@
       </div>
 
       <section class="admin-card">
-        <h2>Watching now</h2>
-        ${active.length ? `<div class="admin-list">${active.map(sessionRow).join('')}</div>` : '<p class="muted">Nobody is watching right now.</p>'}
+        <h2>Watching now <small data-watch-updated>Updates every 30 seconds</small></h2>
+        <div data-watching>${watchingHtml(active, live.now)}</div>
       </section>
 
       <section class="admin-card">
@@ -3147,6 +3171,7 @@
       try { await api('/Library/Refresh', { method: 'POST' }); toast('Library scan started'); } catch (err) { toast(adminError(err)); }
       e.target.disabled = false;
     });
+    if (!users?.error) refreshWatching(body, isCurrent, users);
   }
 
   // Live TV source: Emby's own Live TV, an M3U playlist, or an Xtream Codes account. Saved for every account.
@@ -3238,6 +3263,7 @@
         <input type="${type}" data-f="${name}" value="${esc(value || '')}" autocomplete="off" autocapitalize="none" spellcheck="false">
         ${hint ? `<small>${hint}</small>` : ''}</label>`;
     body.innerHTML = `
+      <section class="admin-card" data-live-watch><h2>Watching live TV now</h2><div class="spinner"></div></section>
       <section class="admin-card live-source">
         <h2>Live TV source</h2>
         <p class="muted">Pick where Live TV comes from. Saving applies it to every account, and each customer's app switches over the next time it opens.
@@ -3286,6 +3312,26 @@
         </div>
         <div class="live-result" data-result></div>
       </section>`;
+    // Who's watching which channel, and what was watched lately.
+    (async () => {
+      const box = $('[data-live-watch]', body);
+      const paint = async () => {
+        try {
+          const live = await liveWatching(await api('/Users'));
+          if (!isCurrent() || !box.isConnected) return false;
+          box.innerHTML = `<h2>Watching live TV now <small>${live.now.length ? `${live.now.length} watching · ` : ''}updates every 30 seconds</small></h2>
+            ${live.now.length ? `<div class="admin-list">${live.now.map(liveRow).join('')}</div>` : '<p class="muted">Nobody is watching live TV right now.</p>'}
+            <h3 class="admin-sub">Recently watched</h3>
+            ${live.history.length ? `<div class="admin-list">${live.history.slice(0, 25).map(liveHistoryRow).join('')}</div>` : '<p class="muted">Nothing yet. Channels watched for a minute or more show up here.</p>'}`;
+        } catch (e) {
+          if (isCurrent() && box.isConnected) box.innerHTML = `<h2>Watching live TV now</h2><p class="muted">${esc(adminError(e))}</p>`;
+        }
+        return isCurrent() && box.isConnected;
+      };
+      if (!(await paint())) return;
+      const timer = setInterval(async () => { if (!(await paint())) clearInterval(timer); }, 30000);
+    })();
+
     let type = cfg.type || 'emby';
     const showFields = () => {
       $$('.source-pick .chip', body).forEach((c) => c.classList.toggle('active', c.dataset.type === type));
@@ -3453,6 +3499,44 @@
       }
       e.target.disabled = false;
     });
+  }
+
+  // ----- Live TV viewing (M3U / Xtream) -----
+  // Aurora's live player records what it's playing in each viewer's Emby display preferences ("aurora-watching");
+  // an entry not refreshed for three minutes counts as stopped.
+  const WATCHING_FRESH = 3 * 60000;
+  async function liveWatching(users) {
+    const out = { now: [], history: [] };
+    const list = (Array.isArray(users) ? users : users?.Items) || [];
+    const queue = list.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        let data = null;
+        try { data = await readAuroraPref('aurora-watching', u.Id); } catch { continue; }
+        for (const [deviceId, e] of Object.entries(data?.devices || {})) {
+          if (Date.now() - (e.at || 0) < WATCHING_FRESH) out.now.push({ ...e, deviceId, user: u.Name });
+        }
+        (data?.history || []).forEach((h) => out.history.push({ ...h, user: u.Name }));
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    out.now.sort((a, b) => (a.user || '').localeCompare(b.user || ''));
+    out.history.sort((a, b) => (b.ended || 0) - (a.ended || 0));
+    return out;
+  }
+  const minutes = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+  function liveRow(e) {
+    const ch = [e.num, e.name].filter(Boolean).join('  ');
+    return `<div class="admin-row session-row live-row">
+      ${e.logo ? `<img class="live-row-logo" src="${esc(e.logo)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+      <div class="admin-row-main"><strong>${esc(e.user || 'Someone')}</strong> · ${esc(ch)} <span class="pill live">Live TV</span>
+        <div class="muted">${e.now ? esc(e.now) + ' · ' : ''}${esc(e.device || '')} · watching for ${minutes(Date.now() - (e.started || Date.now()))}${e.group ? ' · ' + esc(e.group) : ''}</div>
+      </div></div>`;
+  }
+  function liveHistoryRow(h) {
+    return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(h.user || '')}</strong> · ${esc([h.num, h.name].filter(Boolean).join('  '))}
+      <div class="muted">${esc(h.device || '')} · ${minutes((h.ended || 0) - (h.started || 0))} · ${esc(timeAgo(h.ended))}</div></div></div>`;
   }
 
   // Aurora reports its version as 1.2.<build>; the build number orders versions.
