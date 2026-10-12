@@ -830,7 +830,10 @@
   // ---------- Details modal ----------
   let modalToken = 0;
 
+  const updateRequiredOpen = () => !!$('#modal-content .update-body.required') && !$('#modal').classList.contains('hidden');
   function closeModal() {
+    // A required update can't be closed; the app stays locked until it's installed.
+    if (updateRequiredOpen()) return;
     modalToken++;
     if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
@@ -2831,6 +2834,11 @@
         const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) continue;
         const cfg = await res.json();
+        if (cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
+          forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
+          store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
+          applyRequiredUpdate();
+        }
         const value = typeof cfg.requestsServer === 'string' ? cfg.requestsServer.trim().replace(/\/+$/, '') : '';
         if (value && !/^https?:\/\//.test(value)) return;
         if (requestsOverride) return;
@@ -3752,6 +3760,10 @@
   const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases?per_page=30';
   const RECHECK_AFTER = 15 * 60000; // when coming back to the app
   const updates = { checking: null, lastCheck: 0, dismissedCode: 0, waiting: null };
+  // How many releases behind before the app stops working until it's updated. Set by forceUpdateAfter in
+  // aurora-config.json (0 turns it off), so it can change without a new APK.
+  let forceUpdateAfter = Number(store.get('ef.forceUpdateAfter') ?? 3);
+  if (!Number.isFinite(forceUpdateAfter)) forceUpdateAfter = 3;
 
   // The build puts the lines of aurora/whats-new.md between these markers in each release's notes.
   function releaseNotes(body) {
@@ -3779,7 +3791,7 @@
       if (!apk) return { status: 'current' };
       // Newest first, without repeating a line that appears in more than one version.
       const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 12);
-      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes };
+      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes, behind: newer.length };
     } catch {
       return { status: 'error' };
     }
@@ -3792,40 +3804,68 @@
     updates.checking = checkForUpdate();
     const result = await updates.checking;
     updates.checking = null;
+    // Remember how far behind this device is, so the lock still applies when GitHub can't be reached.
+    if (result.status === 'available') store.set('ef.updateBehind', JSON.stringify(result));
+    else if (result.status === 'current') store.del('ef.updateBehind');
+    if (applyRequiredUpdate()) return;
     if (result.status !== 'available' || result.code === updates.dismissedCode) return;
-    if ($('#modal .update-body')) return; // already asking
+    if (!$('#modal').classList.contains('hidden') && $('#modal .update-body')) return; // already asking
     // Don't interrupt a video; ask as soon as the player closes.
     if (isPlayerOpen()) { updates.waiting = result; return; }
     showUpdatePrompt(result);
   }
 
+  // Too many releases behind: lock the app behind the update prompt. Returns true if it did.
+  function applyRequiredUpdate() {
+    if (!nativeApp?.getVersionCode) return false;
+    let u = null;
+    try { u = JSON.parse(store.get('ef.updateBehind') || 'null'); } catch { /* none */ }
+    const locked = !!forceUpdateAfter && !!u && u.code > nativeApp.getVersionCode() && (u.behind || 0) >= forceUpdateAfter;
+    if (!locked) {
+      // The limit was raised or turned off since the lock went up: let the viewer back in.
+      if (updateRequiredOpen()) {
+        $('#modal-content .update-body').classList.remove('required');
+        $('#modal').classList.remove('update-required');
+        closeModal();
+      }
+      return false;
+    }
+    if (updateRequiredOpen()) return true;
+    if (isPlayerOpen()) closePlayer();
+    showUpdatePrompt(u, { required: true });
+    return true;
+  }
+
   function showWaitingUpdate() {
     const result = updates.waiting;
     updates.waiting = null;
-    if (result && result.code !== updates.dismissedCode && !$('#modal .update-body')) showUpdatePrompt(result);
+    if (result && result.code !== updates.dismissedCode && !($('#modal .update-body') && !$('#modal').classList.contains('hidden'))) showUpdatePrompt(result);
   }
 
-  function showUpdatePrompt(update) {
+  function showUpdatePrompt(update, { required = false } = {}) {
     const modal = $('#modal'), content = $('#modal-content');
     modalToken++;
     if (modal.classList.contains('hidden')) rememberFocus('modal');
+    modal.classList.toggle('update-required', required);
     content.innerHTML = `
-      <div class="m-body update-body">
-        <h2>Update available</h2>
-        <p class="overview">${esc(update.version)} is ready to install. It keeps you signed in.</p>
+      <div class="m-body update-body${required ? ' required' : ''}">
+        <h2>${required ? 'Update required' : 'Update available'}</h2>
+        <p class="overview">${required
+          ? `This version of Aurora is ${update.behind} updates behind and has stopped working. Install ${esc(update.version)} to keep watching. It keeps you signed in.`
+          : `${esc(update.version)} is ready to install. It keeps you signed in.`}</p>
         ${update.notes?.length ? `<h3 class="update-notes-title">What's new</h3>
         <ul class="update-notes">${update.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
         <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
         <div class="m-actions update-actions">
           <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>
-          <button class="btn btn-gray" data-act="later">Later</button>
+          ${required ? '' : '<button class="btn btn-gray" data-act="later">Later</button>'}
         </div>
       </div>`;
     modal.classList.remove('hidden');
     document.body.style.overflow = 'hidden';
     const msg = $('.update-msg', content), bar = $('.update-bar span', content), progress = $('.update-progress', content);
     // "Later" skips this version until the app is next opened.
-    $('[data-act="later"]', content).addEventListener('click', () => {
+    $('[data-act="later"]', content)?.addEventListener('click', () => {
       updates.dismissedCode = update.code;
       closeModal();
     });
@@ -4861,6 +4901,7 @@
     }
     if (trailerOpen()) { closeTrailerWindow(); return true; }
     if ($('#page .tm-guide')?.__closeGroups?.()) return true;
+    if (updateRequiredOpen()) return false; // Back leaves the app instead
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
     if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {
@@ -4886,6 +4927,7 @@
     loadRemoteConfig();
     applySubtitleStyle();
     setupUi();
+    applyRequiredUpdate(); // locked already (known from an earlier check), even without internet
     $('#setup-username').value = store.get('ef.username') || '';
     if (!state.apiKey || !state.userId) return showSetup();
     try {

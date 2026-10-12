@@ -860,3 +860,6 @@ button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85re
 .live-row { display: flex; align-items: center; gap: .9rem; }
 .live-row-logo { width: 56px; height: 36px; object-fit: contain; flex: none; }
 .admin-sub { margin: 1.2rem 0 .5rem; font-size: 1rem; color: var(--muted); }
+/* A required update can't be dismissed. */
+.modal.update-required .modal-close { display: none; }
+.update-body.required h2 { color: #ffb3bb; }

@@ -1,4 +1,5 @@
 {
   "requestsEnabled": true,
-  "requestsServer": "https://deviant-strike-permalink-crimes.trycloudflare.com"
+  "requestsServer": "https://deviant-strike-permalink-crimes.trycloudflare.com",
+  "forceUpdateAfter": 3
 }

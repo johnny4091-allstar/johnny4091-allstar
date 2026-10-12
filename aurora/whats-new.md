@@ -1,1 +1,1 @@
-- Admin: see who's watching live TV (M3U / Xtream channels). Admin → Live TV shows each person watching, the channel and show, their device and how long, plus the channels watched recently. They're also counted in Overview → Watching now. Both update every 30 seconds.
+- Aurora now stops working on devices that are 3 or more updates behind, until the update is installed. The update screen can't be dismissed, but it keeps people signed in and the update takes a minute.
