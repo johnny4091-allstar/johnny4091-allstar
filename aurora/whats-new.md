@@ -1,10 +1,2 @@
-- Live TV is steadier:
-  - When the TV provider has a hiccup, Aurora shows the last saved channel list instead of an error.
-  - Movies and series are left out of M3U playlists, so big playlists load much faster and use less memory.
-  - Channel lists and guides follow the provider's redirects (for example from http to https).
-  - Every Live TV loading error now has a Try again button.
-- The live player is more reliable:
-  - A stream that freezes without an error is restarted automatically after 25 seconds.
-  - A channel that keeps failing is tried in the other stream format (MPEG-TS or HLS).
-  - If a channel stays down, the player keeps trying for about five minutes; press OK (or tap the message) to try straight away.
-  - Better support for TV boxes whose video decoder can't handle a channel, and Wi-Fi is kept awake while you watch.
+- Admin → Live TV: choose which categories customers see. Press "Choose categories", tick the ones to show (there's a search box, Show all and Hide all), then Save for everyone. Hidden categories disappear everywhere: the category list, All channels, search and the guide.
+- New categories the provider adds stay hidden until you tick them, or turn on "Show new categories automatically" to have them appear by themselves.

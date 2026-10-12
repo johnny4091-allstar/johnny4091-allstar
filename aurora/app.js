@@ -1219,6 +1219,14 @@
   }
 
   // One loaded copy of the source per session (M3U playlists can be large).
+  // Which categories customers see, as chosen in Admin → Live TV: catsShown lists the ones to show (new ones from
+  // the provider stay hidden), catsHidden lists the ones to hide (new ones show). Neither: everything shows.
+  function catFilter(cfg) {
+    if (Array.isArray(cfg?.catsShown)) { const set = new Set(cfg.catsShown.map(String)); return (id) => set.has(String(id)); }
+    if (Array.isArray(cfg?.catsHidden) && cfg.catsHidden.length) { const set = new Set(cfg.catsHidden.map(String)); return (id) => !set.has(String(id)); }
+    return null;
+  }
+
   async function iptvSource(cfg = iptv.config) {
     const key = `src:${cfg.type}:${cfg.v || 0}`;
     if (iptv.lists.has(key)) return iptv.lists.get(key);
@@ -1226,12 +1234,19 @@
       if (cfg.type === 'm3u') {
         const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000, { saved: true, liveOnly: true, maxAge: LIST_MAX_AGE });
         if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) throw new Error("That address didn't return an M3U playlist.");
-        const { all, groups, guideUrl } = parseM3u(text);
-        return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, guideUrl };
+        const parsed = parseM3u(text);
+        const ok = catFilter(cfg);
+        const groups = ok ? new Map([...parsed.groups].filter(([name]) => ok(name))) : parsed.groups;
+        const all = ok ? parsed.all.filter((ch) => ok(ch.group)) : parsed.all;
+        return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, guideUrl: parsed.guideUrl };
       }
       const cats = await xtJson(cfg, { action: 'get_live_categories' }, { saved: true, maxAge: LIST_MAX_AGE });
       if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
-      return { categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })), groups: new Map(), all: null };
+      const ok = catFilter(cfg);
+      return {
+        categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })).filter((c) => !ok || ok(c.id)),
+        groups: new Map(), all: null,
+      };
     })();
     iptv.lists.set(key, p);
     p.catch(() => iptv.lists.delete(key));
@@ -1243,6 +1258,8 @@
     if (catId === '__all') return iptvAllChannels(cfg);
     if (src.groups.has(catId)) return src.groups.get(catId);
     if (cfg.type === 'xtream') {
+      const ok = catFilter(cfg);
+      if (ok && !ok(catId)) return [];
       const list = await xtJson(cfg, { action: 'get_live_streams', category_id: catId }, { saved: true, maxAge: LIST_MAX_AGE });
       const chans = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
       src.groups.set(catId, chans);
@@ -1255,7 +1272,8 @@
     const src = await iptvSource(cfg);
     if (!src.all) {
       const list = await xtJson(cfg, { action: 'get_live_streams' }, { saved: true, maxAge: LIST_MAX_AGE });
-      src.all = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
+      const ok = catFilter(cfg);
+      src.all = (Array.isArray(list) ? list : []).filter((st) => !ok || ok(st.category_id)).map((st) => xtChannel(cfg, st));
     }
     return src.all;
   }
@@ -3246,6 +3264,21 @@
         <div class="source-fields" data-for="m3u xtream">
           ${field('TV guide link (XMLTV, optional)', 'epgUrl', cfg.epgUrl, 'url', 'Leave empty to use the guide from your provider: Xtream accounts have one built in, and many M3U playlists name theirs. .xml and .xml.gz both work.')}
           ${field('User agent (optional)', 'userAgent', cfg.userAgent, 'text', 'Only if your provider asks for a particular player name.')}
+          <div class="cat-pick-wrap">
+            <div class="cat-pick-head">
+              <div><strong>Categories shown to customers</strong><div class="muted" data-cat-summary></div></div>
+              <button class="btn btn-gray" data-cat-load>Choose categories</button>
+            </div>
+            <div class="cat-pick hidden">
+              <div class="cat-pick-tools">
+                <input type="search" data-cat-filter placeholder="Find a category" autocomplete="off">
+                <button class="btn btn-gray" data-cat-all>Show all</button>
+                <button class="btn btn-gray" data-cat-none>Hide all</button>
+              </div>
+              <label class="admin-check"><input type="checkbox" data-cat-auto> Show new categories automatically when the provider adds them</label>
+              <div class="cat-list"></div>
+            </div>
+          </div>
         </div>
         <div class="m-actions">
           <button class="btn btn-gray" data-test>Test</button>
@@ -3262,12 +3295,82 @@
     $$('.source-pick .chip', body).forEach((c) => c.addEventListener('click', () => { type = c.dataset.type; showFields(); }));
     showFields();
     const result = $('[data-result]', body);
-    const draft = () => {
+
+    // ----- Category picker -----
+    // hidden: ids switched off; cats: the provider's full list once loaded (null until then).
+    let cats = null, catsFor = '', hidden = new Set((cfg.catsHidden || []).map(String)), autoNew = Array.isArray(cfg.catsHidden);
+    const pickEl = $('.cat-pick', body), listEl = $('.cat-list', body), summary = $('[data-cat-summary]', body);
+    const sourceOf = (c) => (c.type === 'm3u' ? c.m3uUrl : `${c.server}|${c.username}`);
+    const sameSource = () => { const d = rawDraft(); return d.type === cfg.type && sourceOf(d) === sourceOf(cfg); };
+    const showSummary = () => {
+      if (!cats || catsFor !== sourceOf(rawDraft())) {
+        const n = cfg.catsShown?.length, h = cfg.catsHidden?.length;
+        summary.textContent = !sameSource() ? 'All categories (choose after testing the new source)'
+          : Array.isArray(cfg.catsShown) ? `${n} chosen categor${n === 1 ? 'y' : 'ies'} shown` : h ? `All except ${h} hidden` : 'All categories';
+        return;
+      }
+      const on = cats.length - cats.filter((c) => hidden.has(c.id)).length;
+      summary.textContent = on === cats.length ? `All ${cats.length} categories` : `${on} of ${cats.length} categories shown`;
+    };
+    const paintCats = () => {
+      const q = $('[data-cat-filter]', body).value.trim().toLowerCase();
+      listEl.innerHTML = cats.filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => `
+        <label class="cat-row"><input type="checkbox" data-id="${esc(c.id)}"${hidden.has(c.id) ? '' : ' checked'}>
+          <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</label>`).join('') || '<p class="muted">No categories match.</p>';
+      $$('input[data-id]', listEl).forEach((cb) => cb.addEventListener('change', () => {
+        if (cb.checked) hidden.delete(cb.dataset.id); else hidden.add(cb.dataset.id);
+        showSummary();
+      }));
+    };
+    $('[data-cat-load]', body).addEventListener('click', async (e) => {
+      const d = rawDraft(), problem = check(d);
+      if (problem) return say(esc(problem), 'bad');
+      e.target.disabled = true;
+      listEl.innerHTML = '<div class="spinner"></div>';
+      pickEl.classList.remove('hidden');
+      try {
+        const src = await iptvSource(d);
+        const fresh = src.categories.map((c) => ({ id: String(c.id), name: c.name, count: c.count }));
+        // Carry over the current choice when it's the same provider; a new one starts with everything shown.
+        if (!cats && sameSource() && Array.isArray(cfg.catsShown)) {
+          const shown = new Set(cfg.catsShown.map(String));
+          hidden = new Set(fresh.filter((c) => !shown.has(c.id)).map((c) => c.id));
+        } else if (!cats && !sameSource()) hidden = new Set();
+        cats = fresh;
+        catsFor = sourceOf(d);
+        $('[data-cat-auto]', body).checked = autoNew;
+        paintCats();
+        showSummary();
+        if (nav.on) focusEl($('[data-cat-filter]', body));
+      } catch (err) { listEl.innerHTML = `<p class="muted">Couldn't load the categories: ${esc(err.message)}</p>`; }
+      e.target.disabled = false;
+    });
+    $('[data-cat-filter]', body).addEventListener('input', () => cats && paintCats());
+    $('[data-cat-all]', body).addEventListener('click', () => { hidden.clear(); paintCats(); showSummary(); });
+    $('[data-cat-none]', body).addEventListener('click', () => { cats.forEach((c) => hidden.add(c.id)); paintCats(); showSummary(); });
+    $('[data-cat-auto]', body).addEventListener('change', (e) => { autoNew = e.target.checked; });
+    body.addEventListener('input', (e) => { if (e.target.matches('[data-f]')) showSummary(); });
+
+    const rawDraft = () => {
       const v = (n) => ($(`[data-f="${n}"]`, body)?.value || '').trim();
       if (type === 'emby') return { type: 'emby', v: Date.now() };
       const d = { type, userAgent: v('userAgent'), epgUrl: v('epgUrl'), v: Date.now() };
       if (type === 'm3u') d.m3uUrl = v('m3uUrl');
       else Object.assign(d, { server: v('server'), username: v('username'), password: v('password'), format: v('format') || 'ts' });
+      return d;
+    };
+    // The settings to save: the source plus the category choice.
+    const draft = () => {
+      const d = rawDraft();
+      if (d.type === 'emby') return d;
+      if (cats && catsFor === sourceOf(d)) {
+        if (hidden.size && autoNew) d.catsHidden = [...hidden];
+        else if (hidden.size) d.catsShown = cats.filter((c) => !hidden.has(c.id)).map((c) => c.id);
+      } else if (sameSource()) {
+        // Not opened this time: keep the choice already saved.
+        if (cfg.catsShown) d.catsShown = cfg.catsShown;
+        if (cfg.catsHidden) d.catsHidden = cfg.catsHidden;
+      }
       return d;
     };
     const check = (d) => {
@@ -3276,6 +3379,7 @@
       return '';
     };
     const say = (html, cls = '') => { result.className = 'live-result ' + cls; result.innerHTML = html; };
+    showSummary();
 
     async function test(d) {
       say('<div class="spinner"></div>');
