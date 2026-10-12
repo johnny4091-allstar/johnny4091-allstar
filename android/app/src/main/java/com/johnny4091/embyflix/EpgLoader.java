@@ -8,14 +8,12 @@ import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserFactory;
 
 import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
@@ -43,11 +41,12 @@ final class EpgLoader {
     /** How long a downloaded guide file is reused. */
     private static final long DOWNLOAD_MS = 6 * 3600_000L;
     /** How long the saved, read guide is used without looking for a newer one... */
-    private static final long FRESH_MS = 2 * 3600_000L;
+    private static final long FRESH_MS = 4 * 3600_000L;
     /** ...and how long it's still used while a newer one is read in the background. */
-    private static final long STALE_MS = 8 * 3600_000L;
-    private static final long BEFORE_MS = 3600_000L, AHEAD_MS = 12 * 3600_000L;
-    private static final int MAX_DESC = 200;
+    private static final long STALE_MS = 12 * 3600_000L;
+    // The guide page shows six hours; keeping a little past that covers a guide that's a few hours old.
+    private static final long BEFORE_MS = 3600_000L, AHEAD_MS = 10 * 3600_000L;
+    private static final int MAX_DESC = 180;
     private static final int MAX_REDIRECTS = 5;
 
     /** One channel in the guide: its name, logo, and programmes as a JSON array [[start, end, title, desc], ...]. */
@@ -56,15 +55,38 @@ final class EpgLoader {
         Entry(String name, String icon, String progs) { this.name = name; this.icon = icon; this.progs = progs; }
     }
 
-    /** A whole guide in memory. Replaced, never changed, so lookups from any thread are safe. */
+    /**
+     * A guide ready for lookups. Only an index is kept in memory (where each channel's line is in the saved
+     * file); the listings stay on disk and are read for the channels asked about. Holding a big provider's
+     * whole guide in memory made Android stop the app again and again to tidy memory, and everything lagged.
+     * Replaced, never changed, so lookups from any thread are safe.
+     */
     private static final class Guide {
         final String url;
         final long builtAt;
-        final Map<String, Entry> byId;
+        final File file;
+        final Map<String, long[]> lineById;     // key -> {offset, length} in file
         final Map<String, String> idByName;
         final int programmes;
-        Guide(String url, long builtAt, Map<String, Entry> byId, Map<String, String> idByName, int programmes) {
-            this.url = url; this.builtAt = builtAt; this.byId = byId; this.idByName = idByName; this.programmes = programmes;
+        /** Opened once: a background refresh replaces the file, and this keeps reading the version indexed. */
+        private final java.io.RandomAccessFile data;
+        Guide(String url, long builtAt, File file, Map<String, long[]> lineById, Map<String, String> idByName, int programmes) throws IOException {
+            this.url = url; this.builtAt = builtAt; this.file = file; this.lineById = lineById; this.idByName = idByName; this.programmes = programmes;
+            this.data = new java.io.RandomAccessFile(file, "r");
+        }
+
+        synchronized Entry read(String key) {
+            long[] at = lineById.get(key);
+            if (at == null) return null;
+            try {
+                byte[] buf = new byte[(int) at[1]];
+                data.seek(at[0]);
+                data.readFully(buf);
+                String[] parts = new String(buf, StandardCharsets.UTF_8).split("\t", 4);
+                return parts.length < 4 ? null : new Entry(parts[1], parts[2], parts[3]);
+            } catch (IOException e) {
+                return null;
+            }
         }
     }
 
@@ -93,7 +115,7 @@ final class EpgLoader {
     }
 
     private static String summary(Guide g) {
-        return "{\"channels\":" + g.byId.size() + ",\"programmes\":" + g.programmes + "}";
+        return "{\"channels\":" + g.lineById.size() + ",\"programmes\":" + g.programmes + "}";
     }
 
     /**
@@ -142,10 +164,10 @@ final class EpgLoader {
     }
 
     private static Entry find(Guide g, String id, String name) {
-        Entry e = id.isEmpty() ? null : g.byId.get(key(id));
+        Entry e = id.isEmpty() ? null : g.read(key(id));
         if (e != null) return e;
         String byName = name.isEmpty() ? null : g.idByName.get(normal(name));
-        return byName == null ? null : g.byId.get(byName);
+        return byName == null ? null : g.read(byName);
     }
 
     // ---------- Reading the guide ----------
@@ -212,20 +234,34 @@ final class EpgLoader {
             }
         }
 
-        Map<String, Entry> byId = new HashMap<>(channels.size() * 2);
-        Map<String, String> idByName = new HashMap<>(channels.size() * 2);
+        // Write it straight to the saved file, one channel per line, then index that file.
+        File file = savedFile(context, url);
+        File tmp = new File(file.getPath() + "." + Thread.currentThread().getId() + ".part");
         Set<String> keys = new HashSet<>(channels.keySet());
         keys.addAll(progs.keySet());
-        for (String k : keys) {
-            String[] ch = channels.get(k);
-            List<String> list = progs.get(k);
-            if (list != null) java.util.Collections.sort(list, (a, b) -> Long.compare(startOf(a), startOf(b)));
-            String name = ch == null ? "" : ch[0];
-            byId.put(k, new Entry(name, ch == null ? "" : ch[1], list == null ? "[]" : "[" + join(list) + "]"));
-            if (!name.isEmpty() && !idByName.containsKey(normal(name))) idByName.put(normal(name), k);
+        try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8), 65536)) {
+            w.write(clean(url) + "\t" + now + "\t" + count + "\n");
+            for (String k : keys) {
+                String[] ch = channels.get(k);
+                List<String> list = progs.remove(k);
+                if (list != null) java.util.Collections.sort(list, (a, b) -> Long.compare(startOf(a), startOf(b)));
+                w.write(clean(k) + "\t" + clean(ch == null ? "" : ch[0]) + "\t" + clean(ch == null ? "" : ch[1]) + "\t");
+                if (list == null) w.write("[]");
+                else {
+                    w.write('[');
+                    for (int i = 0; i < list.size(); i++) { if (i > 0) w.write(','); w.write(list.get(i)); }
+                    w.write(']');
+                }
+                w.write('\n');
+            }
+        } catch (IOException e) {
+            tmp.delete();
+            throw e;
         }
-        Guide g = new Guide(url, now, byId, idByName, count);
-        save(context, g);
+        channels.clear();
+        if (!tmp.renameTo(file)) { tmp.delete(); throw new IOException("couldn't save the guide"); }
+        Guide g = readSaved(context, url);
+        if (g == null) throw new IOException("couldn't read the saved guide");
         return g;
     }
 
@@ -234,17 +270,12 @@ final class EpgLoader {
         try { return Long.parseLong(prog.substring(1, comma)); } catch (Exception e) { return 0; }
     }
 
-    private static String join(List<String> list) {
-        StringBuilder b = new StringBuilder();
-        for (int i = 0; i < list.size(); i++) { if (i > 0) b.append(','); b.append(list.get(i)); }
-        return b.toString();
-    }
-
     private static void refreshLater(Context context, String url, String userAgent) {
         synchronized (refreshing) {
             if (!refreshing.add(url)) return;
         }
         Thread t = new Thread(() -> {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
             try {
                 Guide g = build(context, url, userAgent);
                 Guide c = current;
@@ -255,7 +286,6 @@ final class EpgLoader {
                 synchronized (refreshing) { refreshing.remove(url); }
             }
         }, "aurora-epg-refresh");
-        t.setPriority(Thread.MIN_PRIORITY);
         t.start();
     }
 
@@ -266,46 +296,47 @@ final class EpgLoader {
         return new File(cacheDir(context), Integer.toHexString(url.hashCode()) + ".guide");
     }
 
-    private static void save(Context context, Guide g) {
-        File file, tmp;
-        try {
-            file = savedFile(context, g.url);
-            tmp = new File(file.getPath() + "." + Thread.currentThread().getId() + ".part");
-        } catch (IOException e) {
-            return;
-        }
-        try (BufferedWriter w = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(tmp), StandardCharsets.UTF_8), 65536)) {
-            w.write(clean(g.url) + "\t" + g.builtAt + "\t" + g.programmes + "\n");
-            for (Map.Entry<String, Entry> e : g.byId.entrySet()) {
-                Entry v = e.getValue();
-                w.write(clean(e.getKey()) + "\t" + clean(v.name) + "\t" + clean(v.icon) + "\t" + v.progs + "\n");
-            }
-        } catch (IOException e) {
-            tmp.delete();
-            return;
-        }
-        if (!tmp.renameTo(file)) tmp.delete();
-    }
-
+    /** Indexes the saved file: reads each line's key and name and remembers where the line is. */
     private static Guide readSaved(Context context, String url) {
         try {
             File file = savedFile(context, url);
             if (!file.exists()) return null;
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8), 65536)) {
-                String[] head = r.readLine().split("\t");
-                if (head.length < 3 || !head[0].equals(clean(url))) return null;
-                long builtAt = Long.parseLong(head[1]);
-                int programmes = Integer.parseInt(head[2]);
-                Map<String, Entry> byId = new HashMap<>();
-                Map<String, String> idByName = new HashMap<>();
-                for (String line; (line = r.readLine()) != null; ) {
-                    String[] f = line.split("\t", 4);
-                    if (f.length < 4) continue;
-                    byId.put(f[0], new Entry(f[1], f[2], f[3]));
-                    if (!f[1].isEmpty() && !idByName.containsKey(normal(f[1]))) idByName.put(normal(f[1]), f[0]);
+            Map<String, long[]> lineById = new HashMap<>();
+            Map<String, String> idByName = new HashMap<>();
+            long builtAt;
+            int programmes;
+            try (InputStream in = new BufferedInputStream(new FileInputStream(file), 65536)) {
+                java.io.ByteArrayOutputStream line = new java.io.ByteArrayOutputStream(256);
+                long pos = 0, start = 0;
+                String[] head = null;
+                builtAt = 0; programmes = 0;
+                // Only the first three fields of each line are needed here; the listings are skipped over.
+                int tabs = 0;
+                for (int c; (c = in.read()) != -1; pos++) {
+                    if (c == '\n') {
+                        String text = line.toString("UTF-8");
+                        if (head == null) {
+                            head = text.split("\t");
+                            if (head.length < 3 || !head[0].equals(clean(url))) return null;
+                            builtAt = Long.parseLong(head[1]);
+                            programmes = Integer.parseInt(head[2]);
+                        } else {
+                            String[] f = text.split("\t", 3);
+                            if (f.length >= 2) {
+                                lineById.put(f[0], new long[]{start, pos - start});
+                                if (!f[1].isEmpty() && !idByName.containsKey(normal(f[1]))) idByName.put(normal(f[1]), f[0]);
+                            }
+                        }
+                        line.reset();
+                        tabs = 0;
+                        start = pos + 1;
+                    } else if (head == null || tabs < 2) {
+                        if (c == '\t') tabs++;
+                        if (head == null || tabs < 2) line.write(c);
+                    }
                 }
-                return new Guide(url, builtAt, byId, idByName, programmes);
             }
+            return new Guide(url, builtAt, file, lineById, idByName, programmes);
         } catch (Exception e) {
             return null;
         }

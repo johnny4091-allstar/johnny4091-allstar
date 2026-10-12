@@ -530,6 +530,8 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void loadEpg(String id, String url, String userAgent) {
             new Thread(() -> {
+                // Reading a big guide is long, busy work: keep it behind the app's screens and video.
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
                 String result;
                 try {
                     String ua = userAgent == null || userAgent.isEmpty() ? "Aurora/" + versionName() + " (Android)" : userAgent;

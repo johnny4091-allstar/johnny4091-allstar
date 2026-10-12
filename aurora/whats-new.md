@@ -1,1 +1,3 @@
-- Countryboy89 is now an Aurora admin too, with access to the Admin page.
+- Smoother app: the TV guide no longer sits in memory all the time. Aurora keeps it on the device and reads only the channels on screen, so the app stops pausing to tidy up memory.
+- Reading the TV guide now happens at low priority, so it doesn't slow down scrolling, the remote or video, and it's refreshed less often.
+- The TV guide is only prepared in the background for people who have used Live TV in the last two weeks.

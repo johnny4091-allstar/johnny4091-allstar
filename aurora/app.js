@@ -393,8 +393,10 @@
     refreshRequestsConfig();
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
-      // Get the TV guide ready in the background (after Home has loaded) so the Guide opens quickly.
-      if (iptvOn() && nativeApp?.loadEpg) setTimeout(() => { if (iptvOn()) loadIptvGuide().catch(() => {}); }, 12000);
+      // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
+      // for people who've used Live TV lately: reading a big guide is real work for a TV box.
+      const usedLive = Date.now() - Number(store.get('ef.iptv.used') || 0) < 14 * 86400000;
+      if (iptvOn() && nativeApp?.loadEpg && usedLive) setTimeout(() => { if (iptvOn() && !isPlayerOpen()) loadIptvGuide().catch(() => {}); }, 20000);
       // If the Live TV source changed while the Live TV page or Home was showing, redraw it.
       if (/^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
     });
@@ -1776,6 +1778,7 @@
   }
 
   function renderIptvLive(page, tab, isCurrent) {
+    store.set('ef.iptv.used', String(Date.now()));
     const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ...(hasLiveTv() ? [['recordings', 'Recordings']] : [])];
     if (!tabs.some(([id]) => id === tab)) tab = 'channels';
     page.innerHTML = `
