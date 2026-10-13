@@ -3,8 +3,13 @@ package com.johnny4091.embyflix;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.UiModeManager;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageInstaller;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
@@ -39,6 +44,7 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -176,6 +182,10 @@ public class MainActivity extends Activity {
 
     /** A downloaded update waiting for the "install unknown apps" permission. */
     private File pendingApk;
+    /** The last downloaded update, for "Try again" when the installer didn't show. */
+    private File downloadedApk;
+    private static final String ACTION_INSTALL_STATUS = "com.johnny4091.embyflix.INSTALL_STATUS";
+    private BroadcastReceiver installReceiver;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -473,6 +483,8 @@ public class MainActivity extends Activity {
                     }
                 }
             }
+            if (total > 0 && done != total) throw new IOException("the download was cut short");
+            downloadedApk = apk;
             pendingApk = apk;
             runOnUiThread(this::installPendingApk);
         } catch (Exception e) {
@@ -495,10 +507,78 @@ public class MainActivity extends Activity {
             }
         }
         pendingApk = null;
+        notifyUpdate("installing", null);
+        // Android's installer service: the way app stores install updates, and the one TV boxes reliably show.
+        // The older "open this file" route (below) is the fallback, and what "Try again" uses.
+        new Thread(() -> {
+            try {
+                installWithSession(apk);
+            } catch (Exception e) {
+                runOnUiThread(() -> openInstaller(apk));
+            }
+        }, "aurora-install").start();
+    }
+
+    private void installWithSession(File apk) throws IOException {
+        registerInstallReceiver();
+        PackageInstaller installer = getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        params.setAppPackageName(getPackageName());
+        params.setSize(apk.length());
+        int id = installer.createSession(params);
+        try (PackageInstaller.Session session = installer.openSession(id)) {
+            try (InputStream in = new FileInputStream(apk); OutputStream out = session.openWrite("aurora.apk", 0, apk.length())) {
+                byte[] buf = new byte[256 * 1024];
+                for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                session.fsync(out);
+            }
+            Intent status = new Intent(ACTION_INSTALL_STATUS).setPackage(getPackageName());
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
+            PendingIntent sender = PendingIntent.getBroadcast(this, id, status, flags);
+            session.commit(sender.getIntentSender());
+        } catch (IOException | RuntimeException e) {
+            try { installer.abandonSession(id); } catch (Exception ignored) { /* already gone */ }
+            throw e;
+        }
+    }
+
+    /** Hears back from the installer service: show its confirmation screen, or report a failure. */
+    private void registerInstallReceiver() {
+        if (installReceiver != null) return;
+        installReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+                if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                    @SuppressWarnings("deprecation")
+                    Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                    if (confirm == null) { openInstaller(downloadedApk); return; }
+                    try {
+                        startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                    } catch (Exception e) {
+                        openInstaller(downloadedApk);
+                    }
+                } else if (status == PackageInstaller.STATUS_FAILURE_ABORTED) {
+                    notifyUpdate("cancelled", null);
+                } else if (status != PackageInstaller.STATUS_SUCCESS) {
+                    String message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+                    notifyUpdate("error", "the installer said: " + (message == null ? "status " + status : message));
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(ACTION_INSTALL_STATUS);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(installReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        else registerReceiver(installReceiver, filter);
+    }
+
+    /** The older route: open the file with the system installer. */
+    private void openInstaller(File apk) {
+        if (apk == null || !apk.exists()) { notifyUpdate("error", "the download is gone; press Update now again"); return; }
         try {
             Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".updates", apk);
             Intent install = new Intent(Intent.ACTION_VIEW)
                     .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
                     .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
             notifyUpdate("installing", null);
             startActivity(install);
@@ -509,6 +589,9 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (installReceiver != null) {
+            try { unregisterReceiver(installReceiver); } catch (Exception ignored) { /* not registered */ }
+        }
         root.removeAllViews();
         webView.destroy();
         super.onDestroy();
@@ -729,6 +812,15 @@ public class MainActivity extends Activity {
                 return;
             }
             new Thread(() -> downloadUpdate(url), "aurora-update").start();
+        }
+
+        /** "Try again" on the update screen: open the downloaded update with the system installer. */
+        @JavascriptInterface
+        public void openInstaller() {
+            runOnUiThread(() -> {
+                if (downloadedApk != null && downloadedApk.exists()) MainActivity.this.openInstaller(downloadedApk);
+                else notifyUpdate("error", "the download is gone; press Update now again");
+            });
         }
 
         /** Opens the on-screen keyboard for the focused text field (needed with a TV remote). */

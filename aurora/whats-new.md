@@ -1,1 +1,1 @@
-- Errors and warnings are now reported to the admins automatically, with what happened just before, so problems can be fixed without anyone having to write in.
+- Fixed: on some TVs and phones the update said "Opening the installer…" but the installer never appeared. Updates now go through Android's own installer service, and an "Open installer" button appears if nothing shows up.

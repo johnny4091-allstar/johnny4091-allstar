@@ -4087,12 +4087,40 @@
     window.auroraUpdate = (u) => {
       if (u.state === 'progress') { bar.style.width = u.pct + '%'; msg.textContent = `Downloading… ${u.pct}%`; }
       else if (u.state === 'permission') msg.textContent = 'Allow Aurora to install apps in the screen that just opened, then come back. The update continues by itself.';
-      else if (u.state === 'installing') { bar.style.width = '100%'; msg.textContent = 'Opening the installer… choose Install (or Update).'; }
-      else if (u.state === 'error') {
-        appLog.add('error', `Update download failed: ${u.message || 'unknown error'}`);
-        msg.textContent = `The download failed (${u.message || 'unknown error'}). Check the internet connection and try again.`;
+      else if (u.state === 'installing') {
+        bar.style.width = '100%';
+        msg.textContent = 'Opening the installer… choose Install (or Update).';
+        // Some TV boxes don't show the installer the first time: offer another way after a few seconds.
+        clearTimeout(retryTimer);
+        if (nativeApp?.openInstaller) retryTimer = setTimeout(showRetry, 8000);
+      } else if (u.state === 'cancelled') {
+        clearTimeout(retryTimer);
+        msg.textContent = 'The update was cancelled. Press Update now to try again.';
+        $('[data-act="install"]', content).disabled = false;
+      } else if (u.state === 'error') {
+        clearTimeout(retryTimer);
+        appLog.add('error', `Update failed: ${u.message || 'unknown error'}`);
+        msg.textContent = /installer/.test(u.message || '')
+          ? `The update couldn't be installed (${u.message}). Press Update now to try again.`
+          : `The download failed (${u.message || 'unknown error'}). Check the internet connection and try again.`;
         $('[data-act="install"]', content).disabled = false;
       }
+    };
+    let retryTimer = null;
+    const showRetry = () => {
+      if (!content.isConnected || $('[data-act="open-installer"]', content)) return;
+      msg.textContent = "Didn't see the installer? Press Open installer.";
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-white';
+      btn.dataset.act = 'open-installer';
+      btn.textContent = 'Open installer';
+      btn.addEventListener('click', () => {
+        appLog.add('info', 'Opening the installer again');
+        msg.textContent = 'Opening the installer… choose Install (or Update).';
+        nativeApp.openInstaller();
+      });
+      $('.update-actions', content).prepend(btn);
+      focusEl(btn);
     };
     autoFocus($('[data-act="install"]', content));
   }
