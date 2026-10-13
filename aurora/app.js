@@ -416,6 +416,7 @@
     loadIptvConfigLocal();
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
     refreshRequestsConfig();
+    refreshAppConfig();
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
@@ -2841,6 +2842,26 @@
   }
 
   // After sign-in: the address the admin set in the app, if any.
+  // The update lock set in Admin → Updates (kept in every account's "aurora-app" display preferences) wins over
+  // forceUpdateAfter in aurora-config.json. Read at sign-in and before each update check, so a locked device
+  // picks up a change by itself.
+  const APP_PREFS = 'aurora-app';
+  async function refreshAppConfig() {
+    if (!state.userId || !state.apiKey) return;
+    try {
+      const cfg = await readAuroraPref(APP_PREFS);
+      if (cfg && Number.isFinite(Number(cfg.forceUpdateAfter))) {
+        forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
+        store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
+        store.set('ef.forceUpdateFromAdmin', '1');
+      } else if (store.get('ef.forceUpdateFromAdmin')) {
+        store.del('ef.forceUpdateFromAdmin');
+        loadRemoteConfig();
+      }
+      applyRequiredUpdate();
+    } catch { /* keep what's known */ }
+  }
+
   async function refreshRequestsConfig() {
     try {
       const cfg = await readAuroraPref(REQ_PREFS.id);
@@ -2859,7 +2880,7 @@
         const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) continue;
         const cfg = await res.json();
-        if (cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
+        if (!store.get('ef.forceUpdateFromAdmin') && cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
           forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
           store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
           applyRequiredUpdate();
@@ -3221,7 +3242,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3263,7 +3284,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
   }
 
@@ -3845,6 +3866,79 @@
     await load();
   }
 
+  async function auroraReleaseCodes() {
+    try {
+      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return null;
+      return (await res.json()).filter((r) => !r.draft && !r.prerelease && /^aurora-v/.test(r.tag_name || ''))
+        .map((r) => Number(r.tag_name.match(/(\d+)$/)?.[1] || 0)).filter(Boolean).sort((a, b) => b - a);
+    } catch { return null; }
+  }
+
+  async function adminUpdates(body, isCurrent) {
+    const [cfg, devices, codes] = await Promise.all([
+      readAuroraPref(APP_PREFS).catch(() => null), api('/Devices').catch((e) => ({ error: e })), auroraReleaseCodes(),
+    ]);
+    if (!isCurrent()) return;
+    const fromAdmin = cfg && Number.isFinite(Number(cfg.forceUpdateAfter));
+    const current = fromAdmin ? Number(cfg.forceUpdateAfter) : forceUpdateAfter;
+    const latest = codes?.[0] || 0;
+    const behindBy = (code) => (codes ? codes.filter((c) => c > code).length : 0);
+    const aurora = (devices?.error ? [] : (devices.Items || devices || []))
+      .filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY)
+      .map((d) => ({ d, code: auroraVersionCode(d.AppVersion) }))
+      .filter((x) => x.code && latest && x.code < latest)
+      .sort((a, b) => a.code - b.code);
+    const choices = [[0, 'Off: never lock'], [1, '1 update behind'], [2, '2 updates behind'], [3, '3 updates behind'], [5, '5 updates behind'], [10, '10 updates behind']];
+    if (!choices.some(([v]) => v === current)) choices.push([current, `${current} updates behind`]);
+    const row = ({ d, code }) => {
+      const n = behindBy(code), tooOld = code < 139, locked = !tooOld && current && n >= current;
+      return `<div class="admin-row" tabindex="-1">
+        <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
+          <div class="muted">Aurora ${esc(d.AppVersion || '')} · ${n} ${n === 1 ? 'update' : 'updates'} behind
+          ${tooOld ? ' <span class="pill warn">Too old to lock: needs updating by hand</span>' : locked ? ' <span class="pill bad">Locked until updated</span>' : current && n === current - 1 ? ' <span class="pill warn">Locks at the next update</span>' : ''}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div></div>`;
+    };
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Required updates</h2>
+        <p class="muted">Aurora stops working on a device that falls this many updates behind, until it's updated (the update screen can't be dismissed).
+          Changes reach every device the next time it opens Aurora or checks for updates, and locked devices unlock by themselves.
+          Only Aurora 1.2.139 and newer can be locked.</p>
+        <dl class="admin-dl"><dt>In use now</dt><dd>${current ? `Lock at ${current} ${current === 1 ? 'update' : 'updates'} behind` : 'Off'}
+          <span class="pill">${fromAdmin ? 'set here' : 'from the app settings file'}</span></dd></dl>
+        <label class="admin-field"><span>Lock the app when it is</span>
+          <select data-lock>${choices.map(([v, l]) => `<option value="${v}"${v === current ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+        <div class="m-actions">
+          <button class="btn btn-red" data-save>Save for everyone</button>
+          ${fromAdmin ? '<button class="btn btn-gray" data-reset>Use the settings file instead</button>' : ''}
+        </div>
+        <div class="live-result" data-result></div>
+      </section>
+      <section class="admin-card">
+        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 1.2.${latest}` : ''}</small></h2>
+        ${codes ? '' : '<p class="muted">Couldn\'t reach GitHub to count releases.</p>'}
+        <div class="admin-list">${aurora.map(row).join('') || '<p class="muted">Every device is up to date.</p>'}</div>
+      </section>`;
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const save = async (value, done) => {
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        const r = await writeAuroraPrefForAll(APP_PREFS, value);
+        await refreshAppConfig();
+        if (!isCurrent()) return;
+        say(`${done} Saved for ${r.saved} of ${r.total} accounts${r.failed ? ` (${r.failed} failed; try again)` : ''}.`, r.failed ? 'bad' : 'good');
+        setTimeout(() => { if (isCurrent()) adminUpdates(body, isCurrent); }, 1500);
+      } catch (e) { say("Couldn't save: " + esc(adminError(e)), 'bad'); }
+    };
+    $('[data-save]', body).addEventListener('click', () => {
+      const n = Number($('[data-lock]', body).value);
+      save({ forceUpdateAfter: n, t: Date.now() }, n ? `The app now locks at ${n} ${n === 1 ? 'update' : 'updates'} behind.` : 'The update lock is off.');
+    });
+    $('[data-reset]', body)?.addEventListener('click', () => save(null, 'Using the settings file again.'));
+  }
+
   async function adminDevices(body, isCurrent) {
     const [devices, users, release] = await Promise.all([
       api('/Devices').catch((e) => ({ error: e })), api('/Users').catch((e) => ({ error: e })), latestAuroraRelease(),
@@ -4008,6 +4102,8 @@
   async function autoCheckForUpdate() {
     if (!nativeApp?.getVersionCode || updates.checking) return;
     updates.lastCheck = Date.now();
+    await refreshAppConfig();
+    if (updates.checking) return;
     updates.checking = checkForUpdate();
     const result = await updates.checking;
     updates.checking = null;
@@ -5088,7 +5184,9 @@
 
     // Solid nav on scroll
     window.addEventListener('scroll', () => $('#nav').classList.toggle('solid', window.scrollY > 40), { passive: true });
-    window.addEventListener('hashchange', () => { closeModal(); route(); });
+    // A page change closes a details pop-up, but not the update prompt (the first screen loading right after
+    // sign-in would otherwise close it as soon as it appeared).
+    window.addEventListener('hashchange', () => { if (!$('#modal-content .update-body')) closeModal(); route(); });
 
     setupPlayer();
     setupKeys();

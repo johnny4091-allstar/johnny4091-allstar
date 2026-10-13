@@ -1,1 +1,2 @@
-- Fixed: on some TVs and phones the update said "Opening the installer…" but the installer never appeared. Updates now go through Android's own installer service, and an "Open installer" button appears if nothing shows up.
+- New: Admin → Updates. Turn the required-update lock on or off, or choose how many updates behind it applies, for every device at once, and see which devices are behind.
+- Fixed: the "Update available" window could close by itself right after Aurora opened.
