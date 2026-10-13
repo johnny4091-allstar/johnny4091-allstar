@@ -150,7 +150,17 @@ public class MainActivity extends Activity {
         if (requestCode != REQUEST_LIVE) return;
         LivePlayerActivity.pendingChannels = null;
         int index = data == null ? -1 : data.getIntExtra(LivePlayerActivity.RESULT_INDEX, -1);
-        webView.evaluateJavascript("window.auroraLiveClosed && window.auroraLiveClosed(" + index + ")", null);
+        String stats = "null";
+        if (data != null) {
+            try {
+                stats = new JSONObject().put("stalls", data.getIntExtra(LivePlayerActivity.RESULT_STALLS, 0))
+                        .put("minutes", data.getIntExtra(LivePlayerActivity.RESULT_MINUTES, 0))
+                        .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER))).toString();
+            } catch (Exception ignored) {
+                // No stats.
+            }
+        }
+        webView.evaluateJavascript("window.auroraLiveClosed && window.auroraLiveClosed(" + index + "," + stats + ")", null);
     }
 
     private static final String CREDENTIAL_KEY = "aurora-credentials";

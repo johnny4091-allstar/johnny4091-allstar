@@ -42,6 +42,8 @@ import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.extractor.DefaultExtractorsFactory;
+import androidx.media3.extractor.ts.DefaultTsPayloadReaderFactory;
 import androidx.media3.ui.PlayerView;
 
 import org.json.JSONArray;
@@ -73,6 +75,7 @@ public class LivePlayerActivity extends Activity {
     static final String EXTRA_USER_AGENT = "userAgent";
     static final String EXTRA_REPORT = "report";       // Emby details for telling the admin what's playing
     static final String RESULT_INDEX = "index";
+    static final String RESULT_STALLS = "stalls", RESULT_MINUTES = "minutes", RESULT_BUFFER = "buffer";
 
     private static final int ACCENT = Color.parseColor("#2AD4D0");
     private static final int PANEL = Color.parseColor("#E6070C1C");
@@ -95,6 +98,10 @@ public class LivePlayerActivity extends Activity {
     private String group = "";
     private String userAgent;
     private LiveReporter reporter;
+    private String bufferLevel = "medium";
+    private boolean wasReady;
+    private int stalls;
+    private final long openedAt = System.currentTimeMillis();
 
     private ExoPlayer player;
     private PlayerView playerView;
@@ -142,6 +149,12 @@ public class LivePlayerActivity extends Activity {
         if (TextUtils.isEmpty(userAgent)) userAgent = "Aurora/" + versionName() + " (Android)";
 
         reporter = LiveReporter.from(intent.getStringExtra(EXTRA_REPORT));
+        try {
+            String level = new JSONObject(intent.getStringExtra(EXTRA_REPORT)).optString("buffer", "medium");
+            if (level.equals("small") || level.equals("large")) bufferLevel = level;
+        } catch (Exception ignored) {
+            // Medium.
+        }
         buildViews();
         buildPlayer();
         tune(index);
@@ -168,9 +181,17 @@ public class LivePlayerActivity extends Activity {
                 .setAllowCrossProtocolRedirects(true)
                 .setConnectTimeoutMs(15000)
                 .setReadTimeoutMs(20000);
-        // A deeper buffer than the default: live IPTV streams often arrive in bursts.
+        // Live video arrives in real time, so the cushion built up before playback starts (and again after a
+        // stall) is all there is to ride out a slow moment. 2 seconds was too little; the viewer picks the size
+        // in Settings → Playback → Live TV buffer (Medium by default), trading channel-change speed for smoothness.
+        int startMs, afterStallMs;
+        switch (bufferLevel) {
+            case "small": startMs = 2500; afterStallMs = 5000; break;
+            case "large": startMs = 10000; afterStallMs = 20000; break;
+            default: startMs = 5000; afterStallMs = 10000; break;
+        }
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(15000, 50000, 2000, 4000)
+                .setBufferDurationsMs(Math.max(20000, afterStallMs + 10000), 60000, startMs, afterStallMs)
                 .setTargetBufferBytes(bufferBytes())
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
@@ -180,12 +201,18 @@ public class LivePlayerActivity extends Activity {
                 .setLoadControl(loadControl)
                 // Keep Wi-Fi awake while watching; some boxes otherwise let it doze and the stream drops.
                 .setWakeMode(C.WAKE_MODE_NETWORK)
-                .setMediaSourceFactory(new DefaultMediaSourceFactory(this)
-                        .setDataSourceFactory(new DefaultDataSource.Factory(this, http)))
+                .setMediaSourceFactory(new DefaultMediaSourceFactory(new DefaultDataSource.Factory(this, http),
+                        // IPTV MPEG-TS often has keyframes the default reader doesn't treat as start points, which
+                        // slows the start of a channel and can stutter.
+                        new DefaultExtractorsFactory().setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES
+                                | DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS)))
                 .build();
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
+                // Count stalls while watching (not the start of a channel), for the app log.
+                if (state == Player.STATE_BUFFERING && wasReady) stalls++;
+                wasReady = state == Player.STATE_READY;
                 if (state == Player.STATE_READY) {
                     retries = 0;
                     failed = false;
@@ -225,6 +252,7 @@ public class LivePlayerActivity extends Activity {
         handler.removeCallbacks(retryRunnable);
         status.setVisibility(View.GONE);
         Channel c = channels.get(index);
+        wasReady = false; // a new channel loading isn't a stall
         player.setMediaItem(mediaItem(c.url));
         player.prepare();
         player.setPlayWhenReady(true);
@@ -678,6 +706,9 @@ public class LivePlayerActivity extends Activity {
         logoCache.evictAll();
         Intent result = new Intent();
         result.putExtra(RESULT_INDEX, index);
+        result.putExtra(RESULT_STALLS, stalls);
+        result.putExtra(RESULT_MINUTES, (int) ((System.currentTimeMillis() - openedAt) / 60000));
+        result.putExtra(RESULT_BUFFER, bufferLevel);
         setResult(RESULT_OK, result);
         finish();
     }

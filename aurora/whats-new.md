@@ -1,3 +1,3 @@
-- Smoother films and shows: the player now keeps a much bigger buffer, so short slow moments on the internet no longer stop playback. If a video stalls without an error, it reconnects at the same spot by itself.
-- Faster browsing: the remote responds quicker on long lists and the TV guide, pictures load faster, and going back to Home after watching something no longer reloads every row.
-- TV guide: listings no longer run out when Aurora is left on for hours, and live channels from long lists start faster.
+- Smoother live TV: channels now load a few seconds of video before they start, so slow moments on the internet or at the TV provider no longer make them stop to buffer.
+- New: Settings → Playback → Live TV buffer. Small changes channel fastest, Medium is the new default, Large is smoothest on slow internet.
+- Channels start more reliably on some TV providers, and live TV that keeps buffering is reported to the admins automatically.

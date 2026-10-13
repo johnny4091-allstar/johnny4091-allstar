@@ -1528,15 +1528,23 @@
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
-        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader() }));
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer') }));
   }
   // The native player closed: remember the channel it ended on and put the focus back on it.
-  window.auroraLiveClosed = (index) => {
+  window.auroraLiveClosed = (index, stats) => {
     store.del('ef.liveReturn');
     const p = iptvPlaying;
     iptvPlaying = null;
     if (!p || index < 0) return;
     const ch = p.list[index];
+    // Kept stopping to buffer: note it (it reaches the admins with the automatic reports) and suggest a bigger buffer.
+    if (stats?.stalls >= 3) {
+      appLog.add('warn', `Live TV kept buffering: ${stats.stalls} times in ${stats.minutes} min (last channel ${ch?.name || '?'}, buffer ${stats.buffer})`);
+      if (stats.buffer !== 'large' && !store.get('ef.liveBufferTip')) {
+        store.set('ef.liveBufferTip', '1');
+        toast('Live TV kept stopping to buffer. A bigger buffer can help: Settings → Playback → Live TV buffer → Large.', 9000);
+      }
+    }
     if (!ch) return;
     rememberChannel(ch);
     const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`);
@@ -2989,7 +2997,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium' };
   const getPref = (key) => store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
@@ -3046,6 +3054,7 @@
         ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
         ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
         ${nativeApp?.playVod ? settingRow('Video player', 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'))) : ''}
+        ${nativeApp?.playLive ? settingRow('Live TV buffer', 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'))) : ''}
         ${settingRow('Streaming quality', 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
       </section>
       <section class="settings-section feedback-section">
@@ -4576,7 +4585,9 @@
       // hls.js plays Emby's stream more smoothly than Android's built-in HLS; Apple's own is best on Apple devices.
       const apple = /Apple/.test(navigator.vendor || '');
       if (isHls && (!apple || !video.canPlayType('application/vnd.apple.mpegurl')) && window.Hls?.isSupported()) {
-        const hls = new window.Hls({ startPosition: startSeconds || -1, maxBufferLength: 60, maxMaxBufferLength: 120, backBufferLength: 30 });
+        const hls = new window.Hls({ startPosition: startSeconds || -1, maxBufferLength: 60, maxMaxBufferLength: 120, backBufferLength: 30,
+          // Emby live channels: play a little further behind live, so there's more in hand when the stream hiccups.
+          ...(player.isLive ? { liveSyncDurationCount: 4, liveMaxLatencyDurationCount: 12 } : {}) });
         player.hls = hls;
         hls.on(window.Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); resolve(); });
         hls.on(window.Hls.Events.ERROR, (_, data) => {
