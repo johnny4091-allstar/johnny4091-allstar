@@ -1,2 +1,3 @@
-- New: Admin → Updates. Turn the required-update lock on or off, or choose how many updates behind it applies, for every device at once, and see which devices are behind.
-- Fixed: the "Update available" window could close by itself right after Aurora opened.
+- Smoother films and shows: the player now keeps a much bigger buffer, so short slow moments on the internet no longer stop playback. If a video stalls without an error, it reconnects at the same spot by itself.
+- Faster browsing: the remote responds quicker on long lists and the TV guide, pictures load faster, and going back to Home after watching something no longer reloads every row.
+- TV guide: listings no longer run out when Aurora is left on for hours, and live channels from long lists start faster.

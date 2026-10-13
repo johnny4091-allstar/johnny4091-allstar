@@ -42,10 +42,11 @@ final class EpgLoader {
     private static final long DOWNLOAD_MS = 6 * 3600_000L;
     /** How long the saved, read guide is used without looking for a newer one... */
     private static final long FRESH_MS = 4 * 3600_000L;
-    /** ...and how long it's still used while a newer one is read in the background. */
-    private static final long STALE_MS = 12 * 3600_000L;
-    // The guide page shows six hours; keeping a little past that covers a guide that's a few hours old.
-    private static final long BEFORE_MS = 3600_000L, AHEAD_MS = 10 * 3600_000L;
+    /** ...and how long it's still used while a newer one is read in the background. Kept well inside AHEAD_MS,
+     *  so an older saved guide still has the next six hours (the guide page's width) in it. */
+    private static final long STALE_MS = 8 * 3600_000L;
+    // The guide page shows six hours; 14 hours ahead covers a saved guide up to STALE_MS old.
+    private static final long BEFORE_MS = 3600_000L, AHEAD_MS = 14 * 3600_000L;
     private static final int MAX_DESC = 180;
     private static final int MAX_REDIRECTS = 5;
 

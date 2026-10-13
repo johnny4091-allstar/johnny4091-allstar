@@ -91,7 +91,8 @@ public class VodPlayerActivity extends Activity {
     private long resumeMs;
     private boolean everReady, ended, stopped, closing, reportedStart, touched;
     private int retries;
-    private long endStuckSince;
+    private long endStuckSince, stallSince;
+    private static final long STALL_MS = 30000;
     private String error;
 
     @Override
@@ -136,12 +137,16 @@ public class VodPlayerActivity extends Activity {
 
     // ---------- Player ----------
 
-    /** How much video to hold in memory: a quarter of what this device allows the app (16-64 MB). */
+    /**
+     * How much video to hold in memory: a third of what this device allows the app, 32-160 MB. Films are
+     * often 10-40 Mbps when sent as they are, so 64 MB was only 13-50 seconds and a slow moment on the
+     * internet stopped playback. This screen has little else in memory, unlike live TV's channel list.
+     */
     private int bufferBytes() {
         ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
-        int heapMb = am == null ? 128 : Math.max(am.getMemoryClass(), am.getLargeMemoryClass());
-        int mb = Math.max(16, Math.min(64, heapMb / 4));
-        if (am != null && am.isLowRamDevice()) mb = 16;
+        int heapMb = am == null ? 192 : Math.max(am.getMemoryClass(), am.getLargeMemoryClass());
+        int mb = Math.max(32, Math.min(160, heapMb / 3));
+        if (am != null && am.isLowRamDevice()) mb = 32;
         return mb * 1024 * 1024;
     }
 
@@ -153,7 +158,7 @@ public class VodPlayerActivity extends Activity {
                 .setReadTimeoutMs(30000);
         // Start quickly, then build up a deep buffer so a slow moment on the internet doesn't stop the film.
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
-                .setBufferDurationsMs(30000, 120000, 2500, 5000)
+                .setBufferDurationsMs(30000, 180000, 2500, 5000)
                 .setTargetBufferBytes(bufferBytes())
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
@@ -297,6 +302,20 @@ public class VodPlayerActivity extends Activity {
             // Stuck loading in the last seconds (the final piece never arrives): that's the end.
             boolean stuckAtEnd = everReady && dur != C.TIME_UNSET && dur > 0 && pos >= dur - END_SLACK_MS
                     && player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING;
+            // Stuck loading mid-film with no error (a stalled connection, or Emby's converting stalled):
+            // reconnect at the same spot rather than spinning for ever.
+            boolean buffering = everReady && player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING && !stuckAtEnd;
+            if (!buffering) stallSince = 0;
+            else if (stallSince == 0) stallSince = System.currentTimeMillis();
+            else if (System.currentTimeMillis() - stallSince > STALL_MS && retries < MAX_RETRIES) {
+                stallSince = 0;
+                retries++;
+                resumeMs = Math.max(0, player.getCurrentPosition());
+                status.setText("Reconnecting…");
+                status.setVisibility(View.VISIBLE);
+                handler.removeCallbacks(retry);
+                handler.post(retry);
+            }
             if (!stuckAtEnd) endStuckSince = 0;
             else if (endStuckSince == 0) endStuckSince = System.currentTimeMillis();
             else if (System.currentTimeMillis() - endStuckSince > 8000) {

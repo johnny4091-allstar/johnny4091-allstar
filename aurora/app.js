@@ -174,8 +174,11 @@
   function imageUrl(id, type, { tag, maxWidth, maxHeight, index } = {}) {
     if (!id) return '';
     const path = `/Items/${id}/Images/${type}` + (index != null ? `/${index}` : '');
-    return apiUrl(path, { tag, maxWidth, maxHeight, quality: 90 });
+    // A little lighter than Emby's 90 (a third smaller files, no visible difference), so rows fill faster.
+    return apiUrl(path, { tag, maxWidth, maxHeight, quality: maxWidth && maxWidth <= 600 ? 80 : 85 });
   }
+  // Big backgrounds no wider than the screen's real pixels (a phone doesn't need a 1920-wide picture).
+  const SCREEN_W = Math.min(1920, Math.max(640, Math.ceil((Math.max(screen.width || 0, screen.height || 0) * (window.devicePixelRatio || 1)) / 320) * 320 || 1920));
 
   function landscapeImage(item, w = 500) {
     const t = item.ImageTags || {};
@@ -189,7 +192,7 @@
     return '';
   }
 
-  function backdropImage(item, w = 1920) {
+  function backdropImage(item, w = SCREEN_W) {
     if (item.BackdropImageTags?.length) return imageUrl(item.Id, 'Backdrop', { tag: item.BackdropImageTags[0], maxWidth: w, index: 0 });
     if (item.ParentBackdropItemId && item.ParentBackdropImageTags?.length) return imageUrl(item.ParentBackdropItemId, 'Backdrop', { tag: item.ParentBackdropImageTags[0], maxWidth: w, index: 0 });
     return landscapeImage(item, w);
@@ -429,6 +432,8 @@
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin());
     live.channelIds = [];
+    // Measure the connection now, in the background, so the first Play doesn't wait for it.
+    setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
@@ -534,26 +539,44 @@
 
     const videoViews = state.views.filter((v) => ['movies', 'tvshows', 'homevideos', 'musicvideos', undefined, null, ''].includes(v.CollectionType));
     for (const view of videoViews) {
-      add(`Recently Added in ${view.Name}`, () =>
-        api(userPath('/Items/Latest'), { params: { ParentId: view.Id, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }));
+      add(`Recently Added in ${view.Name}`, () => cachedRow(`${state.userId}:latest:${view.Id}`, () =>
+        api(userPath('/Items/Latest'), { params: { ParentId: view.Id, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } })));
     }
 
-    add('Top Rated Movies', async () =>
-      (await getItems({ IncludeItemTypes: 'Movie', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 20 }))?.Items);
-    add('Popular TV Shows', async () =>
-      (await getItems({ IncludeItemTypes: 'Series', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 20 }))?.Items);
+    add('Top Rated Movies', () => cachedRow(`${state.userId}:top`, async () =>
+      (await getItems({ IncludeItemTypes: 'Movie', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 20 }))?.Items));
+    add('Popular TV Shows', () => cachedRow(`${state.userId}:popular`, async () =>
+      (await getItems({ IncludeItemTypes: 'Series', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 20 }))?.Items));
 
     // A few random genre rows, Netflix-style.
     (async () => {
       try {
-        const genres = (await api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: 'Movie,Series', Recursive: true, SortBy: 'SortName' } }))?.Items || [];
+        // The same five genres for a few minutes, so Home doesn't reshuffle every time it's opened.
+        const picks = await cachedRow(`${state.userId}:genres`, async () => {
+          const genres = (await api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: 'Movie,Series', Recursive: true, SortBy: 'SortName' } }))?.Items || [];
+          return shuffle(genres).slice(0, 5);
+        });
         if (!isCurrent()) return;
-        for (const g of shuffle(genres).slice(0, 5)) {
-          add(g.Name, async () =>
-            (await getItems({ IncludeItemTypes: 'Movie,Series', GenreIds: g.Id, SortBy: 'Random', Limit: 20 }))?.Items);
+        for (const g of picks) {
+          add(g.Name, () => cachedRow(`${state.userId}:genre:${g.Id}`, async () =>
+            (await getItems({ IncludeItemTypes: 'Movie,Series', GenreIds: g.Id, SortBy: 'Random', Limit: 20 }))?.Items));
         }
       } catch (e) { console.error(e); }
     })();
+  }
+
+  // Rows that change rarely (recently added, top rated, genres) are kept for a few minutes, so going back to
+  // Home after a film doesn't fetch them all again. Continue Watching, Next Up and My List are always fresh.
+  const rowCache = new Map();
+  const ROW_TTL = 5 * 60000;
+  function cachedRow(key, loader) {
+    const hit = rowCache.get(key);
+    if (hit && Date.now() - hit.t < ROW_TTL) return hit.p;
+    const p = loader();
+    rowCache.set(key, { t: Date.now(), p });
+    p.catch(() => rowCache.delete(key));
+    if (rowCache.size > 60) rowCache.delete(rowCache.keys().next().value);
+    return p;
   }
 
   // ---------- Rows & cards ----------
@@ -891,7 +914,7 @@
     const resumeTicks = item.UserData?.PlaybackPositionTicks || 0;
 
     content.innerHTML = `
-      <div class="m-hero" style="background-image:url('${esc(backdropImage(item, 1280))}')">
+      <div class="m-hero" style="background-image:url('${esc(backdropImage(item, Math.min(1280, SCREEN_W)))}')">
         <div class="m-hero-content">
           ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h2>${esc(item.Name)}</h2>`}
           <div class="m-actions">
@@ -1368,7 +1391,11 @@
 
   // Gets the guide ready once per session. The Android app downloads and reads it and keeps it (the page
   // only ever asks it for the channels on screen: see guideFor), so this resolves to a small handle.
+  const GUIDE_REFRESH = 3 * 3600000;
   function loadIptvGuide(cfg = iptv.config) {
+    // The listings run about 10 hours ahead, so a guide kept for a long session (a TV left on Aurora) is
+    // fetched again after a few hours rather than running out of listings.
+    if (cfg === iptv.config && iptv.guide && Date.now() - (iptv.guide.at || 0) > GUIDE_REFRESH) { iptv.guide = null; iptv.guideLoad = null; }
     if (cfg === iptv.config && iptv.guideLoad) return iptv.guideLoad;
     const p = (async () => {
       if (!nativeApp?.loadEpg || !nativeApp.epgLookup) return null;
@@ -1381,7 +1408,7 @@
       });
       if (data?.error) throw new Error(data.error);
       if (!data?.channels) throw new Error("The guide link didn't return a TV guide (XMLTV).");
-      return { url, channels: data.channels, programmes: data.programmes, cache: new Map() };
+      return { url, channels: data.channels, programmes: data.programmes, cache: new Map(), at: Date.now() };
     })();
     if (cfg === iptv.config) {
       iptv.guideLoad = p;
@@ -1430,6 +1457,8 @@
   window.auroraImageDone = (id, dataUrl) => { const done = imgPending.get(id); if (done) { imgPending.delete(id); done(dataUrl); } };
   function nativeImage(url) {
     if (imgCache.has(url)) return imgCache.get(url);
+    // Logos are kept as data, so don't let the list grow without end in a long session.
+    if (imgCache.size > 400) [...imgCache.keys()].slice(0, 100).forEach((k) => imgCache.delete(k));
     const p = new Promise((resolve) => imgQueue.push({ url, resolve }));
     imgCache.set(url, p);
     pumpImages();
@@ -1487,10 +1516,15 @@
     let from = 0, to = list.length;
     if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
     const slice = list.slice(from, to);
-    guidePrefetch(slice);
+    // What's on is looked up for the channels around this one only: looking up thousands held up the start
+    // of playback for seconds on a TV box.
+    const near = (i) => Math.abs(i - (index - from)) <= 150;
+    guidePrefetch(slice.filter((c, i) => near(i)));
     iptvPlaying = { list: slice, offset: from, group: groupName };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
-    nativeApp.playLive(JSON.stringify(slice.map((c) => ({ name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }))),
+    nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
+      ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }
+      : { name: c.name, url: c.url, logo: c.logo || '', num: c.num, now: '' }))),
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
@@ -1574,6 +1608,7 @@
     if (!isCurrent()) return;
     // The grid shows straight away; listings fill in when the full guide is ready (Xtream channels on screen
     // get theirs from the provider one by one in the meantime).
+    if (iptv.guide && Date.now() - (iptv.guide.at || 0) > GUIDE_REFRESH) { iptv.guide = null; iptv.guideLoad = null; }
     let guidePending = !iptv.guide;
     const recent = iptvRecent();
     const cats = [
@@ -5257,9 +5292,14 @@
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     const vertical = dir === 'up' || dir === 'down';
     const cands = [];
-    for (const el of focusables(layer)) {
-      if (el === cur || el.contains(cur) || cur.contains(el)) continue;
+    // Only items near the current one are worth checking: a long grid or guide has thousands, and asking the
+    // style of each one on every press made the remote lag on TV boxes.
+    const W = window.innerWidth, H = window.innerHeight;
+    for (const el of $$(FOCUSABLE, layer)) {
+      if (el.tabIndex < 0 || el === cur || el.contains(cur) || cur.contains(el)) continue;
       const b = el.getBoundingClientRect();
+      if (b.width <= 1 || b.height <= 1) continue;
+      if (b.bottom < r.top - 1.5 * H || b.top > r.bottom + 1.5 * H || b.right < r.left - 1.5 * W || b.left > r.right + 1.5 * W) continue;
       const bx = b.left + b.width / 2, by = b.top + b.height / 2;
       let primary, cross, overlap;
       if (dir === 'down') { if (b.top < cy) continue; primary = by - cy; }
@@ -5274,6 +5314,7 @@
       }
       cands.push({ el, primary, cross, overlap });
     }
+    for (let i = cands.length - 1; i >= 0; i--) if (getComputedStyle(cands[i].el).visibility === 'hidden') cands.splice(i, 1);
     // The fixed top bar is only reached when nothing else lies in that direction (like Netflix).
     const inPage = cands.filter((c) => !c.el.closest('#nav'));
     if (inPage.length && !cur.closest('#nav')) cands.splice(0, cands.length, ...inPage);
