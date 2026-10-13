@@ -2908,7 +2908,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora' };
   const getPref = (key) => store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
@@ -2964,7 +2964,8 @@
         ${settingRow('Sound when Aurora opens', 'Play the Aurora intro sound with the opening animation.', selectHtml('splashSound', [['on', 'On'], ['off', 'Off']], getPref('splashSound')))}
         ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
         ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
-        ${settingRow('Streaming quality', 'Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
+        ${nativeApp?.playVod ? settingRow('Video player', 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'))) : ''}
+        ${settingRow('Streaming quality', 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
       </section>
       <section class="settings-section">
         <h2>About</h2>
@@ -3902,6 +3903,95 @@
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
   const speedLabel = (r) => (r === 1 ? 'Normal' : `${r}x`);
   const maxBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
+  const autoQuality = () => maxBitrate() === QUALITY_OPTIONS[0].bitrate;
+
+  // "Auto" quality: measure the connection to the Emby server (as Emby's own apps do) so a film that's bigger
+  // than the connection can carry gets sized down by Emby instead of stopping to buffer every few seconds.
+  let measuredBitrate = null;
+  async function measureBitrate(size) {
+    const started = performance.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
+    try {
+      const res = await fetch(apiUrl('/Playback/BitrateTest', { Size: size }), { cache: 'no-store', signal: ctrl.signal });
+      if (!res.ok) throw new Error('status ' + res.status);
+      const bytes = (await res.arrayBuffer()).byteLength;
+      return (bytes * 8) / Math.max(0.05, (performance.now() - started) / 1000);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async function playbackBitrate() {
+    if (!autoQuality()) return maxBitrate();
+    if (measuredBitrate && Date.now() - measuredBitrate.t < 20 * 60000) return measuredBitrate.bps;
+    try {
+      let bps = await measureBitrate(1000000);
+      // A quick first test on a fast line mostly measures the delay; a bigger one gives the real speed.
+      if (bps > 10000000) bps = Math.max(bps, await measureBitrate(6000000));
+      const use = Math.round(Math.min(QUALITY_OPTIONS[0].bitrate, Math.max(1500000, bps * 0.7)));
+      measuredBitrate = { bps: use, t: Date.now() };
+      appLog.add('info', `Connection to the server: ${(bps / 1e6).toFixed(1)} Mbps; streaming up to ${(use / 1e6).toFixed(1)} Mbps`);
+      return use;
+    } catch (e) {
+      return maxBitrate();
+    }
+  }
+
+  // Movies and episodes play in the Android app's own player (ExoPlayer) unless the viewer picked the old one.
+  const useNativePlayer = () => !!nativeApp?.playVod && getPref('player') !== 'web';
+  let nativeCodecs = null;
+  function deviceCodecs() {
+    if (nativeCodecs) return nativeCodecs;
+    try { nativeCodecs = JSON.parse(nativeApp?.getCodecs?.() || 'null'); } catch { /* use the defaults */ }
+    if (!nativeCodecs?.video?.length) nativeCodecs = { video: ['h264'], audio: ['aac', 'mp3'], hevc10: false, maxWidth: 1920 };
+    return nativeCodecs;
+  }
+
+  // What the native player handles: nearly every film as it is, so Emby just sends the file.
+  function nativeDeviceProfile(bitrate) {
+    const c = deviceCodecs();
+    const video = c.video.filter((v) => ['h264', 'hevc', 'vp9', 'av1', 'vp8', 'mpeg2video', 'mpeg4'].includes(v));
+    const audio = c.audio.filter((a) => ['aac', 'mp3', 'ac3', 'eac3', 'opus', 'flac', 'vorbis', 'dts', 'truehd', 'mp2', 'pcm_s16le'].includes(a));
+    if (!audio.includes('aac')) audio.unshift('aac');
+    if (!audio.includes('mp3')) audio.push('mp3');
+    const surround = audio.includes('ac3');
+    // When Emby has to convert, it copies the picture if the device takes it and only redoes what's needed.
+    const hlsVideo = ['h264', ...(video.includes('hevc') ? ['hevc'] : [])].join(',');
+    const hlsAudio = ['aac', ...(surround ? ['ac3'] : []), ...(audio.includes('eac3') ? ['eac3'] : [])].join(',');
+    const codecProfiles = [
+      { Type: 'Video', Codec: 'h264', Conditions: [{ Condition: 'LessThanEqual', Property: 'VideoLevel', Value: '52', IsRequired: false }] },
+      { Type: 'Video', Conditions: [{ Condition: 'LessThanEqual', Property: 'Width', Value: String(c.maxWidth || 1920), IsRequired: false }] },
+    ];
+    if (video.includes('hevc') && !c.hevc10) {
+      codecProfiles.push({ Type: 'Video', Codec: 'hevc', Conditions: [{ Condition: 'LessThanEqual', Property: 'VideoBitDepth', Value: '8', IsRequired: false }] });
+    }
+    const embed = ['srt', 'subrip', 'ass', 'ssa', 'pgssub', 'pgs', 'dvdsub', 'dvbsub', 'vtt', 'webvtt'];
+    return {
+      Name: 'Aurora (Android)',
+      MaxStreamingBitrate: bitrate,
+      MaxStaticBitrate: bitrate,
+      MusicStreamingTranscodingBitrate: 192000,
+      DirectPlayProfiles: [
+        { Container: 'mkv,webm,mp4,m4v,mov,ts,m2ts,mpegts,mts', Type: 'Video', VideoCodec: video.join(','), AudioCodec: audio.join(',') },
+        { Container: 'mp3,aac,m4a,flac,webma,ogg,opus,wav', Type: 'Audio' },
+      ],
+      TranscodingProfiles: [
+        { Container: 'ts', Type: 'Video', VideoCodec: hlsVideo, AudioCodec: hlsAudio, Context: 'Streaming', Protocol: 'hls',
+          MaxAudioChannels: surround ? '6' : '2', MinSegments: '1', BreakOnNonKeyFrames: false },
+        { Container: 'mp4', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Context: 'Static', Protocol: 'http' },
+        { Container: 'mp3', Type: 'Audio', AudioCodec: 'mp3', Context: 'Streaming', Protocol: 'http' },
+      ],
+      ContainerProfiles: [],
+      CodecProfiles: codecProfiles,
+      // Subtitles inside the file are shown by the player itself; separate files are fetched alongside.
+      SubtitleProfiles: [
+        ...embed.map((f) => ({ Format: f, Method: 'Embed' })),
+        ...['srt', 'vtt', 'ass', 'ssa'].map((f) => ({ Format: f, Method: 'External' })),
+        ...['pgssub', 'dvdsub', 'dvbsub'].map((f) => ({ Format: f, Method: 'Encode' })),
+      ],
+      ResponseProfiles: [{ Type: 'Video', Container: 'm4v', MimeType: 'video/mp4' }],
+    };
+  }
 
   const player = {
     item: null, hls: null, playSessionId: null, mediaSourceId: null, playMethod: null, source: null,
@@ -3914,7 +4004,7 @@
   };
 
   // Tells Emby what this browser can play directly; anything else is transcoded to HLS H.264/AAC.
-  function deviceProfile() {
+  function deviceProfile(bitrate = maxBitrate()) {
     const v = document.createElement('video');
     const can = (t) => !!v.canPlayType(t).replace('no', '');
     const mp4Video = ['h264'];
@@ -3927,7 +4017,6 @@
     if (can('audio/mp4; codecs="ec-3"')) mp4Audio.push('eac3');
     if (can('audio/mp4; codecs="flac"')) mp4Audio.push('flac');
     if (can('audio/mp4; codecs="opus"')) mp4Audio.push('opus');
-    const bitrate = maxBitrate();
 
     return {
       Name: 'Aurora',
@@ -4028,12 +4117,15 @@
           ? `${esc(full.SeriesName)}<span class="sub">${esc(episodeLabel(full))}</span>`
           : esc(full.Name);
 
-      const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: maxBitrate() };
+      const native = useNativePlayer() && !isLive;
+      const bitrate = await playbackBitrate();
+      if (stale()) return;
+      const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: bitrate };
       if (audioIndex != null) params.AudioStreamIndex = audioIndex;
       if (subtitleIndex != null) params.SubtitleStreamIndex = subtitleIndex;
       // Browsers can't switch audio tracks in a file, so a non-default track needs Emby to remux it.
       if (forceTranscode) { params.EnableDirectPlay = false; params.EnableDirectStream = false; }
-      const info = await api(`/Items/${full.Id}/PlaybackInfo`, { method: 'POST', params, body: { DeviceProfile: deviceProfile() } });
+      const info = await api(`/Items/${full.Id}/PlaybackInfo`, { method: 'POST', params, body: { DeviceProfile: native ? nativeDeviceProfile(bitrate) : deviceProfile(bitrate) } });
       const source = info?.MediaSources?.[0];
       if (stale()) {
         // A newer request took over; release the tuner this one may have opened.
@@ -4060,6 +4152,12 @@
           Static: true, MediaSourceId: source.Id, PlaySessionId: info.PlaySessionId, DeviceId: state.deviceId,
         });
         player.playMethod = source.SupportsDirectPlay ? 'DirectPlay' : 'DirectStream';
+      }
+      appLog.add('info', `Playing ${full.Name} (${player.playMethod}${native ? ', Aurora player' : ''})`);
+
+      if (native) {
+        await playNative(full, source, url, isHls, forceTranscode, stale);
+        return;
       }
 
       // Text subtitles come as a separate WebVTT file; burned-in ones are already in the video.
@@ -4110,8 +4208,10 @@
         video.play().catch(() => { /* autoplay may need a click */ });
         resolve();
       };
-      if (isHls && !video.canPlayType('application/vnd.apple.mpegurl') && window.Hls?.isSupported()) {
-        const hls = new window.Hls({ startPosition: startSeconds || -1, maxBufferLength: 30 });
+      // hls.js plays Emby's stream more smoothly than Android's built-in HLS; Apple's own is best on Apple devices.
+      const apple = /Apple/.test(navigator.vendor || '');
+      if (isHls && (!apple || !video.canPlayType('application/vnd.apple.mpegurl')) && window.Hls?.isSupported()) {
+        const hls = new window.Hls({ startPosition: startSeconds || -1, maxBufferLength: 60, maxMaxBufferLength: 120, backBufferLength: 30 });
         player.hls = hls;
         hls.on(window.Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); resolve(); });
         hls.on(window.Hls.Events.ERROR, (_, data) => {
@@ -4177,11 +4277,82 @@
     reportPlayback('/Sessions/Playing');
   }
 
+  async function nextEpisodeOf(ep) {
+    const res = await api(`/Shows/${ep.SeriesId}/Episodes`, { params: { UserId: state.userId, StartItemId: ep.Id, Limit: 2, Fields: ITEM_FIELDS } });
+    return res?.Items?.find((i) => i.Id !== ep.Id) || null;
+  }
+
+  // ----- Aurora's native player (Android app) -----
+  // The page picks what to play; the native screen plays it, keeps Emby up to date, and reports back here.
+  let vodSession = null;
+  async function playNative(full, source, url, isHls, forceTranscode, stale) {
+    const next = full.Type === 'Episode' ? await nextEpisodeOf(full).catch(() => null) : null;
+    if (stale()) return;
+    const subs = (source.MediaStreams || [])
+      .filter((s) => s.Type === 'Subtitle' && s.DeliveryMethod === 'External' && s.DeliveryUrl)
+      .map((s) => ({
+        url: withApiKey(s.DeliveryUrl),
+        lang: s.Language || '',
+        label: s.DisplayTitle || s.Language || 'Subtitles',
+        format: (s.DeliveryUrl.match(/\.(\w+)(?:\?|$)/) || [])[1] || s.Codec || 'vtt',
+        selected: s.Index === player.subtitleIndex,
+      }));
+    const cfg = state.user?.Configuration || {};
+    const ms = (sec) => (sec == null ? -1 : Math.round(sec * 1000));
+    const spec = {
+      url, hls: isHls,
+      startMs: Math.round(player.startSeconds * 1000),
+      title: full.Type === 'Episode' ? full.SeriesName : full.Name,
+      subtitle: full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''),
+      subs,
+      introStartMs: ms(player.intro?.start), introEndMs: ms(player.intro?.end), creditsMs: ms(player.creditsAt),
+      nextTitle: next ? episodeLabel(next) : '',
+      audioLang: cfg.AudioLanguagePreference || '', subLang: cfg.SubtitleLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default',
+      report: {
+        base: state.server + '/emby', apiKey: state.apiKey, auth: authHeader(), deviceId: state.deviceId,
+        itemId: full.Id, mediaSourceId: source.Id, playSessionId: player.playSessionId, playMethod: player.playMethod,
+        audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
+      },
+    };
+    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod };
+    // The native screen reports to Emby from here on.
+    player.item = null;
+    player.playSessionId = null;
+    store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
+    nativeApp.playVod(JSON.stringify(spec));
+  }
+
+  window.auroraVodClosed = (r) => {
+    store.del('ef.liveReturn');
+    const s = vodSession;
+    vodSession = null;
+    r = r || {};
+    if (!s || !isPlayerOpen()) {
+      if (isPlayerOpen()) closePlayer(); else route();
+      return;
+    }
+    if (r.touched) noteInput();
+    if (r.error) appLog.add('warn', `Aurora player: ${s.item.Name} stopped (${r.error}, ${s.playMethod})`);
+    // The device couldn't play the file as it is: ask Emby to convert it, from the same spot.
+    if (r.error?.startsWith('unplayable') && !s.forceTranscode) {
+      toast('Converting this video so it plays on this device…');
+      const pos = r.ready ? r.positionMs : s.startMs;
+      playItem(s.item, { startTicks: Math.round(pos * 10000), forceTranscode: true, auto: true });
+      return;
+    }
+    if (r.next && s.next && (!r.ended || getPref('autoplay') === 'on')) {
+      player.nextEpisode = s.next;
+      startNextEpisode(!!r.ended);
+      return;
+    }
+    if (r.error) toast("This video couldn't be played. Try again, or pick a lower Streaming quality in Settings.", 6000);
+    closePlayer();
+  };
+
   async function findNextEpisode(ep) {
     player.nextEpisode = null;
     try {
-      const res = await api(`/Shows/${ep.SeriesId}/Episodes`, { params: { UserId: state.userId, StartItemId: ep.Id, Limit: 2, Fields: ITEM_FIELDS } });
-      const next = res?.Items?.find((i) => i.Id !== ep.Id);
+      const next = await nextEpisodeOf(ep);
       if (next && player.item?.Id === ep.Id) {
         player.nextEpisode = next;
         const btn = $('#player-next');

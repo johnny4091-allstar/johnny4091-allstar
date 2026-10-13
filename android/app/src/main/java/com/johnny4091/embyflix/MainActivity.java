@@ -128,12 +128,19 @@ public class MainActivity extends Activity {
     }
 
     private static final int REQUEST_LIVE = 7;
+    private static final int REQUEST_VOD = 8;
 
     /** Tells the page which channel was last watched when the native live player closes. */
     @SuppressWarnings("deprecation")
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_VOD) {
+            String result = data == null ? null : data.getStringExtra(VodPlayerActivity.RESULT_JSON);
+            webView.evaluateJavascript("window.auroraVodClosed && window.auroraVodClosed("
+                    + (result == null ? "null" : result) + ")", null);
+            return;
+        }
         if (requestCode != REQUEST_LIVE) return;
         LivePlayerActivity.pendingChannels = null;
         int index = data == null ? -1 : data.getIntExtra(LivePlayerActivity.RESULT_INDEX, -1);
@@ -616,6 +623,25 @@ public class MainActivity extends Activity {
                 intent.putExtra(LivePlayerActivity.EXTRA_REPORT, reportJson);
                 startActivityForResult(intent, REQUEST_LIVE);
             });
+        }
+
+        /** Plays an Emby movie or episode in the native player; specJson is described in VodPlayerActivity. */
+        @JavascriptInterface
+        public void playVod(String specJson) {
+            runOnUiThread(() -> {
+                Intent intent = new Intent(MainActivity.this, VodPlayerActivity.class);
+                intent.putExtra(VodPlayerActivity.EXTRA_SPEC, specJson);
+                startActivityForResult(intent, REQUEST_VOD);
+            });
+        }
+
+        /**
+         * What this device's decoders handle, so Emby sends files as they are whenever it can:
+         * {"video": ["h264", "hevc", …], "audio": ["aac", "ac3", …], "hevc10": true, "maxWidth": 3840}.
+         */
+        @JavascriptInterface
+        public String getCodecs() {
+            return Codecs.describe();
         }
 
         /** Opens a YouTube video in the YouTube app. Returns false if there isn't one (the page then plays it itself). */
