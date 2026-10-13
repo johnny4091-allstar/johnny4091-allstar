@@ -7,6 +7,10 @@
   <link rel="stylesheet" href="styles.css">
   <!-- Splash styles are inline so it shows on the very first frame. -->
   <style>
+    /* No page scroll bars: none while the opening screen is up, and none along the edges afterwards. */
+    html { scrollbar-width: none; background: #070c1c; }
+    html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    html:has(#splash), html:has(#splash) body { overflow: hidden; }
     #splash { position: fixed; inset: 0; z-index: 10000; background: #070c1c; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; transition: opacity .55s ease; }
     #splash.out { opacity: 0; pointer-events: none; }
     #splash .glow { position: absolute; width: 90vmax; height: 50vmax; border-radius: 50%; filter: blur(70px); opacity: 0; animation: splash-glow 2.4s ease-out forwards, splash-drift 9s ease-in-out 2.4s infinite alternate; }

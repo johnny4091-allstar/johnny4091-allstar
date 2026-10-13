@@ -1,1 +1,1 @@
-- Fixed: at the end of an episode or film, the player could stop with "This video stopped playing (ERROR_CODE_IO_UNSPECIFIED)" instead of finishing. Reaching the end now finishes normally and goes on to the next episode.
+- Fixed: scroll bars no longer flash along the side of the screen while Aurora opens.

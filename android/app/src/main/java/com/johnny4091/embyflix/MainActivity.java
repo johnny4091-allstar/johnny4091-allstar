@@ -199,6 +199,9 @@ public class MainActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private void createWebView() {
         webView = new WebView(this);
+        // No scroll bars along the edges (the page scrolls with the remote or a swipe).
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setHorizontalScrollBarEnabled(false);
         // Keep the page's engine at full priority while the live TV player covers it. By default Android
         // treats it as background work and stops it first when memory runs short, and the app then had to
         // load everything again when the viewer pressed Back.
