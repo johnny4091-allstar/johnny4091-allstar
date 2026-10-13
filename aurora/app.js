@@ -4332,7 +4332,7 @@
       return;
     }
     if (r.touched) noteInput();
-    if (r.error) appLog.add('warn', `Aurora player: ${s.item.Name} stopped (${r.error}, ${s.playMethod})`);
+    if (r.error) appLog.add('warn', `Aurora player: ${s.item.Name} stopped (${r.error}, ${s.playMethod}, at ${Math.round((r.positionMs || 0) / 1000)}s of ${Math.round((r.durationMs || 0) / 1000)}s)`);
     // The device couldn't play the file as it is: ask Emby to convert it, from the same spot.
     if (r.error?.startsWith('unplayable') && !s.forceTranscode) {
       toast('Converting this video so it plays on this device…');

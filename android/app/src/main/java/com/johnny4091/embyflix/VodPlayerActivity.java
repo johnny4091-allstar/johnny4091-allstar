@@ -70,6 +70,8 @@ public class VodPlayerActivity extends Activity {
     private static final long SEEK_MS = 10000;
     private static final long PROGRESS_MS = 10000;
     private static final int MAX_RETRIES = 4;
+    /** An error this close to the end counts as the end. */
+    private static final long END_SLACK_MS = 30000;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService reports = Executors.newSingleThreadExecutor();
@@ -89,6 +91,7 @@ public class VodPlayerActivity extends Activity {
     private long resumeMs;
     private boolean everReady, ended, stopped, closing, reportedStart, touched;
     private int retries;
+    private long endStuckSince;
     private String error;
 
     @Override
@@ -245,6 +248,15 @@ public class VodPlayerActivity extends Activity {
     private void onError(PlaybackException e) {
         if (player == null || closing) return;
         String why = e.getErrorCodeName();
+        // A failure in the last moments is the end of the video, not a fault: Emby's converted stream often
+        // lists a little more than it delivers, so the final piece fails to load. Carry on as if it ended.
+        long pos = player.getCurrentPosition(), dur = player.getDuration();
+        if (everReady && dur != C.TIME_UNSET && dur > 0
+                && (pos >= dur - END_SLACK_MS || (credits > 0 && pos >= credits))) {
+            ended = true;
+            close(!nextTitle.isEmpty());
+            return;
+        }
         // A file the device can't play as it is: let the page ask Emby to convert it instead.
         if (!"Transcode".equals(playMethod) && (!everReady || isDecodeError(e))) {
             error = "unplayable:" + why;
@@ -282,6 +294,16 @@ public class VodPlayerActivity extends Activity {
             setVisible(skipIntro, inIntro);
             long nextAt = credits > 0 ? credits : (dur > 0 ? dur - 30000 : -1);
             setVisible(nextButton, !nextTitle.isEmpty() && nextAt > 0 && pos >= nextAt);
+            // Stuck loading in the last seconds (the final piece never arrives): that's the end.
+            boolean stuckAtEnd = everReady && dur != C.TIME_UNSET && dur > 0 && pos >= dur - END_SLACK_MS
+                    && player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING;
+            if (!stuckAtEnd) endStuckSince = 0;
+            else if (endStuckSince == 0) endStuckSince = System.currentTimeMillis();
+            else if (System.currentTimeMillis() - endStuckSince > 8000) {
+                ended = true;
+                close(!nextTitle.isEmpty());
+                return;
+            }
             handler.postDelayed(this, 1000);
         }
     };

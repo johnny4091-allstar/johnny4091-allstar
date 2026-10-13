@@ -1,4 +1,1 @@
-- Movies and shows now play in Aurora's own video player, the same one live TV uses. It plays most files as they are (MKV, HEVC, Dolby Digital and more), so the server rarely has to convert them, and playback is much smoother.
-- When a file can't be played as it is, Aurora asks the server to convert it and carries on from the same spot.
-- "Auto" quality now measures your connection to the server and picks a quality it can keep up with, so videos stop pausing to buffer.
-- The old player is still available under Settings → Playback → Video player → Basic.
+- Fixed: at the end of an episode or film, the player could stop with "This video stopped playing (ERROR_CODE_IO_UNSPECIFIED)" instead of finishing. Reaching the end now finishes normally and goes on to the next episode.
