@@ -1,1 +1,1 @@
-- Fixed: scroll bars no longer flash along the side of the screen while Aurora opens.
+- New: Settings → Help & feedback. Write what went wrong and press "Send to admin". Your note goes to the admins with this device's app log, so problems are easier to fix. You can also see the app log there.

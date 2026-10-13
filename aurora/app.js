@@ -2967,6 +2967,17 @@
         ${nativeApp?.playVod ? settingRow('Video player', 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'))) : ''}
         ${settingRow('Streaming quality', 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
       </section>
+      <section class="settings-section feedback-section">
+        <h2>Help &amp; feedback <small>This device</small></h2>
+        <p class="setting-desc">Something not working? Say what happened and send it. The admins get your note with this device's app log, so they can see what went wrong.</p>
+        <textarea class="feedback-text" data-feedback rows="3" maxlength="1000" placeholder="What happened? For example: the film stopped halfway through."></textarea>
+        <div class="feedback-actions">
+          <button class="btn btn-white" data-send-feedback>Send to admin</button>
+          <button class="btn btn-gray" data-show-log>Show app log</button>
+          <span class="setting-value" data-feedback-status></span>
+        </div>
+        <div class="feedback-log hidden" data-app-log></div>
+      </section>
       <section class="settings-section">
         <h2>About</h2>
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
@@ -3001,6 +3012,7 @@
         default: setPref(sel.dataset.setting, v); applySubtitleStyle(); toast('Saved', 1500);
       }
     });
+    setupFeedback(page);
     $('[data-check-update]', page)?.addEventListener('click', async () => {
       const status = $('[data-update-status]', page);
       status.textContent = 'Checking…';
@@ -3015,7 +3027,118 @@
   // isn't a server administrator, so the name check only decides who sees the menu item.
   const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
   const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
-  const ADMIN_TABS = [['overview', 'Overview'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  // ----- Feedback -----
+  // A viewer's note plus this device's app log, kept in their Emby display preferences ("aurora-feedback")
+  // where the admin's Feedback tab reads it, and also sent to the server's client log as a copy.
+  const FEEDBACK_KEEP = 10;
+  const logLineHtml = (e) => `<div class="admin-row" tabindex="-1">
+    <div class="admin-row-main">${e.level === 'error' ? '<span class="pill bad">Error</span> ' : e.level === 'warn' ? '<span class="pill warn">Warning</span> ' : ''}${esc(e.msg)}</div>
+    <div class="admin-row-time">${esc(fmtDateTime(e.t))}</div></div>`;
+
+  function setupFeedback(page) {
+    const box = $('[data-feedback]', page), status = $('[data-feedback-status]', page), logEl = $('[data-app-log]', page);
+    const showBtn = $('[data-show-log]', page), sendBtn = $('[data-send-feedback]', page);
+    showBtn.addEventListener('click', () => {
+      const open = logEl.classList.toggle('hidden') === false;
+      showBtn.textContent = open ? 'Hide app log' : 'Show app log';
+      if (open) {
+        const entries = appLog.read().slice(-100).reverse();
+        logEl.innerHTML = `<div class="admin-list">${entries.map(logLineHtml).join('') || '<p class="muted">Nothing recorded yet.</p>'}</div>`;
+      }
+    });
+    sendBtn.addEventListener('click', async () => {
+      const text = box.value.trim();
+      if (!text) { status.textContent = 'Write what happened first.'; focusEl(box); return; }
+      sendBtn.disabled = true;
+      status.textContent = 'Sending…';
+      try {
+        await sendFeedback(text);
+        box.value = '';
+        status.textContent = 'Sent. Thank you!';
+        toast('Feedback sent to the admins', 2500);
+      } catch (e) {
+        status.textContent = "Couldn't send it: " + (e.message || 'no connection') + '. Try again in a moment.';
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+  }
+
+  async function sendFeedback(text) {
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t: Date.now(), text,
+      user: state.user?.Name || '', device: nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser'),
+      version: nativeApp?.getVersionName?.() || 'web', screen: location.hash || '#/home',
+      log: appLog.read().slice(-80).map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
+    };
+    let data = null;
+    try { data = await readAuroraPref('aurora-feedback'); } catch { /* none yet */ }
+    const items = [entry, ...(data?.items || [])].slice(0, FEEDBACK_KEEP);
+    await writeAuroraPref('aurora-feedback', state.userId, { items });
+    // A copy in the server's own logs.
+    fetch(apiUrl('/ClientLog/Document'), {
+      method: 'POST', headers: { 'X-Emby-Authorization': authHeader(), 'Content-Type': 'text/plain' },
+      body: `Aurora feedback · ${entry.user} · ${entry.device} · Aurora ${entry.version}\n${text}\n\n`
+        + entry.log.map((e) => `${new Date(e.t).toISOString()} ${e.level} ${e.msg}`).join('\n'),
+    }).catch(() => {});
+    appLog.add('info', 'Feedback sent: ' + text.slice(0, 120));
+  }
+
+  async function allFeedback(users) {
+    const out = [];
+    const queue = ((Array.isArray(users) ? users : users?.Items) || []).slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try {
+          const data = await readAuroraPref('aurora-feedback', u.Id);
+          (data?.items || []).forEach((f) => out.push({ ...f, user: f.user || u.Name, userId: u.Id }));
+        } catch { /* no feedback from this user */ }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return out.sort((a, b) => (b.t || 0) - (a.t || 0));
+  }
+
+  async function adminFeedback(body, isCurrent) {
+    let items;
+    try { items = await allFeedback(await api('/Users')); } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Feedback <small>${items.length} ${items.length === 1 ? 'note' : 'notes'}</small></h2>
+        <p class="muted">Sent from Settings → Help &amp; feedback, with the app log of the device it came from. Up to ${FEEDBACK_KEEP} are kept per person.</p>
+        <div class="admin-list">${items.map((f) => `<div class="feedback-item" data-id="${esc(f.id)}" data-user="${esc(f.userId)}">
+          <div class="feedback-head"><strong>${esc(f.user || 'Someone')}</strong> <span class="muted">· ${esc(f.device || '')} · Aurora ${esc(f.version || '')} · ${esc(fmtDateTime(f.t))}</span></div>
+          <p class="feedback-note">${esc(f.text)}</p>
+          <div class="feedback-actions">
+            <button class="btn btn-gray" data-log-toggle>Show app log (${(f.log || []).length})</button>
+            <button class="btn btn-gray" data-done>Done, remove</button>
+          </div>
+          <div class="feedback-log hidden"><div class="admin-list">${(f.log || []).slice().reverse().map(logLineHtml).join('') || '<p class="muted">The log was empty.</p>'}</div></div>
+        </div>`).join('') || '<p class="muted">No feedback yet.</p>'}</div>
+      </section>`;
+    $$('.feedback-item', body).forEach((el) => {
+      const btn = $('[data-log-toggle]', el), log = $('.feedback-log', el);
+      btn.addEventListener('click', () => {
+        const open = log.classList.toggle('hidden') === false;
+        btn.textContent = open ? 'Hide app log' : btn.textContent.replace('Hide', 'Show');
+        if (!open) btn.textContent = `Show app log (${$$('.admin-row', log).length})`;
+      });
+      $('[data-done]', el).addEventListener('click', async () => {
+        try {
+          const data = await readAuroraPref('aurora-feedback', el.dataset.user);
+          await writeAuroraPref('aurora-feedback', el.dataset.user, { items: (data?.items || []).filter((f) => f.id !== el.dataset.id) });
+          const next = el.nextElementSibling || el.previousElementSibling;
+          el.remove();
+          if (next) focusEl($('button', next));
+          toast('Removed', 1500);
+        } catch (e) { toast("Couldn't remove it: " + adminError(e)); }
+      });
+    });
+  }
+
+  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3057,7 +3180,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
   }
 
@@ -4864,7 +4987,7 @@
   // Arrow keys move focus to the nearest item in that direction (TV remotes send arrow keys),
   // OK/Enter activates it and Back closes the top layer.
   const nav = { on: false, tv: false, returnFocus: {} };
-  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, [tabindex]';
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, [tabindex]';
 
   function enableNav() {
     if (nav.on) return;
