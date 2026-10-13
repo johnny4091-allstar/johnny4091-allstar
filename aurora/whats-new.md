@@ -1,1 +1,1 @@
-- New: Settings → Help & feedback. Write what went wrong and press "Send to admin". Your note goes to the admins with this device's app log, so problems are easier to fix. You can also see the app log there.
+- Errors and warnings are now reported to the admins automatically, with what happened just before, so problems can be fixed without anyone having to write in.

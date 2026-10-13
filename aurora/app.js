@@ -27,6 +27,29 @@
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
+  // Errors and warnings go to the admins by themselves (Admin → Feedback → Automatic reports): a few seconds
+  // after the first one, in one report with what led up to it. The same problem is reported at most once an
+  // hour, reports are at least two minutes apart, and a device sends no more than 20 a day.
+  const problems = {
+    queue: [], timer: null, sentAt: 0, sending: false,
+    WAIT: 20000, GAP: 120000, DAILY: 20, KEEP: 30,
+    key: (msg) => String(msg).replace(/\d+/g, '#').slice(0, 120),
+    note(e) {
+      if (this.sending) return; // problems while sending a report (say, no connection) aren't reported again
+      let seen = {};
+      try { seen = JSON.parse(localStorage.getItem('ef.problemsSeen') || '{}'); } catch { /* start afresh */ }
+      const k = this.key(e.msg);
+      if (seen[k] && e.t - seen[k] < 3600000) return;
+      if (this.queue.some((q) => this.key(q.msg) === k) || this.queue.length >= 25) return;
+      this.queue.push(e);
+      this.schedule(this.WAIT);
+    },
+    schedule(ms) {
+      if (this.timer) return;
+      this.timer = setTimeout(() => { this.timer = null; this.flush(); }, Math.max(ms, this.sentAt + this.GAP - Date.now()));
+    },
+  };
+
   // A small log of errors and notable events on this device, shown in the admin dashboard.
   const appLog = {
     KEY: 'ef.appLog', MAX: 300,
@@ -34,8 +57,10 @@
     add(level, msg) {
       try {
         const list = this.read();
-        list.push({ t: Date.now(), level, msg: String(msg).slice(0, 600) });
+        const entry = { t: Date.now(), level, msg: String(msg).slice(0, 600) };
+        list.push(entry);
         localStorage.setItem(this.KEY, JSON.stringify(list.slice(-this.MAX)));
+        if (level === 'error' || level === 'warn') problems.note(entry);
       } catch { /* storage full or blocked */ }
     },
     clear() { try { localStorage.removeItem(this.KEY); } catch { /* ignore */ } },
@@ -2969,7 +2994,7 @@
       </section>
       <section class="settings-section feedback-section">
         <h2>Help &amp; feedback <small>This device</small></h2>
-        <p class="setting-desc">Something not working? Say what happened and send it. The admins get your note with this device's app log, so they can see what went wrong.</p>
+        <p class="setting-desc">Something not working? Say what happened and send it. The admins get your note with this device's app log, so they can see what went wrong. Errors are also reported to them automatically.</p>
         <textarea class="feedback-text" data-feedback rows="3" maxlength="1000" placeholder="What happened? For example: the film stopped halfway through."></textarea>
         <div class="feedback-actions">
           <button class="btn btn-white" data-send-feedback>Send to admin</button>
@@ -3084,15 +3109,54 @@
     appLog.add('info', 'Feedback sent: ' + text.slice(0, 120));
   }
 
-  async function allFeedback(users) {
+  problems.flush = async function flush() {
+    if (!this.queue.length) return;
+    // Not signed in yet (or the app is still starting): try again shortly.
+    if (!state.userId || !state.apiKey || typeof readAuroraPref !== 'function') { this.schedule(60000); return; }
+    const day = new Date().toDateString();
+    let count = { day, n: 0 };
+    try { const c = JSON.parse(store.get('ef.problemsDay') || 'null'); if (c?.day === day) count = c; } catch { /* new day */ }
+    if (count.n >= this.DAILY) { this.queue = []; return; }
+    const items = this.queue.splice(0);
+    const errors = items.filter((e) => e.level === 'error').length, warnings = items.length - errors;
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t: Date.now(), auto: true,
+      text: [errors && `${errors} ${errors === 1 ? 'error' : 'errors'}`, warnings && `${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`].filter(Boolean).join(', '),
+      problems: items.map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
+      user: state.user?.Name || '', device: nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser'),
+      version: nativeApp?.getVersionName?.() || 'web', screen: location.hash || '#/home',
+      log: appLog.read().slice(-40).map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
+    };
+    this.sending = true;
+    try {
+      let data = null;
+      try { data = await readAuroraPref('aurora-problems'); } catch { /* none yet */ }
+      await writeAuroraPref('aurora-problems', state.userId, { items: [entry, ...(data?.items || [])].slice(0, this.KEEP) });
+      this.sentAt = Date.now();
+      store.set('ef.problemsDay', JSON.stringify({ day, n: count.n + 1 }));
+      let seen = {};
+      try { seen = JSON.parse(store.get('ef.problemsSeen') || '{}'); } catch { /* start afresh */ }
+      for (const [k, t] of Object.entries(seen)) if (Date.now() - t > 3600000) delete seen[k];
+      items.forEach((e) => { seen[this.key(e.msg)] = e.t; });
+      store.set('ef.problemsSeen', JSON.stringify(seen));
+    } catch {
+      // No connection or the server is down: keep them for the next try.
+      this.queue = [...items, ...this.queue].slice(0, 25);
+      this.schedule(5 * 60000);
+    } finally {
+      this.sending = false;
+    }
+  };
+
+  async function allFeedback(users, prefsId = 'aurora-feedback') {
     const out = [];
     const queue = ((Array.isArray(users) ? users : users?.Items) || []).slice();
     const worker = async () => {
       while (queue.length) {
         const u = queue.shift();
         try {
-          const data = await readAuroraPref('aurora-feedback', u.Id);
-          (data?.items || []).forEach((f) => out.push({ ...f, user: f.user || u.Name, userId: u.Id }));
+          const data = await readAuroraPref(prefsId, u.Id);
+          (data?.items || []).forEach((f) => out.push({ ...f, user: f.user || u.Name, userId: u.Id, prefsId }));
         } catch { /* no feedback from this user */ }
       }
     };
@@ -3101,40 +3165,59 @@
   }
 
   async function adminFeedback(body, isCurrent) {
-    let items;
-    try { items = await allFeedback(await api('/Users')); } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    let notes, reports;
+    try {
+      const users = await api('/Users');
+      [notes, reports] = await Promise.all([allFeedback(users), allFeedback(users, 'aurora-problems')]);
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
     if (!isCurrent()) return;
+    const problemHtml = (list) => `<div class="admin-list feedback-problems">${list.map(logLineHtml).join('')}</div>`;
+    const itemHtml = (f) => `<div class="feedback-item" data-id="${esc(f.id)}" data-user="${esc(f.userId)}" data-prefs="${esc(f.prefsId)}">
+      <div class="feedback-head"><strong>${esc(f.user || 'Someone')}</strong> <span class="muted">· ${esc(f.device || '')} · Aurora ${esc(f.version || '')} · ${esc(fmtDateTime(f.t))}</span></div>
+      ${f.auto ? `<p class="feedback-note">${esc(f.text)} <span class="muted">on ${esc((f.screen || '').replace(/^#\//, '') || 'home')}</span></p>${problemHtml(f.problems || [])}` : `<p class="feedback-note">${esc(f.text)}</p>`}
+      <div class="feedback-actions">
+        <button class="btn btn-gray" data-log-toggle>Show app log (${(f.log || []).length})</button>
+        <button class="btn btn-gray" data-done>Done, remove</button>
+      </div>
+      <div class="feedback-log hidden"><div class="admin-list">${(f.log || []).slice().reverse().map(logLineHtml).join('') || '<p class="muted">The log was empty.</p>'}</div></div>
+    </div>`;
     body.innerHTML = `
       <section class="admin-card">
-        <h2>Feedback <small>${items.length} ${items.length === 1 ? 'note' : 'notes'}</small></h2>
+        <h2>Notes from viewers <small>${notes.length}</small></h2>
         <p class="muted">Sent from Settings → Help &amp; feedback, with the app log of the device it came from. Up to ${FEEDBACK_KEEP} are kept per person.</p>
-        <div class="admin-list">${items.map((f) => `<div class="feedback-item" data-id="${esc(f.id)}" data-user="${esc(f.userId)}">
-          <div class="feedback-head"><strong>${esc(f.user || 'Someone')}</strong> <span class="muted">· ${esc(f.device || '')} · Aurora ${esc(f.version || '')} · ${esc(fmtDateTime(f.t))}</span></div>
-          <p class="feedback-note">${esc(f.text)}</p>
-          <div class="feedback-actions">
-            <button class="btn btn-gray" data-log-toggle>Show app log (${(f.log || []).length})</button>
-            <button class="btn btn-gray" data-done>Done, remove</button>
-          </div>
-          <div class="feedback-log hidden"><div class="admin-list">${(f.log || []).slice().reverse().map(logLineHtml).join('') || '<p class="muted">The log was empty.</p>'}</div></div>
-        </div>`).join('') || '<p class="muted">No feedback yet.</p>'}</div>
+        <div class="admin-list">${notes.map(itemHtml).join('') || '<p class="muted">No notes yet.</p>'}</div>
+      </section>
+      <section class="admin-card">
+        <h2>Automatic problem reports <small>${reports.length}</small></h2>
+        <div class="log-tools"><p class="muted">Sent by the app on its own when something goes wrong: errors and warnings, with what happened just before. The same problem is sent at most once an hour per device.</p>
+          <span class="osd-spacer"></span>${reports.length ? '<button class="btn btn-gray" data-clear-reports>Remove all</button>' : ''}</div>
+        <div class="admin-list">${reports.map(itemHtml).join('') || '<p class="muted">No problems reported.</p>'}</div>
       </section>`;
     $$('.feedback-item', body).forEach((el) => {
       const btn = $('[data-log-toggle]', el), log = $('.feedback-log', el);
+      const count = $$('.admin-row', log).length;
       btn.addEventListener('click', () => {
         const open = log.classList.toggle('hidden') === false;
-        btn.textContent = open ? 'Hide app log' : btn.textContent.replace('Hide', 'Show');
-        if (!open) btn.textContent = `Show app log (${$$('.admin-row', log).length})`;
+        btn.textContent = open ? 'Hide app log' : `Show app log (${count})`;
       });
       $('[data-done]', el).addEventListener('click', async () => {
         try {
-          const data = await readAuroraPref('aurora-feedback', el.dataset.user);
-          await writeAuroraPref('aurora-feedback', el.dataset.user, { items: (data?.items || []).filter((f) => f.id !== el.dataset.id) });
+          const data = await readAuroraPref(el.dataset.prefs, el.dataset.user);
+          await writeAuroraPref(el.dataset.prefs, el.dataset.user, { items: (data?.items || []).filter((f) => f.id !== el.dataset.id) });
           const next = el.nextElementSibling || el.previousElementSibling;
           el.remove();
           if (next) focusEl($('button', next));
           toast('Removed', 1500);
         } catch (e) { toast("Couldn't remove it: " + adminError(e)); }
       });
+    });
+    $('[data-clear-reports]', body)?.addEventListener('click', async () => {
+      const users = [...new Set(reports.map((r) => r.userId))];
+      try {
+        await Promise.all(users.map((u) => writeAuroraPref('aurora-problems', u, { items: [] })));
+        toast('All automatic reports removed', 2000);
+        adminFeedback(body, isCurrent);
+      } catch (e) { toast("Couldn't remove them: " + adminError(e)); }
     });
   }
 
