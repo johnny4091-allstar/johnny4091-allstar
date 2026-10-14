@@ -873,3 +873,22 @@ button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85re
 /* A required update can't be dismissed. */
 .modal.update-required .modal-close { display: none; }
 .update-body.required h2 { color: #ffb3bb; }
+
+/* ---------- Admin: users ---------- */
+.users-head { display: flex; align-items: center; gap: 1rem; margin-bottom: .6rem; }
+.users-head h2 { margin: 0; }
+.users-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .8rem 1.2rem; margin-bottom: .4rem; }
+.users-tools .chip-row { margin: 0; }
+.users-search { flex: 1 1 220px; max-width: 360px; background: var(--bg-3); border: 1px solid rgba(255,255,255,.15); color: #fff; border-radius: 6px; padding: .55rem .8rem; font: inherit; }
+.users-search:focus { outline: none; border-color: #fff; }
+a.user-row { color: inherit !important; text-decoration: none; padding-left: .4rem; padding-right: .4rem; border-radius: 6px; }
+a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline: none; }
+.kbd-nav a.user-row:focus { box-shadow: 0 0 0 2px #fff; }
+.user-row.dim strong { opacity: .75; }
+.users-back { display: inline-block; margin-bottom: 1rem; }
+.users-sub { font-size: 1rem; margin: 1.4rem 0 .4rem; }
+.pill.good { background: rgba(42,212,160,.18); color: #6ff0c4; }
+.notice-body { max-width: 560px; }
+.admin-field input[type="date"], .admin-field input[type="password"], .admin-field input[type="text"] { max-width: 360px; }
+.admin-field select { max-width: 360px; }
+.admin-card > .admin-field, .admin-card > .admin-check { margin-bottom: .75rem; }

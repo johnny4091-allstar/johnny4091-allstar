@@ -1,3 +1,3 @@
-- Smoother live TV: channels now load a few seconds of video before they start, so slow moments on the internet or at the TV provider no longer make them stop to buffer.
-- New: Settings → Playback → Live TV buffer. Small changes channel fastest, Medium is the new default, Large is smoothest on slow internet.
-- Channels start more reliably on some TV providers, and live TV that keeps buffering is reported to the admins automatically.
+- New: Admin → Users. See every account with its status, devices in use, device limit and expiration date. Add users, change limits and expiry, sign out a device, enable or disable an account, set a new password, or delete a user.
+- Accounts are limited to 2 devices at a time by default (admins can change it per account), and expired accounts are switched off.
+- If a device is signed out by an admin, Aurora now goes back to the sign-in screen instead of showing errors.

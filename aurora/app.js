@@ -145,10 +145,27 @@
     if (!res.ok) {
       const err = new Error(`Emby returned ${res.status} ${res.statusText}`);
       err.status = res.status;
+      // This device's sign-in was revoked (an admin signed it out, or the account was disabled).
+      if (res.status === 401 && state.userId && !path.startsWith('/Users/AuthenticateByName')) signedOutElsewhere();
       throw err;
     }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
+  }
+
+  let signingOut = false;
+  function signedOutElsewhere() {
+    if (signingOut) return;
+    signingOut = true;
+    const name = state.user?.Name || '';
+    appLog.add('warn', 'This device was signed out by the server');
+    if (state.userId) removeAccount(state.userId);
+    state.apiKey = ''; state.userId = ''; state.user = null;
+    store.del('ef.apiKey'); store.del('ef.userId');
+    if (isPlayerOpen()) closePlayer().catch(() => {});
+    showSetup('This device was signed out. Sign in again to continue.');
+    if (name) $('#setup-username').value = name;
+    setTimeout(() => { signingOut = false; }, 3000);
   }
 
   // Header values must be plain ASCII without quotes or commas.
@@ -400,6 +417,17 @@
   async function selectUser(user) {
     state.userId = user.Id;
     state.user = user;
+    // Device limit and expiry (Admin → Users). Blocked: back to the sign-in screen, where the account's tile
+    // stays so it can try again once another device has signed out.
+    access.okUntil = 0;
+    const blocked = await checkAccess(user, 'signin');
+    if (blocked) {
+      appLog.add('info', `Sign-in blocked for ${user.Name}: ${blocked.message}`);
+      state.userId = ''; state.user = null;
+      store.del('ef.userId');
+      showSetup(blocked.message);
+      return;
+    }
     store.set('ef.userId', user.Id);
     const a = avatarInfo(user), btn = $('#profile-btn');
     btn.style.backgroundImage = a.image ? `url("${a.image}")` : '';
@@ -431,6 +459,7 @@
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin());
+    if (isAdmin()) setTimeout(() => disableExpiredUsers().catch(() => {}), 25000);
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
     setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
@@ -440,7 +469,7 @@
   }
 
   function connectionErrorMessage(e) {
-    if (e.status === 401 || e.status === 403) return 'Incorrect username or password.';
+    if (e.status === 401 || e.status === 403) return 'Incorrect username or password, or the account has been disabled.';
     if (e.status) return `Server error: ${e.message}`;
     return 'Could not reach the Emby server. Check your internet connection and that the server is running.';
   }
@@ -884,6 +913,7 @@
     // A required update can't be closed; the app stays locked until it's installed.
     if (updateRequiredOpen()) return;
     modalToken++;
+    if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(false); }
     if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
     document.body.style.overflow = '';
@@ -1508,6 +1538,10 @@
   // Opens the native player with the list the channel came from, so up/down flips through it.
   let iptvPlaying = null;
   function playIptv(list, index, groupName) {
+    if (!list[index]) return;
+    whenAllowed(() => startIptv(list, index, groupName));
+  }
+  function startIptv(list, index, groupName) {
     const ch = list[index];
     if (!ch) return;
     rememberChannel(ch);
@@ -2905,6 +2939,120 @@
     } catch { /* keep what's known */ }
   }
 
+  // ----- Account limits: devices per account and an expiry date -----
+  // Kept in each account's own display preferences ("aurora-limits": {limit, expires: "YYYY-MM-DD" or null}),
+  // written by an admin in Admin → Users. Admin accounts have no limits.
+  const LIMITS_PREFS = 'aurora-limits';
+  const DEFAULT_DEVICE_LIMIT = 2;
+  const ACTIVE_WINDOW = 5 * 60000; // a device counts as in use if it talked to Emby this recently
+  const expiryEnd = (d) => new Date(`${d}T23:59:59`).getTime(); // the account works until the end of that day
+  const isExpired = (lim) => !!lim?.expires && Date.now() > expiryEnd(lim.expires);
+  const fmtDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  const exemptFromLimits = (user) => !!user?.Policy?.IsAdministrator || ADMIN_NAMES.includes((user?.Name || '').toLowerCase());
+
+  // The devices (unique DeviceIds) signed in to an account that talked to Emby in the last few minutes,
+  // newest first. Uses Emby's session list.
+  async function activeDevices(userId, { within = ACTIVE_WINDOW } = {}) {
+    const sessions = await api('/Sessions', { params: { ActiveWithinSeconds: Math.round(within / 1000) } });
+    const byDevice = new Map();
+    for (const s of Array.isArray(sessions) ? sessions : []) {
+      if (s.UserId !== userId || !s.DeviceId) continue;
+      const at = Date.parse(s.LastActivityDate || 0) || 0;
+      if (Date.now() - at > within) continue;
+      const have = byDevice.get(s.DeviceId);
+      if (!have || at > have.at || (s.NowPlayingItem && !have.playing)) {
+        byDevice.set(s.DeviceId, {
+          deviceId: s.DeviceId, sessionId: s.Id, name: s.DeviceName || 'Device', client: s.Client || '', version: s.ApplicationVersion || '',
+          at: Math.max(at, have?.at || 0), playing: !!s.NowPlayingItem || !!have?.playing, title: s.NowPlayingItem?.Name || have?.title || '',
+        });
+      }
+    }
+    return [...byDevice.values()].sort((a, b) => b.at - a.at);
+  }
+
+  // null when this account may carry on, or {message} when it's blocked. phase "signin": counts every device
+  // in use; phase "play": counts the other devices playing right now (Emby playback, and M3U/Xtream live TV,
+  // which Emby doesn't see, from the live player's "aurora-watching" note).
+  const access = { okUntil: 0 };
+  async function checkAccess(user = state.user, phase = 'signin') {
+    if (!user || exemptFromLimits(user)) return null;
+    if (phase === 'play' && Date.now() < access.okUntil) return null;
+    let lim = null;
+    try { lim = await readAuroraPref(LIMITS_PREFS, user.Id); } catch { /* no limits saved: the defaults */ }
+    if (isExpired(lim)) {
+      return { message: `This account expired on ${fmtDay(lim.expires)}. Contact the admin to renew it.` };
+    }
+    const limit = Math.max(1, Number(lim?.limit) || DEFAULT_DEVICE_LIMIT);
+    let devices;
+    try {
+      devices = await activeDevices(user.Id);
+    } catch (e) {
+      // Emby refused the session list for this account: let them in rather than lock everyone out.
+      appLog.add('warn', `Device limit not checked: Emby wouldn't list sessions for this account (${e.status || e.message})`);
+      access.okUntil = Date.now() + 120000;
+      return null;
+    }
+    let others = devices.filter((d) => d.deviceId !== state.deviceId);
+    if (phase === 'play') {
+      const live = new Set();
+      try {
+        const w = await readAuroraPref('aurora-watching', user.Id);
+        for (const [id, e] of Object.entries(w?.devices || {})) if (id !== state.deviceId && Date.now() - (e.at || 0) < 3 * 60000) live.add(id);
+      } catch { /* no live TV note */ }
+      const playing = new Set(others.filter((d) => d.playing).map((d) => d.deviceId));
+      live.forEach((id) => playing.add(id));
+      others = [...playing];
+    }
+    if (others.length >= limit) {
+      const n = others.length;
+      return { message: phase === 'play'
+        ? `This account is already playing on ${n} other ${n === 1 ? 'device' : 'devices'}. Stop playback on another device to continue.`
+        : `This account is already in use on ${n} ${n === 1 ? 'device' : 'devices'}. Sign out on another device to continue.` };
+    }
+    if (phase === 'play') access.okUntil = Date.now() + 120000; // channel surfing doesn't ask every time
+    return null;
+  }
+
+  // Before anything plays: checks the limits, then runs start() if allowed.
+  async function whenAllowed(start) {
+    const blocked = await checkAccess(state.user, 'play').catch(() => null);
+    if (!blocked) return start();
+    appLog.add('info', 'Playback blocked: ' + blocked.message);
+    showNotice('Can\'t play right now', blocked.message);
+  }
+
+  // A plain message with an OK button.
+  function showNotice(title, text) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `<div class="m-body notice-body"><h2>${esc(title)}</h2><p class="overview">${esc(text)}</p>
+      <div class="m-actions"><button class="btn btn-white" data-act="ok" data-autofocus>OK</button></div></div>`;
+    modal.classList.remove('hidden');
+    $('[data-act="ok"]', content).addEventListener('click', closeModal);
+    autoFocus($('[data-act="ok"]', content));
+  }
+
+  // Asks before something that can't be undone. Resolves true for the confirm button, false otherwise.
+  let confirmResolve = null;
+  function confirmAction(title, text, okLabel = 'Confirm') {
+    return new Promise((resolve) => {
+      const modal = $('#modal'), content = $('#modal-content');
+      if (confirmResolve) confirmResolve(false);
+      confirmResolve = resolve;
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      content.innerHTML = `<div class="m-body notice-body"><h2>${esc(title)}</h2><p class="overview">${esc(text)}</p>
+        <div class="m-actions"><button class="btn btn-red" data-act="yes">${esc(okLabel)}</button>
+        <button class="btn btn-gray" data-act="no" data-autofocus>Cancel</button></div></div>`;
+      modal.classList.remove('hidden');
+      const done = (v) => { const r = confirmResolve; confirmResolve = null; closeModal(); r?.(v); };
+      $('[data-act="yes"]', content).addEventListener('click', () => done(true));
+      $('[data-act="no"]', content).addEventListener('click', () => done(false));
+      autoFocus($('[data-act="no"]', content));
+    });
+  }
+
   async function refreshRequestsConfig() {
     try {
       const cfg = await readAuroraPref(REQ_PREFS.id);
@@ -3286,7 +3434,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3328,7 +3476,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
   }
 
@@ -3910,6 +4058,299 @@
     await load();
   }
 
+  // ----- Users (device limits, expiry, accounts) -----
+  async function userLimits(users) {
+    const out = new Map();
+    const queue = users.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try { out.set(u.Id, await readAuroraPref(LIMITS_PREFS, u.Id)); } catch { out.set(u.Id, null); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return out;
+  }
+  const writeLimits = (userId, lim) => writeAuroraPref(LIMITS_PREFS, userId, { ...lim, t: Date.now() });
+
+  async function setDisabled(userId, disabled) {
+    const user = await api(`/Users/${userId}`);
+    await api(`/Users/${userId}/Policy`, { method: 'POST', body: { ...(user.Policy || {}), IsDisabled: !!disabled } });
+  }
+
+  // Expired accounts are switched off in Emby (so no app can use them) whenever an admin's Aurora opens or
+  // the Users page is shown. Returns the names disabled.
+  async function disableExpiredUsers(users, limits) {
+    if (!isAdmin()) return [];
+    users = users || (await api('/Users')) || [];
+    limits = limits || (await userLimits(users));
+    const done = [];
+    for (const u of users) {
+      const lim = limits.get(u.Id);
+      if (!isExpired(lim) || u.Policy?.IsDisabled || u.Id === state.userId || exemptFromLimits(u)) continue;
+      try {
+        await setDisabled(u.Id, true);
+        await writeLimits(u.Id, { ...lim, autoDisabled: true });
+        u.Policy = { ...(u.Policy || {}), IsDisabled: true };
+        limits.set(u.Id, { ...lim, autoDisabled: true });
+        done.push(u.Name);
+      } catch (e) { console.warn('Disabling expired account', u.Name, e); }
+    }
+    if (done.length) appLog.add('info', `Disabled expired accounts: ${done.join(', ')}`);
+    return done;
+  }
+
+  const userStatus = (u, lim) => (isExpired(lim) ? 'expired' : u.Policy?.IsDisabled ? 'disabled' : 'active');
+  const statusPill = (st) => `<span class="pill ${st === 'active' ? 'good' : st === 'expired' ? 'bad' : 'warn'}">${st === 'active' ? 'Active' : st === 'expired' ? 'Expired' : 'Disabled'}</span>`;
+
+  async function adminUsers(body, isCurrent) {
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    if (params.get('user') === 'new') return adminUserNew(body, isCurrent);
+    if (params.get('user')) return adminUserDetail(body, isCurrent, params.get('user'));
+    let users, sessions, limits;
+    try {
+      [users, sessions] = await Promise.all([api('/Users'), api('/Sessions', { params: { ActiveWithinSeconds: ACTIVE_WINDOW / 1000 } }).catch(() => [])]);
+      users = users || [];
+      limits = await userLimits(users);
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    const disabledNow = await disableExpiredUsers(users, limits).catch(() => []);
+    if (!isCurrent()) return;
+    const inUse = new Map();
+    for (const se of Array.isArray(sessions) ? sessions : []) {
+      if (!se.UserId || !se.DeviceId || Date.now() - Date.parse(se.LastActivityDate || 0) > ACTIVE_WINDOW) continue;
+      if (!inUse.has(se.UserId)) inUse.set(se.UserId, new Set());
+      inUse.get(se.UserId).add(se.DeviceId);
+    }
+    const rows = users.map((u) => {
+      const lim = limits.get(u.Id), st = userStatus(u, lim), exempt = exemptFromLimits(u);
+      return { u, lim, st, exempt, devices: inUse.get(u.Id)?.size || 0, search: (u.Name || '').toLowerCase() };
+    }).sort((a, b) => (a.u.Name || '').localeCompare(b.u.Name || ''));
+    const counts = { all: rows.length, active: 0, disabled: 0, expired: 0 };
+    rows.forEach((r) => { counts[r.st]++; });
+    let filter = store.get('ef.usersFilter') || 'all', query = '';
+    body.innerHTML = `
+      <section class="admin-card">
+        <div class="users-head">
+          <h2>Users <small>${rows.length}</small></h2>
+          <span class="osd-spacer"></span>
+          <a class="btn btn-red" href="#/admin?tab=users&user=new">Add user</a>
+        </div>
+        ${disabledNow.length ? `<p class="live-result good">Expired, so switched off in Emby: ${esc(disabledNow.join(', '))}.</p>` : ''}
+        <div class="users-tools">
+          <input type="search" class="users-search" placeholder="Search users" autocomplete="off" spellcheck="false">
+          <div class="chip-row">${['all', 'active', 'disabled', 'expired'].map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
+        </div>
+        <div class="admin-list users-list"></div>
+        <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes) out of the account's limit. Admin accounts have no limits.</p>
+      </section>`;
+    const list = $('.users-list', body);
+    const draw = () => {
+      const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
+      list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
+        <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
+          <div class="muted">${r.exempt ? `${r.devices} ${r.devices === 1 ? 'device' : 'devices'} in use` : `${r.devices} of ${r.lim?.limit || DEFAULT_DEVICE_LIMIT} devices in use`}
+            · ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}</div></div>
+        <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
+    };
+    draw();
+    $('.users-search', body).addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); draw(); });
+    $$('[data-filter]', body).forEach((b) => b.addEventListener('click', () => {
+      filter = b.dataset.filter;
+      store.set('ef.usersFilter', filter);
+      $$('[data-filter]', body).forEach((x) => x.classList.toggle('active', x === b));
+      draw();
+    }));
+  }
+
+  // Device limit choices: 1-10.
+  const limitOptions = (cur) => Array.from({ length: 10 }, (_, i) => i + 1)
+    .map((n) => `<option value="${n}"${n === cur ? ' selected' : ''}>${n} ${n === 1 ? 'device' : 'devices'}</option>`).join('');
+  const expiryFields = (expires) => `
+    <label class="admin-field"><span>Expiration date</span>
+      <input type="date" data-f="expires" value="${esc(expires || '')}"${expires ? '' : ' disabled'}></label>
+    <label class="admin-check"><input type="checkbox" data-f="noexpiry"${expires ? '' : ' checked'}> No expiration</label>`;
+  const wireExpiry = (root) => {
+    const box = $('[data-f="noexpiry"]', root), date = $('[data-f="expires"]', root);
+    box.addEventListener('change', () => {
+      date.disabled = box.checked;
+      if (!box.checked && !date.value) {
+        const d = new Date(Date.now() + 30 * DAY);
+        date.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+    });
+    return () => (box.checked ? null : (date.value || null));
+  };
+  // Sets a password without showing or keeping it: clear it, then set the new one.
+  async function setUserPassword(userId, pw) {
+    await api(`/Users/${userId}/Password`, { method: 'POST', body: { Id: userId, ResetPassword: true } });
+    await api(`/Users/${userId}/Password`, { method: 'POST', body: { Id: userId, CurrentPw: '', NewPw: pw } });
+  }
+  const passwordFields = () => `
+    <label class="admin-field"><span>New password</span><input type="password" data-f="pw" autocomplete="new-password"></label>
+    <label class="admin-field"><span>Type it again</span><input type="password" data-f="pw2" autocomplete="new-password"></label>`;
+  const readPassword = (root) => {
+    const a = $('[data-f="pw"]', root), b = $('[data-f="pw2"]', root);
+    const v = a.value, w = b.value;
+    a.value = ''; b.value = ''; // never left on screen
+    if (!v) throw new Error('Enter a password.');
+    if (v !== w) throw new Error("The two passwords don't match.");
+    return v;
+  };
+
+  async function adminUserDetail(body, isCurrent, userId) {
+    let user, lim, devices = [];
+    try {
+      user = await api(`/Users/${userId}`);
+      lim = await readAuroraPref(LIMITS_PREFS, userId).catch(() => null);
+      devices = await activeDevices(userId).catch(() => []);
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))} <a href="#/admin?tab=users">Back to users</a></p>`; return; }
+    if (!isCurrent()) return;
+    const self = userId === state.userId, exempt = exemptFromLimits(user);
+    const st = userStatus(user, lim);
+    body.innerHTML = `
+      <a class="btn btn-gray users-back" href="#/admin?tab=users">‹ All users</a>
+      <section class="admin-card">
+        <h2>${esc(user.Name)} ${statusPill(st)}${exempt ? ' <span class="pill">Admin</span>' : ''}${self ? ' <span class="pill">You</span>' : ''}</h2>
+        <p class="muted">Last active ${user.LastActivityDate ? esc(timeAgo(user.LastActivityDate)) : 'never'}${exempt ? ' · Admin accounts have no device limit or expiration.' : ''}</p>
+        <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(Number(lim?.limit) || DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(lim?.expires)}
+        <div class="m-actions"><button class="btn btn-red" data-save-limits>Save</button></div>
+        <div class="live-result" data-limits-result></div>
+      </section>
+      <section class="admin-card">
+        <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
+        <div class="admin-list">${devices.map((d) => `<div class="admin-row">
+          <div class="admin-row-main"><strong>${esc(d.name)}</strong>${d.deviceId === state.deviceId ? ' <span class="pill">This device</span>' : ''}${d.playing ? ' <span class="pill live">Playing</span>' : ''}
+            <div class="muted">${esc([d.client, d.version].filter(Boolean).join(' '))}${d.title ? ' · ' + esc(d.title) : ''} · ${esc(timeAgo(new Date(d.at)))}</div></div>
+          ${d.deviceId === state.deviceId ? '' : `<button class="btn btn-gray" data-signout="${esc(d.deviceId)}" data-session="${esc(d.sessionId)}" data-name="${esc(d.name)}">Sign out device</button>`}
+        </div>`).join('') || '<p class="muted">No devices in use right now.</p>'}</div>
+      </section>
+      <section class="admin-card">
+        <h2>Account</h2>
+        <div class="m-actions">
+          ${self ? '<p class="muted">You can\'t disable or delete your own account.</p>' : `
+          <button class="btn btn-gray" data-toggle>${user.Policy?.IsDisabled ? 'Enable account' : 'Disable account'}</button>
+          <button class="btn btn-gray" data-delete>Delete user</button>`}
+        </div>
+        <h3 class="users-sub">Reset password</h3>
+        ${passwordFields()}
+        <div class="m-actions"><button class="btn btn-gray" data-reset-pw>Set new password</button></div>
+        <div class="live-result" data-account-result></div>
+      </section>`;
+    const getExpiry = wireExpiry(body);
+    const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
+    const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
+
+    $('[data-save-limits]', body).addEventListener('click', async () => {
+      const next = { ...(lim || {}), limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() };
+      say('[data-limits-result]', '<div class="spinner"></div>');
+      try {
+        let note = '';
+        const nowExpired = isExpired(next);
+        if (nowExpired && !user.Policy?.IsDisabled && !self && !exempt) {
+          if (!(await confirmAction('Disable this account?', `${user.Name}'s expiration date has passed, so the account will be switched off in Emby.`, 'Disable'))) return say('[data-limits-result]', '');
+          await setDisabled(userId, true);
+          next.autoDisabled = true;
+          note = ' The date has passed, so the account is now disabled.';
+        } else if (!nowExpired && user.Policy?.IsDisabled && lim?.autoDisabled) {
+          // Extending an expired account switches it back on.
+          await setDisabled(userId, false);
+          delete next.autoDisabled;
+          note = ' The account is enabled again.';
+        } else if (!nowExpired) delete next.autoDisabled;
+        await writeLimits(userId, next);
+        say('[data-limits-result]', 'Saved.' + note, 'good');
+        setTimeout(reload, 1200);
+      } catch (e) { say('[data-limits-result]', "Couldn't save: " + esc(adminError(e)), 'bad'); }
+    });
+
+    $$('[data-signout]', body).forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmAction('Sign out this device?', `${b.dataset.name} will be signed out of ${user.Name}'s account and has to sign in again. This frees a device slot.`, 'Sign out'))) return;
+      try {
+        api(`/Sessions/${encodeURIComponent(b.dataset.session)}/Playing/Stop`, { method: 'POST' }).catch(() => {});
+        await api('/Devices', { method: 'DELETE', params: { Id: b.dataset.signout } });
+        toast(`${b.dataset.name} signed out`, 2500);
+        reload();
+      } catch (e) { toast("Couldn't sign it out: " + adminError(e)); }
+    }));
+
+    $('[data-toggle]', body)?.addEventListener('click', async () => {
+      const disabling = !user.Policy?.IsDisabled;
+      if (disabling && !(await confirmAction('Disable this account?', `${user.Name} won't be able to sign in or watch anything until the account is enabled again.`, 'Disable'))) return;
+      if (!disabling && isExpired(lim)) return say('[data-account-result]', 'This account has expired. Set a later expiration date (or No expiration) above and Save; that enables it again.', 'bad');
+      try {
+        await setDisabled(userId, disabling);
+        if (lim?.autoDisabled) await writeLimits(userId, { ...lim, autoDisabled: false });
+        toast(disabling ? 'Account disabled' : 'Account enabled', 2000);
+        reload();
+      } catch (e) { say('[data-account-result]', "Couldn't change it: " + esc(adminError(e)), 'bad'); }
+    });
+
+    $('[data-delete]', body)?.addEventListener('click', async () => {
+      if (!(await confirmAction(`Delete ${user.Name}?`, 'The account, its watch history and its settings are removed from Emby for good. This can\'t be undone.', 'Delete user'))) return;
+      try {
+        await api(`/Users/${userId}`, { method: 'DELETE' });
+        toast(`${user.Name} deleted`, 2500);
+        location.hash = '#/admin?tab=users';
+      } catch (e) { say('[data-account-result]', "Couldn't delete it: " + esc(adminError(e)), 'bad'); }
+    });
+
+    $('[data-reset-pw]', body).addEventListener('click', async () => {
+      let pw;
+      try { pw = readPassword(body); } catch (e) { return say('[data-account-result]', esc(e.message), 'bad'); }
+      if (!(await confirmAction('Set a new password?', `${user.Name}'s current password stops working straight away.`, 'Set password'))) return;
+      try {
+        await setUserPassword(userId, pw);
+        say('[data-account-result]', 'New password set.', 'good');
+      } catch (e) { say('[data-account-result]', "Couldn't set it: " + esc(adminError(e)), 'bad'); }
+    });
+  }
+
+  async function adminUserNew(body, isCurrent) {
+    body.innerHTML = `
+      <a class="btn btn-gray users-back" href="#/admin?tab=users">‹ All users</a>
+      <section class="admin-card">
+        <h2>Add user</h2>
+        <label class="admin-field"><span>Name (used to sign in)</span><input type="text" data-f="name" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        ${passwordFields()}
+        <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(null)}
+        <div class="m-actions"><button class="btn btn-red" data-create>Create user</button></div>
+        <div class="live-result" data-result></div>
+      </section>`;
+    const getExpiry = wireExpiry(body);
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    $('[data-create]', body).addEventListener('click', async () => {
+      const name = $('[data-f="name"]', body).value.trim();
+      if (!name) return say('Enter a name.', 'bad');
+      let pw;
+      try { pw = readPassword(body); } catch (e) { return say(esc(e.message), 'bad'); }
+      say('<div class="spinner"></div> Creating the account…');
+      let user;
+      try {
+        user = await api('/Users/New', { method: 'POST', body: { Name: name } });
+        if (!user?.Id) throw new Error('Emby did not return the new account');
+      } catch (e) { return say("Couldn't create it: " + esc(adminError(e)) + (e.status === 400 ? ' (is the name already taken?)' : ''), 'bad'); }
+      const problems = [];
+      try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
+      try { await writeLimits(user.Id, { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() }); } catch (e) { problems.push('the device limit and expiration'); }
+      // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
+      try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }
+      for (const id of [REQ_PREFS.id, APP_PREFS]) {
+        try { const v = await readAuroraPref(id); if (v) await writeAuroraPref(id, user.Id, v); } catch { /* not set */ }
+      }
+      if (problems.length) {
+        say(`Created ${esc(name)}, but couldn't set ${esc(problems.join(', '))}. Open the account to try again.`, 'bad');
+        setTimeout(() => { if (isCurrent()) location.hash = `#/admin?tab=users&user=${user.Id}`; }, 3000);
+      } else {
+        toast(`${name} created`, 2500);
+        location.hash = `#/admin?tab=users&user=${user.Id}`;
+      }
+    });
+  }
+
   async function auroraReleaseCodes() {
     try {
       const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
@@ -4441,7 +4882,13 @@
   }
 
   // audioIndex / subtitleIndex / forceTranscode are passed when the viewer changes tracks or quality.
-  async function playItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false, auto = false } = {}) {
+  async function playItem(rawItem, opts = {}) {
+    // Changing tracks or quality, or the next episode on the same device, isn't a new device starting to play.
+    if (opts.audioIndex != null || opts.subtitleIndex != null || opts.forceTranscode || opts.auto) return startPlayItem(rawItem, opts);
+    return whenAllowed(() => startPlayItem(rawItem, opts));
+  }
+
+  async function startPlayItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false, auto = false } = {}) {
     if (!auto) noteInput();
     const isReload = player.item && rawItem.Id === player.item.Id;
     if (!isReload && $('#player').classList.contains('hidden')) rememberFocus('player');
