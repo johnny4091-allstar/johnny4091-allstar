@@ -149,9 +149,35 @@ async function isAdminToken(token) {
   return ok;
 }
 
+// Emby's session list, shared for 3 seconds: at peak time many clients ask "may I play?" at once, and each
+// answer would otherwise cost Emby its own /Sessions call. Signing in and the every-minute job always ask fresh,
+// so someone who has just signed out on another device isn't told it's still in use.
+let sessionsCache = { at: 0, data: null, pending: null };
+async function sessionsShared() {
+  if (Date.now() - sessionsCache.at < 3000 && sessionsCache.data) return sessionsCache.data;
+  if (!sessionsCache.pending) {
+    sessionsCache.pending = emby('GET', '/Sessions')
+      .then((d) => { sessionsCache = { at: Date.now(), data: d, pending: null }; return d; })
+      .catch((e) => { sessionsCache.pending = null; throw e; });
+  }
+  return sessionsCache.pending;
+}
+
 // The user a token belongs to (for /check, which any signed-in user may call about themselves).
+const identityCache = new Map(); // sha256(token + userId) -> { me, until }
 async function userOfToken(token, userId) {
   if (!token || !userId || !/^[\w-]{1,64}$/.test(userId)) return null;
+  const ckey = crypto.createHash('sha256').update(token + '\n' + userId).digest('hex');
+  const known = identityCache.get(ckey);
+  if (known && known.until > Date.now()) return known.me;
+  const me = await lookupUser(token, userId);
+  if (me) {
+    identityCache.set(ckey, { me, until: Date.now() + 30000 });
+    if (identityCache.size > 1000) identityCache.delete(identityCache.keys().next().value);
+  }
+  return me;
+}
+async function lookupUser(token, userId) {
   try {
     const me = await emby('GET', '/Users/Me', { token }).catch(async (e) => {
       if (e.status === 404 || e.status === 400) return emby('GET', `/Users/${userId}`, { token });
@@ -163,7 +189,7 @@ async function userOfToken(token, userId) {
 
 // ---------- Enforcement ----------
 const windowMs = () => cfg.activeWindowMinutes * 60000;
-let lastRun = { at: 0, ok: false, error: '', actions: 0 };
+let lastRun = { at: 0, ok: false, error: '', actions: 0, ms: 0 };
 
 function activeByUser(sessions) {
   const now = Date.now(), byUser = new Map();
@@ -266,11 +292,12 @@ let running = false;
 async function tick() {
   if (running) return;
   running = true;
+  const began = Date.now();
   try {
     const actions = await enforce();
-    lastRun = { at: Date.now(), ok: true, error: '', actions };
+    lastRun = { at: Date.now(), ok: true, error: '', actions, ms: Date.now() - began };
   } catch (e) {
-    lastRun = { at: Date.now(), ok: false, error: e.message, actions: 0 };
+    lastRun = { at: Date.now(), ok: false, error: e.message, actions: 0, ms: Date.now() - began };
     log('Check failed:', e.message);
   } finally { running = false; }
 }
@@ -286,6 +313,7 @@ function send(res, status, body) {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'X-Emby-Token, Content-Type',
     'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
+    'Access-Control-Max-Age': '7200', // the browser remembers the permission check, so /check is one round trip
   });
   res.end(data);
 }
@@ -299,11 +327,14 @@ function readBody(req) {
   });
 }
 
-// Slow down anyone guessing tokens.
+// Slow down anyone guessing admin tokens. Only attempts at the admin endpoints count: /check is called by every
+// customer's app (many of them behind one shared address, with tokens that expire or get signed out), so its
+// failures must never lock anyone out.
 const failures = new Map();
+const FAILURE_LIMIT = 30;
 function tooManyFailures(ip) {
   const f = failures.get(ip);
-  return f && f.count >= 20 && Date.now() - f.since < 10 * 60000;
+  return f && f.count >= FAILURE_LIMIT && Date.now() - f.since < 10 * 60000;
 }
 function noteFailure(ip) {
   const f = failures.get(ip);
@@ -318,20 +349,19 @@ async function handle(req, res) {
   if (url.pathname === '/health' && req.method === 'GET') {
     return send(res, 200, { ok: true, service: 'aurora-guard', version: VERSION });
   }
-  if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
   const token = String(req.headers['x-emby-token'] || '');
 
   // Any signed-in user, about their own account only. Aurora uses it to explain a block up front; it is
   // not where limits are enforced, and it never returns the store.
   if (url.pathname === '/check' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
-    if (!me) { noteFailure(ip); return send(res, 401, { error: 'Not signed in' }); }
+    if (!me) return send(res, 401, { error: 'Not signed in' });
     if (me.Policy?.IsAdministrator) return send(res, 200, { allowed: true });
     const rec = store.users[me.Id];
     if (isExpired(rec)) return send(res, 200, { allowed: false, reason: 'expired', message: `This account expired on ${rec.expires}. Contact the admin to renew it.` });
     const deviceId = url.searchParams.get('deviceId') || '';
     const phase = url.searchParams.get('phase') === 'play' ? 'play' : 'signin';
-    const devices = activeByUser(await emby('GET', '/Sessions')).get(me.Id) || new Map();
+    const devices = activeByUser(phase === 'play' ? await sessionsShared() : await emby('GET', '/Sessions')).get(me.Id) || new Map();
     let others = [...devices.values()].filter((d) => d.deviceId !== deviceId);
     if (phase === 'play') others = others.filter((d) => d.playing);
     const limit = limitOf(me.Id);
@@ -345,6 +375,7 @@ async function handle(req, res) {
   }
 
   // Everything else: Emby administrators only.
+  if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
   let admin = false;
   try { admin = await isAdminToken(token); } catch (e) { return send(res, 502, { error: `Can't reach Emby to check who you are: ${e.message}` }); }
   if (!admin) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }

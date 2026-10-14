@@ -92,6 +92,9 @@ public class VodPlayerActivity extends Activity {
     private boolean everReady, ended, stopped, closing, reportedStart, touched;
     private int retries;
     private long endStuckSince, stallSince;
+    private int stalls;
+    private long stalledMs, stallStart, playingSince;
+    private boolean wasReady, seeking;
     private static final long STALL_MS = 30000;
     private String error;
 
@@ -177,6 +180,12 @@ public class VodPlayerActivity extends Activity {
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
+                // Stalls while watching (not the start, and not after a seek), with how long they lasted.
+                long nowMs = System.currentTimeMillis();
+                if (state == Player.STATE_BUFFERING && wasReady && !seeking) { stalls++; stallStart = nowMs; }
+                else if (state != Player.STATE_BUFFERING && stallStart != 0) { stalledMs += nowMs - stallStart; stallStart = 0; }
+                wasReady = state == Player.STATE_READY;
+                seeking = false;
                 if (state == Player.STATE_READY) {
                     retries = 0;
                     status.setVisibility(View.GONE);
@@ -184,6 +193,7 @@ public class VodPlayerActivity extends Activity {
                         everReady = true;
                         playerView.hideController();
                     }
+                    if (playingSince == 0) playingSince = System.currentTimeMillis();
                     if (!reportedStart) {
                         reportedStart = true;
                         sendReport("/Sessions/Playing", null);
@@ -194,6 +204,11 @@ public class VodPlayerActivity extends Activity {
                     ended = true;
                     close(!nextTitle.isEmpty());
                 }
+            }
+
+            @Override
+            public void onPositionDiscontinuity(Player.PositionInfo oldPosition, Player.PositionInfo newPosition, int reason) {
+                if (reason == Player.DISCONTINUITY_REASON_SEEK || reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT) seeking = true;
             }
 
             @Override
@@ -618,7 +633,10 @@ public class VodPlayerActivity extends Activity {
                     .put("ended", ended)
                     .put("next", next)
                     .put("ready", everReady)
-                    .put("touched", touched);
+                    .put("touched", touched)
+                    .put("stalls", stalls)
+                    .put("stalledMs", stalledMs + (stallStart != 0 ? System.currentTimeMillis() - stallStart : 0))
+                    .put("watchedMs", playingSince == 0 ? 0 : System.currentTimeMillis() - playingSince);
             if (error != null) result.put("error", error);
             setResult(RESULT_OK, new Intent().putExtra(RESULT_JSON, result.toString()));
         } catch (Exception ignored) {

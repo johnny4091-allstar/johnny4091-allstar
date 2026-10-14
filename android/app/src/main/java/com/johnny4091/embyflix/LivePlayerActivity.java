@@ -38,6 +38,7 @@ import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultDataSource;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
@@ -318,11 +319,32 @@ public class LivePlayerActivity extends Activity {
     private static final int SLOW_RETRIES = 20;
     private static final long SLOW_RETRY_MS = 15000;
 
+    /** The HTTP status the provider answered with, if that's what went wrong (0 if it was something else). */
+    private static int httpCode(Throwable t) {
+        for (int depth = 0; t != null && depth < 8; t = t.getCause(), depth++) {
+            if (t instanceof HttpDataSource.InvalidResponseCodeException) return ((HttpDataSource.InvalidResponseCodeException) t).responseCode;
+        }
+        return 0;
+    }
+
+    /** What a provider's refusal usually means, in words the viewer can act on. */
+    private static String providerHint(int code) {
+        if (code == 429 || code == 458) return "The TV provider says this subscription is in use on too many devices. Stop any other TV using it.";
+        if (code == 401 || code == 403) return "The TV provider refused this channel. The subscription may have expired, or be in use on too many devices.";
+        if (code == 404 || code == 410) return "The TV provider doesn't have this channel any more.";
+        if (code >= 500) return "The TV provider's server is having trouble.";
+        return null;
+    }
+    private String providerNote = "";
+
     // Live streams drop now and then; reconnect, and if a channel keeps failing try it in the other format.
     private void retryAfterError(PlaybackException error) {
         if (player == null) return;
         retries++;
         bufferingSince = 0;
+        int code = error == null ? 0 : httpCode(error);
+        String hint = providerHint(code);
+        providerNote = hint == null ? "" : "\n" + hint;
         handler.removeCallbacks(retryRunnable);
         Channel c = channels.get(index);
         String other = c.triedOther ? null : otherFormat(c.url);
@@ -337,17 +359,18 @@ public class LivePlayerActivity extends Activity {
             return;
         }
         if (retries <= MAX_RETRIES) {
-            status.setText(retries == 1 ? "Reconnecting…" : "Reconnecting… (" + retries + ")");
+            status.setText((retries == 1 ? "Reconnecting…" : "Reconnecting… (" + retries + ")") + (retries >= 2 ? providerNote : ""));
             status.setVisibility(View.VISIBLE);
-            handler.postDelayed(retryRunnable, Math.min(1000L * retries, 5000L));
+            // A provider that says "too many connections" is also counting our retries: don't hammer it.
+            handler.postDelayed(retryRunnable, code == 429 || code == 458 ? 8000L : Math.min(1000L * retries, 5000L));
         } else if (retries <= MAX_RETRIES + SLOW_RETRIES) {
             failed = true;
-            status.setText("This channel isn't working right now. Still trying…\nPress OK to try again now, or pick another channel.");
+            status.setText("This channel isn't working right now. Still trying…" + providerNote + "\nPress OK to try again now, or pick another channel.");
             status.setVisibility(View.VISIBLE);
             handler.postDelayed(retryRunnable, SLOW_RETRY_MS);
         } else {
             failed = true;
-            status.setText("This channel isn't working right now.\nPress OK to try again, or pick another channel.");
+            status.setText("This channel isn't working right now." + providerNote + "\nPress OK to try again, or pick another channel.");
             status.setVisibility(View.VISIBLE);
         }
     }

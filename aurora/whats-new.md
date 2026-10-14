@@ -1,2 +1,4 @@
-- Device limits and expiration dates are now kept and enforced by the Emby server itself, for every Emby app. They can no longer be changed from a user's own account.
-- Admin → Users shows what the server has done recently (devices signed out, accounts disabled or re-enabled), and needs an Emby administrator account.
+- Films and shows on a slow connection: Aurora now picks a lower quality when the speed test shows a slow line, instead of the highest, so they buffer less.
+- If a video keeps stopping to buffer, Aurora lowers the quality for the next one by itself.
+- Live TV now says why when the TV provider refuses a channel (for example, too many devices on the subscription) instead of only "Reconnecting…".
+- Opening Aurora and starting a video are no longer held up when the device-limit server can't be reached.

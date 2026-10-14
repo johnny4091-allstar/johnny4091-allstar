@@ -414,19 +414,28 @@
     }).then((res) => { if (res.ok) store.del('ef.pendingCrash'); }).catch(() => {});
   }
 
-  async function selectUser(user) {
+  // Device limit and expiry (Admin → Users). Blocked: back to the sign-in screen, where the account's tile
+  // stays so it can try again once another device has signed out.
+  function blockAccount(user, blocked) {
+    appLog.add('info', `Blocked ${user.Name}: ${blocked.message}`);
+    if (isPlayerOpen()) closePlayer().catch(() => {});
+    state.userId = ''; state.user = null;
+    store.del('ef.userId');
+    showSetup(blocked.message);
+  }
+
+  // fresh: the person just typed their password. Only then does the check hold things up (at most 3 s);
+  // reopening the app or switching accounts goes straight to Home and checks in the background, because
+  // the guard on the server enforces the limit either way.
+  async function selectUser(user, { fresh = false } = {}) {
     state.userId = user.Id;
     state.user = user;
-    // Device limit and expiry (Admin → Users). Blocked: back to the sign-in screen, where the account's tile
-    // stays so it can try again once another device has signed out.
     access.okUntil = 0;
-    const blocked = await checkAccess(user, 'signin');
-    if (blocked) {
-      appLog.add('info', `Sign-in blocked for ${user.Name}: ${blocked.message}`);
-      state.userId = ''; state.user = null;
-      store.del('ef.userId');
-      showSetup(blocked.message);
-      return;
+    if (fresh) {
+      const blocked = await checkAccess(user, 'signin');
+      if (blocked) return blockAccount(user, blocked);
+    } else {
+      checkAccess(user, 'signin').then((blocked) => { if (blocked && state.userId === user.Id) blockAccount(user, blocked); }).catch(() => {});
     }
     store.set('ef.userId', user.Id);
     const a = avatarInfo(user), btn = $('#profile-btn');
@@ -2947,14 +2956,26 @@
   const OLD_LIMITS_PREFS = 'aurora-limits';
   const DEFAULT_GUARD_URL = 'https://emby4836.duckdns.org:8922';
   let guardUrl = store.get('ef.guardUrl') || DEFAULT_GUARD_URL;
-  async function guard(path, { method = 'GET', body, params } = {}) {
+  // The guard can be slow or unreachable (the PC is off, a customer's network blocks the port). Anything the
+  // viewer is waiting on uses a short timeout (quick: true), and after a failure the guard isn't tried again
+  // for a few minutes, so a down guard never holds up opening the app or starting a video.
+  let guardDownUntil = 0;
+  async function guard(path, { method = 'GET', body, params, quick = false } = {}) {
+    if (quick && Date.now() < guardDownUntil) throw new Error('Aurora Guard is not answering');
     const url = new URL(guardUrl.replace(/\/+$/, '') + path);
     for (const [k, v] of Object.entries(params || {})) if (v != null) url.searchParams.set(k, v);
-    const res = await fetch(url, {
-      method, cache: 'no-store', signal: AbortSignal.timeout(15000),
-      headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method, cache: 'no-store', signal: AbortSignal.timeout(quick ? 3000 : 15000),
+        headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      if (quick) guardDownUntil = Date.now() + 5 * 60000;
+      throw e;
+    }
+    guardDownUntil = 0;
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { const e = new Error(data.error || `Aurora Guard answered ${res.status}`); e.status = res.status; throw e; }
     return data;
@@ -2997,7 +3018,7 @@
     if (phase === 'play' && Date.now() < access.okUntil) return null;
     let r;
     try {
-      r = await guard('/check', { params: { userId: user.Id, deviceId: state.deviceId, phase } });
+      r = await guard('/check', { quick: true, params: { userId: user.Id, deviceId: state.deviceId, phase } });
     } catch (e) {
       // The guard is down or unreachable: don't lock people out over a message. It still enforces when it's back.
       console.warn('Device limit check skipped:', e.message);
@@ -3008,13 +3029,17 @@
       return { message: r.reason === 'expired' && /\d{4}-\d{2}-\d{2}/.test(r.message)
         ? r.message.replace(/\d{4}-\d{2}-\d{2}/, (d) => fmtDay(d)) : r.message };
     }
-    if (phase === 'play') access.okUntil = Date.now() + 120000; // channel surfing doesn't ask every time
+    // Channel surfing doesn't ask every time. Being allowed to sign in also means being allowed to play (playing
+    // is only a part of what counts for signing in), so the first video after opening the app doesn't wait.
+    access.okUntil = Date.now() + (phase === 'play' ? 120000 : 30000);
     return null;
   }
 
   // Before anything plays: checks the limits, then runs start() if allowed.
   async function whenAllowed(start) {
-    const blocked = await checkAccess(state.user, 'play').catch(() => null);
+    // The message is a courtesy (the guard on the server enforces the limit), so it never holds a video up for
+    // more than a moment: no answer in 1.5 s means "go ahead".
+    const blocked = await Promise.race([checkAccess(state.user, 'play'), new Promise((r) => setTimeout(() => r(null), 1500))]).catch(() => null);
     if (!blocked) return start();
     appLog.add('info', 'Playback blocked: ' + blocked.message);
     showNotice('Can\'t play right now', blocked.message);
@@ -4746,31 +4771,42 @@
   // "Auto" quality: measure the connection to the Emby server (as Emby's own apps do) so a film that's bigger
   // than the connection can carry gets sized down by Emby instead of stopping to buffer every few seconds.
   let measuredBitrate = null;
-  async function measureBitrate(size) {
+  // Downloads up to `size` bytes from Emby and returns the speed in bits per second. If the line is too slow to
+  // finish in time, the bytes that did arrive still give the speed (a timeout means slow, never "fast").
+  async function measureBitrate(size, limitMs = 4500) {
     const started = performance.now();
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 8000);
+    const timer = setTimeout(() => ctrl.abort(), limitMs);
+    let bytes = 0;
     try {
       const res = await fetch(apiUrl('/Playback/BitrateTest', { Size: size }), { cache: 'no-store', signal: ctrl.signal });
-      if (!res.ok) throw new Error('status ' + res.status);
-      const bytes = (await res.arrayBuffer()).byteLength;
-      return (bytes * 8) / Math.max(0.05, (performance.now() - started) / 1000);
+      if (!res.ok) { const e = new Error('status ' + res.status); e.unavailable = true; throw e; }
+      const reader = res.body?.getReader?.();
+      if (reader) {
+        for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength; }
+      } else bytes = (await res.arrayBuffer()).byteLength;
+    } catch (e) {
+      if (e.unavailable) throw e;
+      // Timed out or dropped: judge by what arrived (nothing at all counts as very slow).
     } finally {
       clearTimeout(timer);
     }
+    return { bps: (bytes * 8) / Math.max(0.05, (performance.now() - started) / 1000), complete: bytes >= size };
   }
   async function playbackBitrate() {
     if (!autoQuality()) return maxBitrate();
     if (measuredBitrate && Date.now() - measuredBitrate.t < 20 * 60000) return measuredBitrate.bps;
     try {
-      let bps = await measureBitrate(1000000);
+      let r = await measureBitrate(1000000);
       // A quick first test on a fast line mostly measures the delay; a bigger one gives the real speed.
-      if (bps > 10000000) bps = Math.max(bps, await measureBitrate(6000000));
-      const use = Math.round(Math.min(QUALITY_OPTIONS[0].bitrate, Math.max(1500000, bps * 0.7)));
-      measuredBitrate = { bps: use, t: Date.now() };
-      appLog.add('info', `Connection to the server: ${(bps / 1e6).toFixed(1)} Mbps; streaming up to ${(use / 1e6).toFixed(1)} Mbps`);
+      if (r.complete && r.bps > 10000000) { const r2 = await measureBitrate(6000000); r = { bps: Math.max(r.bps, r2.bps), complete: r2.complete }; }
+      const use = Math.round(Math.min(QUALITY_OPTIONS[0].bitrate, Math.max(700000, r.bps * 0.7)));
+      // A slow answer is kept only briefly: it may have been a hiccup, and a stricter limit costs picture quality.
+      measuredBitrate = { bps: use, t: Date.now() - (r.complete ? 0 : 15 * 60000) };
+      appLog.add(r.bps < 4000000 ? 'warn' : 'info', `Connection to the server: ${(r.bps / 1e6).toFixed(1)} Mbps${r.complete ? '' : ' (slow: the test did not finish)'}; streaming up to ${(use / 1e6).toFixed(1)} Mbps`);
       return use;
     } catch (e) {
+      // This Emby has no speed test: keep the old behaviour (no limit beyond the Streaming quality setting).
       return maxBitrate();
     }
   }
@@ -4964,6 +5000,7 @@
       const native = useNativePlayer() && !isLive;
       const bitrate = await playbackBitrate();
       if (stale()) return;
+      player.bitrate = bitrate;
       const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: bitrate };
       if (audioIndex != null) params.AudioStreamIndex = audioIndex;
       if (subtitleIndex != null) params.SubtitleStreamIndex = subtitleIndex;
@@ -5160,7 +5197,7 @@
         audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
       },
     };
-    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod };
+    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate };
     // The native screen reports to Emby from here on.
     player.item = null;
     player.playSessionId = null;
@@ -5168,11 +5205,29 @@
     nativeApp.playVod(JSON.stringify(spec));
   }
 
+  // How a viewing went (the Aurora player counts the stalls). A rough session goes into the app log as a warning,
+  // so it reaches the admins with the automatic reports, and lowers the quality used for the next few plays.
+  function noteStreamHealth(s, r) {
+    const watched = r.watchedMs || 0, stalledMs = r.stalledMs || 0, stalls = r.stalls || 0;
+    const pct = watched ? Math.round((stalledMs / watched) * 1000) / 10 : 0;
+    const rough = stalls >= 3 || pct >= 3;
+    appLog.add(rough ? 'warn' : 'info',
+      `Watched ${s.item.Name} (${s.playMethod}${s.bitrate ? ', limit ' + (s.bitrate / 1e6).toFixed(0) + ' Mbps' : ''}): ${Math.round(watched / 60000)} min, ${stalls} ${stalls === 1 ? 'stall' : 'stalls'}, ${Math.round(stalledMs / 1000)} s buffering (${pct}%)`);
+    if (rough && autoQuality() && s.bitrate) {
+      measuredBitrate = { bps: Math.max(700000, Math.round(s.bitrate * 0.6)), t: Date.now() };
+      if (!store.get('ef.vodBufferTip')) {
+        store.set('ef.vodBufferTip', '1');
+        toast('That video kept stopping to buffer, so Aurora will use a lower quality next time. You can set it in Settings → Playback → Streaming quality.', 8000);
+      }
+    }
+  }
+
   window.auroraVodClosed = (r) => {
     store.del('ef.liveReturn');
     const s = vodSession;
     vodSession = null;
     r = r || {};
+    if (s && r.watchedMs > 60000) noteStreamHealth(s, r);
     if (!s || !isPlayerOpen()) {
       if (isPlayerOpen()) closePlayer(); else route();
       return;
@@ -5652,7 +5707,7 @@
       btn.disabled = true; btn.textContent = 'Connecting…';
       try {
         const user = await signIn($('#setup-username').value.trim(), $('#setup-password').value);
-        await selectUser(user);
+        await selectUser(user, { fresh: true });
       } catch (err) {
         showSetup(connectionErrorMessage(err));
       } finally {
