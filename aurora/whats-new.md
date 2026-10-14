@@ -1,3 +1,2 @@
-- New: Admin → Users. See every account with its status, devices in use, device limit and expiration date. Add users, change limits and expiry, sign out a device, enable or disable an account, set a new password, or delete a user.
-- Accounts are limited to 2 devices at a time by default (admins can change it per account), and expired accounts are switched off.
-- If a device is signed out by an admin, Aurora now goes back to the sign-in screen instead of showing errors.
+- Device limits and expiration dates are now kept and enforced by the Emby server itself, for every Emby app. They can no longer be changed from a user's own account.
+- Admin → Users shows what the server has done recently (devices signed out, accounts disabled or re-enabled), and needs an Emby administrator account.

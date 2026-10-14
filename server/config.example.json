@@ -1,0 +1,11 @@
+{
+  "embyUrl": "http://127.0.0.1:8096",
+  "apiKey": "PASTE-THE-EMBY-API-KEY-HERE",
+  "port": 8922,
+  "pfxPath": "C:\\path\\to\\the-same-certificate-emby-uses.pfx",
+  "pfxPassphrase": "",
+  "intervalSeconds": 60,
+  "activeWindowMinutes": 5,
+  "defaultLimit": 2,
+  "dryRun": true
+}

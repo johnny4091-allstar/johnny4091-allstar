@@ -459,7 +459,6 @@
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin());
-    if (isAdmin()) setTimeout(() => disableExpiredUsers().catch(() => {}), 25000);
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
     setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
@@ -2940,9 +2939,26 @@
   }
 
   // ----- Account limits: devices per account and an expiry date -----
-  // Kept in each account's own display preferences ("aurora-limits": {limit, expires: "YYYY-MM-DD" or null}),
-  // written by an admin in Admin → Users. Admin accounts have no limits.
-  const LIMITS_PREFS = 'aurora-limits';
+  // Limits and expiration dates live in Aurora Guard (server/aurora-guard.js), a small service on the Emby
+  // server PC that only Emby administrators can read or change, and that enforces them every minute with
+  // its own API key: it disables expired accounts and signs out devices over the limit, for every Emby app.
+  // Older versions kept them in each account's display preferences, which any account can write; those
+  // copies ("aurora-limits") are only read once more, to move them into the guard (see adminUsers).
+  const OLD_LIMITS_PREFS = 'aurora-limits';
+  const DEFAULT_GUARD_URL = 'https://emby4836.duckdns.org:8922';
+  let guardUrl = store.get('ef.guardUrl') || DEFAULT_GUARD_URL;
+  async function guard(path, { method = 'GET', body, params } = {}) {
+    const url = new URL(guardUrl.replace(/\/+$/, '') + path);
+    for (const [k, v] of Object.entries(params || {})) if (v != null) url.searchParams.set(k, v);
+    const res = await fetch(url, {
+      method, cache: 'no-store', signal: AbortSignal.timeout(15000),
+      headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error(data.error || `Aurora Guard answered ${res.status}`); e.status = res.status; throw e; }
+    return data;
+  }
   const DEFAULT_DEVICE_LIMIT = 2;
   const ACTIVE_WINDOW = 5 * 60000; // a device counts as in use if it talked to Emby this recently
   const expiryEnd = (d) => new Date(`${d}T23:59:59`).getTime(); // the account works until the end of that day
@@ -2970,44 +2986,27 @@
     return [...byDevice.values()].sort((a, b) => b.at - a.at);
   }
 
-  // null when this account may carry on, or {message} when it's blocked. phase "signin": counts every device
-  // in use; phase "play": counts the other devices playing right now (Emby playback, and M3U/Xtream live TV,
-  // which Emby doesn't see, from the live player's "aurora-watching" note).
+  // null when this account may carry on, or {message} when it's blocked.
+  // NOT A SECURITY BOUNDARY: this is only so people see a clear message up front instead of being signed out
+  // a minute later. Anyone can skip it (another Emby app, an old Aurora). The real enforcement is Aurora
+  // Guard's job on the server, which signs out devices over the limit and disables expired accounts.
+  // phase "signin": every device in use counts; phase "play": the other devices playing right now.
   const access = { okUntil: 0 };
   async function checkAccess(user = state.user, phase = 'signin') {
     if (!user || exemptFromLimits(user)) return null;
     if (phase === 'play' && Date.now() < access.okUntil) return null;
-    let lim = null;
-    try { lim = await readAuroraPref(LIMITS_PREFS, user.Id); } catch { /* no limits saved: the defaults */ }
-    if (isExpired(lim)) {
-      return { message: `This account expired on ${fmtDay(lim.expires)}. Contact the admin to renew it.` };
-    }
-    const limit = Math.max(1, Number(lim?.limit) || DEFAULT_DEVICE_LIMIT);
-    let devices;
+    let r;
     try {
-      devices = await activeDevices(user.Id);
+      r = await guard('/check', { params: { userId: user.Id, deviceId: state.deviceId, phase } });
     } catch (e) {
-      // Emby refused the session list for this account: let them in rather than lock everyone out.
-      appLog.add('warn', `Device limit not checked: Emby wouldn't list sessions for this account (${e.status || e.message})`);
+      // The guard is down or unreachable: don't lock people out over a message. It still enforces when it's back.
+      console.warn('Device limit check skipped:', e.message);
       access.okUntil = Date.now() + 120000;
       return null;
     }
-    let others = devices.filter((d) => d.deviceId !== state.deviceId);
-    if (phase === 'play') {
-      const live = new Set();
-      try {
-        const w = await readAuroraPref('aurora-watching', user.Id);
-        for (const [id, e] of Object.entries(w?.devices || {})) if (id !== state.deviceId && Date.now() - (e.at || 0) < 3 * 60000) live.add(id);
-      } catch { /* no live TV note */ }
-      const playing = new Set(others.filter((d) => d.playing).map((d) => d.deviceId));
-      live.forEach((id) => playing.add(id));
-      others = [...playing];
-    }
-    if (others.length >= limit) {
-      const n = others.length;
-      return { message: phase === 'play'
-        ? `This account is already playing on ${n} other ${n === 1 ? 'device' : 'devices'}. Stop playback on another device to continue.`
-        : `This account is already in use on ${n} ${n === 1 ? 'device' : 'devices'}. Sign out on another device to continue.` };
+    if (r.allowed === false) {
+      return { message: r.reason === 'expired' && /\d{4}-\d{2}-\d{2}/.test(r.message)
+        ? r.message.replace(/\d{4}-\d{2}-\d{2}/, (d) => fmtDay(d)) : r.message };
     }
     if (phase === 'play') access.okUntil = Date.now() + 120000; // channel surfing doesn't ask every time
     return null;
@@ -3071,6 +3070,7 @@
         const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) continue;
         const cfg = await res.json();
+        if (typeof cfg.guardUrl === 'string' && /^https?:\/\//.test(cfg.guardUrl)) { guardUrl = cfg.guardUrl.trim(); store.set('ef.guardUrl', guardUrl); }
         if (!store.get('ef.forceUpdateFromAdmin') && cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
           forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
           store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
@@ -4059,46 +4059,50 @@
   }
 
   // ----- Users (device limits, expiry, accounts) -----
-  async function userLimits(users) {
-    const out = new Map();
-    const queue = users.slice();
-    const worker = async () => {
-      while (queue.length) {
-        const u = queue.shift();
-        try { out.set(u.Id, await readAuroraPref(LIMITS_PREFS, u.Id)); } catch { out.set(u.Id, null); }
-      }
-    };
-    await Promise.all([0, 1, 2, 3].map(worker));
-    return out;
-  }
-  const writeLimits = (userId, lim) => writeAuroraPref(LIMITS_PREFS, userId, { ...lim, t: Date.now() });
-
   async function setDisabled(userId, disabled) {
     const user = await api(`/Users/${userId}`);
     await api(`/Users/${userId}/Policy`, { method: 'POST', body: { ...(user.Policy || {}), IsDisabled: !!disabled } });
   }
 
-  // Expired accounts are switched off in Emby (so no app can use them) whenever an admin's Aurora opens or
-  // the Users page is shown. Returns the names disabled.
-  async function disableExpiredUsers(users, limits) {
-    if (!isAdmin()) return [];
-    users = users || (await api('/Users')) || [];
-    limits = limits || (await userLimits(users));
-    const done = [];
-    for (const u of users) {
-      const lim = limits.get(u.Id);
-      if (!isExpired(lim) || u.Policy?.IsDisabled || u.Id === state.userId || exemptFromLimits(u)) continue;
-      try {
-        await setDisabled(u.Id, true);
-        await writeLimits(u.Id, { ...lim, autoDisabled: true });
-        u.Policy = { ...(u.Policy || {}), IsDisabled: true };
-        limits.set(u.Id, { ...lim, autoDisabled: true });
-        done.push(u.Name);
-      } catch (e) { console.warn('Disabling expired account', u.Name, e); }
-    }
-    if (done.length) appLog.add('info', `Disabled expired accounts: ${done.join(', ')}`);
-    return done;
+  // Limits saved by older versions in each account's (user-writable) display preferences: moved into the
+  // guard once, then cleared, so nothing reads them again.
+  async function moveOldLimits(users, guardUsers) {
+    const moved = [];
+    const queue = users.filter((u) => !guardUsers[u.Id]);
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        let old = null;
+        try { old = await readAuroraPref(OLD_LIMITS_PREFS, u.Id); } catch { continue; }
+        if (!old || (!old.limit && !old.expires)) continue;
+        try {
+          const r = await guard(`/limits/${u.Id}`, { method: 'PUT', body: { limit: Math.max(1, Number(old.limit) || DEFAULT_DEVICE_LIMIT), expires: old.expires || null } });
+          guardUsers[u.Id] = r.record;
+          await writeAuroraPref(OLD_LIMITS_PREFS, u.Id, null);
+          moved.push(u.Name);
+        } catch (e) { console.warn('Moving limits for', u.Name, e); }
+      }
+    };
+    await Promise.all([0, 1, 2].map(worker));
+    return moved;
   }
+
+  // User management needs a real Emby administrator (not just one of Aurora's admin names): Emby and the
+  // guard both refuse anyone else, and the page doesn't show controls that would fail.
+  async function embyAdminCheck(body) {
+    try {
+      const me = await api(`/Users/${state.userId}`);
+      if (me?.Policy?.IsAdministrator) return true;
+    } catch { /* fall through */ }
+    body.innerHTML = '<p class="empty-msg">User management needs an Emby administrator account. Make this account an administrator in the Emby dashboard (Users → this user → "Allow this user to manage the server"), then sign in again.</p>';
+    return false;
+  }
+
+  const guardHelp = (e) => `<section class="admin-card"><h2>Aurora Guard isn't answering</h2>
+    <p class="live-result bad">${esc(e.message)}${e.status ? '' : ` (${esc(guardUrl)})`}</p>
+    <p class="muted">Device limits and expiration dates are kept and enforced by Aurora Guard on the Emby server PC. Check that it is running
+      (Task Scheduler → "Aurora Guard"; its log is in the guard's data folder) and that port ${esc(new URL(guardUrl).port || '443')} is forwarded to that PC.
+      Accounts can still be enabled, disabled or deleted below.</p></section>`;
 
   const userStatus = (u, lim) => (isExpired(lim) ? 'expired' : u.Policy?.IsDisabled ? 'disabled' : 'active');
   const statusPill = (st) => `<span class="pill ${st === 'active' ? 'good' : st === 'expired' ? 'bad' : 'warn'}">${st === 'active' ? 'Active' : st === 'expired' ? 'Expired' : 'Disabled'}</span>`;
@@ -4107,14 +4111,24 @@
     const params = new URLSearchParams(location.hash.split('?')[1] || '');
     if (params.get('user') === 'new') return adminUserNew(body, isCurrent);
     if (params.get('user')) return adminUserDetail(body, isCurrent, params.get('user'));
-    let users, sessions, limits;
+    if (!(await embyAdminCheck(body)) || !isCurrent()) return;
+    let users, sessions, g = null, guardError = null;
     try {
       [users, sessions] = await Promise.all([api('/Users'), api('/Sessions', { params: { ActiveWithinSeconds: ACTIVE_WINDOW / 1000 } }).catch(() => [])]);
       users = users || [];
-      limits = await userLimits(users);
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    try { g = await guard('/limits'); } catch (e) { guardError = e; }
     if (!isCurrent()) return;
-    const disabledNow = await disableExpiredUsers(users, limits).catch(() => []);
+    // Once only (the guard remembers): any account can write its own display preferences, so values found
+    // there later must not be trusted.
+    let moved = [];
+    if (g && !g.migrated) {
+      moved = await moveOldLimits(users, g.users).catch(() => []);
+      await guard('/migrated', { method: 'PUT' }).catch(() => {});
+    }
+    if (!isCurrent()) return;
+    const limits = new Map(users.map((u) => [u.Id, g?.users?.[u.Id] || null]));
+    const actions = g ? (await guard('/actions').catch(() => ({ actions: [] }))).actions : [];
     if (!isCurrent()) return;
     const inUse = new Map();
     for (const se of Array.isArray(sessions) ? sessions : []) {
@@ -4136,20 +4150,30 @@
           <span class="osd-spacer"></span>
           <a class="btn btn-red" href="#/admin?tab=users&user=new">Add user</a>
         </div>
-        ${disabledNow.length ? `<p class="live-result good">Expired, so switched off in Emby: ${esc(disabledNow.join(', '))}.</p>` : ''}
+        ${moved.length ? `<p class="live-result good">Moved the limits saved by the older version into Aurora Guard (once only) for: ${esc(moved.join(', '))}. Check they look right: any account could edit its own old copy.</p>` : ''}
+        ${g?.dryRun ? '<p class="live-result bad">Aurora Guard is in dry-run mode: it only logs what it would do. Set "dryRun": false in its config.json to enforce.</p>' : ''}
         <div class="users-tools">
           <input type="search" class="users-search" placeholder="Search users" autocomplete="off" spellcheck="false">
           <div class="chip-row">${['all', 'active', 'disabled', 'expired'].map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
         </div>
         <div class="admin-list users-list"></div>
         <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes) out of the account's limit. Admin accounts have no limits.</p>
-      </section>`;
+      </section>
+      ${guardError ? guardHelp(guardError) : `<section class="admin-card">
+        <h2>Enforcement <small>Aurora Guard · checks every ${g.intervalSeconds} s</small></h2>
+        <p class="muted">Last check ${g.lastRun?.at ? esc(timeAgo(new Date(g.lastRun.at))) : 'not yet'}${g.lastRun?.at && !g.lastRun.ok ? ` · <span class="pill bad">Failed</span> ${esc(g.lastRun.error)}` : ''}.
+          The guard signs out devices over an account's limit and switches off expired accounts, in every Emby app.</p>
+        <div class="admin-list">${actions.slice(0, 15).map((a) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(a.name || '')}</strong> · ${esc(
+          a.type === 'signedOut' ? `signed out ${a.device || 'a device'}${a.client ? ' (' + a.client + ')' : ''}, ${a.why}`
+            : a.type === 'disabled' ? `disabled, ${a.why}` : a.type === 'enabled' ? `enabled again, ${a.why}` : a.why || a.type)}</div>
+          <div class="admin-row-time">${esc(timeAgo(new Date(a.at)))}</div></div>`).join('') || '<p class="muted">Nothing done yet.</p>'}</div>
+      </section>`}`;
     const list = $('.users-list', body);
     const draw = () => {
       const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
       list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
         <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
-          <div class="muted">${r.exempt ? `${r.devices} ${r.devices === 1 ? 'device' : 'devices'} in use` : `${r.devices} of ${r.lim?.limit || DEFAULT_DEVICE_LIMIT} devices in use`}
+          <div class="muted">${r.exempt ? `${r.devices} ${r.devices === 1 ? 'device' : 'devices'} in use` : `${r.devices} of ${r.lim?.limit || g?.defaultLimit || DEFAULT_DEVICE_LIMIT} devices in use`}
             · ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}</div></div>
         <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
     };
@@ -4199,12 +4223,13 @@
   };
 
   async function adminUserDetail(body, isCurrent, userId) {
-    let user, lim, devices = [];
+    if (!(await embyAdminCheck(body)) || !isCurrent()) return;
+    let user, lim = null, devices = [], g = null, guardError = null;
     try {
       user = await api(`/Users/${userId}`);
-      lim = await readAuroraPref(LIMITS_PREFS, userId).catch(() => null);
       devices = await activeDevices(userId).catch(() => []);
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))} <a href="#/admin?tab=users">Back to users</a></p>`; return; }
+    try { g = await guard('/limits'); lim = g.users?.[userId] || null; } catch (e) { guardError = e; }
     if (!isCurrent()) return;
     const self = userId === state.userId, exempt = exemptFromLimits(user);
     const st = userStatus(user, lim);
@@ -4213,10 +4238,12 @@
       <section class="admin-card">
         <h2>${esc(user.Name)} ${statusPill(st)}${exempt ? ' <span class="pill">Admin</span>' : ''}${self ? ' <span class="pill">You</span>' : ''}</h2>
         <p class="muted">Last active ${user.LastActivityDate ? esc(timeAgo(user.LastActivityDate)) : 'never'}${exempt ? ' · Admin accounts have no device limit or expiration.' : ''}</p>
-        <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(Number(lim?.limit) || DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${guardError ? `<p class="live-result bad">Device limit and expiration can't be changed: Aurora Guard isn't answering (${esc(guardError.message)}).</p>` : `
+        <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(Number(lim?.limit) || g?.defaultLimit || DEFAULT_DEVICE_LIMIT)}</select></label>
         ${expiryFields(lim?.expires)}
         <div class="m-actions"><button class="btn btn-red" data-save-limits>Save</button></div>
-        <div class="live-result" data-limits-result></div>
+        <p class="muted">Saved in Aurora Guard and applied straight away: an account past its date is switched off in Emby, and extending the date switches it back on.</p>
+        <div class="live-result" data-limits-result></div>`}
       </section>
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
@@ -4238,31 +4265,24 @@
         <div class="m-actions"><button class="btn btn-gray" data-reset-pw>Set new password</button></div>
         <div class="live-result" data-account-result></div>
       </section>`;
-    const getExpiry = wireExpiry(body);
+    const getExpiry = guardError ? null : wireExpiry(body);
     const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
     const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
 
-    $('[data-save-limits]', body).addEventListener('click', async () => {
-      const next = { ...(lim || {}), limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() };
+    $('[data-save-limits]', body)?.addEventListener('click', async () => {
+      const next = { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() };
+      if (isExpired(next) && !user.Policy?.IsDisabled && !self && !exempt
+        && !(await confirmAction('Disable this account?', `That date has passed, so ${user.Name}'s account will be switched off in Emby.`, 'Save and disable'))) return;
       say('[data-limits-result]', '<div class="spinner"></div>');
       try {
-        let note = '';
-        const nowExpired = isExpired(next);
-        if (nowExpired && !user.Policy?.IsDisabled && !self && !exempt) {
-          if (!(await confirmAction('Disable this account?', `${user.Name}'s expiration date has passed, so the account will be switched off in Emby.`, 'Disable'))) return say('[data-limits-result]', '');
-          await setDisabled(userId, true);
-          next.autoDisabled = true;
-          note = ' The date has passed, so the account is now disabled.';
-        } else if (!nowExpired && user.Policy?.IsDisabled && lim?.autoDisabled) {
-          // Extending an expired account switches it back on.
-          await setDisabled(userId, false);
-          delete next.autoDisabled;
-          note = ' The account is enabled again.';
-        } else if (!nowExpired) delete next.autoDisabled;
-        await writeLimits(userId, next);
+        const r = await guard(`/limits/${userId}`, { method: 'PUT', body: next });
+        const was = !!user.Policy?.IsDisabled;
+        const note = !r.applied ? ' It will be applied at the guard\'s next check.'
+          : r.disabled && !was ? ' The date has passed, so the account is now disabled.'
+            : !r.disabled && was ? ' The account is enabled again.' : '';
         say('[data-limits-result]', 'Saved.' + note, 'good');
         setTimeout(reload, 1200);
-      } catch (e) { say('[data-limits-result]', "Couldn't save: " + esc(adminError(e)), 'bad'); }
+      } catch (e) { say('[data-limits-result]', "Couldn't save: " + esc(e.message), 'bad'); }
     });
 
     $$('[data-signout]', body).forEach((b) => b.addEventListener('click', async () => {
@@ -4281,7 +4301,8 @@
       if (!disabling && isExpired(lim)) return say('[data-account-result]', 'This account has expired. Set a later expiration date (or No expiration) above and Save; that enables it again.', 'bad');
       try {
         await setDisabled(userId, disabling);
-        if (lim?.autoDisabled) await writeLimits(userId, { ...lim, autoDisabled: false });
+        // A hand-made choice: the guard no longer switches this account back on by itself.
+        await guard(`/limits/${userId}/manual`, { method: 'PUT' }).catch(() => {});
         toast(disabling ? 'Account disabled' : 'Account enabled', 2000);
         reload();
       } catch (e) { say('[data-account-result]', "Couldn't change it: " + esc(adminError(e)), 'bad'); }
@@ -4291,6 +4312,7 @@
       if (!(await confirmAction(`Delete ${user.Name}?`, 'The account, its watch history and its settings are removed from Emby for good. This can\'t be undone.', 'Delete user'))) return;
       try {
         await api(`/Users/${userId}`, { method: 'DELETE' });
+        await guard(`/limits/${userId}`, { method: 'DELETE' }).catch(() => {});
         toast(`${user.Name} deleted`, 2500);
         location.hash = '#/admin?tab=users';
       } catch (e) { say('[data-account-result]', "Couldn't delete it: " + esc(adminError(e)), 'bad'); }
@@ -4308,6 +4330,7 @@
   }
 
   async function adminUserNew(body, isCurrent) {
+    if (!(await embyAdminCheck(body)) || !isCurrent()) return;
     body.innerHTML = `
       <a class="btn btn-gray users-back" href="#/admin?tab=users">‹ All users</a>
       <section class="admin-card">
@@ -4335,7 +4358,7 @@
       } catch (e) { return say("Couldn't create it: " + esc(adminError(e)) + (e.status === 400 ? ' (is the name already taken?)' : ''), 'bad'); }
       const problems = [];
       try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
-      try { await writeLimits(user.Id, { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() }); } catch (e) { problems.push('the device limit and expiration'); }
+      try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
       // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
       try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }
       for (const id of [REQ_PREFS.id, APP_PREFS]) {
