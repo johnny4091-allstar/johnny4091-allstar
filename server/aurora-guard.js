@@ -41,6 +41,7 @@ function loadConfig() {
     pfxPath: '',
     pfxPassphrase: '',
     allowInsecureHttp: false,
+    exitOnCertError: false,
     intervalSeconds: 60,
     activeWindowMinutes: 5,
     defaultLimit: 2,
@@ -428,27 +429,102 @@ async function handle(req, res) {
   return send(res, 404, { error: 'Not found' });
 }
 
+// ---------- HTTPS certificate ----------
+const legacyProviderOn = () => process.execArgv.includes('--openssl-legacy-provider') || /--openssl-legacy-provider/.test(process.env.NODE_OPTIONS || '');
+
+// What went wrong with the certificate, in words that say what to do about it.
+function explainCertError(e) {
+  const msg = String((e && e.message) || e);
+  const file = cfg.pfxPath;
+  if (e && e.code === 'ENOENT') return `The certificate file "${file}" doesn't exist. Check "pfxPath" in config.json (in a JSON file every backslash is doubled, like "C:\\\\certs\\\\emby.pfx", or use forward slashes).`;
+  if (e && (e.code === 'EACCES' || e.code === 'EPERM')) return `The certificate file "${file}" can't be read by the account the guard runs as (the scheduled task runs as SYSTEM, which can't open files inside a user's own folders). Copy the .pfx into this folder and point "pfxPath" at the copy.`;
+  if (e && e.code === 'EISDIR') return `"pfxPath" points at a folder, not at the .pfx file: ${file}`;
+  if (/mac verify failure|bad decrypt|invalid password|wrong password|mac check/i.test(msg)) return 'The certificate password is wrong. Check "pfxPassphrase" in config.json.';
+  if ((e && e.code === 'ERR_OSSL_EVP_UNSUPPORTED') || /unsupported|digital envelope|PKCS12/i.test(msg)) {
+    return legacyProviderOn()
+      ? `Node.js can't read this certificate even with the OpenSSL legacy provider switched on (${msg}). Re-export it with modern encryption: openssl pkcs12 -legacy -in old.pfx -nodes -out all.pem, then openssl pkcs12 -export -in all.pem -out new.pfx (OpenSSL comes with Git for Windows).`
+      : 'The certificate uses an older encryption (RC2 / 3DES) that Node.js no longer opens by default. Start the guard with --openssl-legacy-provider (install-windows.ps1 does this), or re-export the .pfx with modern encryption.';
+  }
+  return `The certificate "${file}" couldn't be loaded: ${msg}. Check that it is a .pfx (PKCS#12) file and not damaged.`;
+}
+
+// Opens the .pfx the way the https server will, so a certificate problem is found here and explained,
+// not as a stack trace from inside Node.
+function loadCertificate() {
+  try {
+    const pfx = fs.readFileSync(cfg.pfxPath);
+    require('tls').createSecureContext({ pfx, passphrase: cfg.pfxPassphrase || undefined });
+    return { pfx };
+  } catch (e) {
+    return { error: explainCertError(e) };
+  }
+}
+
+const isLocalHost = () => ['127.0.0.1', 'localhost', '::1'].includes(cfg.host);
+
+// node aurora-guard.js --check: tries the certificate and the Emby API key, prints what it found and exits
+// with 0 (all good), 1 (a problem to fix) or 2 (only a warning: Emby couldn't be reached right now).
+async function selfCheck() {
+  let problems = 0, warnings = 0;
+  if (cfg.pfxPath) {
+    const cert = loadCertificate();
+    if (cert.error) { console.log('PROBLEM: ' + cert.error); problems++; }
+    else console.log(`OK: the certificate "${cfg.pfxPath}" loads${legacyProviderOn() ? ' (OpenSSL legacy provider is on)' : ''}.`);
+  } else if (!isLocalHost() && !cfg.allowInsecureHttp) {
+    console.log('PROBLEM: no certificate is set. Admin tokens must not travel over plain http on the internet: set "pfxPath" (the same .pfx certificate Emby uses for https).');
+    problems++;
+  }
+  try {
+    const info = await emby('GET', '/System/Info');
+    console.log(`OK: Emby answered at ${cfg.embyUrl} (${(info && info.ServerName) || 'server'} ${(info && info.Version) || ''}), and the API key works.`);
+  } catch (e) {
+    if (e.status === 401 || e.status === 403) { console.log('PROBLEM: Emby refused the API key. Create one in the Emby dashboard (Advanced → API Keys) and put it in "apiKey" in config.json.'); problems++; }
+    else { console.log(`WARNING: couldn't reach Emby at ${cfg.embyUrl}: ${e.message}. Is Emby running, and is "embyUrl" right? The guard will keep trying.`); warnings++; }
+  }
+  process.exit(problems ? 1 : warnings ? 2 : 0);
+}
+
 // ---------- Start ----------
 function start() {
-  let server;
   const handler = (req, res) => handle(req, res).catch((e) => { log('Request failed:', e.message); try { send(res, 500, { error: 'Internal error' }); } catch {} });
+  let server = null;
   if (cfg.pfxPath) {
-    server = https.createServer({ pfx: fs.readFileSync(cfg.pfxPath), passphrase: cfg.pfxPassphrase || undefined }, handler);
+    const cert = loadCertificate();
+    if (cert.error) {
+      // No https endpoint without a certificate, and never plain http instead: admin tokens would cross the
+      // internet unencrypted. The every-minute job doesn't need the endpoint, so by default it keeps running
+      // with the limits already saved, and says loudly what is wrong.
+      log('CERTIFICATE PROBLEM: the https endpoint is NOT running.', cert.error);
+      if (cfg.exitOnCertError) { log('Stopping (exitOnCertError is on).'); process.exit(1); }
+      log('Aurora cannot reach the guard until this is fixed, so Admin → Users can\'t change limits. The every-minute check carries on with the limits already saved. Fix config.json or the certificate and restart the "Aurora Guard" task.');
+      setInterval(() => log('REMINDER: the https endpoint is still NOT running.', cert.error), 10 * 60000).unref();
+    } else {
+      log(`Certificate loaded${legacyProviderOn() ? ' (OpenSSL legacy provider on)' : ''}.`);
+      server = https.createServer({ pfx: cert.pfx, passphrase: cfg.pfxPassphrase || undefined }, handler);
+    }
   } else {
-    const local = ['127.0.0.1', 'localhost', '::1'].includes(cfg.host);
-    if (!local && !cfg.allowInsecureHttp) {
+    if (!isLocalHost() && !cfg.allowInsecureHttp) {
       console.error('No certificate configured. Admin tokens must not travel over plain http on the internet: set "pfxPath" (the same .pfx certificate Emby uses for https), or "host": "127.0.0.1" for local testing.');
       process.exit(1);
     }
     server = http.createServer(handler);
   }
-  server.listen(cfg.port, cfg.host, () => {
-    log(`Aurora Guard ${VERSION} listening on ${cfg.pfxPath ? 'https' : 'http'}://${cfg.host}:${cfg.port}; Emby at ${cfg.embyUrl};`,
-      `checking every ${cfg.intervalSeconds}s${cfg.dryRun ? ' (DRY RUN: nothing is changed, only logged)' : ''}`);
-  });
+  if (server) {
+    server.on('error', (e) => {
+      log(e.code === 'EADDRINUSE'
+        ? `Port ${cfg.port} is already in use. Is another copy of the guard already running (Task Manager → node.exe), or another program on that port? Change "port" in config.json, or stop the other one.`
+        : e.code === 'EACCES' ? `Not allowed to listen on port ${cfg.port}. Use a port above 1024, or run as Administrator.`
+          : `The server stopped: ${e.message}`);
+      process.exit(1);
+    });
+    server.listen(cfg.port, cfg.host, () => {
+      log(`Aurora Guard ${VERSION} listening on ${cfg.pfxPath ? 'https' : 'http'}://${cfg.host}:${cfg.port}; Emby at ${cfg.embyUrl};`,
+        `checking every ${cfg.intervalSeconds}s${cfg.dryRun ? ' (DRY RUN: nothing is changed, only logged)' : ''}`);
+    });
+  }
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
 }
 
-if (require.main === module) start();
+if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else start(); }
 module.exports = { enforce, isExpired, activeByUser };

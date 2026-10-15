@@ -37,8 +37,11 @@ Administrator accounts are never limited or disabled.
    powershell -ExecutionPolicy Bypass -File .\install-windows.ps1
    ```
 
-   This makes it start with Windows and restart if it stops, opens the port in Windows Firewall, and limits
-   the folder to Administrators.
+   First it **checks the certificate and the Emby API key** and stops with an explanation if either is wrong.
+   Then it makes the guard start with Windows and restart if it stops, opens the port in Windows Firewall, and
+   limits the folder to Administrators. The guard is started as `node --openssl-legacy-provider aurora-guard.js`:
+   the flag lets Node.js open older `.pfx` certificates (RC2 / 3DES encryption, which Windows used to export by
+   default) and makes no difference for a modern one.
 6. **Forward the port:** on your router, forward TCP port **8922** to this PC, as you did for 8920.
 7. **Check it's reachable:** from a phone off Wi-Fi, open <https://emby4836.duckdns.org:8922/health>. You
    should see `{"ok":true,...}`.
@@ -60,6 +63,7 @@ Administrator accounts are never limited or disabled.
 | `activeWindowMinutes` | A device counts as in use if it talked to Emby this recently (default 5) |
 | `defaultLimit` | Device limit for accounts without their own (default 2) |
 | `dryRun` | `true`: only log what it would do |
+| `exitOnCertError` | `false` (default): if the certificate can't be loaded, keep running the every-minute check without the https endpoint. `true`: stop instead |
 
 ## Endpoints
 
@@ -76,6 +80,25 @@ Administrator accounts are never limited or disabled.
 - `data\limits.json`: the store. Back it up if you like; it is rewritten safely, so a crash never leaves
   half a file.
 - `data\guard.log`: what it did. It rolls over at 2 MB.
+
+## Certificate problems
+
+If the `.pfx` can't be loaded, the guard never falls back to plain http (admin tokens would cross the internet
+unencrypted). It writes **`CERTIFICATE PROBLEM: the https endpoint is NOT running.`** and the reason to
+`data\guard.log` (repeated every 10 minutes), and carries on with the every-minute check using the limits
+already saved, unless `exitOnCertError` is `true`. Aurora can't reach the guard until it is fixed.
+
+| The log says | Fix |
+|---|---|
+| uses an older encryption (RC2 / 3DES) | Start with `--openssl-legacy-provider` (the installer does), or re-export the `.pfx` with modern encryption: `openssl pkcs12 -legacy -in old.pfx -nodes -out all.pem` then `openssl pkcs12 -export -in all.pem -out new.pfx` (OpenSSL comes with Git for Windows) |
+| the password is wrong | Fix `pfxPassphrase` in `config.json` |
+| the file doesn't exist | Fix `pfxPath`. In JSON every backslash is doubled: `"C:\\certs\\emby.pfx"`, or use forward slashes |
+| can't be read by the account the guard runs as | The task runs as SYSTEM, which can't open files in a user's own folders. Copy the `.pfx` into this folder and point `pfxPath` at the copy |
+| Port ... is already in use | Another copy of the guard (or another program) has the port. Change `port`, or stop the other one |
+
+To test the settings without installing anything: `node --openssl-legacy-provider aurora-guard.js --check`.
+It prints `OK`, `WARNING` or `PROBLEM` lines and exits with 0 (fine), 1 (fix something) or 2 (only a warning:
+Emby couldn't be reached).
 
 ## Stopping the guard
 
