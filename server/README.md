@@ -1,5 +1,8 @@
 # Aurora Guard
 
+> **Status: switched off.** Aurora does not contact the guard unless `"guardEnabled": true` is set in
+> `aurora-config.json`. To stop the service on the PC, see "Stopping the guard" at the end.
+
 Enforces Aurora's per-account device limits and expiration dates on the Emby server. It applies to Emby's
 own apps too, not just Aurora.
 
@@ -73,3 +76,16 @@ Administrator accounts are never limited or disabled.
 - `data\limits.json`: the store. Back it up if you like; it is rewritten safely, so a crash never leaves
   half a file.
 - `data\guard.log`: what it did. It rolls over at 2 MB.
+
+## Stopping the guard
+
+In PowerShell as Administrator:
+
+```powershell
+Stop-ScheduledTask -TaskName 'Aurora Guard'
+Disable-ScheduledTask -TaskName 'Aurora Guard'
+```
+
+While it is stopped nothing is enforced: no device limits and no expiration dates. Accounts it disabled for
+expiry stay disabled until you enable them in Emby (or in Aurora → Admin → Users). Devices it signed out have
+to sign in again. To start it again: `Enable-ScheduledTask -TaskName 'Aurora Guard'; Start-ScheduledTask -TaskName 'Aurora Guard'`.

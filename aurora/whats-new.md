@@ -1,4 +1,2 @@
-- Films and shows on a slow connection: Aurora now picks a lower quality when the speed test shows a slow line, instead of the highest, so they buffer less.
-- If a video keeps stopping to buffer, Aurora lowers the quality for the next one by itself.
-- Live TV now says why when the TV provider refuses a channel (for example, too many devices on the subscription) instead of only "Reconnecting…".
-- Opening Aurora and starting a video are no longer held up when the device-limit server can't be reached.
+- Fixed: device-limit checks could slow down opening Aurora and starting videos, and fill the app log with warnings. They are switched off.
+- Admin → Users still manages accounts (enable, disable, delete, passwords, sign out a device) but no longer shows device limits or expiration dates.

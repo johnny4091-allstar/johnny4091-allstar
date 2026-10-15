@@ -2956,11 +2956,16 @@
   const OLD_LIMITS_PREFS = 'aurora-limits';
   const DEFAULT_GUARD_URL = 'https://emby4836.duckdns.org:8922';
   let guardUrl = store.get('ef.guardUrl') || DEFAULT_GUARD_URL;
+  // SWITCHED OFF by default: with it off, Aurora never contacts the guard (no checks at sign-in or play start,
+  // no delays, nothing in the app log). Turn it on with "guardEnabled": true in aurora-config.json, once the
+  // guard service is set up, reachable and tested.
+  let guardEnabled = store.get('ef.guardEnabled') === '1';
   // The guard can be slow or unreachable (the PC is off, a customer's network blocks the port). Anything the
   // viewer is waiting on uses a short timeout (quick: true), and after a failure the guard isn't tried again
   // for a few minutes, so a down guard never holds up opening the app or starting a video.
   let guardDownUntil = 0;
   async function guard(path, { method = 'GET', body, params, quick = false } = {}) {
+    if (!guardEnabled) throw new Error('Aurora Guard is switched off');
     if (quick && Date.now() < guardDownUntil) throw new Error('Aurora Guard is not answering');
     const url = new URL(guardUrl.replace(/\/+$/, '') + path);
     for (const [k, v] of Object.entries(params || {})) if (v != null) url.searchParams.set(k, v);
@@ -3014,7 +3019,7 @@
   // phase "signin": every device in use counts; phase "play": the other devices playing right now.
   const access = { okUntil: 0 };
   async function checkAccess(user = state.user, phase = 'signin') {
-    if (!user || exemptFromLimits(user)) return null;
+    if (!guardEnabled || !user || exemptFromLimits(user)) return null;
     if (phase === 'play' && Date.now() < access.okUntil) return null;
     let r;
     try {
@@ -3037,6 +3042,7 @@
 
   // Before anything plays: checks the limits, then runs start() if allowed.
   async function whenAllowed(start) {
+    if (!guardEnabled) return start();
     // The message is a courtesy (the guard on the server enforces the limit), so it never holds a video up for
     // more than a moment: no answer in 1.5 s means "go ahead".
     const blocked = await Promise.race([checkAccess(state.user, 'play'), new Promise((r) => setTimeout(() => r(null), 1500))]).catch(() => null);
@@ -3089,13 +3095,15 @@
   // Reads the current Requests address from aurora-config.json in the repo, so a changed address
   // (a restarted Cloudflare quick tunnel, say) reaches every installed app without an update.
   async function loadRemoteConfig() {
-    if (requestsOverride) return;
+    const hasOverride = !!requestsOverride; // the Requests address set in Admin wins over the file
     for (const url of REMOTE_CONFIG_URLS) {
       try {
         const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) continue;
         const cfg = await res.json();
+        if (typeof cfg.guardEnabled === 'boolean') { guardEnabled = cfg.guardEnabled; store.set('ef.guardEnabled', guardEnabled ? '1' : '0'); }
         if (typeof cfg.guardUrl === 'string' && /^https?:\/\//.test(cfg.guardUrl)) { guardUrl = cfg.guardUrl.trim(); store.set('ef.guardUrl', guardUrl); }
+        if (hasOverride) return;
         if (!store.get('ef.forceUpdateFromAdmin') && cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
           forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
           store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
@@ -4142,7 +4150,7 @@
       [users, sessions] = await Promise.all([api('/Users'), api('/Sessions', { params: { ActiveWithinSeconds: ACTIVE_WINDOW / 1000 } }).catch(() => [])]);
       users = users || [];
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
-    try { g = await guard('/limits'); } catch (e) { guardError = e; }
+    if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { guardError = e; } }
     if (!isCurrent()) return;
     // Once only (the guard remembers): any account can write its own display preferences, so values found
     // there later must not be trusted.
@@ -4167,7 +4175,9 @@
     }).sort((a, b) => (a.u.Name || '').localeCompare(b.u.Name || ''));
     const counts = { all: rows.length, active: 0, disabled: 0, expired: 0 };
     rows.forEach((r) => { counts[r.st]++; });
+    const filters = guardEnabled ? ['all', 'active', 'disabled', 'expired'] : ['all', 'active', 'disabled'];
     let filter = store.get('ef.usersFilter') || 'all', query = '';
+    if (!filters.includes(filter)) filter = 'all';
     body.innerHTML = `
       <section class="admin-card">
         <div class="users-head">
@@ -4179,12 +4189,14 @@
         ${g?.dryRun ? '<p class="live-result bad">Aurora Guard is in dry-run mode: it only logs what it would do. Set "dryRun": false in its config.json to enforce.</p>' : ''}
         <div class="users-tools">
           <input type="search" class="users-search" placeholder="Search users" autocomplete="off" spellcheck="false">
-          <div class="chip-row">${['all', 'active', 'disabled', 'expired'].map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
+          <div class="chip-row">${filters.map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
         </div>
         <div class="admin-list users-list"></div>
-        <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes) out of the account's limit. Admin accounts have no limits.</p>
+        <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes)${guardEnabled ? " out of the account's limit. Admin accounts have no limits." : '.'}</p>
       </section>
-      ${guardError ? guardHelp(guardError) : `<section class="admin-card">
+      ${!guardEnabled ? `<section class="admin-card"><h2>Device limits and expiration are switched off</h2>
+        <p class="muted">Aurora Guard is disabled, so accounts have no device limit or expiration date. Everything else on this page still works.
+          To turn it back on, set "guardEnabled": true in aurora-config.json once the guard service is running (see server/README.md).</p></section>` : guardError ? guardHelp(guardError) : `<section class="admin-card">
         <h2>Enforcement <small>Aurora Guard · checks every ${g.intervalSeconds} s</small></h2>
         <p class="muted">Last check ${g.lastRun?.at ? esc(timeAgo(new Date(g.lastRun.at))) : 'not yet'}${g.lastRun?.at && !g.lastRun.ok ? ` · <span class="pill bad">Failed</span> ${esc(g.lastRun.error)}` : ''}.
           The guard signs out devices over an account's limit and switches off expired accounts, in every Emby app.</p>
@@ -4198,8 +4210,8 @@
       const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
       list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
         <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
-          <div class="muted">${r.exempt ? `${r.devices} ${r.devices === 1 ? 'device' : 'devices'} in use` : `${r.devices} of ${r.lim?.limit || g?.defaultLimit || DEFAULT_DEVICE_LIMIT} devices in use`}
-            · ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}</div></div>
+          <div class="muted">${r.exempt || !guardEnabled ? `${r.devices} ${r.devices === 1 ? 'device' : 'devices'} in use` : `${r.devices} of ${r.lim?.limit || g?.defaultLimit || DEFAULT_DEVICE_LIMIT} devices in use`}
+            ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}` : ''}</div></div>
         <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
     };
     draw();
@@ -4254,7 +4266,7 @@
       user = await api(`/Users/${userId}`);
       devices = await activeDevices(userId).catch(() => []);
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))} <a href="#/admin?tab=users">Back to users</a></p>`; return; }
-    try { g = await guard('/limits'); lim = g.users?.[userId] || null; } catch (e) { guardError = e; }
+    if (guardEnabled) { try { g = await guard('/limits'); lim = g.users?.[userId] || null; } catch (e) { guardError = e; } }
     if (!isCurrent()) return;
     const self = userId === state.userId, exempt = exemptFromLimits(user);
     const st = userStatus(user, lim);
@@ -4263,7 +4275,7 @@
       <section class="admin-card">
         <h2>${esc(user.Name)} ${statusPill(st)}${exempt ? ' <span class="pill">Admin</span>' : ''}${self ? ' <span class="pill">You</span>' : ''}</h2>
         <p class="muted">Last active ${user.LastActivityDate ? esc(timeAgo(user.LastActivityDate)) : 'never'}${exempt ? ' · Admin accounts have no device limit or expiration.' : ''}</p>
-        ${guardError ? `<p class="live-result bad">Device limit and expiration can't be changed: Aurora Guard isn't answering (${esc(guardError.message)}).</p>` : `
+        ${!guardEnabled ? '<p class="muted">Device limits and expiration are switched off (Aurora Guard is disabled).</p>' : guardError ? `<p class="live-result bad">Device limit and expiration can't be changed: Aurora Guard isn't answering (${esc(guardError.message)}).</p>` : `
         <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(Number(lim?.limit) || g?.defaultLimit || DEFAULT_DEVICE_LIMIT)}</select></label>
         ${expiryFields(lim?.expires)}
         <div class="m-actions"><button class="btn btn-red" data-save-limits>Save</button></div>
@@ -4290,7 +4302,7 @@
         <div class="m-actions"><button class="btn btn-gray" data-reset-pw>Set new password</button></div>
         <div class="live-result" data-account-result></div>
       </section>`;
-    const getExpiry = guardError ? null : wireExpiry(body);
+    const getExpiry = !guardEnabled || guardError ? null : wireExpiry(body);
     const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
     const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
 
@@ -4362,12 +4374,12 @@
         <h2>Add user</h2>
         <label class="admin-field"><span>Name (used to sign in)</span><input type="text" data-f="name" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
         ${passwordFields()}
-        <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
-        ${expiryFields(null)}
+        ${guardEnabled ? `<label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(null)}` : ''}
         <div class="m-actions"><button class="btn btn-red" data-create>Create user</button></div>
         <div class="live-result" data-result></div>
       </section>`;
-    const getExpiry = wireExpiry(body);
+    const getExpiry = guardEnabled ? wireExpiry(body) : null;
     const result = $('[data-result]', body);
     const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
     $('[data-create]', body).addEventListener('click', async () => {
@@ -4383,7 +4395,9 @@
       } catch (e) { return say("Couldn't create it: " + esc(adminError(e)) + (e.status === 400 ? ' (is the name already taken?)' : ''), 'bad'); }
       const problems = [];
       try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
-      try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+      if (guardEnabled) {
+        try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+      }
       // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
       try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }
       for (const id of [REQ_PREFS.id, APP_PREFS]) {
