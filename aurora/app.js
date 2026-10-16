@@ -27,6 +27,13 @@
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
+  // Customers only ever see "Aurora": where the media server's own name (or its web address) would appear in a
+  // message, a log line or a release note, it says Aurora (or "the server") instead. Admin screens, which only
+  // administrators can open, keep the real names because their instructions refer to the server's dashboard.
+  const brand = (t) => String(t ?? '')
+    .replace(/https?:\/\/[^\s"')<>]*emby[^\s"')<>]*/gi, 'the server')
+    .replace(/\bEmby(?:Flix)?\b/gi, 'Aurora');
+
   // Errors and warnings go to the admins by themselves (Admin → Feedback → Automatic reports): a few seconds
   // after the first one, in one report with what led up to it. The same problem is reported at most once an
   // hour, reports are at least two minutes apart, and a device sends no more than 20 a day.
@@ -53,11 +60,13 @@
   // A small log of errors and notable events on this device, shown in the admin dashboard.
   const appLog = {
     KEY: 'ef.appLog', MAX: 300,
-    read() { try { return JSON.parse(localStorage.getItem(this.KEY) || '[]'); } catch { return []; } },
+    read() {
+      try { return JSON.parse(localStorage.getItem(this.KEY) || '[]').map((e) => ({ ...e, msg: brand(e.msg) })); } catch { return []; }
+    },
     add(level, msg) {
       try {
         const list = this.read();
-        const entry = { t: Date.now(), level, msg: String(msg).slice(0, 600) };
+        const entry = { t: Date.now(), level, msg: brand(msg).slice(0, 600) };
         list.push(entry);
         localStorage.setItem(this.KEY, JSON.stringify(list.slice(-this.MAX)));
         if (level === 'error' || level === 'warn') problems.note(entry);
@@ -109,7 +118,7 @@
   let toastTimer;
   function toast(msg, ms = 3500) {
     const el = $('#toast');
-    el.textContent = msg;
+    el.textContent = brand(msg);
     el.classList.remove('hidden');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
@@ -143,7 +152,7 @@
     }
     const res = await fetch(apiUrl(path, params), opts);
     if (!res.ok) {
-      const err = new Error(`Emby returned ${res.status} ${res.statusText}`);
+      const err = new Error(`Aurora returned ${res.status} ${res.statusText}`);
       err.status = res.status;
       err.path = path;
       // This device's sign-in was revoked (an admin signed it out, or the account was disabled).
@@ -480,7 +489,7 @@
   function connectionErrorMessage(e) {
     if (e.status === 401 || e.status === 403) return 'Incorrect username or password, or the account has been disabled.';
     if (e.status) return `Server error: ${e.message}`;
-    return 'Could not reach the Emby server. Check your internet connection and that the server is running.';
+    return 'Could not reach the Aurora server. Check your internet connection and try again.';
   }
 
   // ---------- Router ----------
@@ -4649,7 +4658,7 @@
   function releaseNotes(body) {
     const m = (body || '').match(/<!-- notes -->([\s\S]*?)<!-- \/notes -->/);
     if (!m) return [];
-    return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l)).map((l) => l.slice(2).trim()).filter(Boolean);
+    return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l)).map((l) => brand(l.slice(2).trim())).filter(Boolean);
   }
 
   async function checkForUpdate() {
