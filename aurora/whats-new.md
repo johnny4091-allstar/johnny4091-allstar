@@ -1,2 +1,1 @@
-- Fixed: device-limit checks could slow down opening Aurora and starting videos, and fill the app log with warnings. They are switched off.
-- Admin → Users still manages accounts (enable, disable, delete, passwords, sign out a device) but no longer shows device limits or expiration dates.
+- Fixed: opening a title that has been removed or replaced on the server no longer fails with "Could not load details". Aurora looks for it again by name, or offers to refresh the list. Lists also refresh when a TV that was left on the home screen for a long time is woken up.

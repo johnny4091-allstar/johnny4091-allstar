@@ -145,6 +145,7 @@
     if (!res.ok) {
       const err = new Error(`Emby returned ${res.status} ${res.statusText}`);
       err.status = res.status;
+      err.path = path;
       // This device's sign-in was revoked (an admin signed it out, or the account was disabled).
       if (res.status === 401 && state.userId && !path.startsWith('/Users/AuthenticateByName')) signedOutElsewhere();
       throw err;
@@ -485,8 +486,10 @@
   // ---------- Router ----------
   let routeToken = 0;
 
+  let lastRouteAt = Date.now();
   function route() {
     if (!state.userId) return;
+    lastRouteAt = Date.now();
     const hash = location.hash.replace(/^#\/?/, '');
     const [path, query] = hash.split('?');
     const params = new URLSearchParams(query || '');
@@ -686,9 +689,11 @@
   function openItem(item) {
     if (item.Type === 'TvChannel') return playItem(item);
     if (item.Type === 'Program') return openProgram(item.Id);
-    if (item.Type === 'Episode' && item.SeriesId) openDetails(item.SeriesId, { focusEpisode: item });
-    else if (item.Type === 'Season' && item.SeriesId) openDetails(item.SeriesId, { seasonId: item.Id });
-    else openDetails(item.Id);
+    // hint: what the card showed, so a title that has since been replaced on the server can be found again by name.
+    const series = { Name: item.SeriesName, Type: 'Series' };
+    if (item.Type === 'Episode' && item.SeriesId) openDetails(item.SeriesId, { focusEpisode: item, hint: series });
+    else if (item.Type === 'Season' && item.SeriesId) openDetails(item.SeriesId, { seasonId: item.Id, hint: series });
+    else openDetails(item.Id, { hint: { Name: item.Name, Type: item.Type, ProductionYear: item.ProductionYear } });
   }
 
   // ---------- Browse (Movies / TV) ----------
@@ -928,7 +933,18 @@
     restoreFocus('modal');
   }
 
-  async function openDetails(id, { focusEpisode, seasonId } = {}) {
+  // A card can point at a title Emby no longer has under that id (removed, replaced by a better file, re-identified,
+  // or the list was loaded hours ago). Looks for the same title by name; null if there isn't one.
+  async function findReplacement(hint) {
+    const type = hint?.Type === 'Series' ? 'Series' : hint?.Type === 'Movie' ? 'Movie' : '';
+    if (!hint?.Name || !type) return null;
+    const res = await getItems({ SearchTerm: hint.Name, IncludeItemTypes: type, Limit: 12 });
+    const same = (res?.Items || []).filter((i) => (i.Name || '').toLowerCase() === hint.Name.toLowerCase());
+    const best = same.find((i) => hint.ProductionYear && i.ProductionYear === hint.ProductionYear) || same[0];
+    return best ? getItem(best.Id) : null;
+  }
+
+  async function openDetails(id, { focusEpisode, seasonId, hint } = {}) {
     const token = ++modalToken;
     const modal = $('#modal'), content = $('#modal-content');
     if (modal.classList.contains('hidden')) rememberFocus('modal');
@@ -939,8 +955,24 @@
 
     let item;
     try { item = await getItem(id); } catch (e) {
-      if (token === modalToken) content.innerHTML = `<p class="empty-msg">Could not load details: ${esc(e.message)}</p>`;
-      return;
+      if (e.status === 404) {
+        // Not found. First try the same title under its new id, then say so and refresh the lists.
+        rowCache.clear();
+        try { item = await findReplacement(hint); } catch { /* none */ }
+        appLog.add('warn', item
+          ? `"${hint.Name}" had moved on the server (old id ${id}); found it again`
+          : `Details not found (404) for ${hint?.Type || 'item'} "${hint?.Name || '?'}", id ${id}, after ${state.views.length} libraries loaded`);
+      }
+      if (!item) {
+        if (token !== modalToken) return;
+        const gone = e.status === 404;
+        content.innerHTML = `<div class="m-body notice-body"><h2>${gone ? 'No longer available' : 'Could not load details'}</h2>
+          <p class="overview">${gone ? 'This title is no longer on the server, or has been replaced. Refresh the list to see what is there now.' : esc(e.message)}</p>
+          <div class="m-actions"><button class="btn btn-white" data-act="refresh" data-autofocus>${gone ? 'Refresh the list' : 'Close'}</button></div></div>`;
+        $('[data-act="refresh"]', content).addEventListener('click', () => { closeModal(); if (gone) route(); });
+        autoFocus($('[data-act="refresh"]', content));
+        return;
+      }
     }
     if (token !== modalToken) return;
 
@@ -6017,6 +6049,13 @@
     autoCheckForUpdate();
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden && Date.now() - updates.lastCheck > RECHECK_AFTER) autoCheckForUpdate();
+      // A TV left on the home screen for hours shows lists from when it was opened. Coming back after a long
+      // time, load them again (the titles may have been removed or replaced meanwhile).
+      if (!document.hidden && state.userId && Date.now() - lastRouteAt > 20 * 60000 && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && /^#\/(home|movies|tv|tvshows|series|)?$/.test(location.hash || '#/home')) {
+        rowCache.clear();
+        route();
+      }
     });
     loadRemoteConfig();
     applySubtitleStyle();
