@@ -838,6 +838,55 @@ button.guide-empty { cursor: pointer; border: 0; font: inherit; font-size: .85re
   .tm-ch-logo { width: 40px; height: 28px; }
   .tm-grid .guide-ch-name { font-size: .72rem; }
 }
+/* ---------- Live TV guide: polish ---------- */
+.tm-guide { gap: .75rem; }
+.tm-grid { --row: 46px; }
+.tm-info { position: relative; overflow: hidden; border-radius: 14px; padding: 1rem 1.3rem; gap: 1.4rem;
+  background: radial-gradient(120% 160% at 0% 0%, rgba(42,212,208,.13) 0%, rgba(42,212,208,0) 55%), linear-gradient(100deg, #17214a 0%, #0c1330 70%);
+  border: 1px solid rgba(255,255,255,.06); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.tm-info-logo { width: 150px; border-radius: 10px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.08); }
+.tm-info-ch { display: inline-flex; align-items: center; gap: .5rem; font-size: .75rem; letter-spacing: .09em; }
+.tm-info-ch::before { content: 'LIVE'; padding: .12rem .45rem; border-radius: 4px; background: var(--live, #e5484d); color: #fff; font-size: .62rem; letter-spacing: .1em; }
+.tm-info-title { font-size: 1.55rem; font-weight: 700; letter-spacing: -.01em; }
+.tm-info-bar { width: 180px; height: 4px; background: rgba(255,255,255,.14); }
+.tm-info-bar i { border-radius: 2px; background: linear-gradient(90deg, var(--accent), #7af0ec); }
+.tm-info-desc { color: #b9c1d9; }
+.tm-clock strong { font-size: 1.9rem; font-weight: 700; letter-spacing: -.02em; }
+.tm-clock span { text-transform: uppercase; letter-spacing: .08em; font-size: .7rem; }
+
+.tm-grid { border-radius: 14px; background: #0a1027; border: 1px solid rgba(255,255,255,.06); box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.tm-grid .guide-head { height: 42px; background: #0d1431; border-bottom: 1px solid #1d2752; }
+.tm-grid .guide-times { height: 42px; }
+.tm-grid .guide-times span { line-height: 42px; font-size: .78rem; font-weight: 600; letter-spacing: .04em; color: #98a2c3; border-left: 1px solid #1d2752; padding-left: .7rem; }
+.tm-group-btn { background: #0d1431; font-size: .8rem; letter-spacing: .04em; text-transform: uppercase; border-bottom: 1px solid #1d2752; }
+.tm-grid .guide-row { border-bottom: 0; padding: 2px 0; }
+.tm-grid .guide-row:nth-child(even) .guide-ch { background: #0c1330; }
+.tm-grid .guide-ch { background: #0e1533; border-right: 1px solid #1d2752; }
+.tm-grid .guide-ch-num { font-size: .8rem; color: #6f7aa0; font-variant-numeric: tabular-nums; }
+.tm-ch-logo { border-radius: 6px; background: rgba(255,255,255,.05); }
+.tm-grid .guide-ch-name { font-weight: 600; color: #e6e9f5; }
+.tm-grid .guide-prog, .tm-grid .guide-empty { top: 2px; bottom: 2px; border-radius: 8px; padding: 0 .8rem; background: #141d42; border: 1px solid rgba(255,255,255,.05); margin: 0 1px; }
+.tm-grid .guide-prog strong { font-size: .88rem; color: #f2f4fb; }
+.tm-grid .guide-prog span { font-size: .72rem; color: #8993b8; }
+.tm-grid .guide-prog.now { background: linear-gradient(90deg, #2c3b78 var(--done, 0%), #1b2655 var(--done, 0%)); border-color: rgba(42,212,208,.35); box-shadow: inset 3px 0 0 var(--accent); }
+.tm-grid .guide-prog.recording strong::before { content: '\25CF  '; color: var(--live, #e5484d); }
+.tm-grid .guide-prog:hover, .tm-grid .guide-ch:hover { background: #2b3a72; }
+.tm-now-line { width: 2px; opacity: .75; box-shadow: 0 0 6px rgba(42,212,208,.5); }
+.tm-now-line::before { content: ''; position: absolute; top: -1px; left: -4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px rgba(42,212,208,.8); }
+.kbd-nav .tm-grid .guide-prog:focus, .kbd-nav .tm-grid .guide-empty:focus, .kbd-nav .tm-grid .guide-ch:focus,
+.kbd-nav .tm-group-btn:focus { outline: none; background: var(--accent); color: #031317; border-color: transparent; box-shadow: 0 0 0 2px #fff inset; }
+.kbd-nav .tm-grid .guide-prog:focus strong { color: #031317; }
+.kbd-nav .tm-grid .guide-prog:focus span { color: #0b3b3b; }
+.tm-groups { border-radius: 14px; border: 1px solid rgba(255,255,255,.08); }
+.tm-group { border-radius: 8px; }
+@media (max-width: 700px) {
+  .tm-info { border-radius: 12px; padding: .8rem; }
+  .tm-grid { border-radius: 12px; }
+  .tm-info-title { font-size: 1.1rem; }
+  .tm-info-ch::before { display: none; }
+  .tm-info-logo { width: 72px; }
+  .tm-grid { --row: 50px; }
+}
 /* A compact page header on the Guide tab leaves more room for channels. */
 .iptv-page.guide-tab .page-head { margin-bottom: .6rem; }
 .iptv-page.guide-tab .page-head h1 { font-size: 1.6rem; }
