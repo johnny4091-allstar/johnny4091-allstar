@@ -1,3 +1,4 @@
+- New: a "Mark season as watched" (or unwatched) button above the episode list.
 - Fixed: episodes and films you finish are now always ticked as watched, and the episode list updates its check marks as soon as you come back from the player.
 - Improved: the Live TV guide has a cleaner, more polished look: a "LIVE" info card, rounded programme cells, a clearer "now" marker and easier-to-read times.
 - Fixed: opening a title that has been removed or replaced on the server no longer fails with "Could not load details". Aurora looks for it again by name, or offers to refresh the list. Lists also refresh when a TV that was left on the home screen for a long time is woken up.

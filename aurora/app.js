@@ -1100,6 +1100,7 @@
     container.innerHTML = `
       <div class="m-section-head">
         <h3>Episodes</h3>
+        <button class="btn btn-gray season-watched hidden" data-season-watched></button>
         ${seasons.length > 1
           ? `<select>${seasons.map((s) => `<option value="${esc(s.Id)}"${s.Id === selected.Id ? ' selected' : ''}>${esc(s.Name)}</option>`).join('')}</select>`
           : `<span style="color:var(--muted)">${esc(selected.Name)}</span>`}
@@ -1107,7 +1108,26 @@
       <div data-episodes></div>`;
     const list = $('[data-episodes]', container);
 
-    let shownSeason = selected.Id;
+    let shownSeason = selected.Id, shownEps = [];
+    const seasonBtn = $('[data-season-watched]', container);
+    const paintSeasonBtn = () => {
+      const all = shownEps.length > 0 && shownEps.every((e) => e.UserData?.Played);
+      seasonBtn.classList.toggle('hidden', !shownEps.length);
+      seasonBtn.textContent = all ? 'Mark season as unwatched' : 'Mark season as watched';
+      seasonBtn.dataset.on = all ? '' : '1';
+    };
+    seasonBtn.addEventListener('click', async () => {
+      const on = !!seasonBtn.dataset.on, todo = shownEps.filter((e) => !!e.UserData?.Played !== on);
+      seasonBtn.disabled = true;
+      let failed = 0;
+      for (let i = 0; i < todo.length; i += 4) {
+        await Promise.all(todo.slice(i, i + 4).map((e) => api(userPath(`/PlayedItems/${e.Id}`), { method: on ? 'POST' : 'DELETE' }).catch(() => { failed++; })));
+      }
+      seasonBtn.disabled = false;
+      rowCache.clear();
+      toast(failed ? `Could not update ${failed} of ${todo.length} episodes. Try again.` : on ? 'Season marked as watched' : 'Season marked as unwatched', 2500);
+      list.__reload();
+    });
     list.__reload = () => load(shownSeason, true);
     const load = async (seasonId, quiet) => {
       shownSeason = seasonId;
@@ -1115,6 +1135,8 @@
       try {
         const eps = (await api(`/Shows/${series.Id}/Episodes`, { params: { SeasonId: seasonId, UserId: state.userId, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items || [];
         if (token !== modalToken) return;
+        shownEps = eps;
+        paintSeasonBtn();
         list.innerHTML = '';
         if (!eps.length) list.innerHTML = '<p class="empty-msg">No episodes.</p>';
         for (const ep of eps) {
