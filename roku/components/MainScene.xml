@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="MainScene" extends="Scene">
+  <script type="text/brightscript" uri="MainScene.brs" />
+  <children>
+    <Rectangle id="bg" color="0x05081AFF" width="1280" height="720" />
+    <Label id="brand" text="A U R O R A" translation="[50,34]" color="0x2AD4D0FF" font="font:MediumBoldSystemFont" />
+    <Label id="crumb" translation="[400,40]" width="830" horizAlign="right" color="0xA9B2D0FF" font="font:SmallSystemFont" />
+
+    <!-- Sign in -->
+    <Group id="loginView" visible="false">
+      <Label text="Sign in to Aurora" translation="[400,170]" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+      <Button id="userBtn" text="Username" translation="[400,250]" minWidth="480" />
+      <Button id="passBtn" text="Password" translation="[400,320]" minWidth="480" />
+      <Button id="signInBtn" text="Sign in" translation="[400,400]" minWidth="480" />
+      <Label id="loginMsg" translation="[400,480]" width="480" wrap="true" color="0xFF8A8AFF" />
+    </Group>
+
+    <!-- Home: rows of posters -->
+    <Group id="homeView" visible="false">
+      <RowList id="rowList" translation="[0,100]" itemComponentName="TileItem" numRows="2" itemSize="[1280,260]"
+        rowItemSize="[[170,255]]" rowItemSpacing="[[16,0]]" rowLabelOffset="[[50,6]]" focusXOffset="[50]"
+        showRowLabel="[true]" rowFocusAnimationStyle="floatingFocus" itemSpacing="[0,50]" rowLabelColor="0xFFFFFFFF" />
+    </Group>
+
+    <!-- Movies, TV shows, search results -->
+    <Group id="gridView" visible="false">
+      <PosterGrid id="grid" translation="[50,100]" basePosterSize="[150,225]" numColumns="6" numRows="2"
+        itemSpacing="[22,40]" caption1NumLines="1" caption2NumLines="0" />
+      <Label id="gridMsg" translation="[50,200]" width="1180" color="0xA9B2D0FF" wrap="true" />
+    </Group>
+
+    <!-- A film or show -->
+    <Group id="detailsView" visible="false">
+      <Poster id="dPoster" translation="[50,100]" width="240" height="360" loadDisplayMode="scaleToFit" />
+      <Label id="dTitle" translation="[320,100]" width="900" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+      <Label id="dMeta" translation="[320,150]" width="900" color="0xA9B2D0FF" font="font:SmallSystemFont" />
+      <Label id="dOverview" translation="[320,185]" width="900" height="110" wrap="true" color="0xDDE2F2FF" font="font:SmallSystemFont" />
+      <ButtonGroup id="dButtons" translation="[320,310]" layoutDirection="horiz" horizAlignment="left" />
+      <LabelList id="seasonList" translation="[50,480]" itemSize="[240,40]" numRows="5" visible="false" />
+      <LabelList id="episodeList" translation="[320,380]" itemSize="[900,40]" numRows="8" visible="false" />
+      <Label id="dHint" translation="[320,690]" width="900" color="0x7F8AB0FF" font="font:SmallestSystemFont" visible="false"
+        text="Press * on an episode to mark it watched or unwatched. Press * on a season to mark the whole season." />
+    </Group>
+
+    <Video id="video" visible="false" width="1280" height="720" translation="[0,0]" />
+    <Label id="busy" text="Loading…" translation="[0,340]" width="1280" horizAlign="center" color="0xFFFFFFFF" font="font:MediumSystemFont" visible="false" />
+    <Timer id="progressTimer" repeat="true" duration="10" />
+  </children>
+</component>

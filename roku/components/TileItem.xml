@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="TileItem" extends="Group">
+  <script type="text/brightscript" uri="TileItem.brs" />
+  <interface>
+    <field id="itemContent" type="node" onChange="onContent" />
+    <field id="width" type="float" />
+    <field id="height" type="float" />
+    <field id="rowIndex" type="integer" />
+    <field id="rowHasFocus" type="boolean" />
+    <field id="itemHasFocus" type="boolean" />
+    <field id="focusPercent" type="float" />
+    <field id="rowListHasFocus" type="boolean" />
+  </interface>
+  <children>
+    <Rectangle id="bg" color="0x1B2550FF" width="170" height="255" />
+    <Poster id="poster" width="170" height="255" loadDisplayMode="scaleToZoom" />
+    <Rectangle id="shade" color="0x000000B0" width="170" height="52" translation="[0,203]" />
+    <Label id="title" width="160" height="48" translation="[5,205]" color="0xFFFFFFFF" wrap="true" maxLines="2" vertAlign="center" font="font:SmallestSystemFont" />
+  </children>
+</component>
