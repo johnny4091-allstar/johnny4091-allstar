@@ -1107,8 +1107,11 @@
       <div data-episodes></div>`;
     const list = $('[data-episodes]', container);
 
-    const load = async (seasonId) => {
-      list.innerHTML = '<div class="spinner"></div>';
+    let shownSeason = selected.Id;
+    list.__reload = () => load(shownSeason, true);
+    const load = async (seasonId, quiet) => {
+      shownSeason = seasonId;
+      if (!quiet) list.innerHTML = '<div class="spinner"></div>';
       try {
         const eps = (await api(`/Shows/${series.Id}/Episodes`, { params: { SeasonId: seasonId, UserId: state.userId, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items || [];
         if (token !== modalToken) return;
@@ -5171,6 +5174,19 @@
     });
   }
 
+  // Emby only ticks an item off when playback stops past its own threshold, and not always (skipping to the
+  // next episode in the credits, a stream that ends a little early). So when the viewer got to the end, say so.
+  async function markFinished(item, posSec, durSec, ended) {
+    if (!item || item.Type === 'TvChannel' || item.Type === 'Program') return;
+    const dur = durSec || (item.RunTimeTicks || 0) / TICKS_PER_SECOND;
+    const done = ended || (dur > 0 && (posSec >= dur * 0.9 || (dur > 600 && posSec >= dur - 120)));
+    rowCache.clear();
+    if (!done) return;
+    try {
+      await api(userPath(`/PlayedItems/${item.Id}`), { method: 'POST' });
+    } catch (e) { appLog.add('warn', `Could not mark "${item.Name}" as watched (${e.message})`); }
+  }
+
   // Emby saves the resume point (and Continue Watching) from these reports.
   function reportPlayback(path, eventName, { keepalive = false } = {}) {
     if (!player.item) return Promise.resolve();
@@ -5277,11 +5293,12 @@
     }
   }
 
-  window.auroraVodClosed = (r) => {
+  window.auroraVodClosed = async (r) => {
     store.del('ef.liveReturn');
     const s = vodSession;
     vodSession = null;
     r = r || {};
+    if (s?.item && r.ready) await markFinished(s.item, (r.positionMs || 0) / 1000, (r.durationMs || 0) / 1000, !!r.ended);
     if (s && r.watchedMs > 60000) noteStreamHealth(s, r);
     if (!s || !isPlayerOpen()) {
       if (isPlayerOpen()) closePlayer(); else route();
@@ -5446,7 +5463,9 @@
       const playSessionId = player.playSessionId;
       const wasTranscoding = player.playMethod === 'Transcode';
       const liveStreamId = player.liveStreamId;
+      const item = player.item, pos = video.currentTime || 0, ended = video.ended;
       if (!player.suspended) await reportPlayback('/Sessions/Playing/Stopped');
+      if (!player.isLive) await markFinished(item, pos, Number.isFinite(video.duration) ? video.duration : 0, ended);
       // Free the tuner.
       if (liveStreamId) api('/LiveTv/LiveStreams/Close', { method: 'POST', params: { LiveStreamId: liveStreamId } }).catch(() => {});
       if (wasTranscoding) {
@@ -5478,6 +5497,7 @@
     document.body.style.overflow = modalOpen ? 'hidden' : '';
     // Refresh what's on screen so "Continue Watching" and progress bars update.
     if (!modalOpen) route();
+    else $('[data-episodes]')?.__reload?.();
     restoreFocus('player');
     showWaitingUpdate();
   }
