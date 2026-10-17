@@ -1,3 +1,4 @@
+- Improved: in the Live TV guide it is now clear what the remote has selected. The programme is highlighted in white, its channel is lit up and its time is underlined.
 - New: a "Mark season as watched" (or unwatched) button above the episode list.
 - Fixed: episodes and films you finish are now always ticked as watched, and the episode list updates its check marks as soon as you come back from the player.
 - Improved: the Live TV guide has a cleaner, more polished look: a "LIVE" info card, rounded programme cells, a clearer "now" marker and easier-to-read times.

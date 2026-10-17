@@ -944,3 +944,16 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 
 .season-watched { padding: .5rem 1rem; font-size: .9rem; margin-left: auto; margin-right: .8rem; }
 .m-section-head h3 + .season-watched { margin-left: auto; }
+
+/* Where am I? The selected row, programme and time are all lit, like a satellite-TV guide. */
+.tm-sel-band { position: absolute; left: 0; bottom: 0; height: 4px; border-radius: 2px 2px 0 0; background: var(--accent); box-shadow: 0 0 10px rgba(42,212,208,.7); pointer-events: none; }
+.tm-grid .guide-row.sel .guide-ch { background: linear-gradient(90deg, #1f5f68, #17364f); box-shadow: inset 4px 0 0 var(--accent); }
+.tm-grid .guide-row.sel .guide-ch-name, .tm-grid .guide-row.sel .guide-ch-num { color: #fff; }
+.tm-grid .guide-row.sel { background: rgba(42,212,208,.07); }
+.kbd-nav .tm-grid .guide-prog:focus, .kbd-nav .tm-grid .guide-empty:focus {
+  background: #fff; color: #06121f; border-color: #fff; z-index: 2;
+  box-shadow: 0 0 0 3px var(--accent), 0 6px 22px rgba(0,0,0,.6); }
+.kbd-nav .tm-grid .guide-prog:focus strong { color: #06121f; }
+.kbd-nav .tm-grid .guide-prog:focus span { color: #35506b; }
+.kbd-nav .tm-grid .guide-ch:focus { background: var(--accent); color: #031317; box-shadow: 0 0 0 3px #fff inset; }
+.kbd-nav .tm-grid .guide-ch:focus .guide-ch-name, .kbd-nav .tm-grid .guide-ch:focus .guide-ch-num { color: #031317; }

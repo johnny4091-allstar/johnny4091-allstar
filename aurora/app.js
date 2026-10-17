@@ -1817,7 +1817,24 @@
       const el = e.target.closest('.guide-row');
       if (!el) return;
       showInfo(el.__guide.ch, e.target.__prog || nowOf(el));
+      markSelection(el, e.target.__prog);
     });
+    // Show where the remote is: the whole row, and the stretch of the time bar the programme covers.
+    let selRow = null;
+    const markSelection = (row, prog) => {
+      if (selRow && selRow !== row) selRow.classList.remove('sel');
+      row.classList.add('sel');
+      selRow = row;
+      let band = $('.tm-sel-band', root);
+      const times = $('.guide-times', root);
+      if (!band && times) { band = document.createElement('i'); band.className = 'tm-sel-band'; times.appendChild(band); }
+      if (!band) return;
+      if (!prog) { band.style.display = 'none'; return; }
+      const l = Math.max(0, xOf(Math.max(prog.start, start.getTime()))), r = Math.min(width, xOf(prog.end));
+      band.style.display = r > l ? '' : 'none';
+      band.style.left = `${l}px`;
+      band.style.width = `${Math.max(0, r - l)}px`;
+    };
     // Mouse and touch: hovering a show previews it too.
     root.addEventListener('mouseover', (e) => {
       if (nav.on) return;
