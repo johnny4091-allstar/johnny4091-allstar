@@ -24,6 +24,12 @@ sub init()
     m.username = ""
     m.password = ""
     m.playing = invalid
+    m.configUrls = [
+        "https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/main/aurora-config.json"
+        "https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/ccr-ab072e58-qfaibp/aurora-config.json"
+    ]
+    m.configTry = 0
+    checkForUpdate()
     start()
 end sub
 
@@ -82,6 +88,56 @@ end sub
 function answer(event as object) as object
     return event.getData()
 end function
+
+' ---------- Updates ----------
+' A sideloaded Roku app can't replace itself, so this tells the viewer when a newer version exists.
+' aurora-config.json in the repository carries "rokuBuild" (newest) and "rokuMinBuild" (oldest still allowed).
+
+function myBuild() as integer
+    return Val(CreateObject("roAppInfo").GetValue("build_version"))
+end function
+
+sub checkForUpdate()
+    if m.configTry >= m.configUrls.count() then return
+    task = CreateObject("roSGNode", "ApiTask")
+    task.request = { method: "GET", url: m.configUrls[m.configTry], headers: { "Accept": "application/json" }, body: "" }
+    task.observeField("response", "onConfig")
+    m.pending["config"] = task
+    task.control = "RUN"
+end sub
+
+sub onConfig(event as object)
+    r = answer(event)
+    cfg = invalid
+    if r.ok and r.json <> invalid and type(r.json) = "roAssociativeArray" then cfg = r.json
+    if cfg = invalid or (cfg.rokuBuild = invalid and cfg.rokuMinBuild = invalid)
+        m.configTry++
+        checkForUpdate()
+        return
+    end if
+    mine = myBuild()
+    if cfg.rokuMinBuild <> invalid and mine < cfg.rokuMinBuild
+        m.updateRequired = true
+        showUpdateDialog("This version of Aurora is out of date and can't be used any more. Install the newest version (build " + txt(cfg.rokuBuild) + ") and open Aurora again.")
+    else if cfg.rokuBuild <> invalid and mine < cfg.rokuBuild
+        showUpdateDialog("A newer version of Aurora is available (build " + txt(cfg.rokuBuild) + ", you have " + txt(mine) + "). Install it the same way you installed this one.")
+    end if
+end sub
+
+sub showUpdateDialog(message as string)
+    dlg = CreateObject("roSGNode", "Dialog")
+    dlg.title = "Update available"
+    dlg.message = message
+    dlg.buttons = ["OK"]
+    dlg.observeField("buttonSelected", "onUpdateDialog")
+    m.top.dialog = dlg
+end sub
+
+sub onUpdateDialog()
+    m.top.dialog.close = true
+    ' An update that is required keeps the app closed to everything else.
+    if m.updateRequired = true then showUpdateDialog("Please install the newest version of Aurora to carry on.")
+end sub
 
 ' ---------- Start up and sign in ----------
 

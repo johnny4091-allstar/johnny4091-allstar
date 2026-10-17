@@ -21,6 +21,17 @@ converted by the server when it can't.
 Sideloaded apps are for you and a few devices of your own. To give the app to customers it has to be published
 as a Roku channel, which needs a Roku developer account and Roku's certification (see below).
 
+## Updates
+
+A sideloaded Roku app cannot replace itself. Aurora instead checks `aurora-config.json` in the repository when it
+opens: `"rokuBuild"` is the newest build and `"rokuMinBuild"` (optional) the oldest still allowed. An older copy shows
+"A newer version is available"; below the minimum it shows an update message it cannot be dismissed from.
+When you ship a new version, raise `build_version` in `roku/manifest`, rebuild the zip, and set `rokuBuild` to match.
+
+For updates that install themselves, publish the app as a **non-certified channel** in a Roku developer account:
+Roku gives you a private link, customers add the channel from it, and every new version you upload reaches
+them automatically. That route needs no review but is limited to 20 non-certified channels per account.
+
 ## Build the zip yourself
 
 ```sh
