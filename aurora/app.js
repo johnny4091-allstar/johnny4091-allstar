@@ -3273,10 +3273,9 @@
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
-  // Phones and browsers only: TVs keep their own settings.
-  const playbackForced = () => !nativeApp?.isTv?.();
-  const lockedPref = (key) => playbackForced() && (key === 'liveBuffer' || key === 'player' || key === 'appLock') && playbackCfg[key] ? playbackCfg[key] : '';
-  const stallSeconds = () => (playbackForced() && Number(playbackCfg.stallSeconds)) || 0; // 0 = the player's own default
+  // Playback settings apply on phones, TVs and in a browser. (The app lock is phones only: see the Android app.)
+  const lockedPref = (key) => (key === 'liveBuffer' || key === 'player' || key === 'appLock') && playbackCfg[key] ? playbackCfg[key] : '';
+  const stallSeconds = () => Number(playbackCfg.stallSeconds) || 0; // 0 = the player's own default
   const getPref = (key) => lockedPref(key) || store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
@@ -4597,8 +4596,8 @@
       <small class="muted">${esc(help)}</small></label>`;
     body.innerHTML = `
       <section class="admin-card">
-        <h2>Playback on phones</h2>
-        <p class="muted"><strong>These apply on phones (and in a browser) only.</strong> TVs keep their own settings. What you choose here replaces the customer's own choice in Settings (the setting is greyed out for them).
+        <h2>Playback for everyone</h2>
+        <p class="muted"><strong>These apply on phones and TVs.</strong> What you choose here replaces the customer's own choice in Settings (the setting is greyed out for them).
           "Customer's choice" leaves it to them. It reaches each device the next time Aurora opens or checks for updates.
           Aurora plays Live TV straight from your provider, and Emby converts movies and shows, so these are the settings that matter for smoothness.</p>
         ${sel('liveBuffer', 'Live TV buffer', 'How much of a channel loads before it plays, in the Android app and TV app. Large rides out slow internet and bursts best; Small changes channel fastest.',
@@ -4931,7 +4930,7 @@
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
   const speedLabel = (r) => (r === 1 ? 'Normal' : `${r}x`);
   const ownBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
-  const qualityCap = () => (playbackForced() ? Number(playbackCfg.maxQuality) || 0 : 0); // set in Admin → Playback; 0 = no cap
+  const qualityCap = () => (Number(playbackCfg.maxQuality) || 0); // set in Admin → Playback; 0 = no cap
   const maxBitrate = () => (qualityCap() ? Math.min(ownBitrate(), qualityCap()) : ownBitrate());
   // "Auto" stays (it measures, within the cap); fixed choices above the cap are hidden.
   const qualityChoices = () => QUALITY_OPTIONS.filter((q, i) => i === 0 || !qualityCap() || q.bitrate <= qualityCap());
