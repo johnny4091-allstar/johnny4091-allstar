@@ -1,3 +1,4 @@
+- New: Aurora can now set Live TV buffer, quality limit and video player for everyone from the Admin area.
 - Security: tighter checks on app updates, and the app no longer allows its data to be copied out through phone backups.
 - Improved: in the Live TV guide it is now clear what the remote has selected. The programme is highlighted in white, its channel is lit up and its time is underlined.
 - New: a "Mark season as watched" (or unwatched) button above the episode list.

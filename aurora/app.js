@@ -3028,6 +3028,11 @@
       }
       applyRequiredUpdate();
     } catch { /* keep what's known */ }
+    try {
+      const pb = await readAuroraPref(PLAYBACK_PREFS);
+      playbackCfg = pb && typeof pb === 'object' ? pb : {};
+      store.set('ef.playbackCfg', JSON.stringify(playbackCfg));
+    } catch { /* keep what's known */ }
   }
 
   // ----- Account limits: devices per account and an expiry date -----
@@ -3262,7 +3267,11 @@
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
   const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium' };
-  const getPref = (key) => store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
+  // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
+  const PLAYBACK_PREFS = 'aurora-playback';
+  let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
+  const lockedPref = (key) => (key === 'liveBuffer' || key === 'player') && playbackCfg[key] ? playbackCfg[key] : '';
+  const getPref = (key) => lockedPref(key) || store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
   const SUB_SIZES = { s: ['Small', '1.2rem'], m: ['Medium', '1.6rem'], l: ['Large', '2.2rem'], xl: ['Extra large', '2.8rem'] };
@@ -3284,8 +3293,8 @@
     root.setProperty('--cue-bg', (SUB_BACKGROUNDS[getPref('subBg')] || SUB_BACKGROUNDS.semi)[1]);
   }
 
-  const selectHtml = (name, options, value) =>
-    `<select data-setting="${name}">${options.map(([v, label]) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+  const selectHtml = (name, options, value, disabled = false) =>
+    `<select data-setting="${name}"${disabled ? ' disabled' : ''}>${options.map(([v, label]) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
   const settingRow = (label, help, control) =>
     `<div class="setting-row"><div class="setting-label"><strong>${esc(label)}</strong>${help ? `<span>${esc(help)}</span>` : ''}</div>${control}</div>`;
 
@@ -3317,9 +3326,9 @@
         ${settingRow('Sound when Aurora opens', 'Play the Aurora intro sound with the opening animation.', selectHtml('splashSound', [['on', 'On'], ['off', 'Off']], getPref('splashSound')))}
         ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
         ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
-        ${nativeApp?.playVod ? settingRow('Video player', 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'))) : ''}
-        ${nativeApp?.playLive ? settingRow('Live TV buffer', 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'))) : ''}
-        ${settingRow('Streaming quality', 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', QUALITY_OPTIONS.map((q) => [q.bitrate, q.label]), maxBitrate()))}
+        ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
+        ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
+        ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
       <section class="settings-section feedback-section">
         <h2>Help &amp; feedback <small>This device</small></h2>
@@ -3550,7 +3559,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3592,7 +3601,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
   }
 
@@ -4483,7 +4492,7 @@
       }
       // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
       try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }
-      for (const id of [REQ_PREFS.id, APP_PREFS]) {
+      for (const id of [REQ_PREFS.id, APP_PREFS, PLAYBACK_PREFS]) {
         try { const v = await readAuroraPref(id); if (v) await writeAuroraPref(id, user.Id, v); } catch { /* not set */ }
       }
       if (problems.length) {
@@ -4567,6 +4576,54 @@
       save({ forceUpdateAfter: n, t: Date.now() }, n ? `The app now locks at ${n} ${n === 1 ? 'update' : 'updates'} behind.` : 'The update lock is off.');
     });
     $('[data-reset]', body)?.addEventListener('click', () => save(null, 'Using the settings file again.'));
+  }
+
+
+  // ----- Admin → Playback: settings for every customer -----
+  // Stored in each account's "aurora-playback" display preferences (the same way as the update lock) and read at
+  // sign-in. A value set here replaces the viewer's own choice in Settings; "Customer's choice" leaves it to them.
+  async function adminPlayback(body, isCurrent) {
+    const cfg = (await readAuroraPref(PLAYBACK_PREFS).catch(() => null)) || {};
+    if (!isCurrent()) return;
+    const sel = (id, label, help, options, value) => `<label class="admin-field"><span>${esc(label)}</span>
+      <select data-pb="${id}">${options.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(value ?? '') ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <small class="muted">${esc(help)}</small></label>`;
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Playback for everyone</h2>
+        <p class="muted">What you choose here replaces the customer's own choice in Settings (the setting is greyed out for them).
+          "Customer's choice" leaves it to them. It reaches each device the next time Aurora opens or checks for updates.
+          Aurora plays Live TV straight from your provider, and Emby converts movies and shows, so these are the settings that matter for smoothness.</p>
+        ${sel('liveBuffer', 'Live TV buffer', 'How much of a channel loads before it plays, in the Android app and TV app. Large rides out slow internet and bursts best; Small changes channel fastest.',
+          [['', "Customer's choice"], ['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest)']], cfg.liveBuffer)}
+        ${sel('maxQuality', 'Streaming quality limit', 'The highest quality movies and shows may use, whatever the customer picks. Lowering it saves your server and upload bandwidth.',
+          [[0, 'No limit'], ...QUALITY_OPTIONS.slice(1).map((q) => [q.bitrate, q.label])], Number(cfg.maxQuality) || 0)}
+        ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
+          [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
+        <div class="m-actions">
+          <button class="btn btn-red" data-save>Save for everyone</button>
+          <button class="btn btn-gray" data-reset>Back to customer's choice</button>
+        </div>
+        <div class="live-result" data-result></div>
+      </section>`;
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const save = async (value, done) => {
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        const r = await writeAuroraPrefForAll(PLAYBACK_PREFS, value);
+        await refreshAppConfig();
+        if (!isCurrent()) return;
+        say(`${done} Saved for ${r.saved} of ${r.total} accounts${r.failed ? ` (${r.failed} failed; try again)` : ''}.`, r.failed ? 'bad' : 'good');
+        setTimeout(() => { if (isCurrent()) adminPlayback(body, isCurrent); }, 1500);
+      } catch (e) { say("Couldn't save: " + esc(adminError(e)), 'bad'); }
+    };
+    const pick = (id) => $(`[data-pb="${id}"]`, body).value;
+    $('[data-save]', body).addEventListener('click', () => {
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, player: pick('player'), t: Date.now() };
+      save(value, 'Playback settings saved.');
+    });
+    $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
   }
 
   async function adminDevices(body, isCurrent) {
@@ -4862,8 +4919,13 @@
   ];
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
   const speedLabel = (r) => (r === 1 ? 'Normal' : `${r}x`);
-  const maxBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
-  const autoQuality = () => maxBitrate() === QUALITY_OPTIONS[0].bitrate;
+  const ownBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
+  const qualityCap = () => Number(playbackCfg.maxQuality) || 0; // set in Admin → Playback; 0 = no cap
+  const maxBitrate = () => (qualityCap() ? Math.min(ownBitrate(), qualityCap()) : ownBitrate());
+  // "Auto" stays (it measures, within the cap); fixed choices above the cap are hidden.
+  const qualityChoices = () => QUALITY_OPTIONS.filter((q, i) => i === 0 || !qualityCap() || q.bitrate <= qualityCap());
+  const shownQuality = () => (autoQuality() || !qualityCap() ? ownBitrate() : Math.min(ownBitrate(), qualityCap()));
+  const autoQuality = () => ownBitrate() === QUALITY_OPTIONS[0].bitrate;
 
   // "Auto" quality: measure the connection to the Emby server (as Emby's own apps do) so a film that's bigger
   // than the connection can carry gets sized down by Emby instead of stopping to buffer every few seconds.
@@ -4892,7 +4954,8 @@
   }
   async function playbackBitrate() {
     if (!autoQuality()) return maxBitrate();
-    if (measuredBitrate && Date.now() - measuredBitrate.t < 20 * 60000) return measuredBitrate.bps;
+    const capped = (v) => (qualityCap() ? Math.min(v, qualityCap()) : v);
+    if (measuredBitrate && Date.now() - measuredBitrate.t < 20 * 60000) return capped(measuredBitrate.bps);
     try {
       let r = await measureBitrate(1000000);
       // A quick first test on a fast line mostly measures the delay; a bigger one gives the real speed.
@@ -4901,7 +4964,7 @@
       // A slow answer is kept only briefly: it may have been a hiccup, and a stricter limit costs picture quality.
       measuredBitrate = { bps: use, t: Date.now() - (r.complete ? 0 : 15 * 60000) };
       appLog.add(r.bps < 4000000 ? 'warn' : 'info', `Connection to the server: ${(r.bps / 1e6).toFixed(1)} Mbps${r.complete ? '' : ' (slow: the test did not finish)'}; streaming up to ${(use / 1e6).toFixed(1)} Mbps`);
-      return use;
+      return capped(use);
     } catch (e) {
       // This Emby has no speed test: keep the old behaviour (no limit beyond the Streaming quality setting).
       return maxBitrate();
@@ -5623,7 +5686,7 @@
           ${SPEED_OPTIONS.map((r) => opt('speed', r, speedLabel(r), r === player.speed)).join('')}
         </div>`}
         <div class="tracks-col"><h4>Resolution</h4>
-          ${QUALITY_OPTIONS.map((q) => opt('quality', q.bitrate, q.label, q.bitrate === maxBitrate())).join('')}
+          ${qualityChoices().map((q) => opt('quality', q.bitrate, q.label, q.bitrate === shownQuality())).join('')}
           ${nowPlaying}
         </div>
       </div>`;
