@@ -22,7 +22,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -107,7 +107,9 @@ function embyRequest(method, apiPath, { token = cfg.apiKey, body, query } = {}) 
       headers: {
         Accept: 'application/json',
         'X-Emby-Token': token,
-        'X-Emby-Authorization': `Emby Client="Aurora Guard", Device="Emby server", DeviceId="aurora-guard", Version="${VERSION}"`,
+        // Only the guard's own key carries the guard's identity. A customer's token is sent as it is: some Emby
+        // versions refuse a token that arrives with another device's name on it ("Not signed in" for everyone).
+        ...(token === cfg.apiKey ? { 'X-Emby-Authorization': `Emby Client="Aurora Guard", Device="Emby server", DeviceId="aurora-guard", Version="${VERSION}"` } : {}),
         ...(data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {}),
       },
     }, (res) => {
@@ -184,8 +186,20 @@ async function lookupUser(token, userId) {
       if (e.status === 404 || e.status === 400) return emby('GET', `/Users/${userId}`, { token });
       throw e;
     });
-    return me && me.Id === userId ? me : null;
-  } catch { return null; }
+    if (me && String(me.Id).toLowerCase() === String(userId).toLowerCase()) return me;
+    noteLookupFailure(`Emby answered, but for a different account (${me && me.Id}) than the one asked about (${userId})`);
+    return null;
+  } catch (e) {
+    noteLookupFailure(`Emby refused the token: ${e.message}`);
+    return null;
+  }
+}
+// Why a customer's sign-in wasn't recognised, in guard.log (at most once a minute, so it never floods).
+let lastLookupNote = 0;
+function noteLookupFailure(why) {
+  if (Date.now() - lastLookupNote < 60000) return;
+  lastLookupNote = Date.now();
+  log('Not signed in (/check):', why);
 }
 
 // ---------- Enforcement ----------

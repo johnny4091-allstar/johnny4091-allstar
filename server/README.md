@@ -100,6 +100,15 @@ To test the settings without installing anything: `node --openssl-legacy-provide
 It prints `OK`, `WARNING` or `PROBLEM` lines and exits with 0 (fine), 1 (fix something) or 2 (only a warning:
 Emby couldn't be reached).
 
+## "Device limit check skipped: Not signed in"
+
+That line in a customer's app log means the guard answered `/check` with "not signed in": it could not confirm the
+customer's token with Emby. The check is only a courtesy message, so the customer is not affected, and the guard still
+enforces on the server. `data\guard.log` now says why (`Not signed in (/check): ...`, at most once a minute): Emby refused
+the token (the device was signed out, or the token is old), or answered for a different account. From version 1.0.1
+the guard sends a customer's token to Emby without its own device name, which some Emby versions refused. Update the
+PC's copy of `aurora-guard.js` and restart the task to get it.
+
 ## Stopping the guard
 
 In PowerShell as Administrator:

@@ -3117,7 +3117,11 @@
       r = await guard('/check', { quick: true, params: { userId: user.Id, deviceId: state.deviceId, phase } });
     } catch (e) {
       // The guard is down or unreachable: don't lock people out over a message. It still enforces when it's back.
-      console.warn('Device limit check skipped:', e.message);
+      // Not a fault worth reporting: the check is a courtesy message, and the server enforces the limit anyway.
+      if (Date.now() - (access.lastNote || 0) > 10 * 60000) {
+        access.lastNote = Date.now();
+        appLog.add('info', `Device limit check skipped: ${e.status === 401 ? 'the guard did not recognise this sign-in' : e.message}`);
+      }
       access.okUntil = Date.now() + 120000;
       return null;
     }
