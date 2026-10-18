@@ -38,11 +38,22 @@ jobs:
           AURORA_KEYSTORE_BASE64: ${{ secrets.AURORA_KEYSTORE_BASE64 }}
           AURORA_KEYSTORE_PASSWORD: ${{ secrets.AURORA_KEYSTORE_PASSWORD }}
         run: |
-          if [ -z "$AURORA_KEYSTORE_BASE64" ] || [ -z "$AURORA_KEYSTORE_PASSWORD" ]; then
-            echo "::error::The signing secrets AURORA_KEYSTORE_BASE64 and AURORA_KEYSTORE_PASSWORD are not set. See android/SIGNING.md."
+          missing=""
+          if [ -z "$AURORA_KEYSTORE_BASE64" ]; then missing="$missing AURORA_KEYSTORE_BASE64"; fi
+          if [ -z "$AURORA_KEYSTORE_PASSWORD" ]; then missing="$missing AURORA_KEYSTORE_PASSWORD"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::Missing or empty repository secret(s):$missing. Add them under Settings > Secrets and variables > Actions > Repository secrets (not Environment or Dependabot secrets), with exactly these names. See android/SIGNING.md."
             exit 1
           fi
-          printf '%s' "$AURORA_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/aurora-release.keystore"
+          if ! printf '%s' "$AURORA_KEYSTORE_BASE64" | tr -d ' \n\r' | base64 -d > "$RUNNER_TEMP/aurora-release.keystore"; then
+            echo "::error::AURORA_KEYSTORE_BASE64 is not valid Base64. Paste the whole contents of KEYSTORE_BASE64.txt as one line."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$RUNNER_TEMP/aurora-release.keystore" -storepass "$AURORA_KEYSTORE_PASSWORD" -alias aurora > /dev/null 2>&1; then
+            echo "::error::The keystore would not open with AURORA_KEYSTORE_PASSWORD (or it has no key named aurora). Check that both secrets came from the same files."
+            exit 1
+          fi
+          echo "Signing key is present and opens with the password."
 
       - name: Build APK
         working-directory: android
