@@ -1,3 +1,4 @@
+- Fixed: the tabs in the Admin area now stay on the tab you chose instead of sliding back to the first one.
 - New (phones): "Lock Aurora" in Settings asks for your phone PIN, pattern or fingerprint when Aurora opens.
 - New: Aurora can set Live TV buffer, quality limit, video player and stall reconnect time for phones and TVs from the Admin area.
 - Security: tighter checks on app updates, and the app no longer allows its data to be copied out through phone backups.

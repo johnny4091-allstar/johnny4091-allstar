@@ -3613,6 +3613,9 @@
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
     ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
+    // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
+    const bar = $('.tab-bar', page), active = $('.tab.active', bar);
+    if (bar && active) bar.scrollLeft = Math.max(0, active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
   }
 
   const statTile = (label, value, note = '', cls = '') =>

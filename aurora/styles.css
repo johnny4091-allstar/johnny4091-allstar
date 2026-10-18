@@ -957,3 +957,6 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .kbd-nav .tm-grid .guide-prog:focus span { color: #35506b; }
 .kbd-nav .tm-grid .guide-ch:focus { background: var(--accent); color: #031317; box-shadow: 0 0 0 3px #fff inset; }
 .kbd-nav .tm-grid .guide-ch:focus .guide-ch-name, .kbd-nav .tm-grid .guide-ch:focus .guide-ch-num { color: #031317; }
+
+/* Admin has many tabs: wrap them on wide screens so all are visible; scroll on a phone. */
+@media (min-width: 701px) { .admin-page .tab-bar { flex-wrap: wrap; overflow-x: visible; } }
