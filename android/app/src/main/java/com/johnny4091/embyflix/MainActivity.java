@@ -65,6 +65,8 @@ import java.util.Map;
 /** Hosts the Aurora web app (bundled in assets/) in a full-screen WebView. */
 public class MainActivity extends Activity {
     private static final String APP_HOST = "appassets.androidplatform.net";
+    /** Updates come only from this repository's releases. */
+    private static final String UPDATE_URL_PREFIX = "https://github.com/johnny4091-allstar/johnny4091-allstar/releases/download/";
     private static final String START_URL = "https://" + APP_HOST + "/assets/index.html";
 
     private FrameLayout root;
@@ -235,6 +237,9 @@ public class MainActivity extends Activity {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        // The app is only ever loaded from its own bundled address; nothing needs the phone's files.
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
         settings.setMediaPlaybackRequiresUserGesture(false);
         // Allow http:// Emby servers even though the app itself is served from https://.
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
@@ -478,6 +483,11 @@ public class MainActivity extends Activity {
             conn.setReadTimeout(30000);
             int status = conn.getResponseCode();
             if (status >= 400) throw new IOException("HTTP " + status);
+            // GitHub hands the file over from its own download servers; anything else is refused.
+            String host = conn.getURL().getHost();
+            if (!"https".equals(conn.getURL().getProtocol()) || !(host.equals("github.com") || host.endsWith(".github.com") || host.endsWith(".githubusercontent.com"))) {
+                throw new IOException("the download came from an unexpected place");
+            }
             long total = conn.getContentLengthLong(), done = 0;
             int lastPct = -1;
             try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
@@ -577,8 +587,8 @@ public class MainActivity extends Activity {
             }
         };
         IntentFilter filter = new IntentFilter(ACTION_INSTALL_STATUS);
-        if (Build.VERSION.SDK_INT >= 33) registerReceiver(installReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
-        else registerReceiver(installReceiver, filter);
+        // Not exported on any Android version: other apps must not be able to send it a made-up result.
+        androidx.core.content.ContextCompat.registerReceiver(this, installReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     /** The older route: open the file with the system installer. */
@@ -817,7 +827,7 @@ public class MainActivity extends Activity {
         /** Downloads the APK at url and opens the system installer. Progress goes to window.auroraUpdate(). */
         @JavascriptInterface
         public void installUpdate(String url) {
-            if (url == null || !url.startsWith("https://github.com/")) {
+            if (url == null || !url.startsWith(UPDATE_URL_PREFIX)) {
                 notifyUpdate("error", "unexpected download address");
                 return;
             }
