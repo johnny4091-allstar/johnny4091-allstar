@@ -31,9 +31,30 @@ jobs:
       - name: Set version
         run: echo "VERSION_CODE=$((${{ github.run_number }} + 100))" >> "$GITHUB_ENV"
 
+      # The signing key lives only in GitHub secrets (Settings → Secrets and variables → Actions), never in the repo.
+      # See android/SIGNING.md. Without them the build stops here, so nothing is ever signed with another key.
+      - name: Prepare signing key
+        env:
+          AURORA_KEYSTORE_BASE64: ${{ secrets.AURORA_KEYSTORE_BASE64 }}
+          AURORA_KEYSTORE_PASSWORD: ${{ secrets.AURORA_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$AURORA_KEYSTORE_BASE64" ] || [ -z "$AURORA_KEYSTORE_PASSWORD" ]; then
+            echo "::error::The signing secrets AURORA_KEYSTORE_BASE64 and AURORA_KEYSTORE_PASSWORD are not set. See android/SIGNING.md."
+            exit 1
+          fi
+          printf '%s' "$AURORA_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/aurora-release.keystore"
+
       - name: Build APK
         working-directory: android
+        env:
+          AURORA_KEYSTORE_FILE: ${{ runner.temp }}/aurora-release.keystore
+          AURORA_KEYSTORE_PASSWORD: ${{ secrets.AURORA_KEYSTORE_PASSWORD }}
+          AURORA_KEY_ALIAS: aurora
         run: gradle assembleRelease -PversionCode=${{ env.VERSION_CODE }} --stacktrace
+
+      - name: Remove signing key from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/aurora-release.keystore"
 
       - name: Rename APK
         run: cp android/app/build/outputs/apk/release/app-release.apk Aurora.apk

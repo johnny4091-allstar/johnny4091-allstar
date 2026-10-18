@@ -74,7 +74,7 @@ installing from unknown sources when asked.
 
 To build it yourself, install the Android SDK and Gradle 8.x, then run `gradle assembleRelease` in `android/`.
 
-The signing key (`android/embyflix.keystore`) is in this public repo so every build can update the last one.
+The release signing key is NOT in this repo: it is kept in GitHub secrets (see `android/SIGNING.md`). Every build must be signed with the same key so it can update the last one.
 That's fine for a personal app, but anyone could sign an app that installs over it, so only install Aurora
 APKs from this repo's Releases page.
 

@@ -15,6 +15,24 @@ def copyWebApp = tasks.register('copyWebApp', Sync) {
 
 def appVersionCode = (findProperty('versionCode') ?: '1') as int
 
+def signingProps = new Properties()
+def signingPropsFile = rootProject.file('keystore.properties')
+if (signingPropsFile.exists()) signingPropsFile.withInputStream { signingProps.load(it) }
+def signingSetting = { String envName, String propName -> System.getenv(envName) ?: signingProps.getProperty(propName) }
+def releaseStoreFile = signingSetting('AURORA_KEYSTORE_FILE', 'storeFile')
+def releaseStorePassword = signingSetting('AURORA_KEYSTORE_PASSWORD', 'storePassword')
+def releaseKeyAlias = signingSetting('AURORA_KEY_ALIAS', 'keyAlias') ?: 'aurora'
+// PKCS12 keystores use one password for the store and the key.
+def releaseKeyPassword = signingSetting('AURORA_KEY_PASSWORD', 'keyPassword') ?: releaseStorePassword
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && rootProject.file(releaseStoreFile).exists()
+
+// A release build with no key must fail loudly, never fall back to some other key.
+gradle.taskGraph.whenReady { graph ->
+    if (!hasReleaseSigning && graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }) {
+        throw new GradleException('No release signing key. Set AURORA_KEYSTORE_FILE and AURORA_KEYSTORE_PASSWORD, or create android/keystore.properties. See android/SIGNING.md.')
+    }
+}
+
 android {
     namespace 'com.johnny4091.embyflix'
     compileSdk 35
@@ -28,24 +46,26 @@ android {
         versionName "1.2.${appVersionCode}"
     }
 
+    // The release key is NEVER in the repository. It comes from the environment (the build workflow sets these from
+    // GitHub secrets) or from android/keystore.properties (a gitignored file for building on your own computer).
+    // See android/SIGNING.md.
     signingConfigs {
-        release {
-            // A fixed key so each new APK installs as an update over the previous one.
-            storeFile file('../embyflix.keystore')
-            storePassword 'embyflix'
-            keyAlias 'embyflix'
-            keyPassword 'embyflix'
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
         }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig signingConfigs.release
+            if (hasReleaseSigning) signingConfig signingConfigs.release
         }
-        debug {
-            signingConfig signingConfigs.release
-        }
+        // Debug builds use Android's own throw-away debug key, never the release key.
     }
 
     sourceSets {

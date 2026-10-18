@@ -1,3 +1,4 @@
+- IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.
 - Fixed: the tabs in the Admin area now stay on the tab you chose instead of sliding back to the first one.
 - New (phones): "Lock Aurora" in Settings asks for your phone PIN, pattern or fingerprint when Aurora opens.
 - New: Aurora can set Live TV buffer, quality limit, video player and stall reconnect time for phones and TVs from the Admin area.
