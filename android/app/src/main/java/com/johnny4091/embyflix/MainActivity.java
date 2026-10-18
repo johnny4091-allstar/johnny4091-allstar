@@ -2,6 +2,7 @@ package com.johnny4091.embyflix;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.KeyguardManager;
 import android.app.UiModeManager;
 import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
@@ -137,12 +138,86 @@ public class MainActivity extends Activity {
 
     private static final int REQUEST_LIVE = 7;
     private static final int REQUEST_VOD = 8;
+    private static final int REQUEST_UNLOCK = 9;
+
+    // ---- App lock (phones only): the phone's own PIN, pattern or fingerprint to open Aurora ----
+    private static final long LOCK_AFTER_MS = 60_000;
+    private boolean appLockOn, locked, unlocking, inPlayer, tvDevice;
+    private long leftAt;
+    private View lockView;
+
+    private boolean deviceSecure() {
+        KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        return km != null && km.isDeviceSecure();
+    }
+
+    /** Covers the app and asks for the phone's lock. Never on a TV, and not if the phone has no screen lock. */
+    private void lockNow() {
+        if (tvDevice || !appLockOn || locked || !deviceSecure()) return;
+        locked = true;
+        if (lockView == null) {
+            FrameLayout cover = new FrameLayout(this);
+            cover.setBackgroundColor(Color.parseColor("#070C1C"));
+            android.widget.LinearLayout col = new android.widget.LinearLayout(this);
+            col.setOrientation(android.widget.LinearLayout.VERTICAL);
+            col.setGravity(android.view.Gravity.CENTER);
+            android.widget.TextView title = new android.widget.TextView(this);
+            title.setText("Aurora is locked");
+            title.setTextColor(Color.WHITE);
+            title.setTextSize(22);
+            android.widget.TextView button = new android.widget.TextView(this);
+            button.setText("Unlock");
+            button.setTextColor(Color.parseColor("#031317"));
+            button.setBackgroundColor(Color.parseColor("#2AD4D0"));
+            button.setTextSize(18);
+            button.setPadding(80, 36, 80, 36);
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = 60;
+            button.setOnClickListener(v -> requestUnlock());
+            col.addView(title);
+            col.addView(button, lp);
+            cover.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            cover.setClickable(true); // nothing underneath can be touched
+            lockView = cover;
+        }
+        if (lockView.getParent() == null) {
+            root.addView(lockView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        requestUnlock();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void requestUnlock() {
+        if (unlocking) return;
+        KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        Intent confirm = km == null ? null : km.createConfirmDeviceCredentialIntent("Unlock Aurora", "Confirm it's you to open Aurora.");
+        if (confirm == null) { unlock(); return; }
+        unlocking = true;
+        try {
+            startActivityForResult(confirm, REQUEST_UNLOCK);
+        } catch (Exception e) {
+            unlocking = false;
+        }
+    }
+
+    private void unlock() {
+        locked = false;
+        leftAt = 0;
+        if (lockView != null && lockView.getParent() != null) root.removeView(lockView);
+    }
 
     /** Tells the page which channel was last watched when the native live player closes. */
     @SuppressWarnings("deprecation")
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_UNLOCK) {
+            unlocking = false;
+            if (resultCode == RESULT_OK) unlock();
+            return;
+        }
+        if (requestCode == REQUEST_VOD || requestCode == REQUEST_LIVE) inPlayer = false;
         if (requestCode == REQUEST_VOD) {
             String result = data == null ? null : data.getStringExtra(VodPlayerActivity.RESULT_JSON);
             webView.evaluateJavascript("window.auroraVodClosed && window.auroraVodClosed("
@@ -204,6 +279,8 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashRecorder.install(this);
+        tvDevice = detectTv();
+        appLockOn = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("appLock", false);
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#070C1C"));
@@ -215,6 +292,7 @@ public class MainActivity extends Activity {
         } else {
             webView.loadUrl(START_URL);
         }
+        lockNow();
     }
 
     /** Builds the WebView that shows the app. Also used to start over if Android stops the WebView's engine. */
@@ -416,6 +494,7 @@ public class MainActivity extends Activity {
     @SuppressWarnings("deprecation")
     @Override
     public void onBackPressed() {
+        if (locked) { moveTaskToBack(true); return; }
         if (customView != null) {
             exitFullscreen();
             return;
@@ -438,6 +517,19 @@ public class MainActivity extends Activity {
         // Save the playback position before the WebView stops running the page.
         webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
         webView.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (!unlocking && !inPlayer) leftAt = System.currentTimeMillis();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        // Away for a while (not just watching something in the player): ask again.
+        if (!locked && !unlocking && !inPlayer && leftAt > 0 && System.currentTimeMillis() - leftAt > LOCK_AFTER_MS) lockNow();
     }
 
     @Override
@@ -722,6 +814,7 @@ public class MainActivity extends Activity {
         public void playLive(String channelsJson, int index, String group, String userAgent, String reportJson) {
             runOnUiThread(() -> {
                 LivePlayerActivity.pendingChannels = channelsJson;
+                inPlayer = true;
                 Intent intent = new Intent(MainActivity.this, LivePlayerActivity.class);
                 intent.putExtra(LivePlayerActivity.EXTRA_INDEX, index);
                 intent.putExtra(LivePlayerActivity.EXTRA_GROUP, group);
@@ -735,6 +828,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void playVod(String specJson) {
             runOnUiThread(() -> {
+                inPlayer = true;
                 Intent intent = new Intent(MainActivity.this, VodPlayerActivity.class);
                 intent.putExtra(VodPlayerActivity.EXTRA_SPEC, specJson);
                 startActivityForResult(intent, REQUEST_VOD);
@@ -841,6 +935,20 @@ public class MainActivity extends Activity {
                 if (downloadedApk != null && downloadedApk.exists()) MainActivity.this.openInstaller(downloadedApk);
                 else notifyUpdate("error", "the download is gone; press Update now again");
             });
+        }
+
+        /** Phones: whether the phone has a screen lock Aurora can ask for. Always false on a TV. */
+        @JavascriptInterface
+        public boolean canAppLock() {
+            return !tv && deviceSecure();
+        }
+
+        /** Turns the start-up lock on or off. Ignored on a TV. */
+        @JavascriptInterface
+        public void setAppLock(boolean on) {
+            if (tv) return;
+            appLockOn = on;
+            getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("appLock", on).apply();
         }
 
         /** Opens the on-screen keyboard for the focused text field (needed with a TV remote). */

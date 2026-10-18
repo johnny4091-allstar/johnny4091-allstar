@@ -3014,6 +3014,8 @@
   // forceUpdateAfter in aurora-config.json. Read at sign-in and before each update check, so a locked device
   // picks up a change by itself.
   const APP_PREFS = 'aurora-app';
+  // The Android app asks for the phone's lock when it opens; it needs to know this before the page loads.
+  const syncAppLock = () => { try { nativeApp?.setAppLock?.(getPref('appLock') === 'on'); } catch { /* not the Android app */ } };
   async function refreshAppConfig() {
     if (!state.userId || !state.apiKey) return;
     try {
@@ -3033,6 +3035,7 @@
       playbackCfg = pb && typeof pb === 'object' ? pb : {};
       store.set('ef.playbackCfg', JSON.stringify(playbackCfg));
     } catch { /* keep what's known */ }
+    syncAppLock();
   }
 
   // ----- Account limits: devices per account and an expiry date -----
@@ -3266,13 +3269,13 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
   // Phones and browsers only: TVs keep their own settings.
   const playbackForced = () => !nativeApp?.isTv?.();
-  const lockedPref = (key) => playbackForced() && (key === 'liveBuffer' || key === 'player') && playbackCfg[key] ? playbackCfg[key] : '';
+  const lockedPref = (key) => playbackForced() && (key === 'liveBuffer' || key === 'player' || key === 'appLock') && playbackCfg[key] ? playbackCfg[key] : '';
   const stallSeconds = () => (playbackForced() && Number(playbackCfg.stallSeconds)) || 0; // 0 = the player's own default
   const getPref = (key) => lockedPref(key) || store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
@@ -3331,6 +3334,7 @@
         ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
+        ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
       <section class="settings-section feedback-section">
@@ -3375,7 +3379,7 @@
         case 'subMode': saveAccount({ SubtitleMode: v }); break;
         case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
         case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
-        default: setPref(sel.dataset.setting, v); applySubtitleStyle(); toast('Saved', 1500);
+        default: setPref(sel.dataset.setting, v); applySubtitleStyle(); if (sel.dataset.setting === 'appLock') syncAppLock(); toast('Saved', 1500);
       }
     });
     setupFeedback(page);
@@ -4603,6 +4607,8 @@
           [[0, 'No limit'], ...QUALITY_OPTIONS.slice(1).map((q) => [q.bitrate, q.label])], Number(cfg.maxQuality) || 0)}
         ${sel('stallSeconds', 'Reconnect a stalled stream after', 'If a movie, show or channel sits buffering this long without recovering, the player reconnects at the same spot. Shorter recovers faster from a dead connection but may cut in on a slow one. Normal is 30 seconds for movies and shows, 25 for Live TV.',
           [[0, 'Normal'], [10, '10 seconds'], [15, '15 seconds'], [20, '20 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '60 seconds']], Number(cfg.stallSeconds) || 0)}
+        ${sel('appLock', 'Lock Aurora with the phone\'s PIN or fingerprint', "Phones only (never on TVs). With 'Required', Aurora asks for the phone's screen lock when it opens and after a minute away. Phones with no screen lock set are not affected.",
+          [['', "Customer's choice"], ['on', 'Required']], cfg.appLock)}
         ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
           [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
         <div class="m-actions">
@@ -4625,7 +4631,7 @@
     };
     const pick = (id) => $(`[data-pb="${id}"]`, body).value;
     $('[data-save]', body).addEventListener('click', () => {
-      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, player: pick('player'), t: Date.now() };
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), t: Date.now() };
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
