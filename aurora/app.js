@@ -1636,7 +1636,7 @@
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
-        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer') }));
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), stallSeconds: stallSeconds() || undefined }));
   }
   // The native player closed: remember the channel it ended on and put the focus back on it.
   window.auroraLiveClosed = (index, stats) => {
@@ -3270,7 +3270,10 @@
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
-  const lockedPref = (key) => (key === 'liveBuffer' || key === 'player') && playbackCfg[key] ? playbackCfg[key] : '';
+  // Phones and browsers only: TVs keep their own settings.
+  const playbackForced = () => !nativeApp?.isTv?.();
+  const lockedPref = (key) => playbackForced() && (key === 'liveBuffer' || key === 'player') && playbackCfg[key] ? playbackCfg[key] : '';
+  const stallSeconds = () => (playbackForced() && Number(playbackCfg.stallSeconds)) || 0; // 0 = the player's own default
   const getPref = (key) => lockedPref(key) || store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
@@ -4590,14 +4593,16 @@
       <small class="muted">${esc(help)}</small></label>`;
     body.innerHTML = `
       <section class="admin-card">
-        <h2>Playback for everyone</h2>
-        <p class="muted">What you choose here replaces the customer's own choice in Settings (the setting is greyed out for them).
+        <h2>Playback on phones</h2>
+        <p class="muted"><strong>These apply on phones (and in a browser) only.</strong> TVs keep their own settings. What you choose here replaces the customer's own choice in Settings (the setting is greyed out for them).
           "Customer's choice" leaves it to them. It reaches each device the next time Aurora opens or checks for updates.
           Aurora plays Live TV straight from your provider, and Emby converts movies and shows, so these are the settings that matter for smoothness.</p>
         ${sel('liveBuffer', 'Live TV buffer', 'How much of a channel loads before it plays, in the Android app and TV app. Large rides out slow internet and bursts best; Small changes channel fastest.',
           [['', "Customer's choice"], ['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest)']], cfg.liveBuffer)}
         ${sel('maxQuality', 'Streaming quality limit', 'The highest quality movies and shows may use, whatever the customer picks. Lowering it saves your server and upload bandwidth.',
           [[0, 'No limit'], ...QUALITY_OPTIONS.slice(1).map((q) => [q.bitrate, q.label])], Number(cfg.maxQuality) || 0)}
+        ${sel('stallSeconds', 'Reconnect a stalled stream after', 'If a movie, show or channel sits buffering this long without recovering, the player reconnects at the same spot. Shorter recovers faster from a dead connection but may cut in on a slow one. Normal is 30 seconds for movies and shows, 25 for Live TV.',
+          [[0, 'Normal'], [10, '10 seconds'], [15, '15 seconds'], [20, '20 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '60 seconds']], Number(cfg.stallSeconds) || 0)}
         ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
           [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
         <div class="m-actions">
@@ -4620,7 +4625,7 @@
     };
     const pick = (id) => $(`[data-pb="${id}"]`, body).value;
     $('[data-save]', body).addEventListener('click', () => {
-      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, player: pick('player'), t: Date.now() };
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, player: pick('player'), t: Date.now() };
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
@@ -4920,7 +4925,7 @@
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
   const speedLabel = (r) => (r === 1 ? 'Normal' : `${r}x`);
   const ownBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
-  const qualityCap = () => Number(playbackCfg.maxQuality) || 0; // set in Admin → Playback; 0 = no cap
+  const qualityCap = () => (playbackForced() ? Number(playbackCfg.maxQuality) || 0 : 0); // set in Admin → Playback; 0 = no cap
   const maxBitrate = () => (qualityCap() ? Math.min(ownBitrate(), qualityCap()) : ownBitrate());
   // "Auto" stays (it measures, within the cap); fixed choices above the cap are hidden.
   const qualityChoices = () => QUALITY_OPTIONS.filter((q, i) => i === 0 || !qualityCap() || q.bitrate <= qualityCap());
@@ -5369,6 +5374,7 @@
         itemId: full.Id, mediaSourceId: source.Id, playSessionId: player.playSessionId, playMethod: player.playMethod,
         audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
       },
+      stallSeconds: stallSeconds() || undefined,
     };
     vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate };
     // The native screen reports to Emby from here on.

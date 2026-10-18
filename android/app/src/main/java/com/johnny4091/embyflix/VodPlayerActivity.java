@@ -95,7 +95,8 @@ public class VodPlayerActivity extends Activity {
     private int stalls;
     private long stalledMs, stallStart, playingSince;
     private boolean wasReady, seeking;
-    private static final long STALL_MS = 30000;
+    /** How long a film may sit buffering before the player reconnects; the page can set it (Admin → Playback). */
+    private long stallMs = 30000;
     private String error;
 
     @Override
@@ -120,6 +121,8 @@ public class VodPlayerActivity extends Activity {
         report = spec.optJSONObject("report");
         if (report == null) report = new JSONObject();
         playMethod = report.optString("playMethod", "DirectPlay");
+        int stallSeconds = spec.optInt("stallSeconds", 30);
+        if (stallSeconds >= 8 && stallSeconds <= 120) stallMs = stallSeconds * 1000L;
         JSONArray s = spec.optJSONArray("subs");
         for (int i = 0; s != null && i < s.length(); i++) {
             JSONObject o = s.optJSONObject(i);
@@ -322,7 +325,7 @@ public class VodPlayerActivity extends Activity {
             boolean buffering = everReady && player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING && !stuckAtEnd;
             if (!buffering) stallSince = 0;
             else if (stallSince == 0) stallSince = System.currentTimeMillis();
-            else if (System.currentTimeMillis() - stallSince > STALL_MS && retries < MAX_RETRIES) {
+            else if (System.currentTimeMillis() - stallSince > stallMs && retries < MAX_RETRIES) {
                 stallSince = 0;
                 retries++;
                 resumeMs = Math.max(0, player.getCurrentPosition());

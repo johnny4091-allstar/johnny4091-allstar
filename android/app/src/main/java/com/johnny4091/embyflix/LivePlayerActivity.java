@@ -151,8 +151,11 @@ public class LivePlayerActivity extends Activity {
 
         reporter = LiveReporter.from(intent.getStringExtra(EXTRA_REPORT));
         try {
-            String level = new JSONObject(intent.getStringExtra(EXTRA_REPORT)).optString("buffer", "medium");
+            JSONObject extra = new JSONObject(intent.getStringExtra(EXTRA_REPORT));
+            String level = extra.optString("buffer", "medium");
             if (level.equals("small") || level.equals("large")) bufferLevel = level;
+            int stallSeconds = extra.optInt("stallSeconds", 25);
+            if (stallSeconds >= 8 && stallSeconds <= 120) stallMs = stallSeconds * 1000L;
         } catch (Exception ignored) {
             // Medium.
         }
@@ -303,12 +306,13 @@ public class LivePlayerActivity extends Activity {
     };
 
     /** A stream can stall without any error (the provider stops sending but keeps the connection open). */
-    private static final long WATCHDOG_MS = 5000, STALL_MS = 25000;
+    private static final long WATCHDOG_MS = 5000;
+    private long stallMs = 25000; // the page can set it (Admin → Playback)
     private final Runnable watchdog = new Runnable() {
         @Override public void run() {
             if (player == null) return;
             if (player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING
-                    && bufferingSince > 0 && System.currentTimeMillis() - bufferingSince > STALL_MS) {
+                    && bufferingSince > 0 && System.currentTimeMillis() - bufferingSince > stallMs) {
                 retryAfterError(null);
             }
             handler.postDelayed(this, WATCHDOG_MS);
