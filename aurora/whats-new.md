@@ -1,3 +1,4 @@
+- Improved: the Users page in Admin shows live device counts per account, with an "Over limit" warning, refreshed every 10 seconds.
 - New: report a channel with a long-press (or the Menu button on a TV remote). Aurora also reports channels that keep buffering.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.
 - Fixed: the tabs in the Admin area now stay on the tab you chose instead of sliding back to the first one.

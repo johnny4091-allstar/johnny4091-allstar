@@ -4301,6 +4301,10 @@
     }
     if (!isCurrent()) return;
     const limits = new Map(users.map((u) => [u.Id, g?.users?.[u.Id] || null]));
+    // Live device counts straight from the guard (GET /status/users, guard 1.2.0+): the same count it enforces with,
+    // and it names the devices. An older or unreachable guard just means the count is worked out here from Emby.
+    let live = null;
+    if (g) live = await guard('/status/users').catch(() => null);
     const actions = g ? (await guard('/actions').catch(() => ({ actions: [] }))).actions : [];
     if (!isCurrent()) return;
     const inUse = new Map();
@@ -4309,10 +4313,26 @@
       if (!inUse.has(se.UserId)) inUse.set(se.UserId, new Set());
       inUse.get(se.UserId).add(se.DeviceId);
     }
+    const liveOf = (data, id) => (data ? (data.users || []).find((x) => x.userId === id) || { activeDevices: 0, over: false, devices: [], limit: undefined } : null);
     const rows = users.map((u) => {
       const lim = limits.get(u.Id), st = userStatus(u, lim), exempt = exemptFromLimits(u);
-      return { u, lim, st, exempt, devices: inUse.get(u.Id)?.size || 0, search: (u.Name || '').toLowerCase() };
+      return { u, lim, st, exempt, devices: inUse.get(u.Id)?.size || 0, live: exempt ? null : liveOf(live, u.Id), search: (u.Name || '').toLowerCase() };
     }).sort((a, b) => (a.u.Name || '').localeCompare(b.u.Name || ''));
+    // What a row says about devices. With the guard's live data: "2 of 2 devices in use · Pixel, TV", and a red
+    // "Over limit" when there are more than allowed.
+    const liveHtml = (r) => {
+      const n = r.live ? r.live.activeDevices : r.devices, word = n === 1 ? 'device' : 'devices';
+      if (r.exempt || !guardEnabled) return `${n} ${word} in use`;
+      const limit = r.live?.limit || r.lim?.limit || g?.defaultLimit || DEFAULT_DEVICE_LIMIT;
+      const names = r.live?.devices?.length ? ' · ' + esc(r.live.devices.map((d) => d.name + (d.playing ? ' (playing)' : '')).join(', ')) : '';
+      return `${n} of ${limit} devices in use${r.live?.over ? ' <span class="pill bad">Over limit</span>' : ''}${names}`;
+    };
+    const summaryText = (data) => {
+      if (!data) return '';
+      const t = data.totals || {};
+      return `Live from Aurora Guard: ${t.activeDevices || 0} ${t.activeDevices === 1 ? 'device' : 'devices'} in use across ${t.accounts || 0} ${t.accounts === 1 ? 'account' : 'accounts'}`
+        + `${t.over ? ` · ${t.over} over the limit` : ' · none over the limit'} · updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
+    };
     const counts = { all: rows.length, active: 0, disabled: 0, expired: 0 };
     rows.forEach((r) => { counts[r.st]++; });
     const filters = guardEnabled ? ['all', 'active', 'disabled', 'expired'] : ['all', 'active', 'disabled'];
@@ -4331,6 +4351,7 @@
           <input type="search" class="users-search" placeholder="Search users" autocomplete="off" spellcheck="false">
           <div class="chip-row">${filters.map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
         </div>
+        <p class="muted users-live" data-live-summary>${esc(summaryText(live))}</p>
         <div class="admin-list users-list"></div>
         <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes)${guardEnabled ? " out of the account's limit. Admin accounts have no limits." : '.'}</p>
       </section>
@@ -4350,11 +4371,30 @@
       const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
       list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
         <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
-          <div class="muted">${r.exempt || !guardEnabled ? `${r.devices} ${r.devices === 1 ? 'device' : 'devices'} in use` : `${r.devices} of ${r.lim?.limit || g?.defaultLimit || DEFAULT_DEVICE_LIMIT} devices in use`}
+          <div class="muted"><span data-live="${esc(r.u.Id)}">${liveHtml(r)}</span>
             ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}` : ''}</div></div>
         <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
     };
     draw();
+    // Keep the counts live while this page is open: ask the guard every 10 s and change just the device text
+    // in place (so a row the remote is on keeps its focus). Stops when the page is left.
+    if (live) {
+      let failures = 0;
+      const timer = setInterval(async () => {
+        if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
+        if (document.hidden) return;
+        try {
+          const fresh = await guard('/status/users');
+          failures = 0;
+          for (const r of rows) { if (!r.exempt) r.live = liveOf(fresh, r.u.Id); }
+          for (const r of rows) { const el = $(`[data-live="${CSS.escape(r.u.Id)}"]`, body); if (el) el.innerHTML = liveHtml(r); }
+          const sum = $('[data-live-summary]', body);
+          if (sum) sum.textContent = summaryText(fresh);
+        } catch {
+          if (++failures >= 3) { const sum = $('[data-live-summary]', body); if (sum) sum.textContent = 'Live counts paused: Aurora Guard is not answering.'; }
+        }
+      }, 10000);
+    }
     $('.users-search', body).addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); draw(); });
     $$('[data-filter]', body).forEach((b) => b.addEventListener('click', () => {
       filter = b.dataset.filter;
