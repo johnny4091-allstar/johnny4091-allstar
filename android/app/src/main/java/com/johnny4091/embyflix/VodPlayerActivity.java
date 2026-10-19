@@ -501,7 +501,16 @@ public class VodPlayerActivity extends Activity {
         }
         root.addView(top, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP));
         top.setVisibility(View.GONE);
-        playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) v -> top.setVisibility(v));
+        // Phones: a visible Back button with the controls (the back gesture is easy to miss, and Back first only hides the controls).
+        TextView backButton = PlayerUi.backButton(this, () -> close(false));
+        if (backButton != null) {
+            backButton.setVisibility(View.GONE);
+            root.addView(backButton);
+        }
+        playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener) v -> {
+            top.setVisibility(v);
+            if (backButton != null) backButton.setVisibility(v);
+        });
 
         // Skip Intro / Next Episode, bottom right above the controls.
         LinearLayout actions = new LinearLayout(this);

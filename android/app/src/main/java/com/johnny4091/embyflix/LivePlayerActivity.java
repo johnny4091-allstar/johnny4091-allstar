@@ -468,7 +468,7 @@ public class LivePlayerActivity extends Activity {
         listPanel = new LinearLayout(this);
         listPanel.setOrientation(LinearLayout.VERTICAL);
         listPanel.setBackgroundColor(PANEL);
-        listPanel.setPadding(0, dp(20), 0, dp(12));
+        listPanel.setPadding(0, dp(PlayerUi.isTv(this) ? 20 : 76), 0, dp(12)); // phones: room for the Back button above the list
         TextView header = text(13, ACCENT, true);
         header.setText(group.isEmpty() ? "CHANNELS" : group.toUpperCase());
         header.setPadding(dp(20), 0, dp(20), dp(10));
@@ -489,6 +489,13 @@ public class LivePlayerActivity extends Activity {
         listPanel.setVisibility(View.GONE);
         root.addView(listPanel, new FrameLayout.LayoutParams(dp(380), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
 
+        // Phones: a Back button that shows with the channel banner (tap the picture to bring it up).
+        backButton = PlayerUi.backButton(this, this::finishWithResult);
+        if (backButton != null) {
+            backButton.setVisibility(View.GONE);
+            root.addView(backButton);
+        }
+
         setContentView(root);
     }
 
@@ -505,7 +512,15 @@ public class LivePlayerActivity extends Activity {
         return s;
     }
 
-    private final Runnable hideBanner = () -> banner.animate().alpha(0f).setDuration(300).start();
+    private TextView backButton; // null on a TV
+    private final Runnable hideBanner = () -> {
+        banner.animate().alpha(0f).setDuration(300).start();
+        if (backButton != null && !listOpen()) {
+            backButton.animate().alpha(0f).setDuration(300).withEndAction(() -> {
+                if (backButton.getAlpha() == 0f) backButton.setVisibility(View.GONE);
+            }).start();
+        }
+    };
 
     private void showBanner() {
         Channel c = channels.get(index);
@@ -518,6 +533,11 @@ public class LivePlayerActivity extends Activity {
         loadLogo(c.logo, bannerLogo);
         banner.animate().cancel();
         banner.setAlpha(1f);
+        if (backButton != null) {
+            backButton.animate().cancel();
+            backButton.setAlpha(1f);
+            backButton.setVisibility(View.VISIBLE);
+        }
         handler.removeCallbacks(hideBanner);
         handler.postDelayed(hideBanner, 4500);
     }
@@ -535,6 +555,9 @@ public class LivePlayerActivity extends Activity {
     private void hideList() {
         listPanel.setVisibility(View.GONE);
         playerView.requestFocus();
+        // The Back button goes with the banner again once the list is closed.
+        handler.removeCallbacks(hideBanner);
+        handler.postDelayed(hideBanner, 2500);
     }
 
     private void toggleList() {
