@@ -7,5 +7,6 @@
   "intervalSeconds": 60,
   "activeWindowMinutes": 5,
   "defaultLimit": 2,
-  "dryRun": true
+  "dryRun": true,
+  "alertWebhookUrl": ""
 }

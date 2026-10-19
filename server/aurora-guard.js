@@ -12,6 +12,10 @@
  *     ones it disabled whose date was extended, and signs out devices over an account's limit. This is
  *     the real enforcement, and it covers Emby's own apps as well as Aurora.
  *
+ * Also (1.2.0): sends an alert to a webhook (Discord, ntfy.sh, or any JSON webhook) when it signs a device out or
+ * hits a certificate problem; GET /status/users (admins) gives live device counts per account; GET /status (public)
+ * is a two-line "is it up" page.
+ *
  * No packages to install: plain Node.js 18 or newer.
  */
 'use strict';
@@ -21,8 +25,9 @@ const path = require('path');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
+const os = require('os');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -46,9 +51,17 @@ function loadConfig() {
     activeWindowMinutes: 5,
     defaultLimit: 2,
     dryRun: false,
+    // Where to send alerts (Discord webhook, ntfy.sh topic, or any web address that takes JSON). Blank = no alerts.
+    alertWebhookUrl: '',
+    alertFormat: 'auto', // auto | discord | ntfy | json
     dataDir: path.join(DIR, 'data'),
     ...raw,
   };
+  cfg.alertWebhookUrl = String(cfg.alertWebhookUrl || '').trim();
+  if (cfg.alertWebhookUrl && !/^https?:\/\/[^\s]+$/i.test(cfg.alertWebhookUrl)) {
+    console.error('config.json: "alertWebhookUrl" must start with https:// or http://. Alerts are switched off.');
+    cfg.alertWebhookUrl = '';
+  }
   cfg.embyUrl = String(cfg.embyUrl).replace(/\/+$/, '');
   if (!/\/emby$/i.test(cfg.embyUrl)) cfg.embyUrl += '/emby';
   if (!cfg.apiKey) { console.error('config.json needs "apiKey": an Emby API key (Emby dashboard → Advanced → API Keys).'); process.exit(1); }
@@ -70,6 +83,91 @@ function log(...parts) {
     if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > 2 * 1024 * 1024) fs.renameSync(LOG_FILE, LOG_FILE + '.old');
     fs.appendFileSync(LOG_FILE, line + '\n');
   } catch { /* logging is best effort */ }
+}
+
+// ---------- Alerts ----------
+// A short message to a webhook when the guard actually signs someone out (never in dry run) or can't load its
+// certificate. It must never get in the way: every call is fire-and-forget, has a hard time limit, can't throw, and
+// is rate limited. The address is never written to the log (webhook addresses contain a secret).
+function alertFormat() {
+  const f = String(cfg.alertFormat || 'auto').toLowerCase();
+  if (['discord', 'ntfy', 'json'].includes(f)) return f;
+  try {
+    const u = new URL(cfg.alertWebhookUrl);
+    if (/(^|\.)discord(app)?\.com$/i.test(u.hostname) && /\/api\/webhooks\//.test(u.pathname)) return 'discord';
+    if (/(^|\.)ntfy(\.|$)/i.test(u.hostname)) return 'ntfy';
+  } catch { /* fall through */ }
+  return 'json';
+}
+// Resolves {ok, status, error}. Never rejects, never takes longer than 10 s.
+function postAlert(title, text, urgent) {
+  return new Promise((resolve) => {
+    let settled = false, req = null, deadline = null;
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(deadline); try { req && req.destroy(); } catch {} resolve(r); };
+    try {
+      if (!cfg.alertWebhookUrl) return done({ ok: false, status: 0, error: 'no alertWebhookUrl is set' });
+      const target = new URL(cfg.alertWebhookUrl), fmt = alertFormat();
+      const headers = { 'User-Agent': `AuroraGuard/${VERSION}` };
+      let body;
+      if (fmt === 'discord') {
+        body = JSON.stringify({ username: 'Aurora Guard', content: `**${title}**\n${text}`.slice(0, 1900) });
+        headers['Content-Type'] = 'application/json';
+      } else if (fmt === 'ntfy') {
+        body = text;
+        headers['Content-Type'] = 'text/plain; charset=utf-8';
+        headers.Title = title.replace(/[^\x20-\x7e]/g, ''); // header values must be plain ASCII
+        headers.Priority = urgent ? 'high' : 'default';
+        headers.Tags = urgent ? 'warning' : 'shield';
+      } else {
+        // "text", "content" and "message" so Slack-style, Discord-style and generic receivers all find the words.
+        body = JSON.stringify({ title, text: `${title}\n${text}`, content: `**${title}**\n${text}`, message: text, urgent: !!urgent, host: os.hostname(), version: VERSION, time: new Date().toISOString() });
+        headers['Content-Type'] = 'application/json';
+      }
+      headers['Content-Length'] = Buffer.byteLength(body);
+      deadline = setTimeout(() => done({ ok: false, status: 0, error: 'timed out' }), 10000);
+      const lib = target.protocol === 'https:' ? https : http;
+      req = lib.request(target, { method: 'POST', headers, timeout: 8000 }, (r) => {
+        r.resume();
+        r.on('end', () => done({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode, error: '' }));
+        r.on('error', (e) => done({ ok: false, status: 0, error: e.message }));
+      });
+      req.on('timeout', () => done({ ok: false, status: 0, error: 'timed out' }));
+      req.on('error', (e) => done({ ok: false, status: 0, error: e.message }));
+      req.end(body);
+    } catch (e) { done({ ok: false, status: 0, error: String((e && e.message) || e) }); }
+  });
+}
+let alertFailLogged = 0, alertWindow = [];
+function noteAlertFailure(r) {
+  if (Date.now() - alertFailLogged < 10 * 60000) return;
+  alertFailLogged = Date.now();
+  let host = '';
+  try { host = new URL(cfg.alertWebhookUrl).host; } catch { /* none */ }
+  log(`Alert NOT delivered to ${host}:`, r.status ? `it answered ${r.status}` : r.error, '(the guard carries on; this is logged at most every 10 minutes)');
+}
+// Sends now (still without waiting for it), at most 12 a hour.
+function sendAlert(title, text, urgent) {
+  if (!cfg.alertWebhookUrl) return;
+  const now = Date.now();
+  alertWindow = alertWindow.filter((t) => now - t < 3600000);
+  if (alertWindow.length >= 12) { noteAlertFailure({ status: 0, error: 'too many alerts in the last hour, this one was skipped' }); return; }
+  alertWindow.push(now);
+  postAlert(title, text, urgent).then((r) => { if (!r.ok) noteAlertFailure(r); }).catch(() => {});
+}
+// Actions taken during one pass are sent together a moment later as one message.
+let alertQueue = [], alertTimer = null;
+function queueAlert(line) {
+  if (!cfg.alertWebhookUrl) return;
+  alertQueue.push(line);
+  if (!alertTimer) { alertTimer = setTimeout(flushAlerts, 2000); alertTimer.unref(); }
+}
+function flushAlerts() {
+  alertTimer = null;
+  const items = alertQueue.splice(0);
+  if (!items.length) return;
+  const lines = items.slice(0, 10).map((l) => '- ' + l);
+  if (items.length > 10) lines.push(`...and ${items.length - 10} more (see guard.log)`);
+  sendAlert(items.length === 1 ? 'Aurora Guard took action' : `Aurora Guard took ${items.length} actions`, lines.join('\n'), false);
 }
 
 // ---------- Store ----------
@@ -265,6 +363,8 @@ function noteLookupFailure(why) {
 // ---------- Enforcement ----------
 const windowMs = () => cfg.activeWindowMinutes * 60000;
 let lastRun = { at: 0, ok: false, error: '', actions: 0, ms: 0 };
+// Could the last every-minute check reach Emby with the configured key? (The public /status page shows this.)
+let embyReach = { at: 0, ok: false, error: '' };
 
 function activeByUser(sessions) {
   const now = Date.now(), byUser = new Map();
@@ -296,8 +396,15 @@ async function signOutDevice(user, device, reason) {
 
 // One pass. onlyUserId: just that account (after an admin changes it).
 async function enforce(onlyUserId) {
-  const users = await emby('GET', '/Users');
-  const sessions = await emby('GET', '/Sessions');
+  let users, sessions;
+  try {
+    users = await emby('GET', '/Users');
+    sessions = await emby('GET', '/Sessions');
+    if (!onlyUserId) embyReach = { at: Date.now(), ok: true, error: '' };
+  } catch (e) {
+    if (!onlyUserId) embyReach = { at: Date.now(), ok: false, error: e.message };
+    throw e;
+  }
   const active = activeByUser(sessions);
   let actions = 0;
   let changed = false;
@@ -313,6 +420,7 @@ async function enforce(onlyUserId) {
         store.disabledByGuard[user.Id] = true;
         recordAction({ type: 'disabled', userId: user.Id, name: user.Name, why: `expired ${rec.expires}` });
         log('Disabled', user.Name, '- expired', rec.expires);
+        queueAlert(`${user.Name}: account disabled, expired ${rec.expires}`);
         changed = true;
       }
       actions++;
@@ -347,6 +455,7 @@ async function enforce(onlyUserId) {
         if (!cfg.dryRun) {
           delete seen[d.deviceId];
           recordAction({ type: 'signedOut', userId: user.Id, name: user.Name, device: d.name, client: d.client, why: `over the limit of ${limit}` });
+          queueAlert(`${user.Name}: signed out ${d.name}${d.client ? ` (${d.client})` : ''}, over the limit of ${limit}`);
           changed = true;
         }
         actions++;
@@ -424,6 +533,14 @@ async function handle(req, res) {
   if (url.pathname === '/health' && req.method === 'GET') {
     return send(res, 200, { ok: true, service: 'aurora-guard', version: VERSION });
   }
+  // A glance check, no login and nothing sensitive: is the guard answering, and could its last every-minute check
+  // reach Emby with the configured key? It reads what the loop already found, so it never makes a call to Emby.
+  if (/^\/status\/?$/.test(url.pathname) && (req.method === 'GET' || req.method === 'HEAD')) {
+    const stale = Date.now() - embyReach.at > Math.max(180000, cfg.intervalSeconds * 3000);
+    const aurora = !embyReach.at ? (process.uptime() < 90 ? 'checking...' : 'offline') : (embyReach.ok && !stale ? 'online' : 'offline');
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    return res.end(req.method === 'HEAD' ? undefined : `Guard: online\nAurora: ${aurora}\n`);
+  }
   const token = String(req.headers['x-emby-token'] || '');
 
   // Any signed-in user, about their own account only. Aurora uses it to explain a block up front; it is
@@ -500,6 +617,33 @@ async function handle(req, res) {
   // written later into user-writable preferences are never imported.
   if (url.pathname === '/migrated' && req.method === 'PUT') { store.migratedOldLimits = true; saveStore(); return send(res, 200, { ok: true }); }
   if (url.pathname === '/actions' && req.method === 'GET') return send(res, 200, { actions: store.actions.slice(0, 100) });
+
+  // Live device counts, for Admin → Users. "Managed" accounts are the ones with a saved limit or expiration, plus any
+  // account with a device in use right now (the guard enforces those with the default limit). Administrators are never
+  // limited, so they aren't listed.
+  if (url.pathname === '/status/users' && req.method === 'GET') {
+    let users, sessions;
+    try { [users, sessions] = await Promise.all([emby('GET', '/Users'), emby('GET', '/Sessions')]); } catch (e) { return send(res, 502, { error: `Can't reach Emby: ${e.message}` }); }
+    const active = activeByUser(sessions);
+    const list = [];
+    for (const u of Array.isArray(users) ? users : []) {
+      if (u.Policy?.IsAdministrator) continue;
+      const rec = store.users[u.Id], devs = active.get(u.Id);
+      if (!rec && !devs) continue;
+      const limit = limitOf(u.Id), devices = devs ? [...devs.values()].sort((a, b) => b.at - a.at) : [];
+      list.push({
+        userId: u.Id, name: u.Name, managed: !!rec, limit, activeDevices: devices.length, over: devices.length > limit,
+        disabled: !!u.Policy?.IsDisabled, expires: rec?.expires || null, expired: isExpired(rec),
+        devices: devices.map((d) => ({ name: d.name, client: d.client, playing: d.playing, lastActive: new Date(d.at).toISOString() })),
+      });
+    }
+    list.sort((a, b) => (b.over - a.over) || String(a.name).localeCompare(String(b.name)));
+    return send(res, 200, {
+      version: VERSION, now: new Date().toISOString(), dryRun: !!cfg.dryRun, activeWindowMinutes: cfg.activeWindowMinutes, defaultLimit: cfg.defaultLimit,
+      emby: { online: embyReach.ok, checkedAt: embyReach.at ? new Date(embyReach.at).toISOString() : null, error: embyReach.error },
+      lastRun, totals: { accounts: list.length, over: list.filter((x) => x.over).length, activeDevices: list.reduce((n, x) => n + x.activeDevices, 0) }, users: list,
+    });
+  }
 
   // The TV provider's reporting API (the key is write-only: never returned).
   if (url.pathname === '/provider' && req.method === 'GET') return send(res, 200, publicProvider());
@@ -627,6 +771,7 @@ const isLocalHost = () => ['127.0.0.1', 'localhost', '::1'].includes(cfg.host);
 // with 0 (all good), 1 (a problem to fix) or 2 (only a warning: Emby couldn't be reached right now).
 async function selfCheck() {
   let problems = 0, warnings = 0;
+  console.log(`Aurora Guard ${VERSION}`);
   if (cfg.pfxPath) {
     const cert = loadCertificate();
     if (cert.error) { console.log('PROBLEM: ' + cert.error); problems++; }
@@ -656,6 +801,7 @@ function start() {
       // internet unencrypted. The every-minute job doesn't need the endpoint, so by default it keeps running
       // with the limits already saved, and says loudly what is wrong.
       log('CERTIFICATE PROBLEM: the https endpoint is NOT running.', cert.error);
+      sendAlert('Aurora Guard: certificate problem', `The https endpoint is NOT running, so Aurora's Admin screen can't reach the guard.\n${cert.error}`, true);
       if (cfg.exitOnCertError) { log('Stopping (exitOnCertError is on).'); process.exit(1); }
       log('Aurora cannot reach the guard until this is fixed, so Admin → Users can\'t change limits. The every-minute check carries on with the limits already saved. Fix config.json or the certificate and restart the "Aurora Guard" task.');
       setInterval(() => log('REMINDER: the https endpoint is still NOT running.', cert.error), 10 * 60000).unref();
@@ -687,5 +833,13 @@ function start() {
   setInterval(tick, cfg.intervalSeconds * 1000);
 }
 
-if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else start(); }
+// node aurora-guard.js --test-alert: sends one test message to alertWebhookUrl and says whether it arrived.
+async function testAlert() {
+  if (!cfg.alertWebhookUrl) { console.log('No "alertWebhookUrl" is set in config.json, so there is nowhere to send an alert.'); process.exit(1); }
+  const r = await postAlert('Aurora Guard: test alert', `This is a test from ${os.hostname()} (guard ${VERSION}). If you can read it, alerts work.`, false);
+  console.log(r.ok ? `OK: the webhook accepted it (${r.status}).` : `FAILED: ${r.status ? 'the webhook answered ' + r.status : r.error}`);
+  process.exit(r.ok ? 0 : 1);
+}
+
+if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else start(); }
 module.exports = { enforce, isExpired, activeByUser };

@@ -59,6 +59,8 @@ Administrator accounts are never limited or disabled.
 | `apiKey` | Emby API key the guard acts with |
 | `port`, `host` | Where the guard listens (default `0.0.0.0:8922`) |
 | `pfxPath`, `pfxPassphrase` | https certificate. Without one, the guard only runs on `127.0.0.1` |
+| `alertWebhookUrl` | Where alerts go (a Discord webhook, an ntfy.sh topic, or any web address that takes JSON). Blank (the default) = no alerts |
+| `alertFormat` | `auto` (default: Discord and ntfy addresses are recognised, anything else gets JSON), or `discord`, `ntfy`, `json` |
 | `intervalSeconds` | How often it checks (default 60, minimum 20) |
 | `activeWindowMinutes` | A device counts as in use if it talked to Emby this recently (default 5) |
 | `defaultLimit` | Device limit for accounts without their own (default 2) |
@@ -74,9 +76,44 @@ Administrator accounts are never limited or disabled.
 | `POST /report` | The signed-in customer | Keeps a channel report and, if set up, passes it to the provider. |
 | `GET /provider`, `PUT /provider`, `DELETE /provider/key`, `POST /provider/test` | Emby administrators | The provider's API settings; the key is never returned. |
 | `GET /reports`, `DELETE /reports` | Emby administrators | The reported channels. |
+| `GET /status` | Anyone | Two plain-text lines: `Guard: online` and `Aurora: online/offline`. |
+| `GET /status/users` | Emby administrators | Live device counts per account (see above). |
 | `GET /limits`, `GET /actions` | Emby administrators | Reads the store and the recent actions. |
 | `PUT /limits/{userId}` | Emby administrators | Sets `{limit, expires: "YYYY-MM-DD" or null}` and applies it at once. |
 | `DELETE /limits/{userId}`, `PUT /limits/{userId}/manual`, `PUT /migrated` | Emby administrators | Housekeeping. |
+
+## Alerts, live counts and the status page (guard 1.2.0)
+
+**Alerts.** Put an address in `alertWebhookUrl` in `config.json` (blank = off) and the guard sends a short message when it:
+- signs a device out, or switches off an expired account, **for real**. Nothing is sent in dry run. Actions in the same pass
+  arrive as one message (at most 12 messages an hour);
+- can't load its certificate (sent once, when the guard starts).
+
+Examples: a Discord channel's webhook address (Edit channel → Integrations → Webhooks), or `https://ntfy.sh/your-secret-topic`
+(then install the ntfy app and subscribe to that topic). Try it with `node aurora-guard.js --test-alert`. A webhook that is
+down, slow or refuses the message never holds up or crashes the guard: the call has a 10-second limit, runs beside the
+every-minute check, and a failure is only noted in `guard.log` (at most every 10 minutes). The address itself is never
+written to the log, because it contains a secret.
+
+**Live device counts (admins).** `GET /status/users` with an administrator's Emby token (`X-Emby-Token`, like the other
+admin endpoints) returns, for every account with a saved limit or a device in use now: its `limit`, `activeDevices` (distinct
+devices active in the last `activeWindowMinutes`), `over` (true if more than the limit), the devices, `disabled`/`expires`,
+plus `totals`, `dryRun`, the last check, and whether Emby was reachable. Administrators aren't listed (they're never limited).
+
+**Status page (public).** `https://your-address:8922/status` needs no login and shows only two lines:
+
+```
+Guard: online
+Aurora: online
+```
+
+`Aurora` is `online` when the guard's last every-minute check reached Emby with the configured API key (and that check
+is recent), otherwise `offline`. For a few seconds after the guard starts it says `checking...`. If the page doesn't
+load at all, the guard itself isn't running or can't be reached (for example a certificate problem).
+
+**Which version is running?** `https://your-address:8922/health`, the first line of `node aurora-guard.js --check`, and
+the "Aurora Guard 1.2.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
+none of the new settings works exactly as before.
 
 ## Channel reports and the TV provider's API (guard 1.1.0)
 
