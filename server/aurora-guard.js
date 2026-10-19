@@ -22,7 +22,7 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -60,6 +60,7 @@ const cfg = loadConfig();
 fs.mkdirSync(cfg.dataDir, { recursive: true });
 const STORE_FILE = path.join(cfg.dataDir, 'limits.json');
 const LOG_FILE = path.join(cfg.dataDir, 'guard.log');
+const PROVIDER_FILE = path.join(cfg.dataDir, 'provider.json');
 
 // ---------- Log ----------
 function log(...parts) {
@@ -74,7 +75,7 @@ function log(...parts) {
 // ---------- Store ----------
 // { users: { userId: { limit, expires: "YYYY-MM-DD" | null, name, updated, updatedBy } },
 //   disabledByGuard: { userId: true }, firstSeen: { userId: { deviceId: ms } }, actions: [...] }
-function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [] }; }
+function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], reports: [] }; }
 let store = emptyStore();
 try { store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) }; } catch (e) {
   if (e.code !== 'ENOENT') { log('Could not read', STORE_FILE, '-', e.message, '(starting with an empty store; the old file is kept as limits.json.bad)'); try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.bad'); } catch {} }
@@ -84,6 +85,65 @@ function saveStore() {
   fs.writeFileSync(tmp, JSON.stringify(store, null, 1));
   fs.renameSync(tmp, STORE_FILE); // atomic, so a crash never leaves half a file
 }
+// ---------- Channel reports and the TV provider's API ----------
+// The provider's API key is set from Aurora's Admin screen and kept ONLY here (data/provider.json, readable by the
+// administrators of this PC). It is never sent back to any app: Admin sees whether a key is set and its last 4 characters.
+const PROVIDER_DEFAULTS = { enabled: false, url: '', method: 'POST', keyIn: 'header', keyName: 'X-API-Key', key: '', body: '', updated: 0 };
+let provider = { ...PROVIDER_DEFAULTS };
+try { provider = { ...PROVIDER_DEFAULTS, ...JSON.parse(fs.readFileSync(PROVIDER_FILE, 'utf8')) }; } catch (e) {
+  if (e.code !== 'ENOENT') log('Could not read', PROVIDER_FILE, '-', e.message);
+}
+function saveProvider() {
+  const tmp = PROVIDER_FILE + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(provider, null, 1), { mode: 0o600 });
+  fs.renameSync(tmp, PROVIDER_FILE);
+}
+const DEFAULT_REPORT_BODY = '{"channel":"{{channel}}","channelId":"{{channelId}}","reason":"{{reason}}","note":"{{note}}","device":"{{device}}","time":"{{time}}"}';
+const publicProvider = () => ({
+  enabled: !!provider.enabled, url: provider.url, method: provider.method, keyIn: provider.keyIn, keyName: provider.keyName,
+  body: provider.body, keySet: !!provider.key, keyLast4: provider.key ? provider.key.slice(-4) : '', updated: provider.updated,
+  defaultBody: DEFAULT_REPORT_BODY,
+});
+// Fills {{channel}}, {{reason}} … into a template; asJson escapes for a JSON string, asUrl for a web address.
+function fillTemplate(tpl, values, mode) {
+  return String(tpl).replace(/\{\{(\w+)\}\}/g, (_, k) => {
+    const v = String(values[k] ?? '');
+    return mode === 'url' ? encodeURIComponent(v) : JSON.stringify(v).slice(1, -1);
+  });
+}
+// Sends one report to the provider. Resolves {ok, status, text}; never includes the key.
+function sendToProvider(values) {
+  return new Promise((resolve) => {
+    if (!provider.url || !provider.key) return resolve({ ok: false, status: 0, text: 'The provider address or key is not set.' });
+    let target;
+    try { target = new URL(fillTemplate(provider.url, values, 'url')); } catch { return resolve({ ok: false, status: 0, text: 'The provider address is not a valid web address.' }); }
+    if (target.protocol !== 'https:' && target.protocol !== 'http:') return resolve({ ok: false, status: 0, text: 'The provider address must start with https:// or http://.' });
+    const headers = { Accept: 'application/json, text/plain, */*', 'User-Agent': `AuroraGuard/${VERSION}` };
+    if (provider.keyIn === 'bearer') headers.Authorization = `Bearer ${provider.key}`;
+    else if (provider.keyIn === 'query') target.searchParams.set(provider.keyName || 'api_key', provider.key);
+    else headers[provider.keyName || 'X-API-Key'] = provider.key;
+    const method = provider.method === 'GET' ? 'GET' : 'POST';
+    let data = null;
+    if (method === 'POST') {
+      data = Buffer.from(fillTemplate(provider.body || DEFAULT_REPORT_BODY, values, 'json'));
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = data.length;
+    }
+    const lib = target.protocol === 'https:' ? https : http;
+    const req = lib.request(target, { method, headers, timeout: 10000 }, (r) => {
+      const chunks = []; let size = 0;
+      r.on('data', (c) => { size += c.length; if (size < 4096) chunks.push(c); });
+      r.on('end', () => resolve({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode, text: Buffer.concat(chunks).toString('utf8').slice(0, 300) }));
+    });
+    req.on('timeout', () => req.destroy(new Error('The provider did not answer in time')));
+    req.on('error', (e) => resolve({ ok: false, status: 0, text: String(e.message).split(provider.key).join('***') }));
+    if (data) req.write(data);
+    req.end();
+  });
+}
+const REASONS = ['Buffering', 'No picture', 'No sound', 'Wrong channel', 'Channel is down', 'Other'];
+const reportSeen = new Map(); // "userId|channelId" -> ms, so one customer can't repeat a report
+const reportCount = new Map(); // userId -> { n, since }
 function recordAction(action) {
   store.actions.unshift({ at: Date.now(), ...action });
   store.actions = store.actions.slice(0, 300);
@@ -327,7 +387,7 @@ function send(res, status, body) {
     // needs an Emby administrator's token; nothing is shared through cookies.
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'X-Emby-Token, Content-Type',
-    'Access-Control-Allow-Methods': 'GET, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Max-Age': '7200', // the browser remembers the permission check, so /check is one round trip
   });
   res.end(data);
@@ -389,6 +449,40 @@ async function handle(req, res) {
     return send(res, 200, { allowed: true });
   }
 
+  // A signed-in customer reporting a channel. Kept (and, if the admin set up the provider, passed on). Repeats of the
+  // same channel from the same account within 10 minutes are ignored, and each account gets 30 reports an hour.
+  if (url.pathname === '/report' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const me = await userOfToken(token, String(body.userId || ''));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const channel = String(body.channel || '').slice(0, 120).trim();
+    if (!channel) return send(res, 400, { error: 'channel is needed' });
+    const channelId = String(body.channelId || '').slice(0, 120);
+    const reason = REASONS.includes(body.reason) ? body.reason : 'Other';
+    const note = String(body.note || '').slice(0, 300);
+    const key = `${me.Id}|${channelId || channel}`;
+    if (Date.now() - (reportSeen.get(key) || 0) < 10 * 60000) return send(res, 200, { ok: true, duplicate: true });
+    const c = reportCount.get(me.Id);
+    if (!c || Date.now() - c.since > 3600000) reportCount.set(me.Id, { n: 1, since: Date.now() });
+    else if (++c.n > 30) return send(res, 429, { error: 'Too many reports. Try again later.' });
+    reportSeen.set(key, Date.now());
+    if (reportSeen.size > 5000) reportSeen.delete(reportSeen.keys().next().value);
+    const entry = {
+      at: Date.now(), channel, channelId, reason, note, user: me.Name, device: String(body.device || '').slice(0, 80),
+      group: String(body.group || '').slice(0, 80), auto: !!body.auto, forwarded: 'off',
+    };
+    if (provider.enabled && provider.url && provider.key) {
+      const r = await sendToProvider({ channel, channelId, reason, note: note || (body.auto ? 'Reported automatically after repeated buffering' : ''), device: entry.device, user: me.Name, group: entry.group, time: new Date().toISOString() });
+      entry.forwarded = r.ok ? 'sent' : 'failed';
+      entry.providerStatus = r.status;
+      if (!r.ok) log('Report to the provider failed:', r.status || '', r.text.slice(0, 120));
+    }
+    store.reports = [entry, ...(store.reports || [])].slice(0, 1000);
+    saveStore();
+    return send(res, 200, { ok: true });
+  }
+
   // Everything else: Emby administrators only.
   if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
   let admin = false;
@@ -406,6 +500,59 @@ async function handle(req, res) {
   // written later into user-writable preferences are never imported.
   if (url.pathname === '/migrated' && req.method === 'PUT') { store.migratedOldLimits = true; saveStore(); return send(res, 200, { ok: true }); }
   if (url.pathname === '/actions' && req.method === 'GET') return send(res, 200, { actions: store.actions.slice(0, 100) });
+
+  // The TV provider's reporting API (the key is write-only: never returned).
+  if (url.pathname === '/provider' && req.method === 'GET') return send(res, 200, publicProvider());
+  if (url.pathname === '/provider' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const u = String(body.url || '').trim();
+    if (u && !/^https?:\/\//i.test(u)) return send(res, 400, { error: 'The address must start with https:// or http://' });
+    if (body.method && !['GET', 'POST'].includes(body.method)) return send(res, 400, { error: 'method must be GET or POST' });
+    if (body.keyIn && !['header', 'bearer', 'query'].includes(body.keyIn)) return send(res, 400, { error: 'keyIn must be header, bearer or query' });
+    if (body.body && String(body.body).trim()) {
+      // A JSON template must still be valid JSON once filled in.
+      try { JSON.parse(fillTemplate(body.body, { channel: 'x', channelId: '1', reason: 'r', note: 'n', device: 'd', user: 'u', group: 'g', time: 't' }, 'json')); } catch { return send(res, 400, { error: 'The body is not valid JSON. Check the quotes and commas.' }); }
+    }
+    provider.url = u;
+    if (body.method) provider.method = body.method;
+    if (body.keyIn) provider.keyIn = body.keyIn;
+    provider.keyName = String(body.keyName || '').trim().slice(0, 60) || provider.keyName;
+    provider.body = String(body.body || '').slice(0, 4000);
+    provider.enabled = !!body.enabled;
+    if (typeof body.key === 'string' && body.key.trim()) provider.key = body.key.trim().slice(0, 500);
+    provider.updated = Date.now();
+    saveProvider();
+    recordAction({ type: 'provider', why: `provider reporting ${provider.enabled ? 'on' : 'off'}${body.key ? ', key changed' : ''}` });
+    saveStore();
+    log('Provider settings saved (reporting', provider.enabled ? 'on' : 'off', body.key ? ', key changed)' : ')');
+    return send(res, 200, publicProvider());
+  }
+  if (url.pathname === '/provider/key' && req.method === 'DELETE') {
+    provider.key = ''; provider.enabled = false; provider.updated = Date.now();
+    saveProvider();
+    recordAction({ type: 'provider', why: 'provider key removed' });
+    saveStore();
+    log('Provider key removed');
+    return send(res, 200, publicProvider());
+  }
+  if (url.pathname === '/provider/test' && req.method === 'POST') {
+    const r = await sendToProvider({ channel: 'Aurora test channel', channelId: 'test', reason: 'Other', note: 'Test report from Aurora. Please ignore.', device: 'Aurora admin', user: 'admin', group: 'Test', time: new Date().toISOString() });
+    return send(res, 200, r);
+  }
+  if (url.pathname === '/reports' && req.method === 'GET') {
+    const list = store.reports || [];
+    const byChannel = new Map();
+    for (const r of list) {
+      const k = r.channelId || r.channel;
+      const e = byChannel.get(k) || { channel: r.channel, channelId: r.channelId, count: 0, users: new Set(), last: 0, reasons: {} };
+      e.count++; e.users.add(r.user); e.last = Math.max(e.last, r.at); e.reasons[r.reason] = (e.reasons[r.reason] || 0) + 1;
+      byChannel.set(k, e);
+    }
+    const channels = [...byChannel.values()].map((e) => ({ ...e, users: e.users.size })).sort((a, b) => b.count - a.count || b.last - a.last).slice(0, 50);
+    return send(res, 200, { reports: list.slice(0, 100), channels, total: list.length });
+  }
+  if (url.pathname === '/reports' && req.method === 'DELETE') { store.reports = []; saveStore(); return send(res, 200, { ok: true }); }
 
   const m = url.pathname.match(/^\/limits\/([\w-]{1,64})$/);
   if (m && req.method === 'PUT') {

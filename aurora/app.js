@@ -1638,6 +1638,37 @@
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
         device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), stallSeconds: stallSeconds() || undefined }));
   }
+  // ----- Reporting a channel -----
+  // Reports go to Aurora Guard, which keeps them for Admin → Channel reports and, if the admin set it up, passes them
+  // to the TV provider with the provider's API key (kept only on the guard's PC; the app never sees it).
+  async function reportChannel(ch, reason, { note = '', auto = false, group = '' } = {}) {
+    if (!guardEnabled || !ch || !state.userId) return false;
+    try {
+      await guard('/report', { method: 'POST', quick: true, body: {
+        userId: state.userId, channel: ch.name, channelId: String(ch.id || ''), reason, note, auto, group: group || ch.group || '',
+        device: nativeApp?.getDeviceName?.() || 'Browser' } });
+      return true;
+    } catch (e) { appLog.add('info', `Channel report not sent: ${e.message}`); return false; }
+  }
+  const REPORT_REASONS = ['Buffering', 'No picture', 'No sound', 'Wrong channel', 'Channel is down', 'Other'];
+  function openReportDialog(ch) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `<div class="m-body notice-body"><h2>Report ${esc(ch.name)}</h2>
+      <p class="overview">What is wrong with this channel?</p>
+      <div class="report-reasons">${REPORT_REASONS.map((r, i) => `<button class="btn btn-gray" data-reason="${esc(r)}"${i === 0 ? ' data-autofocus' : ''}>${esc(r)}</button>`).join('')}</div>
+      <div class="m-actions"><button class="btn btn-gray" data-act="cancel">Cancel</button></div></div>`;
+    modal.classList.remove('hidden');
+    $('[data-act="cancel"]', content).addEventListener('click', closeModal);
+    $$('[data-reason]', content).forEach((b) => b.addEventListener('click', async () => {
+      closeModal();
+      const ok = await reportChannel(ch, b.dataset.reason);
+      toast(ok ? 'Thanks, the channel was reported.' : "Couldn't send the report right now. Try again later.", 3000);
+    }));
+    autoFocus($('[data-reason]', content));
+  }
+
   // The native player closed: remember the channel it ended on and put the focus back on it.
   window.auroraLiveClosed = (index, stats) => {
     store.del('ef.liveReturn');
@@ -1653,6 +1684,7 @@
         toast('Live TV kept stopping to buffer. A bigger buffer can help: Settings → Playback → Live TV buffer → Large.', 9000);
       }
     }
+    if (ch && stats?.stalls >= 3) reportChannel(ch, 'Buffering', { auto: true, group: p.group });
     if (!ch) return;
     rememberChannel(ch);
     const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`);
@@ -1670,6 +1702,9 @@
       <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now></div></div>`;
     paintTile(tile);
     tile.addEventListener('click', onPlay);
+    // Long-press on a phone, or the Menu button on a TV remote: report a problem with this channel.
+    tile.addEventListener('contextmenu', (e) => { e.preventDefault(); openReportDialog(ch); });
+    tile.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openReportDialog(ch); } });
     return tile;
   }
 
@@ -3569,7 +3604,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3611,7 +3646,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback, reports: adminReports })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
     // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
     const bar = $('.tab-bar', page), active = $('.tab.active', bar);
@@ -4591,6 +4626,91 @@
     $('[data-reset]', body)?.addEventListener('click', () => save(null, 'Using the settings file again.'));
   }
 
+
+  // ----- Admin → Channel reports: the provider's API key, and what customers reported -----
+  async function adminReports(body, isCurrent) {
+    if (!guardEnabled) {
+      body.innerHTML = '<section class="admin-card"><h2>Channel reports</h2><p class="muted">Aurora Guard is switched off, and it is what keeps the provider key and the reports. Switch it on (see server/README.md), then come back.</p></section>';
+      return;
+    }
+    let prov, rep;
+    try { [prov, rep] = await Promise.all([guard('/provider'), guard('/reports')]); } catch (e) {
+      body.innerHTML = `<section class="admin-card"><h2>Channel reports</h2><p class="empty-msg">Couldn't reach Aurora Guard: ${esc(e.message)}. Channel reports need guard version 1.1.0 or newer on the server PC.</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const sel = (id, label, options, value) => `<label class="admin-field"><span>${esc(label)}</span><select data-pv="${id}">${options.map(([v, l]) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+    const chRow = (c) => `<div class="admin-row" tabindex="-1"><div class="admin-row-main"><strong>${esc(c.channel)}</strong>
+      <div class="muted">${esc(Object.entries(c.reasons).map(([k, v]) => `${k} ×${v}`).join(' · '))} · ${c.users} ${c.users === 1 ? 'customer' : 'customers'}</div></div>
+      <div class="admin-row-time">${c.count} ${c.count === 1 ? 'report' : 'reports'} · ${esc(timeAgo(c.last))}</div></div>`;
+    const recRow = (r) => `<div class="admin-row" tabindex="-1"><div class="admin-row-main"><strong>${esc(r.channel)}</strong> · ${esc(r.reason)}${r.auto ? ' <span class="pill">automatic</span>' : ''}
+      <div class="muted">${esc(r.user)} · ${esc(r.device)}${r.note ? ' · ' + esc(r.note) : ''} · ${r.forwarded === 'sent' ? 'sent to the provider' : r.forwarded === 'failed' ? '<span class="pill bad">the provider did not accept it</span>' : 'kept here only'}</div></div>
+      <div class="admin-row-time">${esc(timeAgo(r.at))}</div></div>`;
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>TV provider reporting</h2>
+        <p class="muted">When a customer reports a channel (long-press it, or press Menu on the remote), or a channel keeps buffering, Aurora can pass the report to your TV provider's system. The API key is typed here once and kept only on the server PC (Aurora Guard): it is never sent to phones or TVs, and it is never shown again, only its last 4 characters.</p>
+        <label class="admin-check"><input type="checkbox" data-pv="enabled"${prov.enabled ? ' checked' : ''}> Send reports to the provider</label>
+        <label class="admin-field"><span>Provider address (web address for reports)</span>
+          <input type="url" data-pv="url" value="${esc(prov.url)}" placeholder="https://provider.example.com/api/report" autocomplete="off"></label>
+        ${sel('method', 'Send as', [['POST', 'POST (with a body)'], ['GET', 'GET (details in the address)']], prov.method)}
+        ${sel('keyIn', 'The key goes in', [['header', 'A header'], ['bearer', 'Authorization: Bearer'], ['query', 'The address (?name=key)']], prov.keyIn)}
+        <label class="admin-field"><span>Name of the header or address field</span>
+          <input type="text" data-pv="keyName" value="${esc(prov.keyName)}" placeholder="X-API-Key" autocomplete="off"></label>
+        <label class="admin-field"><span>API key ${prov.keySet ? `<span class="pill">set · ends …${esc(prov.keyLast4)}</span>` : '<span class="pill warn">not set</span>'}</span>
+          <input type="password" data-pv="key" value="" placeholder="${prov.keySet ? 'Leave empty to keep the current key' : 'Paste the key here'}" autocomplete="new-password"></label>
+        <details><summary>Body of the report (advanced)</summary>
+          <p class="muted">For POST. JSON with these pieces filled in: {{channel}} {{channelId}} {{reason}} {{note}} {{device}} {{user}} {{group}} {{time}}. For GET, put them in the address instead, like ?ch={{channelId}}. Leave empty for the standard layout.</p>
+          <textarea data-pv="body" rows="6" placeholder="${esc(prov.defaultBody)}" spellcheck="false">${esc(prov.body)}</textarea></details>
+        <div class="m-actions">
+          <button class="btn btn-red" data-save>Save</button>
+          <button class="btn btn-gray" data-test>Send a test report</button>
+          ${prov.keySet ? '<button class="btn btn-gray" data-removekey>Remove the key</button>' : ''}
+        </div>
+        <div class="live-result" data-result></div>
+      </section>
+      <section class="admin-card">
+        <h2>Reported channels <small>${rep.total} ${rep.total === 1 ? 'report' : 'reports'} kept</small></h2>
+        <div class="admin-list">${rep.channels.map(chRow).join('') || '<p class="muted">No reports yet.</p>'}</div>
+        ${rep.total ? '<div class="m-actions"><button class="btn btn-gray" data-clear>Clear the list</button></div>' : ''}
+      </section>
+      <section class="admin-card">
+        <h2>Latest reports</h2>
+        <div class="admin-list">${rep.reports.slice(0, 30).map(recRow).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+      </section>`;
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const val = (id) => $(`[data-pv="${id}"]`, body);
+    const reload = () => setTimeout(() => { if (isCurrent()) adminReports(body, isCurrent); }, 1200);
+    $('[data-save]', body).addEventListener('click', async () => {
+      say('<div class="spinner"></div> Saving…');
+      try {
+        const payload = { enabled: val('enabled').checked, url: val('url').value.trim(), method: val('method').value, keyIn: val('keyIn').value, keyName: val('keyName').value.trim(), body: val('body').value };
+        const key = val('key').value.trim();
+        if (key) payload.key = key;
+        await guard('/provider', { method: 'PUT', body: payload });
+        val('key').value = '';
+        say(key ? 'Saved, with the new key.' : 'Saved.', 'good');
+        reload();
+      } catch (e) { say("Couldn't save: " + esc(e.message), 'bad'); }
+    });
+    $('[data-test]', body).addEventListener('click', async () => {
+      say('<div class="spinner"></div> Sending a test report… (save first if you changed anything)');
+      try {
+        const r = await guard('/provider/test', { method: 'POST' });
+        say(r.ok ? `The provider accepted it (status ${esc(r.status)}). ${esc(r.text || '')}` : `The provider did not accept it${r.status ? ` (status ${esc(r.status)})` : ''}: ${esc(r.text || '')}`, r.ok ? 'good' : 'bad');
+      } catch (e) { say("Couldn't send: " + esc(e.message), 'bad'); }
+    });
+    $('[data-removekey]', body)?.addEventListener('click', async () => {
+      if (!await confirmAction('Remove the provider key?', 'Reports will stop going to the provider until you enter a key again.', 'Remove key')) { adminReports(body, isCurrent); return; }
+      try { await guard('/provider/key', { method: 'DELETE' }); toast('Key removed', 2000); } catch (e) { toast("Couldn't remove it: " + e.message); }
+      adminReports(body, isCurrent);
+    });
+    $('[data-clear]', body)?.addEventListener('click', async () => {
+      try { await guard('/reports', { method: 'DELETE' }); } catch (e) { say("Couldn't clear: " + esc(e.message), 'bad'); return; }
+      adminReports(body, isCurrent);
+    });
+  }
 
   // ----- Admin → Playback: settings for every customer -----
   // Stored in each account's "aurora-playback" display preferences (the same way as the update lock) and read at

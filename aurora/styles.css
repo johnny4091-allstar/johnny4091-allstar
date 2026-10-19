@@ -960,3 +960,8 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 
 /* Admin has many tabs: wrap them on wide screens so all are visible; scroll on a phone. */
 @media (min-width: 701px) { .admin-page .tab-bar { flex-wrap: wrap; overflow-x: visible; } }
+
+.report-reasons { display: flex; flex-wrap: wrap; gap: .6rem; margin: 1rem 0; }
+.admin-card textarea { background: var(--bg-3); border: 1px solid rgba(255,255,255,.15); color: #fff; border-radius: 6px; padding: .6rem .8rem; font: .85rem ui-monospace, monospace; width: 100%; box-sizing: border-box; }
+.admin-card details { margin: .8rem 0; } .admin-card summary { cursor: pointer; color: var(--muted); }
+.admin-field input[type=url], .admin-field input[type=text], .admin-field input[type=password] { background: var(--bg-3); border: 1px solid rgba(255,255,255,.15); color: #fff; border-radius: 6px; padding: .6rem .8rem; font: inherit; }

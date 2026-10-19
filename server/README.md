@@ -71,9 +71,28 @@ Administrator accounts are never limited or disabled.
 |---|---|---|
 | `GET /health` | Anyone | Says the guard is running. No data. |
 | `GET /check?userId=&deviceId=&phase=` | The signed-in user, about themselves | Returns whether Aurora should let them in or play, with a message. This is only so Aurora can explain up front; it doesn't enforce anything. |
+| `POST /report` | The signed-in customer | Keeps a channel report and, if set up, passes it to the provider. |
+| `GET /provider`, `PUT /provider`, `DELETE /provider/key`, `POST /provider/test` | Emby administrators | The provider's API settings; the key is never returned. |
+| `GET /reports`, `DELETE /reports` | Emby administrators | The reported channels. |
 | `GET /limits`, `GET /actions` | Emby administrators | Reads the store and the recent actions. |
 | `PUT /limits/{userId}` | Emby administrators | Sets `{limit, expires: "YYYY-MM-DD" or null}` and applies it at once. |
 | `DELETE /limits/{userId}`, `PUT /limits/{userId}/manual`, `PUT /migrated` | Emby administrators | Housekeeping. |
+
+## Channel reports and the TV provider's API (guard 1.1.0)
+
+Customers can report a channel (long-press it on a phone, or press Menu on a TV remote), and Aurora reports a channel by
+itself when it keeps buffering. The guard keeps the reports for **Admin → Channel reports** and, if you switch it on
+there, passes each one to your TV provider's API.
+
+- **Set it up in Aurora, not in a file:** Admin → Channel reports → the provider's address, how the key is sent
+  (header, Bearer, or in the address), the key, and (if the provider needs a particular layout) the body.
+  "Send a test report" tries it.
+- **The key is write-only.** It is stored in `data\provider.json` on this PC (the folder is limited to
+  Administrators). It is never sent to any app: Admin shows only whether a key is set and its last 4 characters.
+  To change it, type a new one and Save; "Remove the key" deletes it.
+- **Limits:** one report per customer per channel every 10 minutes, and 30 reports an hour per customer.
+- **Update the guard:** copy the new `aurora-guard.js` over the old one and restart the task. Older guards don't have
+  these endpoints, and the Channel reports tab says so.
 
 ## Files
 
