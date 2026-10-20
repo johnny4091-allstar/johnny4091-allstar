@@ -4934,7 +4934,12 @@
   function releaseNotes(body) {
     const m = (body || '').match(/<!-- notes -->([\s\S]*?)<!-- \/notes -->/);
     if (!m) return [];
-    return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l)).map((l) => brand(l.slice(2).trim())).filter(Boolean);
+    // A line ending in two invisible characters is only for copies older than 1.2.166, which have the old signing key
+    // and need telling to reinstall. Newer copies don't show it (older ones just see it as a normal line).
+    const OLD_KEY_NOTE = '\u200b\u200c', oldKeyCopy = (nativeApp?.getVersionCode?.() || 999) < 166;
+    return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l))
+      .filter((l) => oldKeyCopy || !l.endsWith(OLD_KEY_NOTE))
+      .map((l) => brand(l.slice(2).replace(OLD_KEY_NOTE, '').trim())).filter(Boolean);
   }
 
   async function checkForUpdate() {

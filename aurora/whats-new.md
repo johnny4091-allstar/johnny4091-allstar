@@ -1,13 +1,2 @@
-- New (phones): a "Back" button in the video and Live TV players, so you can get out easily when you are done watching.
-- Improved: the Users page in Admin shows live device counts per account, with an "Over limit" warning, refreshed every 10 seconds.
-- New: report a channel with a long-press (or the Menu button on a TV remote). Aurora also reports channels that keep buffering.
-- IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.
-- Fixed: the tabs in the Admin area now stay on the tab you chose instead of sliding back to the first one.
-- New (phones): "Lock Aurora" in Settings asks for your phone PIN, pattern or fingerprint when Aurora opens.
-- New: Aurora can set Live TV buffer, quality limit, video player and stall reconnect time for phones and TVs from the Admin area.
-- Security: tighter checks on app updates, and the app no longer allows its data to be copied out through phone backups.
-- Improved: in the Live TV guide it is now clear what the remote has selected. The programme is highlighted in white, its channel is lit up and its time is underlined.
-- New: a "Mark season as watched" (or unwatched) button above the episode list.
-- Fixed: episodes and films you finish are now always ticked as watched, and the episode list updates its check marks as soon as you come back from the player.
-- Improved: the Live TV guide has a cleaner, more polished look: a "LIVE" info card, rounded programme cells, a clearer "now" marker and easier-to-read times.
-- Fixed: opening a title that has been removed or replaced on the server no longer fails with "Could not load details". Aurora looks for it again by name, or offers to refresh the list. Lists also refresh when a TV that was left on the home screen for a long time is woken up.
+- Fixed: the "What's new" list in the update window now shows only what is new in that update, not the same old list every time.
+- IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌
