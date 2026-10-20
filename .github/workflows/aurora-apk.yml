@@ -22,7 +22,7 @@ permissions:
 
 # Channels: a push is released to STABLE, unless the last commit message contains [beta], in which case it is
 # released as a BETA (a GitHub "pre-release") that only devices on the Beta channel (Settings → About) are offered.
-# "Promote" turns an existing beta release into the stable one, with no new build.
+# "Promote" turns an existing beta release into the stable one, with no new build. (Tested with a beta build.)
 jobs:
   promote:
     if: ${{ github.event.inputs.promote_tag != '' }}
