@@ -3308,7 +3308,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', channel: 'stable' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3390,6 +3390,10 @@
         <h2>About</h2>
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
         ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
+        ${nativeApp?.getVersionCode ? settingRow('Update channel', getPref('channel') === 'beta'
+          ? 'Beta: you get new versions before everyone else. They may have bugs. Switching back to Stable keeps this version until the next stable one.'
+          : 'Stable: only versions that have been checked. Choose Beta to get new versions first.',
+          selectHtml('channel', [['stable', 'Stable (recommended)'], ['beta', 'Beta (new versions first)']], getPref('channel'))) : ''}
         ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
       </section>`;
     applySubtitleStyle();
@@ -3417,6 +3421,16 @@
         case 'subMode': saveAccount({ SubtitleMode: v }); break;
         case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
         case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
+        case 'channel':
+          setPref('channel', v);
+          sel.closest('.setting-row')?.querySelector('.setting-label span')?.replaceChildren(v === 'beta'
+            ? 'Beta: you get new versions before everyone else. They may have bugs. Switching back to Stable keeps this version until the next stable one.'
+            : 'Stable: only versions that have been checked. Choose Beta to get new versions first.');
+          store.del('ef.updateBehind'); // what was found on the other channel no longer applies
+          updates.dismissedCode = 0;
+          toast(v === 'beta' ? 'Beta channel: checking for new versions…' : 'Stable channel: checking for updates…', 2500);
+          $('[data-check-update]', page)?.click();
+          break;
         default: setPref(sel.dataset.setting, v); applySubtitleStyle(); if (sel.dataset.setting === 'appLock') syncAppLock(); toast('Saved', 1500);
       }
     });
@@ -4946,8 +4960,11 @@
       });
       if (!res.ok) throw new Error(res.status);
       const installed = nativeApp.getVersionCode();
+      // Stable devices only see releases that are not marked "pre-release"; beta devices see those too (they get new
+      // versions first). The channel is chosen in Settings → About → Update channel.
+      const beta = getPref('channel') === 'beta';
       const newer = (await res.json())
-        .filter((rel) => !rel.draft && !rel.prerelease && /^aurora-v/.test(rel.tag_name || ''))
+        .filter((rel) => !rel.draft && (beta || !rel.prerelease) && /^aurora-v/.test(rel.tag_name || ''))
         .map((rel) => ({ rel, code: Number(rel.tag_name.match(/(\d+)$/)?.[1] || 0) }))
         .filter((r) => r.code > installed)
         .sort((a, b) => b.code - a.code);
