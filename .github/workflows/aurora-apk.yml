@@ -7,39 +7,12 @@ on:
       - 'android/**'
       - '.github/workflows/aurora-apk.yml'
   workflow_dispatch:
-    inputs:
-      build_channel:
-        description: 'Channel for a manual build: stable or beta'
-        required: false
-        default: 'stable'
-      promote_tag:
-        description: 'Promote this beta release to stable instead of building (for example aurora-v1.2.170)'
-        required: false
-        default: ''
 
 permissions:
   contents: write
 
-# Channels: a push is released to STABLE, unless the last commit message contains [beta], in which case it is
-# released as a BETA (a GitHub "pre-release") that only devices on the Beta channel (Settings → About) are offered.
-# "Promote" turns an existing beta release into the stable one, with no new build. (Tested with a beta build.)
 jobs:
-  promote:
-    if: ${{ github.event.inputs.promote_tag != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Promote the beta release to stable
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.inputs.promote_tag }}
-        run: |
-          case "$TAG" in aurora-v1.2.[0-9]*) ;; *) echo "::error::promote_tag must look like aurora-v1.2.170"; exit 1;; esac
-          name=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json name -q .name)
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest --title "$(printf '%s' "$name" | sed 's/ (beta)$//')"
-          echo "$TAG is now the stable release."
-
   build:
-    if: ${{ github.event.inputs.promote_tag == '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,23 +30,6 @@ jobs:
       # The release tag ends in the version code; the app compares it to its own to find updates.
       - name: Set version
         run: echo "VERSION_CODE=$((${{ github.run_number }} + 100))" >> "$GITHUB_ENV"
-
-      # Beta or stable? A push says [beta] in its last commit message; a manual run picks it in the form.
-      - name: Choose the channel
-        env:
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          MANUAL_CHANNEL: ${{ github.event.inputs.build_channel }}
-        run: |
-          beta=false
-          if [ "$MANUAL_CHANNEL" = "beta" ]; then beta=true; fi
-          if printf '%s' "$COMMIT_MESSAGE" | grep -qi '\[beta\]'; then beta=true; fi
-          if [ "$beta" = "true" ]; then
-            echo "PRERELEASE=true" >> "$GITHUB_ENV"; echo "MAKE_LATEST=false" >> "$GITHUB_ENV"; echo "RELEASE_SUFFIX= (beta)" >> "$GITHUB_ENV"
-            echo "This is a BETA release."
-          else
-            echo "PRERELEASE=false" >> "$GITHUB_ENV"; echo "MAKE_LATEST=true" >> "$GITHUB_ENV"; echo "RELEASE_SUFFIX=" >> "$GITHUB_ENV"
-            echo "This is a STABLE release."
-          fi
 
       # The signing key lives only in GitHub secrets (Settings → Secrets and variables → Actions), never in the repo.
       # See android/SIGNING.md. Without them the build stops here, so nothing is ever signed with another key.
@@ -128,7 +84,6 @@ jobs:
             cat aurora/whats-new.md
             echo '<!-- /notes -->'
             echo
-            if [ "$PRERELEASE" = "true" ]; then echo '**This is a beta release.** Only devices on the Beta channel (Settings, About, Update channel) are offered it.'; echo; fi
             echo 'Download **Aurora.apk** below on your Android phone, tablet or Android TV and open it to install.'
             echo 'You may need to allow installing apps from your browser or file manager the first time.'
             echo "Built from ${{ github.ref_name }} at ${{ github.sha }}."
@@ -138,9 +93,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: aurora-v1.2.${{ env.VERSION_CODE }}
-          name: Aurora 1.2.${{ env.VERSION_CODE }}${{ env.RELEASE_SUFFIX }}
+          name: Aurora 1.2.${{ env.VERSION_CODE }}
           target_commitish: ${{ github.sha }}
-          prerelease: ${{ env.PRERELEASE }}
-          make_latest: ${{ env.MAKE_LATEST }}
+          make_latest: true
           files: Aurora.apk
           body_path: release-notes.md

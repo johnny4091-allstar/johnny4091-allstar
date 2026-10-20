@@ -1,4 +1,3 @@
-- New: Settings has an Update channel, Stable or Beta. Beta gets new versions first.
 - New (phones): a "Back" button in the video and Live TV players, so you can get out easily when you are done watching.
 - Improved: the Users page in Admin shows live device counts per account, with an "Over limit" warning, refreshed every 10 seconds.
 - New: report a channel with a long-press (or the Menu button on a TV remote). Aurora also reports channels that keep buffering.
