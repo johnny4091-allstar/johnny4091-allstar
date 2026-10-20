@@ -12,7 +12,7 @@ Each device chooses its channel in **Settings → About → Update channel**:
 |---|---|
 | A **stable** release (what happens today) | Push as usual. |
 | A **beta** release | Put `[beta]` anywhere in the last commit message of the push. The release is published as a *pre-release*, named "Aurora 1.2.N (beta)", and is not marked "latest". Stable devices never see it. |
-| **Promote** a beta to stable | Run the workflow "Build Aurora APK" by hand (Actions → Run workflow) and type the release's tag in `promote_tag`, for example `aurora-v1.2.170`. No rebuild: that release is switched to stable and marked latest, and stable devices are offered it. |
+| **Promote** a beta to stable | On GitHub: Releases → open the beta release → Edit (pencil) → remove " (beta)" from the title, untick **Set as a pre-release**, tick **Set as the latest release** → **Update release**. Stable devices are then offered it. (The workflow also has a `promote_tag` input that does the same without clicking, but GitHub only offers "Run workflow" for workflows that exist on the repository's default branch, and this one lives on the working branch until it is merged to main.) |
 | A manual build as beta | Run the workflow by hand and set `build_channel` to `beta`. |
 
 Version numbers are one sequence shared by both channels (`aurora-v1.2.N`), so a device on Beta that is ahead of Stable simply
