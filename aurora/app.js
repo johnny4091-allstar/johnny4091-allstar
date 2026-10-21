@@ -6572,7 +6572,7 @@
 
   function focusables(layer) {
     return $$(FOCUSABLE, layer).filter((el) => {
-      if (el.tabIndex < 0) return false;
+      if (el.tabIndex < 0 || el.disabled) return false;
       const r = el.getBoundingClientRect();
       return r.width > 1 && r.height > 1 && getComputedStyle(el).visibility !== 'hidden';
     });
@@ -6616,7 +6616,8 @@
     // style of each one on every press made the remote lag on TV boxes.
     const W = window.innerWidth, H = window.innerHeight;
     for (const el of $$(FOCUSABLE, layer)) {
-      if (el.tabIndex < 0 || el === cur || el.contains(cur) || cur.contains(el)) continue;
+      // A disabled control (a setting the admin locked) reports tabIndex 0 but can't take focus: trying it left the remote stuck.
+      if (el.tabIndex < 0 || el.disabled || el === cur || el.contains(cur) || cur.contains(el)) continue;
       const b = el.getBoundingClientRect();
       if (b.width <= 1 || b.height <= 1) continue;
       if (b.bottom < r.top - 1.5 * H || b.top > r.bottom + 1.5 * H || b.right < r.left - 1.5 * W || b.left > r.right + 1.5 * W) continue;
@@ -6673,7 +6674,14 @@
     // Some items do something when there's nowhere further to go (the guide's channel column opens the groups).
     if (!best && dir === 'left' && cur.__onLeftEdge) { cur.__onLeftEdge(); return; }
     if (dir === 'right' && cur.__onRightEdge && (!best || !best.el.closest('[data-nav-zone]'))) { cur.__onRightEdge(); return; }
-    if (best) focusEl(best.el);
+    if (best) {
+      focusEl(best.el);
+      if (document.activeElement !== best.el) {
+        // It wouldn't take the focus (hidden, or not focusable after all): never leave the remote stuck, try the next one.
+        const rest = cands.filter((c) => c.el !== best.el).sort((a, b) => (a.primary + a.cross * 2) - (b.primary + b.cross * 2));
+        for (const c of rest.slice(0, 8)) { focusEl(c.el); if (document.activeElement === c.el) break; }
+      }
+    }
   }
 
   const isTextInput = (el) => el && ((el.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit'].includes(el.type)) || el.tagName === 'TEXTAREA');
