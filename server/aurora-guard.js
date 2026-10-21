@@ -527,12 +527,12 @@ async function checkConnections() {
       c.full = true; changed = true;
       log(`TV provider connections full: ${n} of ${c.limit} in use`);
       sendAlert('Aurora: TV provider connections are full', `${n} of ${c.limit} streams in use. New channels will fail until someone stops watching.`, true);
-    } else if (n < c.limit - 1 && c.full) { c.full = false; changed = true; }
+    } else if (c.full && n < Math.max(1, c.limit - 1)) { c.full = false; changed = true; }
     if (c.alertAt > 0 && n >= c.alertAt && n < c.limit && !c.warned) {
       c.warned = true; changed = true;
       log(`TV provider connections high: ${n} of ${c.limit} in use`);
       sendAlert('Aurora: TV provider connections running high', `${n} of ${c.limit} streams in use (warning level ${c.alertAt}).`, false);
-    } else if (c.warned && n < c.alertAt - 2) { c.warned = false; changed = true; }
+    } else if (c.warned && n < Math.max(1, c.alertAt - 2)) { c.warned = false; changed = true; }
   }
   if (changed) saveStore();
 }

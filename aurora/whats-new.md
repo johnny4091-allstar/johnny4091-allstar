@@ -1,2 +1,2 @@
-- Better playback: when a video or channel won't play or keeps buffering, the app now tells the admin automatically, so it can be fixed sooner.
+- Fixes from a full check of the app: problem reports and feedback are never lost when the connection blips, and the Live TV failure count is accurate.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

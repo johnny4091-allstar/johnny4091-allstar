@@ -82,10 +82,19 @@ sub get(path as string, params as object, done as string)
     call("GET", path, params, invalid, done)
 end sub
 
-sub ignore()
+sub ignore(event as object)
+    answer(event)
 end sub
 
+' The answer to a request. Also lets go of the finished request, so they don't pile up over a long session.
 function answer(event as object) as object
+    node = event.getRoSGNode()
+    for each id in m.pending
+        if m.pending[id].isSameNode(node)
+            m.pending.Delete(id)
+            exit for
+        end if
+    end for
     return event.getData()
 end function
 
@@ -147,6 +156,7 @@ sub start()
         m.global.token = reg.Read("token")
         m.global.userId = reg.Read("userId")
         busy(true)
+        m.sessionTries = 0
         get("/Users/" + m.global.userId, {}, "onSessionChecked")
     else
         showLogin("")
@@ -155,13 +165,29 @@ end sub
 
 sub onSessionChecked(event as object)
     r = answer(event)
-    busy(false)
     if r.ok
+        busy(false)
         showHome()
-    else
+    else if r.status = 401 or r.status = 403
+        ' The server no longer accepts this sign-in.
+        busy(false)
         signOutLocal()
         showLogin("")
+    else if m.sessionTries < 5
+        ' No network yet (the Roku just started) or the server is briefly down: keep the sign-in and try again.
+        m.sessionTries++
+        m.retryTimer = CreateObject("roSGNode", "Timer")
+        m.retryTimer.duration = 3
+        m.retryTimer.observeField("fire", "retrySession")
+        m.retryTimer.control = "start"
+    else
+        busy(false)
+        showLogin("Can't reach the server. Check the connection and try again.")
     end if
+end sub
+
+sub retrySession()
+    get("/Users/" + m.global.userId, {}, "onSessionChecked")
 end sub
 
 sub showLogin(message as string)

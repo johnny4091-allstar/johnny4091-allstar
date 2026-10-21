@@ -97,6 +97,7 @@ public class LivePlayerActivity extends Activity {
     /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
     private boolean failed;
     private int failedChannels, failedCode;
+    private boolean failureCounted; // this channel's failure is already counted (OK to retry doesn't count it again)
     private String failedName = "";
     private long bufferingSince;
     private boolean stopped;
@@ -224,6 +225,7 @@ public class LivePlayerActivity extends Activity {
                 if (state == Player.STATE_READY) {
                     retries = 0;
                     failed = false;
+                    failureCounted = false;
                     bufferingSince = 0;
                     status.setVisibility(View.GONE);
                 } else if (state == Player.STATE_BUFFERING) {
@@ -256,6 +258,7 @@ public class LivePlayerActivity extends Activity {
         index = (i + channels.size()) % channels.size();
         retries = 0;
         failed = false;
+        failureCounted = false;
         bufferingSince = 0;
         handler.removeCallbacks(retryRunnable);
         status.setVisibility(View.GONE);
@@ -372,7 +375,7 @@ public class LivePlayerActivity extends Activity {
             // A provider that says "too many connections" is also counting our retries: don't hammer it.
             handler.postDelayed(retryRunnable, code == 429 || code == 458 ? 8000L : Math.min(1000L * retries, 5000L));
         } else if (retries <= MAX_RETRIES + SLOW_RETRIES) {
-            if (retries == MAX_RETRIES + 1) { failedChannels++; failedName = c.name; failedCode = code; }
+            if (!failureCounted) { failureCounted = true; failedChannels++; failedName = c.name; failedCode = code; }
             failed = true;
             status.setText("This channel isn't working right now. Still trying…" + providerNote + "\nPress OK to try again now, or pick another channel.");
             status.setVisibility(View.VISIBLE);

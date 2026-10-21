@@ -4,5 +4,5 @@
   "forceUpdateAfter": 3,
   "guardUrl": "https://emby4836.duckdns.org:8922",
   "guardEnabled": true,
-  "rokuBuild": 1
+  "rokuBuild": 2
 }

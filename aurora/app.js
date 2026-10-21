@@ -94,10 +94,10 @@
       if (!state.userId || !state.apiKey) { this.timer = setTimeout(() => this.flush(), 60000); return; }
       const items = this.queue.splice(0);
       try {
-        let data = null;
-        try { data = await readAuroraPref(this.PREFS); } catch { /* none yet */ }
+        // A failed read must not count as "nothing saved yet": writing then would wipe the earlier entries.
+        const data = await readAuroraPref(this.PREFS);
         const cutoff = Date.now() - this.DAYS * 86400000;
-        const kept = [...items.reverse(), ...(data?.items || [])].filter((x) => (x.t || 0) > cutoff).slice(0, this.KEEP);
+        const kept = [...items].reverse().concat(data?.items || []).filter((x) => (x.t || 0) > cutoff).slice(0, this.KEEP);
         await writeAuroraPref(this.PREFS, state.userId, { items: kept });
       } catch {
         this.queue = [...items, ...this.queue].slice(-20);
@@ -3524,8 +3524,7 @@
       version: nativeApp?.getVersionName?.() || 'web', screen: location.hash || '#/home',
       log: appLog.read().slice(-80).map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
     };
-    let data = null;
-    try { data = await readAuroraPref('aurora-feedback'); } catch { /* none yet */ }
+    const data = await readAuroraPref('aurora-feedback'); // a failed read would otherwise wipe earlier feedback
     const items = [entry, ...(data?.items || [])].slice(0, FEEDBACK_KEEP);
     await writeAuroraPref('aurora-feedback', state.userId, { items });
     // A copy in the server's own logs.
@@ -3557,8 +3556,8 @@
     };
     this.sending = true;
     try {
-      let data = null;
-      try { data = await readAuroraPref('aurora-problems'); } catch { /* none yet */ }
+      // A failed read must not count as "nothing saved yet": writing then would wipe the earlier reports.
+      const data = await readAuroraPref('aurora-problems');
       await writeAuroraPref('aurora-problems', state.userId, { items: [entry, ...(data?.items || [])].slice(0, this.KEEP) });
       this.sentAt = Date.now();
       store.set('ef.problemsDay', JSON.stringify({ day, n: count.n + 1 }));
@@ -3738,7 +3737,9 @@
   };
   async function playProblems(users, days) {
     const since = Date.now() - days * DAY;
-    return (await allFeedback(users, 'aurora-playlog')).filter((e) => (e.t || 0) > since && PROBLEM_KINDS[e.kind]);
+    // Customers can write their own preferences, so only well-formed entries are shown.
+    return (await allFeedback(users, 'aurora-playlog'))
+      .filter((e) => typeof e.kind === 'string' && Object.prototype.hasOwnProperty.call(PROBLEM_KINDS, e.kind) && Number(e.t) > since);
   }
   function problemDetail(e) {
     const mbps = e.bitrate ? `limit ${Math.round(e.bitrate / 1e6)} Mbps` : '';
@@ -3808,8 +3809,9 @@
       </section>`;
     $('[data-clear-problems]', body)?.addEventListener('click', async () => {
       if (!await confirmAction('Clear playback problems?', 'This removes the list for every customer. New problems still come in.', 'Clear')) return;
-      const ids = [...new Set(events.map((e) => e.userId))];
       try {
+        // Everyone with anything saved, not only those in the period shown.
+        const ids = [...new Set((await allFeedback(users, 'aurora-playlog')).map((e) => e.userId))];
         await Promise.all(ids.map((u) => writeAuroraPref('aurora-playlog', u, { items: [] })));
         toast('Cleared', 1500);
         adminProblems(body, isCurrent);
@@ -3820,9 +3822,17 @@
   // ----- TV provider connections (Admin → Overview) -----
   // Aurora Guard 1.3.0 counts them every minute and sends the alerts; with an older guard the page counts by itself.
   // An Xtream account also says how many connections the provider itself sees in use.
-  async function providerAccount() {
+  let providerCache = null;
+  async function providerAccount({ fresh = false } = {}) {
     const cfg = iptv.config;
     if (!cfg || cfg.type !== 'xtream' || !iptvOn(cfg)) return null;
+    // Asked at most every 2 minutes (the Overview refreshes every 30 s); the health check asks fresh.
+    if (!fresh && providerCache && Date.now() - providerCache.t < 120000) return providerCache.r;
+    const r = await providerAccountNow(cfg);
+    providerCache = { t: Date.now(), r };
+    return r;
+  }
+  async function providerAccountNow(cfg) {
     try {
       const r = await xtJson(cfg, {});
       const u = r?.user_info;
@@ -3869,9 +3879,13 @@
   async function renderConnections(el, isCurrent, users) {
     const [c, acct] = await Promise.all([connectionStatus(users), providerAccount()]);
     if (!isCurrent() || !el.isConnected) return null;
-    // Typing in the boxes: don't redraw under the cursor.
-    if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return c;
-    el.innerHTML = connectionsHtml(c, acct);
+    // Nothing changed, or the admin is using the section (typing, or the remote's focus is in it): leave it as it is.
+    const html = connectionsHtml(c, acct);
+    if (html === el.__html || (el.__html && el.contains(document.activeElement))) return c;
+    const open = !!$('details[open]', el);
+    el.innerHTML = html;
+    el.__html = html;
+    if (open) $('details', el)?.setAttribute('open', '');
     $('[data-conn-save]', el).addEventListener('click', async () => {
       const limit = Math.max(0, Math.round(Number($('[data-conn-limit]', el).value) || 0));
       const alertAt = Math.max(0, Math.round(Number($('[data-conn-alert]', el).value) || 0));
@@ -3884,6 +3898,8 @@
       } catch (e) {
         toast(e.off ? 'Saved on this device. Aurora Guard is off, so there are no alerts.' : e.status === 404 ? 'Saved on this device. Update Aurora Guard to 1.3.0 to get alerts.' : `Saved on this device, but Aurora Guard said: ${e.message}`, 6000);
       }
+      el.__html = '';
+      document.activeElement?.blur?.();
       renderConnections(el, isCurrent, users);
     });
     return c;
@@ -3944,7 +3960,7 @@
         const cfg = iptv.config;
         if (!iptvOn(cfg)) return hasLiveTv() ? ok('Emby\'s own Live TV') : warn('No Live TV source is set up (Admin → Live TV).');
         if (cfg.type === 'xtream') {
-          const a = await providerAccount();
+          const a = await providerAccount({ fresh: true });
           if (a?.error) return bad(`The provider didn't answer properly: ${a.error}`);
           const days = a.expires ? Math.ceil((a.expires - Date.now()) / DAY) : null;
           const t = `Xtream account ${a.status || 'answered'} · ${a.active} of ${a.max || '?'} connections in use${days != null ? ` · ends in ${days} days` : ''}`;
@@ -4449,7 +4465,17 @@
   // Aurora's live player records what it's playing in each viewer's Emby display preferences ("aurora-watching");
   // an entry not refreshed for three minutes counts as stopped.
   const WATCHING_FRESH = 3 * 60000;
-  async function liveWatching(users) {
+  // The Overview asks for this twice every 30 s (Watching now and the connection meter): share one reading.
+  let watchingCache = null;
+  function liveWatching(users) {
+    const key = ((Array.isArray(users) ? users : users?.Items) || []).map((u) => u.Id).join();
+    if (watchingCache && watchingCache.key === key && Date.now() - watchingCache.t < 15000) return watchingCache.p;
+    const p = liveWatchingNow(users);
+    watchingCache = { key, t: Date.now(), p };
+    p.catch(() => { watchingCache = null; });
+    return p;
+  }
+  async function liveWatchingNow(users) {
     const out = { now: [], history: [] };
     const list = (Array.isArray(users) ? users : users?.Items) || [];
     const queue = list.slice();
