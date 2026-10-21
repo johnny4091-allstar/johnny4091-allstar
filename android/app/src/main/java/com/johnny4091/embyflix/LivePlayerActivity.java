@@ -77,6 +77,8 @@ public class LivePlayerActivity extends Activity {
     static final String EXTRA_REPORT = "report";       // Emby details for telling the admin what's playing
     static final String RESULT_INDEX = "index";
     static final String RESULT_STALLS = "stalls", RESULT_MINUTES = "minutes", RESULT_BUFFER = "buffer";
+    /** Channels that stopped working while open (for Admin → Playback problems): how many, the last one, and why. */
+    static final String RESULT_FAILED = "failed", RESULT_FAILED_NAME = "failedName", RESULT_FAILED_CODE = "failedCode";
 
     private static final int ACCENT = Color.parseColor("#2AD4D0");
     private static final int PANEL = Color.parseColor("#E6070C1C");
@@ -94,6 +96,8 @@ public class LivePlayerActivity extends Activity {
     private int retries;
     /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
     private boolean failed;
+    private int failedChannels, failedCode;
+    private String failedName = "";
     private long bufferingSince;
     private boolean stopped;
     private String group = "";
@@ -368,6 +372,7 @@ public class LivePlayerActivity extends Activity {
             // A provider that says "too many connections" is also counting our retries: don't hammer it.
             handler.postDelayed(retryRunnable, code == 429 || code == 458 ? 8000L : Math.min(1000L * retries, 5000L));
         } else if (retries <= MAX_RETRIES + SLOW_RETRIES) {
+            if (retries == MAX_RETRIES + 1) { failedChannels++; failedName = c.name; failedCode = code; }
             failed = true;
             status.setText("This channel isn't working right now. Still trying…" + providerNote + "\nPress OK to try again now, or pick another channel.");
             status.setVisibility(View.VISIBLE);
@@ -759,6 +764,9 @@ public class LivePlayerActivity extends Activity {
         result.putExtra(RESULT_STALLS, stalls);
         result.putExtra(RESULT_MINUTES, (int) ((System.currentTimeMillis() - openedAt) / 60000));
         result.putExtra(RESULT_BUFFER, bufferLevel);
+        result.putExtra(RESULT_FAILED, failedChannels);
+        result.putExtra(RESULT_FAILED_NAME, failedName);
+        result.putExtra(RESULT_FAILED_CODE, failedCode);
         setResult(RESULT_OK, result);
         finish();
     }

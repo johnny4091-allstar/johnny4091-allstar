@@ -74,6 +74,39 @@
     },
     clear() { try { localStorage.removeItem(this.KEY); } catch { /* ignore */ } },
   };
+  // Playback problems for Admin → Playback problems: a video that wouldn't play, one that kept stopping to buffer,
+  // a live channel that failed. Kept in the viewer's own Emby display preferences ("aurora-playlog"), so the admin
+  // page can read every account's. Written a few seconds after the event, together with any others.
+  const deviceLabel = () => nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser');
+  const playLog = {
+    PREFS: 'aurora-playlog', KEEP: 60, DAYS: 14, queue: [], timer: null,
+    add(e) {
+      try {
+        this.queue.push({ t: Date.now(), device: deviceLabel(), version: nativeApp?.getVersionName?.() || 'web', ...e });
+        if (this.queue.length > 20) this.queue.splice(0, this.queue.length - 20);
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.flush(), 5000);
+      } catch { /* never get in the way of playback */ }
+    },
+    async flush() {
+      this.timer = null;
+      if (!this.queue.length) return;
+      if (!state.userId || !state.apiKey) { this.timer = setTimeout(() => this.flush(), 60000); return; }
+      const items = this.queue.splice(0);
+      try {
+        let data = null;
+        try { data = await readAuroraPref(this.PREFS); } catch { /* none yet */ }
+        const cutoff = Date.now() - this.DAYS * 86400000;
+        const kept = [...items.reverse(), ...(data?.items || [])].filter((x) => (x.t || 0) > cutoff).slice(0, this.KEEP);
+        await writeAuroraPref(this.PREFS, state.userId, { items: kept });
+      } catch {
+        this.queue = [...items, ...this.queue].slice(-20);
+        this.timer = setTimeout(() => this.flush(), 5 * 60000);
+      }
+    },
+  };
+  const itemTitle = (it) => (it?.Type === 'Episode' ? `${it.SeriesName || ''} ${episodeLabel(it)}`.trim() : it?.Name || '');
+
   {
     const describe = (args) => args.map((a) => (a instanceof Error ? a.message : typeof a === 'object' ? (() => { try { return JSON.stringify(a); } catch { return String(a); } })() : String(a))).join(' ');
     const origError = console.error.bind(console), origWarn = console.warn.bind(console);
@@ -1692,6 +1725,11 @@
       }
     }
     if (ch && stats?.stalls >= 3) reportChannel(ch, 'Buffering', { auto: true, group: p.group });
+    if (stats?.stalls >= 3) playLog.add({ kind: 'live-stalling', title: ch?.name || '', stalls: stats.stalls, watchedMin: stats.minutes, buffer: stats.buffer });
+    if (stats?.failed > 0) {
+      playLog.add({ kind: 'live-failed', title: stats.failedName || ch?.name || '', error: stats.failedCode ? `provider answered ${stats.failedCode}` : 'no picture', count: stats.failed });
+      appLog.add('warn', `Live TV: ${stats.failed} ${stats.failed === 1 ? 'channel' : 'channels'} stopped working (last ${stats.failedName || '?'}${stats.failedCode ? ', provider answered ' + stats.failedCode : ''})`);
+    }
     if (!ch) return;
     rememberChannel(ch);
     const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`);
@@ -3611,7 +3649,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3653,7 +3691,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback, reports: adminReports })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
     // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
     const bar = $('.tab-bar', page), active = $('.tab.active', bar);
@@ -3691,6 +3729,276 @@
     }, 30000);
   }
 
+  // ----- Playback problems (Admin → Playback problems) -----
+  // Every device notes what wouldn't play, what kept buffering and which live channels failed ("aurora-playlog",
+  // see playLog). Read here from every account, so a problem shows up before a customer calls.
+  const PROBLEM_KINDS = {
+    failed: ['Would not play', 'bad'], converted: ['Had to convert', 'warn'], stalling: ['Kept buffering', 'warn'],
+    'live-failed': ['Live channel failed', 'bad'], 'live-stalling': ['Live TV kept buffering', 'warn'],
+  };
+  async function playProblems(users, days) {
+    const since = Date.now() - days * DAY;
+    return (await allFeedback(users, 'aurora-playlog')).filter((e) => (e.t || 0) > since && PROBLEM_KINDS[e.kind]);
+  }
+  function problemDetail(e) {
+    const mbps = e.bitrate ? `limit ${Math.round(e.bitrate / 1e6)} Mbps` : '';
+    if (e.kind === 'stalling') return [`${e.stalls} stalls, ${e.stalledSec} s buffering (${e.pct}%) in ${e.watchedMin} min`, e.method, mbps].filter(Boolean).join(' · ');
+    if (e.kind === 'live-stalling') return `${e.stalls} stalls in ${e.watchedMin} min · buffer ${e.buffer || 'normal'}`;
+    const err = String(e.error || '');
+    const why = /StartTimeout/.test(err) ? 'never started (the server sent nothing)'
+      : err.startsWith('unplayable:') ? `this device couldn't play the file as it is (${err.slice(11)}), so the server converted it`
+        : err.startsWith('failed:') ? `stopped and couldn't reconnect (${err.slice(7)})` : err;
+    return [why, e.method, e.atSec ? `at ${Math.floor(e.atSec / 60)} min` : '', mbps].filter(Boolean).join(' · ');
+  }
+  function problemRow(e) {
+    const [label, cls] = PROBLEM_KINDS[e.kind];
+    return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.user || '')}</strong> · ${esc(e.title || 'Unknown')} <span class="pill ${cls}">${label}</span>
+      <div class="muted">${esc(problemDetail(e))}</div>
+      <div class="muted">${esc(e.device || '')}${e.version ? ' · Aurora ' + esc(e.version) : ''}</div></div>
+      <div class="admin-row-time">${esc(timeAgo(e.t))}</div></div>`;
+  }
+  function groupProblems(events, key) {
+    const m = new Map();
+    for (const e of events) {
+      const k = key(e);
+      if (!k) continue;
+      const g = m.get(k) || { key: k, n: 0, users: new Set(), titles: new Set(), devices: new Set(), kinds: {}, last: 0 };
+      g.n++; g.users.add(e.user); g.titles.add(e.title); g.devices.add(e.device); g.kinds[e.kind] = (g.kinds[e.kind] || 0) + 1; g.last = Math.max(g.last, e.t || 0);
+      m.set(k, g);
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n || b.last - a.last);
+  }
+  const kindsText = (g) => Object.entries(g.kinds).map(([k, n]) => `${n} ${PROBLEM_KINDS[k][0].toLowerCase()}`).join(', ');
+
+  async function adminProblems(body, isCurrent) {
+    const days = [1, 7, 14].includes(Number(new URLSearchParams(location.hash.split('?')[1] || '').get('days'))) ? Number(new URLSearchParams(location.hash.split('?')[1] || '').get('days')) : 7;
+    let users, events;
+    try { users = await api('/Users'); events = await playProblems(users, days); } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    const n = (...kinds) => events.filter((e) => kinds.includes(e.kind)).length;
+    const titles = groupProblems(events, (e) => e.title).filter((g) => g.n >= 2);
+    const people = groupProblems(events, (e) => e.user).filter((g) => g.n >= 3);
+    const vod = events.filter((e) => !e.kind.startsWith('live'));
+    const transcoded = vod.filter((e) => e.method === 'Transcode').length;
+    const range = (d, label) => `<a href="#/admin?tab=problems&days=${d}" class="tab${d === days ? ' active' : ''}">${label}</a>`;
+    body.innerHTML = `
+      <div class="tab-bar admin-subtabs">${range(1, 'Last 24 hours')}${range(7, 'Last 7 days')}${range(14, 'Last 14 days')}</div>
+      <div class="stat-grid">
+        ${statTile('Problems', events.length, events.length ? `${new Set(events.map((e) => e.user)).size} customers affected` : 'Nothing went wrong', events.length ? '' : 'good')}
+        ${statTile('Would not play', n('failed'), n('converted') ? `${n('converted')} more played after converting` : '')}
+        ${statTile('Kept buffering', n('stalling'), vod.length ? `${transcoded} of ${vod.length} on-demand problems were converting (transcode)` : '')}
+        ${statTile('Live TV', n('live-failed', 'live-stalling'), `${n('live-failed')} channel failures · ${n('live-stalling')} buffering`)}
+      </div>
+      ${titles.length || people.length ? `<section class="admin-card">
+        <h2>Repeat problems <small>Worth a look</small></h2>
+        <div class="admin-list">
+          ${titles.map((g) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(g.key)}</strong> <span class="pill ${g.kinds.failed || g.kinds['live-failed'] ? 'bad' : 'warn'}">${g.n} times</span>
+            <div class="muted">${esc(kindsText(g))} · ${g.users.size} ${g.users.size === 1 ? 'customer' : 'customers'}</div>
+            <div class="muted">${g.users.size > 1 ? 'Several customers: most likely the file itself, the server, or the channel at the provider.' : 'One customer: most likely their connection or device. See them below.'}</div></div>
+            <div class="admin-row-time">${esc(timeAgo(g.last))}</div></div>`).join('')}
+          ${people.map((g) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(g.key)}</strong> <span class="pill warn">${g.n} problems</span>
+            <div class="muted">${esc(kindsText(g))} · on ${g.titles.size} ${g.titles.size === 1 ? 'title' : 'different titles'} · ${esc([...g.devices].join(', '))}</div>
+            <div class="muted">${g.titles.size > 2 ? 'Problems on many titles: most likely this customer\'s internet or device. A lower Streaming quality or the Large Live TV buffer can help.' : 'Problems on the same few titles: check those files.'}</div></div>
+            <div class="admin-row-time">${esc(timeAgo(g.last))}</div></div>`).join('')}
+        </div></section>` : ''}
+      <section class="admin-card">
+        <h2>Everything <small>Newest first</small></h2>
+        ${events.length ? `<div class="admin-list">${events.slice(0, 200).map(problemRow).join('')}</div>
+          <button class="btn btn-gray" data-clear-problems>Clear all</button>` : '<p class="muted">No playback problems in this period. Every device sends its problems here by itself, once it has this update.</p>'}
+      </section>`;
+    $('[data-clear-problems]', body)?.addEventListener('click', async () => {
+      if (!await confirmAction('Clear playback problems?', 'This removes the list for every customer. New problems still come in.', 'Clear')) return;
+      const ids = [...new Set(events.map((e) => e.userId))];
+      try {
+        await Promise.all(ids.map((u) => writeAuroraPref('aurora-playlog', u, { items: [] })));
+        toast('Cleared', 1500);
+        adminProblems(body, isCurrent);
+      } catch (e) { toast("Couldn't clear them: " + adminError(e)); }
+    });
+  }
+
+  // ----- TV provider connections (Admin → Overview) -----
+  // Aurora Guard 1.3.0 counts them every minute and sends the alerts; with an older guard the page counts by itself.
+  // An Xtream account also says how many connections the provider itself sees in use.
+  async function providerAccount() {
+    const cfg = iptv.config;
+    if (!cfg || cfg.type !== 'xtream' || !iptvOn(cfg)) return null;
+    try {
+      const r = await xtJson(cfg, {});
+      const u = r?.user_info;
+      if (!u) return { error: 'The provider did not send account details.' };
+      return { active: Number(u.active_cons) || 0, max: Number(u.max_connections) || 0, status: u.status || '', expires: Number(u.exp_date) ? new Date(Number(u.exp_date) * 1000) : null };
+    } catch (e) { return { error: e.message }; }
+  }
+  async function connectionStatus(users) {
+    let g = null;
+    if (guardEnabled) { try { g = await guard('/connections'); } catch (e) { g = { error: e, old: e.status === 404 }; } }
+    const out = { fromGuard: !!(g && !g.error), guardOld: !!g?.old, limit: 0, alertAt: 0, peak: 0, streams: [] };
+    if (out.fromGuard) Object.assign(out, { limit: g.limit, alertAt: g.alertAt, peak: g.peak, streams: g.streams || [], checkedAt: g.checkedAt });
+    else {
+      const [sessions, live] = await Promise.all([api('/Sessions').catch(() => []), liveWatching(users)]);
+      out.streams = [
+        ...live.now.map((e) => ({ source: 'aurora', user: e.user, device: e.device, channel: [e.num, e.name].filter(Boolean).join(' ') })),
+        ...(Array.isArray(sessions) ? sessions : []).filter((s) => s.NowPlayingItem?.Type === 'TvChannel').map((s) => ({ source: 'emby', user: s.UserName, device: s.DeviceName, channel: s.NowPlayingItem.Name })),
+      ];
+      try { const c = JSON.parse(store.get('ef.connLimit') || 'null'); if (c) { out.limit = c.limit || 0; out.alertAt = c.alertAt || 0; } } catch { /* not set */ }
+    }
+    out.inUse = out.streams.length;
+    return out;
+  }
+  function connectionsHtml(c, acct) {
+    const limit = c.limit || acct?.max || 0;
+    const pct = limit ? Math.min(100, Math.round((c.inUse / limit) * 100)) : 0;
+    const level = !limit ? '' : c.inUse >= limit ? 'bad' : (c.alertAt && c.inUse >= c.alertAt) || pct >= 85 ? 'warn' : 'ok';
+    return `
+      <div class="conn-meter"><div class="conn-count"><strong>${c.inUse}</strong>${limit ? ` of ${limit}` : ''} in use</div>
+        ${limit ? `<div class="conn-bar"><span class="${level}" style="width:${pct}%"></span></div>` : ''}</div>
+      <dl class="admin-dl">
+        ${acct && !acct.error ? `<dt>The provider says</dt><dd>${acct.active} of ${acct.max || '?'} in use${acct.status && acct.status !== 'Active' ? ` · <span class="pill bad">${esc(acct.status)}</span>` : ''}${acct.expires ? ` · account ends ${esc(acct.expires.toLocaleDateString())}` : ''}</dd>` : ''}
+        ${acct?.error ? `<dt>The provider says</dt><dd class="muted">${esc(acct.error)}</dd>` : ''}
+        ${c.fromGuard ? `<dt>Peak today</dt><dd>${c.peak}</dd>` : ''}
+        <dt>Alerts</dt><dd>${c.fromGuard ? (c.limit ? `Aurora Guard alerts at ${c.alertAt ? c.alertAt + ' and ' : ''}${c.limit} (full)` : 'Set the limit below to get alerts') : c.guardOld ? '<span class="pill warn">Update Aurora Guard to 1.3.0</span> for alerts and today\'s peak' : 'Aurora Guard is off: no alerts'}</dd>
+      </dl>
+      ${c.streams.length ? `<details class="conn-list"><summary>Who is using them</summary><div class="admin-list">${c.streams.map((s) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(s.user || '')}</strong> · ${esc(s.channel || '')}<div class="muted">${esc(s.device || '')} · ${s.source === 'emby' ? 'Emby Live TV' : 'Aurora live player'}</div></div></div>`).join('')}</div></details>` : ''}
+      <div class="conn-form">
+        <label class="admin-field"><span>Connections on the account</span><input type="number" min="0" max="1000" inputmode="numeric" data-conn-limit value="${c.limit || acct?.max || ''}" placeholder="60"></label>
+        <label class="admin-field"><span>Warn me at</span><input type="number" min="0" max="1000" inputmode="numeric" data-conn-alert value="${c.alertAt || ''}" placeholder="50"></label>
+        <button class="btn btn-gray" data-conn-save>Save</button>
+      </div>`;
+  }
+  async function renderConnections(el, isCurrent, users) {
+    const [c, acct] = await Promise.all([connectionStatus(users), providerAccount()]);
+    if (!isCurrent() || !el.isConnected) return null;
+    // Typing in the boxes: don't redraw under the cursor.
+    if (el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return c;
+    el.innerHTML = connectionsHtml(c, acct);
+    $('[data-conn-save]', el).addEventListener('click', async () => {
+      const limit = Math.max(0, Math.round(Number($('[data-conn-limit]', el).value) || 0));
+      const alertAt = Math.max(0, Math.round(Number($('[data-conn-alert]', el).value) || 0));
+      if (limit && alertAt > limit) { toast('"Warn me at" must be no higher than the number of connections.'); return; }
+      store.set('ef.connLimit', JSON.stringify({ limit, alertAt }));
+      try {
+        if (!guardEnabled) throw Object.assign(new Error('off'), { off: true });
+        await guard('/connections', { method: 'PUT', body: { limit, alertAt } });
+        toast('Saved. Aurora Guard will alert you.', 2500);
+      } catch (e) {
+        toast(e.off ? 'Saved on this device. Aurora Guard is off, so there are no alerts.' : e.status === 404 ? 'Saved on this device. Update Aurora Guard to 1.3.0 to get alerts.' : `Saved on this device, but Aurora Guard said: ${e.message}`, 6000);
+      }
+      renderConnections(el, isCurrent, users);
+    });
+    return c;
+  }
+
+  // ----- Check everything (Admin → Overview) -----
+  // One line per part of the service, green, amber or red, with what to do about anything that isn't right.
+  async function runHealthCheck(el, users) {
+    const lines = [];
+    const draw = () => {
+      el.innerHTML = `<div class="health-list">${lines.map((l) => `<div class="health-row ${l.level}"><span class="health-dot"></span>
+        <div><strong>${esc(l.name)}</strong> <span class="health-state">${l.level === 'ok' ? 'OK' : l.level === 'warn' ? 'Check' : l.level === 'bad' ? 'Problem' : 'Checking…'}</span>
+        <div class="muted">${l.html ?? esc(l.text || '')}</div></div></div>`).join('')}</div>`;
+    };
+    const check = (name, fn) => {
+      const line = { name, level: 'wait', text: '' };
+      lines.push(line);
+      return (async () => {
+        try { Object.assign(line, await fn()); } catch (e) { Object.assign(line, { level: 'bad', text: e.message || String(e) }); }
+        draw();
+      })();
+    };
+    const ok = (text) => ({ level: 'ok', text }), warn = (text) => ({ level: 'warn', text }), bad = (text) => ({ level: 'bad', text });
+    const guardOn = guardEnabled;
+    const jobs = [
+      check('Emby server', async () => {
+        const t0 = performance.now();
+        const info = await api('/System/Info');
+        const ms = Math.round(performance.now() - t0);
+        const extra = [info.HasPendingRestart && 'it needs a restart', info.HasUpdateAvailable && 'an Emby update is available'].filter(Boolean).join(', ');
+        if (ms > 2500) return warn(`Answered, but slowly (${ms} ms). The server PC may be busy.${extra ? ' Also ' + extra + '.' : ''}`);
+        return extra ? warn(`Answered in ${ms} ms, but ${extra}.`) : ok(`Answered in ${ms} ms (${info.ServerName || ''} ${info.Version || ''})`);
+      }),
+      check('Server tasks', async () => {
+        const tasks = await api('/ScheduledTasks');
+        const failed = (tasks || []).filter((t) => t.LastExecutionResult?.Status === 'Failed');
+        return failed.length ? warn(`Failed last time: ${failed.map((t) => t.Name).join(', ')}`) : ok('All scheduled tasks finished normally');
+      }),
+      check('Speed from this device', async () => {
+        const r = await measureBitrate(6000000, 8000);
+        const mbps = r.bps / 1e6;
+        const t = `${mbps.toFixed(1)} Mbps from the server to this device${r.complete ? '' : ' (the test didn\'t finish in time)'}. Customers' speeds depend on their own internet.`;
+        return mbps < 4 ? bad(t + ' Too slow for HD: check the server PC\'s upload speed.') : mbps < 10 ? warn(t) : ok(t);
+      }),
+      check('Aurora Guard', async () => {
+        if (!guardOn) return warn('Switched off ("guardEnabled" in aurora-config.json), so device limits and expiry dates are not enforced.');
+        const s = await guard('/status/users');
+        const ver = String(s.version || '0'), age = s.lastRun?.at ? Date.now() - s.lastRun.at : Infinity;
+        if (!s.emby?.online) return bad(`Running (${ver}) but can't reach Emby: ${s.emby?.error || 'no answer'}. Check "embyUrl" and "apiKey" in its config.json.`);
+        if (!s.lastRun?.ok || age > 5 * 60000) return bad(`Running (${ver}) but its every-minute check ${s.lastRun?.error ? 'failed: ' + s.lastRun.error : 'has not run lately'}.`);
+        if (s.dryRun) return warn(`Running (${ver}) in DRY RUN: it only logs, nobody is signed out or switched off. Set "dryRun": false in config.json.`);
+        const over = s.totals?.over || 0;
+        const old = ver.localeCompare('1.3.0', undefined, { numeric: true }) < 0;
+        const t = `Running ${ver}, enforcing. ${s.totals?.activeDevices || 0} ${s.totals?.activeDevices === 1 ? 'device' : 'devices'} in use${over ? `, ${over} ${over === 1 ? 'account' : 'accounts'} over the limit right now` : ''}.`;
+        return old ? warn(t + ' Update it to 1.3.0 for the connection alerts (copy the new aurora-guard.js and restart the task).') : over ? warn(t) : ok(t);
+      }),
+      check('Live TV source', async () => {
+        const cfg = iptv.config;
+        if (!iptvOn(cfg)) return hasLiveTv() ? ok('Emby\'s own Live TV') : warn('No Live TV source is set up (Admin → Live TV).');
+        if (cfg.type === 'xtream') {
+          const a = await providerAccount();
+          if (a?.error) return bad(`The provider didn't answer properly: ${a.error}`);
+          const days = a.expires ? Math.ceil((a.expires - Date.now()) / DAY) : null;
+          const t = `Xtream account ${a.status || 'answered'} · ${a.active} of ${a.max || '?'} connections in use${days != null ? ` · ends in ${days} days` : ''}`;
+          if (a.status && a.status !== 'Active') return bad(t);
+          return (days != null && days <= 7) || (a.max && a.active >= a.max) ? warn(t) : ok(t);
+        }
+        const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 30000);
+        if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) return bad("The playlist address didn't return an M3U playlist.");
+        return ok(`The M3U playlist loads (${fmtSize(text.length)})`);
+      }),
+      check('TV provider connections', async () => {
+        const c = await connectionStatus(users);
+        if (!c.limit) return warn(`${c.inUse} in use. Set the number of connections on your account below to get warnings.`);
+        const t = `${c.inUse} of ${c.limit} in use`;
+        return c.inUse >= c.limit ? bad(t + ': full, new channels will fail.') : c.alertAt && c.inUse >= c.alertAt ? warn(t) : ok(t);
+      }),
+      check('Channel reports to the provider', async () => {
+        if (!guardOn) return warn('Needs Aurora Guard.');
+        const [p, r] = await Promise.all([guard('/provider'), guard('/reports').catch(() => null)]);
+        if (!p.enabled || !p.keySet) return warn('Off: customers\' reports are kept in Admin → Channel reports but not sent to the provider.');
+        const recent = (r?.reports || []).filter((x) => Date.now() - x.at < DAY);
+        const failed = recent.filter((x) => x.forwarded === 'failed').length;
+        return failed ? bad(`${failed} of ${recent.length} reports today couldn't be sent. Check the key in Admin → Channel reports.`) : ok(`On${recent.length ? `, ${recent.length} sent today` : ''}`);
+      }),
+      check('Playback problems (24 hours)', async () => {
+        const ev = await playProblems(users, 1);
+        if (!ev.length) return ok('None reported');
+        const rep = groupProblems(ev, (e) => e.title).filter((g) => g.users.size >= 2);
+        const html = `${ev.length} from ${new Set(ev.map((e) => e.user)).size} customers${rep.length ? `, ${esc(rep.map((g) => g.key).slice(0, 3).join(', '))} for several people` : ''} · <a href="#/admin?tab=problems&days=1">See them</a>`;
+        return { level: ev.length >= 5 || rep.length ? 'bad' : 'warn', html };
+      }),
+      check('App updates', async () => {
+        const rel = await latestAuroraRelease();
+        if (!rel) return bad("Couldn't read the releases on GitHub, so apps can't find updates right now.");
+        const devices = await api('/Devices').catch(() => null);
+        const list = (Array.isArray(devices) ? devices : devices?.Items || []).filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY);
+        const oldKey = list.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < 166);
+        const behind = list.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < rel.code);
+        const t = `Latest is ${rel.name} · ${behind.length} of ${list.length} devices behind`;
+        return oldKey.length ? warn(`${t}. ${oldKey.length} still on the old signing key (1.2.165 or older): they must uninstall and reinstall once (${oldKey.map((d) => d.Name).slice(0, 5).join(', ')}).`) : ok(t);
+      }),
+      check('App settings file', async () => {
+        for (const url of REMOTE_CONFIG_URLS) {
+          try { const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(8000) }); if (r.ok) { await r.json(); return ok('aurora-config.json loads'); } } catch { /* next */ }
+        }
+        return bad("aurora-config.json couldn't be read, so apps keep their last settings (guard address, Requests).");
+      }),
+    ];
+    draw();
+    await Promise.all(jobs);
+    const bads = lines.filter((l) => l.level === 'bad').length, warns = lines.filter((l) => l.level === 'warn').length;
+    return { bads, warns };
+  }
+
   async function adminOverview(body, isCurrent) {
     const since = new Date(Date.now() - 14 * DAY);
     const safe = (p) => p.catch((e) => ({ error: e }));
@@ -3726,6 +4034,17 @@
         ${statTile('Library', counts?.error ? '—' : (counts.MovieCount || 0) + (counts.SeriesCount || 0),
           counts?.error ? '' : `${counts.MovieCount || 0} movies · ${counts.SeriesCount || 0} shows · ${counts.EpisodeCount || 0} episodes`)}
       </div>
+
+      <section class="admin-card">
+        <h2>Health check <small>Every part of the service</small></h2>
+        <div data-health><p class="muted">Checks the Emby server, Aurora Guard, the Live TV source and provider connections, channel reporting, app updates and the last day's playback problems.</p></div>
+        <button class="btn btn-white" data-health-run>Check everything</button>
+      </section>
+
+      <section class="admin-card">
+        <h2>TV provider connections <small>Updates every 30 seconds</small></h2>
+        <div data-conn><div class="spinner"></div></div>
+      </section>
 
       <section class="admin-card">
         <h2>Watching now <small data-watch-updated>Updates every 30 seconds</small></h2>
@@ -3780,6 +4099,23 @@
       e.target.disabled = false;
     });
     if (!users?.error) refreshWatching(body, isCurrent, users);
+    const userList = users?.error ? [] : list(users);
+    $('[data-health-run]', body).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Checking…';
+      try {
+        const r = await runHealthCheck($('[data-health]', body), userList);
+        btn.textContent = r.bads ? `${r.bads} ${r.bads === 1 ? 'problem' : 'problems'} · check again` : r.warns ? `${r.warns} to check · check again` : 'All good · check again';
+      } catch (err) { btn.textContent = 'Check everything'; toast("Couldn't finish the check: " + err.message); }
+      btn.disabled = false;
+    });
+    const connEl = $('[data-conn]', body);
+    renderConnections(connEl, isCurrent, userList).catch((e) => { connEl.innerHTML = `<p class="muted">${esc(adminError(e))}</p>`; });
+    const connTimer = setInterval(() => {
+      if (!isCurrent() || !connEl.isConnected) { clearInterval(connTimer); return; }
+      renderConnections(connEl, isCurrent, userList).catch(() => {});
+    }, 30000);
   }
 
   // Live TV source: Emby's own Live TV, an M3U playlist, or an Xtream Codes account. Saved for every account.
@@ -5414,6 +5750,8 @@
     } catch (e) {
       if (stale()) return;
       console.error(e);
+      const same = player.item?.Id === rawItem.Id;
+      playLog.add({ kind: rawItem.Type === 'TvChannel' ? 'live-failed' : 'failed', title: itemTitle(same ? player.item : rawItem), itemId: rawItem.Id, method: same ? player.playMethod || '' : '', error: String(e.message || e).slice(0, 200) });
       status.innerHTML = `<p>Playback failed: ${esc(e.message)}</p><button class="btn btn-white" id="player-err-back">Go Back</button>`;
       $('#player-err-back').addEventListener('click', closePlayer);
       if (nav.on) focusEl($('#player-err-back'));
@@ -5574,6 +5912,7 @@
     const watched = r.watchedMs || 0, stalledMs = r.stalledMs || 0, stalls = r.stalls || 0;
     const pct = watched ? Math.round((stalledMs / watched) * 1000) / 10 : 0;
     const rough = stalls >= 3 || pct >= 3;
+    if (rough) playLog.add({ kind: 'stalling', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, stalls, stalledSec: Math.round(stalledMs / 1000), pct, watchedMin: Math.round(watched / 60000), bitrate: s.bitrate || 0 });
     appLog.add(rough ? 'warn' : 'info',
       `Watched ${s.item.Name} (${s.playMethod}${s.bitrate ? ', limit ' + (s.bitrate / 1e6).toFixed(0) + ' Mbps' : ''}): ${Math.round(watched / 60000)} min, ${stalls} ${stalls === 1 ? 'stall' : 'stalls'}, ${Math.round(stalledMs / 1000)} s buffering (${pct}%)`);
     if (rough && autoQuality() && s.bitrate) {
@@ -5597,6 +5936,11 @@
       return;
     }
     if (r.touched) noteInput();
+    if (r.error) {
+      const converting = r.error.startsWith('unplayable') && !s.forceTranscode;
+      playLog.add({ kind: converting ? 'converted' : 'failed', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, error: r.error,
+        atSec: Math.round((r.positionMs || 0) / 1000), bitrate: s.bitrate || 0 });
+    }
     if (r.error) appLog.add('warn', `Aurora player: ${s.item.Name} stopped (${r.error}, ${s.playMethod}, at ${Math.round((r.positionMs || 0) / 1000)}s of ${Math.round((r.durationMs || 0) / 1000)}s)`);
     // The device couldn't play the file as it is: ask Emby to convert it, from the same spot.
     if (r.error?.startsWith('unplayable') && !s.forceTranscode) {

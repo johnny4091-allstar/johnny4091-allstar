@@ -232,7 +232,10 @@ public class MainActivity extends Activity {
             try {
                 stats = new JSONObject().put("stalls", data.getIntExtra(LivePlayerActivity.RESULT_STALLS, 0))
                         .put("minutes", data.getIntExtra(LivePlayerActivity.RESULT_MINUTES, 0))
-                        .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER))).toString();
+                        .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER)))
+                        .put("failed", data.getIntExtra(LivePlayerActivity.RESULT_FAILED, 0))
+                        .put("failedName", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_FAILED_NAME)))
+                        .put("failedCode", data.getIntExtra(LivePlayerActivity.RESULT_FAILED_CODE, 0)).toString();
             } catch (Exception ignored) {
                 // No stats.
             }

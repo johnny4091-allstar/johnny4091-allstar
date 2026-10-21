@@ -78,9 +78,20 @@ Administrator accounts are never limited or disabled.
 | `GET /reports`, `DELETE /reports` | Emby administrators | The reported channels. |
 | `GET /status` | Anyone | Two plain-text lines: `Guard: online` and `Aurora: online/offline`. |
 | `GET /status/users` | Emby administrators | Live device counts per account (see above). |
+| `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
 | `GET /limits`, `GET /actions` | Emby administrators | Reads the store and the recent actions. |
 | `PUT /limits/{userId}` | Emby administrators | Sets `{limit, expires: "YYYY-MM-DD" or null}` and applies it at once. |
 | `DELETE /limits/{userId}`, `PUT /limits/{userId}/manual`, `PUT /migrated` | Emby administrators | Housekeeping. |
+
+## TV provider connections (guard 1.3.0)
+
+Your TV provider (restream) account allows a set number of streams at once; past that every new channel fails, which
+looks just like buffering. Every minute the guard counts the streams in use: channels playing in Aurora's own live player
+(each device notes its channel in the viewer's Emby settings) plus Emby's own Live TV sessions. Admin → Overview →
+**TV provider connections** shows the count, who is using them and today's peak. Enter the number of connections on your
+account and a warning level there (for example 60 and 50) and the guard sends an alert to `alertWebhookUrl` when the count
+reaches the warning level, and an urgent one when it's full. Each alert is sent once, and again only after the count has
+dropped back. Nothing new is needed in `config.json`; the two numbers are kept in `data/limits.json`.
 
 ## Alerts, live counts and the status page (guard 1.2.0)
 
@@ -112,7 +123,7 @@ is recent), otherwise `offline`. For a few seconds after the guard starts it say
 load at all, the guard itself isn't running or can't be reached (for example a certificate problem).
 
 **Which version is running?** `https://your-address:8922/health`, the first line of `node aurora-guard.js --check`, and
-the "Aurora Guard 1.2.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
+the "Aurora Guard 1.3.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
 none of the new settings works exactly as before.
 
 ## Channel reports and the TV provider's API (guard 1.1.0)

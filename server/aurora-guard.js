@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -400,7 +400,7 @@ async function enforce(onlyUserId) {
   try {
     users = await emby('GET', '/Users');
     sessions = await emby('GET', '/Sessions');
-    if (!onlyUserId) embyReach = { at: Date.now(), ok: true, error: '' };
+    if (!onlyUserId) { embyReach = { at: Date.now(), ok: true, error: '' }; lastSnapshot = { users, sessions }; }
   } catch (e) {
     if (!onlyUserId) embyReach = { at: Date.now(), ok: false, error: e.message };
     throw e;
@@ -472,6 +472,71 @@ async function enforce(onlyUserId) {
   return actions;
 }
 
+// ---------- TV provider connections ----------
+// The TV provider (restream) account allows a set number of streams at once; past that every channel fails, which
+// looks just like buffering. Counted every minute: Aurora's own live player (it notes the channel in the viewer's
+// "aurora-watching" preferences, refreshed every minute) plus Emby's own Live TV sessions. The limit and the
+// warning level are set in Aurora's Admin → Overview; 0 = not set (counted, but no alerts).
+const LIVE_FRESH_MS = 3 * 60000;
+let lastSnapshot = null;
+let connections = { at: 0, inUse: 0, aurora: 0, emby: 0, streams: [], error: '' };
+function connCfg() {
+  if (!store.connections) store.connections = { limit: 0, alertAt: 0, peakDay: '', peak: 0, peakAt: 0, warned: false, full: false };
+  return store.connections;
+}
+async function countConnections({ users, sessions }) {
+  const names = new Map((Array.isArray(users) ? users : []).map((u) => [u.Id, u.Name]));
+  const streams = [];
+  for (const s of Array.isArray(sessions) ? sessions : []) {
+    if (s.NowPlayingItem && s.NowPlayingItem.Type === 'TvChannel') {
+      streams.push({ source: 'emby', user: s.UserName || names.get(s.UserId) || '', device: s.DeviceName || '', channel: s.NowPlayingItem.Name || '' });
+    }
+  }
+  // Only accounts with a device active right now can be watching.
+  const queue = [...activeByUser(sessions).keys()].filter((id) => names.has(id));
+  const worker = async () => {
+    while (queue.length) {
+      const id = queue.shift();
+      let data = null;
+      try {
+        const prefs = await emby('GET', '/DisplayPreferences/aurora-watching', { query: { userId: id, client: 'aurora' } });
+        const raw = prefs && prefs.CustomPrefs && prefs.CustomPrefs.config;
+        data = raw ? JSON.parse(raw) : null;
+      } catch { continue; }
+      for (const e of Object.values((data && data.devices) || {})) {
+        if (Date.now() - (e.at || 0) < LIVE_FRESH_MS) streams.push({ source: 'aurora', user: names.get(id), device: e.device || '', channel: [e.num, e.name].filter(Boolean).join(' '), since: e.started || 0 });
+      }
+    }
+  };
+  await Promise.all([0, 1, 2, 3].map(worker));
+  return streams;
+}
+async function checkConnections() {
+  if (!lastSnapshot) return;
+  let streams;
+  try { streams = await countConnections(lastSnapshot); } catch (e) { connections.error = e.message; return; }
+  const n = streams.length;
+  connections = { at: Date.now(), inUse: n, aurora: streams.filter((x) => x.source === 'aurora').length, emby: streams.filter((x) => x.source === 'emby').length, streams, error: '' };
+  const c = connCfg(), today = new Date().toDateString();
+  let changed = false;
+  if (c.peakDay !== today) { c.peakDay = today; c.peak = 0; c.peakAt = 0; changed = true; }
+  if (n > c.peak) { c.peak = n; c.peakAt = Date.now(); changed = true; }
+  if (c.limit > 0) {
+    // Each alert once, until the count has dropped back a little (so it doesn't repeat every minute at the edge).
+    if (n >= c.limit && !c.full) {
+      c.full = true; changed = true;
+      log(`TV provider connections full: ${n} of ${c.limit} in use`);
+      sendAlert('Aurora: TV provider connections are full', `${n} of ${c.limit} streams in use. New channels will fail until someone stops watching.`, true);
+    } else if (n < c.limit - 1 && c.full) { c.full = false; changed = true; }
+    if (c.alertAt > 0 && n >= c.alertAt && n < c.limit && !c.warned) {
+      c.warned = true; changed = true;
+      log(`TV provider connections high: ${n} of ${c.limit} in use`);
+      sendAlert('Aurora: TV provider connections running high', `${n} of ${c.limit} streams in use (warning level ${c.alertAt}).`, false);
+    } else if (c.warned && n < c.alertAt - 2) { c.warned = false; changed = true; }
+  }
+  if (changed) saveStore();
+}
+
 let running = false;
 async function tick() {
   if (running) return;
@@ -480,6 +545,7 @@ async function tick() {
   try {
     const actions = await enforce();
     lastRun = { at: Date.now(), ok: true, error: '', actions, ms: Date.now() - began };
+    await checkConnections().catch((e) => log('Counting TV provider connections failed:', e.message));
   } catch (e) {
     lastRun = { at: Date.now(), ok: false, error: e.message, actions: 0, ms: Date.now() - began };
     log('Check failed:', e.message);
@@ -643,6 +709,25 @@ async function handle(req, res) {
       emby: { online: embyReach.ok, checkedAt: embyReach.at ? new Date(embyReach.at).toISOString() : null, error: embyReach.error },
       lastRun, totals: { accounts: list.length, over: list.filter((x) => x.over).length, activeDevices: list.reduce((n, x) => n + x.activeDevices, 0) }, users: list,
     });
+  }
+
+  // TV provider connections in use (counted every minute), today's peak, and the limit and warning level.
+  if (url.pathname === '/connections' && req.method === 'GET') {
+    const c = connCfg();
+    return send(res, 200, { ...connections, checkedAt: connections.at ? new Date(connections.at).toISOString() : null, limit: c.limit, alertAt: c.alertAt, peak: c.peakDay === new Date().toDateString() ? c.peak : 0, peakAt: c.peakAt ? new Date(c.peakAt).toISOString() : null });
+  }
+  if (url.pathname === '/connections' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const limit = Number(body.limit), alertAt = Number(body.alertAt || 0);
+    if (!Number.isInteger(limit) || limit < 0 || limit > 1000) return send(res, 400, { error: 'limit must be a whole number from 0 to 1000' });
+    if (!Number.isInteger(alertAt) || alertAt < 0 || (limit && alertAt > limit)) return send(res, 400, { error: 'the warning level must be a whole number no higher than the limit' });
+    const c = connCfg();
+    c.limit = limit; c.alertAt = alertAt; c.warned = false; c.full = false;
+    recordAction({ type: 'connections', why: limit ? `provider connections: limit ${limit}, warn at ${alertAt || 'off'}` : 'provider connection limit cleared' });
+    saveStore();
+    log('TV provider connections: limit', limit || 'not set', '- warn at', alertAt || 'off');
+    return send(res, 200, { ok: true, limit, alertAt });
   }
 
   // The TV provider's reporting API (the key is write-only: never returned).

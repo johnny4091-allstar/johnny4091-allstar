@@ -1,2 +1,2 @@
-- Fixed: a video that never starts no longer spins for ever. Aurora now gives up after a short wait and has Emby convert it, and requests to the server time out with a clear message.
+- Better playback: when a video or channel won't play or keeps buffering, the app now tells the admin automatically, so it can be fixed sooner.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

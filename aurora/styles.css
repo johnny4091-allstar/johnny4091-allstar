@@ -965,3 +965,31 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .admin-card textarea { background: var(--bg-3); border: 1px solid rgba(255,255,255,.15); color: #fff; border-radius: 6px; padding: .6rem .8rem; font: .85rem ui-monospace, monospace; width: 100%; box-sizing: border-box; }
 .admin-card details { margin: .8rem 0; } .admin-card summary { cursor: pointer; color: var(--muted); }
 .admin-field input[type=url], .admin-field input[type=text], .admin-field input[type=password] { background: var(--bg-3); border: 1px solid rgba(255,255,255,.15); color: #fff; border-radius: 6px; padding: .6rem .8rem; font: inherit; }
+
+/* Admin: health check, provider connections, playback problems */
+.health-list { display: flex; flex-direction: column; margin-bottom: 1rem; }
+.health-row { display: flex; gap: .8rem; align-items: flex-start; padding: .6rem 0; border-top: 1px solid rgba(255,255,255,.06); line-height: 1.4; overflow-wrap: anywhere; }
+.health-row:first-child { border-top: 0; }
+.health-dot { flex: none; width: .8rem; height: .8rem; border-radius: 50%; margin-top: .3rem; background: #666; }
+.health-row.ok .health-dot { background: #2fbf71; }
+.health-row.warn .health-dot { background: #e0a800; }
+.health-row.bad .health-dot { background: #e5484d; }
+.health-row.wait .health-dot { background: #666; animation: health-pulse 1s ease-in-out infinite alternate; }
+@keyframes health-pulse { to { opacity: .3; } }
+.health-state { font-size: .75rem; font-weight: 700; color: var(--dim); margin-left: .3rem; }
+.health-row.bad .health-state { color: #ff8a8f; }
+.health-row.warn .health-state { color: #ffd166; }
+.health-row.ok .health-state { color: #7ee2a8; }
+.conn-meter { margin-bottom: 1rem; }
+.conn-count { font-size: 1rem; margin-bottom: .45rem; }
+.conn-count strong { font-size: 1.8rem; margin-right: .25rem; }
+.conn-bar { height: .7rem; border-radius: 99px; background: rgba(255,255,255,.1); overflow: hidden; }
+.conn-bar span { display: block; height: 100%; border-radius: 99px; background: #2fbf71; transition: width .4s; }
+.conn-bar span.warn { background: #e0a800; }
+.conn-bar span.bad { background: #e5484d; }
+.conn-list { margin: .8rem 0; }
+.conn-list summary { cursor: pointer; color: var(--dim); }
+.conn-form { display: flex; flex-wrap: wrap; gap: .8rem; align-items: flex-end; margin-top: 1rem; }
+.conn-form .admin-field { flex: 1 1 10rem; }
+.admin-subtabs { margin-bottom: 1rem; }
+.stat-tile.good .stat-value { color: #7ee2a8; }
