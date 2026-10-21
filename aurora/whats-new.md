@@ -1,3 +1,3 @@
-- TV remote: you can now move all the way down the Settings page (it used to stop at Streaming quality).
+- TV remote: the whole Settings page can now be reached, down to Check for updates. To write feedback on a TV, choose Write a note, then press Back when you're done typing.
 - Settings now shows whether Aurora is online or offline.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

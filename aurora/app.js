@@ -3450,9 +3450,10 @@
       <section class="settings-section feedback-section">
         <h2>Help &amp; feedback <small>This device</small></h2>
         <p class="setting-desc">Something not working? Say what happened and send it. The admins get your note with this device's app log, so they can see what went wrong. Errors are also reported to them automatically.</p>
-        <textarea class="feedback-text" data-feedback rows="3" maxlength="1000" placeholder="What happened? For example: the film stopped halfway through."></textarea>
+        <textarea class="feedback-text" data-feedback rows="3" maxlength="1000"${nav.tv ? ' tabindex="-1"' : ''} placeholder="What happened? For example: the film stopped halfway through.${nav.tv ? ' Press Back when you\'re done typing.' : ''}"></textarea>
         <div class="feedback-actions">
-          <button class="btn btn-white" data-send-feedback>Send to admin</button>
+          ${nav.tv ? '<button class="btn btn-white" data-write-feedback>Write a note</button>' : ''}
+          <button class="btn ${nav.tv ? 'btn-gray' : 'btn-white'}" data-send-feedback>Send to admin</button>
           <button class="btn btn-gray" data-show-log>Show app log</button>
           <span class="setting-value" data-feedback-status></span>
         </div>
@@ -3519,6 +3520,19 @@
   function setupFeedback(page) {
     const box = $('[data-feedback]', page), status = $('[data-feedback-status]', page), logEl = $('[data-app-log]', page);
     const showBtn = $('[data-show-log]', page), sendBtn = $('[data-send-feedback]', page);
+    // TV: the remote never moves into the text box by itself. On some TVs a text box takes the remote's Up and Down
+    // for the keyboard system, which left the remote stuck there (and the rest of Settings out of reach). "Write a
+    // note" opens it with the keyboard; Back (or Down, where the TV allows it) comes out again.
+    const writeBtn = $('[data-write-feedback]', page);
+    writeBtn?.addEventListener('click', () => {
+      box.tabIndex = 0;
+      focusEl(box);
+      nativeApp?.showKeyboard();
+    });
+    if (writeBtn) {
+      box.addEventListener('blur', () => { box.tabIndex = -1; });
+      box.__onBack = () => { focusEl(box.value.trim() ? sendBtn : writeBtn); };
+    }
     showBtn.addEventListener('click', () => {
       const open = logEl.classList.toggle('hidden') === false;
       showBtn.textContent = open ? 'Hide app log' : 'Show app log';
@@ -6631,8 +6645,9 @@
       // Go to the nearest line of items first, then the one most in line with the current item.
       const nearest = Math.min(...cands.map((c) => c.primary));
       // Coming down out of the top bar, start at the left of the line (like Netflix) rather than under the button.
-      // The same from a wide text box (Settings → Help & feedback), so Down lands on its first button.
-      const fromNav = dir === 'down' && (cur.closest('#nav') || cur.tagName === 'TEXTAREA');
+      // The same on the Settings page (its controls sit on the right, its buttons start on the left), so Down
+      // reaches the first button of a line rather than the one nearest the control above.
+      const fromNav = dir === 'down' && (cur.closest('#nav') || cur.closest('.settings-page'));
       for (const c of cands) {
         if (c.primary > nearest + 40) continue;
         const score = fromNav ? c.el.getBoundingClientRect().left : c.cross;
@@ -6740,6 +6755,9 @@
   // ---------- Android app bridge ----------
   // Called by the Android back button. Returns true when the app handled it.
   window.embyflixBack = () => {
+    // Leaving a text box that the remote can't otherwise get out of (Settings → Write a note on a TV).
+    const typing = document.activeElement;
+    if (typing?.__onBack && isTextInput(typing)) { typing.__onBack(); return true; }
     if (isPlayerOpen()) {
       if (tracksOpen()) closeTracks();
       else { hideStillWatching(); closePlayer(); }
