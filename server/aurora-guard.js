@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -604,7 +604,8 @@ async function handle(req, res) {
   if (/^\/status\/?$/.test(url.pathname) && (req.method === 'GET' || req.method === 'HEAD')) {
     const stale = Date.now() - embyReach.at > Math.max(180000, cfg.intervalSeconds * 3000);
     const aurora = !embyReach.at ? (process.uptime() < 90 ? 'checking...' : 'offline') : (embyReach.ok && !stale ? 'online' : 'offline');
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+    // Readable by Aurora on any device (Settings shows "Aurora: Online/Offline" to customers).
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
     return res.end(req.method === 'HEAD' ? undefined : `Guard: online\nAurora: ${aurora}\n`);
   }
   const token = String(req.headers['x-emby-token'] || '');

@@ -993,3 +993,11 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .conn-form .admin-field { flex: 1 1 10rem; }
 .admin-subtabs { margin-bottom: 1rem; }
 .stat-tile.good .stat-value { color: #7ee2a8; }
+
+/* Settings: "Aurora: Online / Offline" for customers */
+.service-status { display: inline-flex; align-items: center; gap: .5rem; padding: .35rem .85rem; border-radius: 99px; background: rgba(255,255,255,.08); font-weight: 600; font-size: .95rem; color: var(--dim); }
+.service-dot { width: .65rem; height: .65rem; border-radius: 50%; background: #777; }
+.service-status.online { color: #7ee2a8; }
+.service-status.online .service-dot { background: #2fbf71; box-shadow: 0 0 0 3px rgba(47,191,113,.25); }
+.service-status.offline { color: #ff8a8f; }
+.service-status.offline .service-dot { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.25); }

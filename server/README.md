@@ -118,12 +118,15 @@ Guard: online
 Aurora: online
 ```
 
+Aurora's Settings page shows customers the same thing as a simple "Aurora: Online / Offline" (guard 1.3.1 or later, which
+lets the app read this page; with an older guard, or when the guard can't be reached, the app asks the Emby server instead).
+
 `Aurora` is `online` when the guard's last every-minute check reached Emby with the configured API key (and that check
 is recent), otherwise `offline`. For a few seconds after the guard starts it says `checking...`. If the page doesn't
 load at all, the guard itself isn't running or can't be reached (for example a certificate problem).
 
 **Which version is running?** `https://your-address:8922/health`, the first line of `node aurora-guard.js --check`, and
-the "Aurora Guard 1.3.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
+the "Aurora Guard 1.3.1 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
 none of the new settings works exactly as before.
 
 ## Channel reports and the TV provider's API (guard 1.1.0)

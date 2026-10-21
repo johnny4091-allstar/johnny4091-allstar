@@ -3387,6 +3387,32 @@
   const settingRow = (label, help, control) =>
     `<div class="setting-row"><div class="setting-label"><strong>${esc(label)}</strong>${help ? `<span>${esc(help)}</span>` : ''}</div>${control}</div>`;
 
+  // "Aurora: Online / Offline" for customers (Settings). Aurora Guard's public /status page says whether the server
+  // answers; if the guard can't be reached (it's off, or an older one the app can't read), ask the server itself.
+  async function serviceOnline() {
+    if (guardEnabled) {
+      try {
+        const res = await fetch(guardUrl.replace(/\/+$/, '') + '/status', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+        const m = res.ok ? (await res.text()).match(/Aurora:\s*(online|offline)/i) : null;
+        if (m) return m[1].toLowerCase() === 'online';
+      } catch { /* ask the server instead */ }
+    }
+    try {
+      const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      return res.ok;
+    } catch { return false; }
+  }
+  function showServiceStatus(el, isCurrent) {
+    const update = async () => {
+      const online = await serviceOnline();
+      if (!isCurrent() || !el.isConnected) return;
+      el.className = 'service-status ' + (online ? 'online' : 'offline');
+      el.lastElementChild.textContent = online ? 'Aurora: Online' : 'Aurora: Offline';
+    };
+    update();
+    const timer = setInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
+  }
+
   async function renderSettings(page, isCurrent) {
     page.innerHTML = `<div class="page-pad settings-page"><div class="page-head"><h1>Settings</h1></div><div class="spinner"></div></div>`;
     let user = state.user;
@@ -3397,7 +3423,8 @@
     const version = nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
 
     $('.settings-page', page).innerHTML = `
-      <div class="page-head"><h1>Settings</h1></div>
+      <div class="page-head"><h1>Settings</h1>
+        <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
       <section class="settings-section">
         <h2>Language &amp; subtitles <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
         ${settingRow('Audio language', 'Pick this language when a title has more than one.', selectHtml('audioLang', langs(cfg.AudioLanguagePreference), cfg.AudioLanguagePreference || ''))}
@@ -3438,6 +3465,7 @@
         ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
       </section>`;
     applySubtitleStyle();
+    showServiceStatus($('[data-service-status]', page), isCurrent);
 
     // Saves run one at a time so quick changes don't overwrite each other.
     let saving = Promise.resolve();
@@ -6603,7 +6631,8 @@
       // Go to the nearest line of items first, then the one most in line with the current item.
       const nearest = Math.min(...cands.map((c) => c.primary));
       // Coming down out of the top bar, start at the left of the line (like Netflix) rather than under the button.
-      const fromNav = dir === 'down' && cur.closest('#nav');
+      // The same from a wide text box (Settings → Help & feedback), so Down lands on its first button.
+      const fromNav = dir === 'down' && (cur.closest('#nav') || cur.tagName === 'TEXTAREA');
       for (const c of cands) {
         if (c.primary > nearest + 40) continue;
         const score = fromNav ? c.el.getBoundingClientRect().left : c.cross;

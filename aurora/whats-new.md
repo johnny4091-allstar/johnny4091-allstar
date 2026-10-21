@@ -1,2 +1,3 @@
-- Fixes from a full check of the app: problem reports and feedback are never lost when the connection blips, and the Live TV failure count is accurate.
+- TV remote: you can now move all the way down the Settings page (it used to stop at Streaming quality).
+- Settings now shows whether Aurora is online or offline.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

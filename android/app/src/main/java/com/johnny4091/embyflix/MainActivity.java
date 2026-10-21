@@ -39,6 +39,8 @@ import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 
 import androidx.core.content.FileProvider;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
@@ -301,7 +303,24 @@ public class MainActivity extends Activity {
     /** Builds the WebView that shows the app. Also used to start over if Android stops the WebView's engine. */
     @SuppressLint("SetJavaScriptEnabled")
     private void createWebView() {
-        webView = new WebView(this);
+        webView = new WebView(this) {
+            // TV remote: while a text box has the focus, Up and Down go to the keyboard system before the page, and with
+            // no on-screen keyboard open nothing uses them, so the remote got stuck there (Settings → Help & feedback,
+            // just below "Streaming quality"). With the keyboard closed, hand them to the page's own navigation instead.
+            // With the keyboard open, they still move around the keyboard.
+            @Override
+            public boolean dispatchKeyEventPreIme(KeyEvent event) {
+                int code = event.getKeyCode();
+                if (tvDevice && (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)
+                        && onCheckIsTextEditor() && !keyboardShowing(this)) {
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                        evaluateJavascript("window.embyflixKey && window.embyflixKey('" + (code == KeyEvent.KEYCODE_DPAD_UP ? "up" : "down") + "')", null);
+                    }
+                    return true;
+                }
+                return super.dispatchKeyEventPreIme(event);
+            }
+        };
         // No scroll bars along the edges (the page scrolls with the remote or a swipe).
         webView.setVerticalScrollBarEnabled(false);
         webView.setHorizontalScrollBarEnabled(false);
@@ -461,6 +480,12 @@ public class MainActivity extends Activity {
                 || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)
                 // Many Android TV boxes report neither of the above, but none has a touchscreen.
                 || !getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
+    }
+
+    /** Whether the on-screen keyboard is open over this view. */
+    private static boolean keyboardShowing(View v) {
+        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(v);
+        return insets != null && insets.isVisible(WindowInsetsCompat.Type.ime());
     }
 
     /** Remote buttons the web page can't receive reliably are forwarded to window.embyflixKey(). */
