@@ -144,13 +144,20 @@
   }
 
   // keepalive lets a request finish even if the app is being closed or sent to the background.
+  const API_TIMEOUT_MS = 30000;
   async function api(path, { params, method = 'GET', body, keepalive = false } = {}) {
     const opts = { method, keepalive, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
       opts.body = JSON.stringify(body);
     }
-    const res = await fetch(apiUrl(path, params), opts);
+    // A server that accepts the connection but never answers must not leave a spinner up for ever.
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    opts.signal = ctrl.signal;
+    let res;
+    try { res = await fetch(apiUrl(path, params), opts); }
+    catch (e) { throw e.name === 'AbortError' ? Object.assign(new Error('The server took too long to answer. Check the connection and try again.'), { path, timeout: true }) : e; }
+    finally { clearTimeout(timer); }
     if (!res.ok) {
       const err = new Error(`Aurora returned ${res.status} ${res.statusText}`);
       err.status = res.status;

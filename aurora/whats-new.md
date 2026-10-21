@@ -1,2 +1,2 @@
-- Fixed: the "What's new" list in the update window now shows only what is new in that update, not the same old list every time.
+- Fixed: a video that never starts no longer spins for ever. Aurora now gives up after a short wait and has Emby convert it, and requests to the server time out with a clear message.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

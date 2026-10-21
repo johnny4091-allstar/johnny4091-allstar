@@ -91,7 +91,7 @@ public class VodPlayerActivity extends Activity {
     private long resumeMs;
     private boolean everReady, ended, stopped, closing, reportedStart, touched;
     private int retries;
-    private long endStuckSince, stallSince;
+    private long endStuckSince, stallSince, loadingSince;
     private int stalls;
     private long stalledMs, stallStart, playingSince;
     private boolean wasReady, seeking;
@@ -333,6 +333,23 @@ public class VodPlayerActivity extends Activity {
                 status.setVisibility(View.VISIBLE);
                 handler.removeCallbacks(retry);
                 handler.post(retry);
+            }
+            // Never got going at all (the server accepted the request but sends nothing): give up on this way of
+            // playing. A file played as it is gets converted by Emby instead; a conversion is tried again.
+            boolean loading = !everReady && player.getPlayWhenReady() && player.getPlaybackState() != Player.STATE_READY;
+            if (!loading) loadingSince = 0;
+            else if (loadingSince == 0) loadingSince = System.currentTimeMillis();
+            else if (System.currentTimeMillis() - loadingSince > Math.max(45000L, stallMs)) {
+                loadingSince = 0;
+                if (!"Transcode".equals(playMethod)) { error = "unplayable:StartTimeout"; close(false); return; }
+                if (retries < MAX_RETRIES) {
+                    retries++;
+                    resumeMs = Math.max(0, player.getCurrentPosition());
+                    status.setText("Reconnecting…");
+                    status.setVisibility(View.VISIBLE);
+                    handler.removeCallbacks(retry);
+                    handler.post(retry);
+                } else { error = "failed:StartTimeout"; close(false); return; }
             }
             if (!stuckAtEnd) endStuckSince = 0;
             else if (endStuckSince == 0) endStuckSince = System.currentTimeMillis();
