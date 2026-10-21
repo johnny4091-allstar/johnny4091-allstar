@@ -126,7 +126,7 @@ is recent), otherwise `offline`. For a few seconds after the guard starts it say
 load at all, the guard itself isn't running or can't be reached (for example a certificate problem).
 
 **Which version is running?** `https://your-address:8922/health`, the first line of `node aurora-guard.js --check`, and
-the "Aurora Guard 1.3.1 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
+the "Aurora Guard 1.3.2 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
 none of the new settings works exactly as before.
 
 ## Channel reports and the TV provider's API (guard 1.1.0)

@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.3.1';
+const VERSION = '1.3.2';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -341,7 +341,8 @@ async function userOfToken(token, userId) {
 async function lookupUser(token, userId) {
   try {
     const me = await emby('GET', '/Users/Me', { token }).catch(async (e) => {
-      if (e.status === 404 || e.status === 400) return emby('GET', `/Users/${userId}`, { token });
+      // Some Emby versions answer /Users/Me with a 500 for certain tokens (seen with Android TV boxes): ask by id instead.
+      if (e.status === 404 || e.status === 400 || e.status >= 500) return emby('GET', `/Users/${userId}`, { token });
       throw e;
     });
     if (me && String(me.Id).toLowerCase() === String(userId).toLowerCase()) return me;
