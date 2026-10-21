@@ -364,6 +364,29 @@ final class EpgLoader {
         return d == null ? 0 : d.getTime();
     }
 
+    /** null if the file looks like an XMLTV guide (plain or gzipped); otherwise what it is instead, for the app log. */
+    static String notAGuide(File f) {
+        byte[] head = new byte[4096];
+        int n = 0;
+        try (InputStream raw = new BufferedInputStream(new FileInputStream(f), 65536)) {
+            InputStream in = maybeGunzip(raw);
+            for (int r; n < head.length && (r = in.read(head, n, head.length - n)) > 0; ) n += r;
+        } catch (IOException e) {
+            return "The guide file couldn't be read (" + e.getMessage() + ")";
+        }
+        String start = new String(head, 0, n, StandardCharsets.UTF_8).replace("\uFEFF", "").trim();
+        String lower = start.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("<?xml") || lower.startsWith("<tv") || lower.startsWith("<!doctype tv") || lower.startsWith("<!--")) return null;
+        String title = "";
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("<title[^>]*>([^<]{1,120})", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(start);
+        if (m.find()) title = m.group(1).trim();
+        else if (!lower.startsWith("<")) title = start.substring(0, Math.min(80, start.length())).replaceAll("\\s+", " ");
+        boolean page = lower.startsWith("<!doctype html") || lower.startsWith("<html") || lower.contains("<body");
+        return (page ? "The TV provider sent a web page instead of the guide" : "The guide address didn't send a TV guide")
+                + (title.isEmpty() ? "" : " (\"" + title + "\")")
+                + ". The provider may be blocking this internet connection, or the account may be busy or expired.";
+    }
+
     private static InputStream maybeGunzip(InputStream in) throws IOException {
         in.mark(2);
         int a = in.read(), b = in.read();
@@ -389,7 +412,11 @@ final class EpgLoader {
         File dir = cacheDir(context);
         tidy(dir);
         File file = new File(dir, Integer.toHexString(url.hashCode()) + ".xml");
-        if (file.exists() && System.currentTimeMillis() - file.lastModified() < DOWNLOAD_MS && file.length() > 0) return file;
+        if (file.exists() && System.currentTimeMillis() - file.lastModified() < DOWNLOAD_MS && file.length() > 0) {
+            // Older versions could have saved a provider's error page here; never reuse one of those.
+            if (notAGuide(file) == null) return file;
+            file.delete();
+        }
         File tmp = new File(dir, file.getName() + "." + Thread.currentThread().getId() + ".part");
         HttpURLConnection conn = null;
         try {
@@ -418,11 +445,15 @@ final class EpgLoader {
                 for (int n; (n = in.read(buf)) > 0; ) { out.write(buf, 0, n); size += n; }
             }
             if (size < 20) throw new IOException("The guide address sent back an empty guide");
+            // A web page instead of a guide (the provider's error, block or "too many connections" page, often sent with
+            // status 200): say so, and keep the last good guide rather than replacing it with the page.
+            String why = notAGuide(tmp);
+            if (why != null) throw new IOException(why);
             if (!tmp.renameTo(file)) throw new IOException("couldn't save the guide");
         } catch (IOException e) {
             tmp.delete();
             // A stale copy is better than no guide at all.
-            if (file.exists() && file.length() > 0) return file;
+            if (file.exists() && file.length() > 0 && notAGuide(file) == null) return file;
             throw e;
         } finally {
             if (conn != null) conn.disconnect();

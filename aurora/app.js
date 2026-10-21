@@ -1556,7 +1556,12 @@
     })();
     if (cfg === iptv.config) {
       iptv.guideLoad = p;
-      p.then((g) => { iptv.guide = g; }, (e) => { console.warn('TV guide', e); if (iptv.guideLoad === p) iptv.guideLoad = null; });
+      // A failed guide isn't asked for again for 5 minutes: every screen asking at once flooded the log, and hammering
+      // a provider that's refusing this connection doesn't help.
+      p.then((g) => { iptv.guide = g; }, (e) => {
+        console.warn('TV guide', e);
+        setTimeout(() => { if (iptv.guideLoad === p) iptv.guideLoad = null; }, 5 * 60000);
+      });
     }
     return p;
   }

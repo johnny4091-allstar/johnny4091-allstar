@@ -52,6 +52,8 @@ final class IptvFetcher {
         JSONObject result = new JSONObject();
         try {
             File file = cacheFile(context, url, liveOnly);
+            // Older versions could have saved a provider's error page as the list; never reuse one.
+            if (file.exists() && webPage(file) != null) file.delete();
             boolean have = file.exists() && file.length() > 0;
             if (have && maxAgeMs > 0 && System.currentTimeMillis() - file.lastModified() < maxAgeMs) {
                 return result.put("status", 200).put("stale", false).put("cached", true);
@@ -117,6 +119,23 @@ final class IptvFetcher {
         return new File(dir, Integer.toHexString(url.hashCode()) + (liveOnly ? ".live" : "") + ".txt");
     }
 
+    /** If the file is a web page rather than a channel list or provider data: what to tell the viewer. Otherwise null. */
+    static String webPage(File f) {
+        byte[] head = new byte[4096];
+        int n = 0;
+        try (InputStream in = new java.io.FileInputStream(f)) {
+            for (int r; n < head.length && (r = in.read(head, n, head.length - n)) > 0; ) n += r;
+        } catch (IOException e) {
+            return null;
+        }
+        String start = new String(head, 0, n, java.nio.charset.StandardCharsets.UTF_8).replace("\uFEFF", "").trim();
+        String lower = start.toLowerCase(java.util.Locale.ROOT);
+        if (!lower.startsWith("<!doctype html") && !lower.startsWith("<html") && !(lower.startsWith("<") && lower.contains("<body"))) return null;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("<title[^>]*>([^<]{1,120})", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(start);
+        return "The TV provider sent a web page instead of the channels" + (m.find() ? " (\"" + m.group(1).trim() + "\")" : "")
+                + ". The provider may be blocking this internet connection, or the account may be busy or expired.";
+    }
+
     /** Downloads url into file (through a temporary file, so a failed download never spoils the saved copy). */
     private static int download(String url, String userAgent, int timeoutMs, File file, boolean liveOnly) throws IOException {
         HttpURLConnection conn = null;
@@ -152,6 +171,9 @@ final class IptvFetcher {
                 }
             }
             if (tmp.length() == 0) throw new IOException("the provider sent back nothing");
+            // An error, block or "too many connections" page sent as if all was well: never save it over the good copy.
+            String page = webPage(tmp);
+            if (page != null) throw new IOException(page);
             if (!tmp.renameTo(file)) throw new IOException("couldn't save the list");
             return status;
         } finally {
