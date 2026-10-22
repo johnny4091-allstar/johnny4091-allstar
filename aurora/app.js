@@ -6026,7 +6026,7 @@
     }
     // Emby's own conversion failed before anything played (it refused, or its converter broke): try once more without
     // the measured quality limit, which lets a file the device can play as it is play directly instead of converting.
-    if (r.error?.startsWith('failed') && !r.ready && s.playMethod === 'Transcode' && !s.noCap && !s.forceTranscode && (s.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate)) {
+    if (r.error?.startsWith('failed') && !r.ready && s.playMethod === 'Transcode' && !s.noCap && !s.forceTranscode && autoQuality() && (s.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate)) {
       toast('Trying another way to play this…');
       measuredBitrate = null;
       playItem(s.item, { startTicks: Math.round((s.startMs || 0) * 10000), auto: true, noCap: true });
