@@ -5705,11 +5705,12 @@
     return whenAllowed(() => startPlayItem(rawItem, opts));
   }
 
-  async function startPlayItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false, auto = false } = {}) {
+  async function startPlayItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false, auto = false, noCap = false } = {}) {
     if (!auto) noteInput();
     const isReload = player.item && rawItem.Id === player.item.Id;
     if (!isReload && $('#player').classList.contains('hidden')) rememberFocus('player');
     const token = ++player.token;
+    player.noCap = noCap;
     const stale = () => token !== player.token;
     live.tunedId = rawItem.Type === 'TvChannel' ? rawItem.Id : null;
     await stopPlayback();
@@ -5756,7 +5757,8 @@
           : esc(full.Name);
 
       const native = useNativePlayer() && !isLive;
-      const bitrate = await playbackBitrate();
+      // noCap: Emby's conversion failed at the measured limit, so this time let the file play as it is (an admin's limit still holds).
+      const bitrate = noCap ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
       if (stale()) return;
       player.bitrate = bitrate;
       const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: bitrate };
@@ -5971,7 +5973,7 @@
       },
       stallSeconds: stallSeconds() || undefined,
     };
-    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate };
+    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap };
     // The native screen reports to Emby from here on.
     player.item = null;
     player.playSessionId = null;
@@ -6020,6 +6022,14 @@
       toast('Converting this video so it plays on this device…');
       const pos = r.ready ? r.positionMs : s.startMs;
       playItem(s.item, { startTicks: Math.round(pos * 10000), forceTranscode: true, auto: true });
+      return;
+    }
+    // Emby's own conversion failed before anything played (it refused, or its converter broke): try once more without
+    // the measured quality limit, which lets a file the device can play as it is play directly instead of converting.
+    if (r.error?.startsWith('failed') && !r.ready && s.playMethod === 'Transcode' && !s.noCap && !s.forceTranscode && (s.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate)) {
+      toast('Trying another way to play this…');
+      measuredBitrate = null;
+      playItem(s.item, { startTicks: Math.round((s.startMs || 0) * 10000), auto: true, noCap: true });
       return;
     }
     if (r.next && s.next && (!r.ended || getPref('autoplay') === 'on')) {

@@ -1,3 +1,3 @@
-- TV remote: Settings can now be scrolled all the way down to Check for updates, even when some settings are locked by the admin.
+- Movies: if the server can't convert a movie for a slow connection, Aurora now tries once more playing it as it is, and the admin can see the server's exact error.
 - Settings now shows whether Aurora is online or offline.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

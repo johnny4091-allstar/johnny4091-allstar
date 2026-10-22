@@ -295,10 +295,21 @@ public class VodPlayerActivity extends Activity {
             handler.removeCallbacks(retry);
             handler.postDelayed(retry, 1500L * retries);
         } else {
-            error = "failed:" + why;
+            error = "failed:" + why + httpSuffix(e);
             status.setText("This video stopped playing (" + why + ").\nPress OK to try again, or Back to leave.");
             status.setVisibility(View.VISIBLE);
         }
+    }
+
+    /** " 500" when the server answered with an HTTP error (so the admin can tell a refusal from a dead connection). */
+    private static String httpSuffix(PlaybackException e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                return " " + ((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) t).responseCode;
+            }
+            if (t.getCause() == t) break;
+        }
+        return "";
     }
 
     private static boolean isDecodeError(PlaybackException e) {
