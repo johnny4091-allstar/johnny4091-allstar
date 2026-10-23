@@ -1015,3 +1015,16 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .ext-actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin-top: .7rem; }
 .ext-actions select { padding: .55rem .8rem; border-radius: 8px; background: var(--bg-3); color: #fff; border: 1px solid rgba(255,255,255,.15); font: inherit; }
 .ext-banner { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; border: 1px solid rgba(255,209,102,.5); color: #fff; text-decoration: none; }
+
+/* Favorites */
+.iptv-tile, .channel-card { position: relative; }
+.fav-btn { position: absolute; top: 6px; right: 6px; z-index: 3; width: 34px; height: 34px; border-radius: 50%; border: 0; background: rgba(0,0,0,.62); color: #fff; font-size: 1.15rem; line-height: 1; cursor: pointer; padding: 0; }
+.iptv-tile.is-fav .fav-btn { color: #ffd166; }
+.tv .fav-btn { display: none; pointer-events: none; }
+.tv .iptv-tile.is-fav .fav-btn { display: block; background: none; font-size: 1.4rem; }
+.badge-fav { display: none; position: absolute; top: 6px; left: 6px; z-index: 2; width: 24px; height: 24px; border-radius: 50%; background: rgba(0,0,0,.7); color: #ffd166; align-items: center; justify-content: center; font-size: .85rem; line-height: 1; }
+.is-fav > .badge-fav, .is-fav .badge-fav { display: flex; }
+.guide-row.is-fav .guide-ch-name::before { content: '\2605  '; color: #ffd166; }
+.fav-section { margin-bottom: 1.5rem; }
+.fav-sub { font-size: 1.15rem; margin: 1rem 0 .8rem; }
+.fav-sub.hidden, .fav-section.hidden { display: none; }

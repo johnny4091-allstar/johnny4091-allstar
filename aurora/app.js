@@ -507,6 +507,7 @@
     $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
     refreshRequestsConfig();
     refreshAppConfig();
+    syncFavorites({ force: true });
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
@@ -559,7 +560,7 @@
     switch (name) {
       case 'movies': return renderBrowse(page, { type: 'Movie', title: 'Movies', isCurrent });
       case 'tv': return renderBrowse(page, { type: 'Series', title: 'TV Shows', isCurrent });
-      case 'mylist': return renderMyList(page, isCurrent);
+      case 'mylist': case 'favorites': return renderMyList(page, isCurrent);
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
       case 'livetv': return iptvOn() ? renderIptvLive(page, params.get('tab') || 'channels', isCurrent) : renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
@@ -623,7 +624,7 @@
     }
     add('Next Up', async () =>
       (await api('/Shows/NextUp', { params: { UserId: state.userId, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items);
-    add('My List', async () =>
+    add('Favorites', async () =>
       (await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 20 }))?.Items);
 
     const videoViews = state.views.filter((v) => ['movies', 'tvshows', 'homevideos', 'musicvideos', undefined, null, ''].includes(v.CollectionType));
@@ -655,7 +656,7 @@
   }
 
   // Rows that change rarely (recently added, top rated, genres) are kept for a few minutes, so going back to
-  // Home after a film doesn't fetch them all again. Continue Watching, Next Up and My List are always fresh.
+  // Home after a film doesn't fetch them all again. Continue Watching, Next Up and Favorites are always fresh.
   const rowCache = new Map();
   const ROW_TTL = 5 * 60000;
   function cachedRow(key, loader) {
@@ -713,6 +714,11 @@
     $('.card-play', card).tabIndex = -1;
     $('.card-play', card).addEventListener('click', (e) => { e.stopPropagation(); playItem(item); });
     card.addEventListener('click', () => openItem(item));
+    card.__item = item;
+    card.insertAdjacentHTML('beforeend', '<div class="badge-fav" title="Favorite">&#9733;</div>');
+    card.classList.toggle('is-fav', !!item.UserData?.IsFavorite);
+    card.addEventListener('contextmenu', (e) => { e.preventDefault(); openItemMenu(item, card); });
+    card.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openItemMenu(item, card); } });
     return card;
   }
 
@@ -728,10 +734,15 @@
       <div class="poster-img">
         ${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
         ${item.UserData?.Played ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
+        <div class="badge-fav" title="Favorite">&#9733;</div>
       </div>
       <div class="poster-title">${esc(title)}</div>
       <div class="poster-sub">${esc(sub)}</div>`;
     el.addEventListener('click', () => openItem(item));
+    el.__item = item;
+    el.classList.toggle('is-fav', !!item.UserData?.IsFavorite);
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); openItemMenu(item, el); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openItemMenu(item, el); } });
     return el;
   }
 
@@ -766,7 +777,7 @@
             <option value="">All</option>
             <option value="IsUnplayed">Unwatched</option>
             <option value="IsPlayed">Watched</option>
-            <option value="IsFavorite">My List</option>
+            <option value="IsFavorite">Favorites</option>
           </select>
         </div>
         <div class="grid"></div>
@@ -839,12 +850,46 @@
     };
   }
 
-  // ---------- My List ----------
+  // ---------- Favorites ----------
+  // Live channels (from the TV provider, or Emby's own Live TV) first, then movies and shows. Route name stays "mylist".
   function renderMyList(page, isCurrent) {
-    page.innerHTML = `<div class="page-pad"><div class="page-head"><h1>My List</h1></div><div class="grid"></div><div class="sentinel"></div></div>`;
-    const pager = makePager($('.grid', page), $('.sentinel', page), isCurrent, (start, limit) =>
-      getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series,Episode', SortBy: 'SortName', StartIndex: start, Limit: limit }));
+    page.innerHTML = `<div class="page-pad"><div class="page-head"><h1>Favorites</h1></div>
+      <section class="fav-section hidden" data-fav-live><h2 class="fav-sub">Live TV</h2><div class="grid iptv-grid" data-fav-grid></div></section>
+      <section class="fav-section" data-fav-vod><h2 class="fav-sub hidden" data-vod-title>Movies &amp; shows</h2><div class="grid" data-vod-grid></div><div class="sentinel"></div></section>
+      <p class="empty-msg hidden" data-fav-empty>Nothing saved yet.<br>Tap the + on a movie or show, or press and hold a Live TV channel (hold OK on a TV remote), to add it here.</p></div>`;
+    const vodGrid = $('[data-vod-grid]', page), liveBox = $('[data-fav-live]', page), liveGrid = $('[data-fav-grid]', page);
+    let channels = 0, vod = 0;
+    const settle = () => {
+      $('[data-vod-title]', page).classList.toggle('hidden', !(channels && vod));
+      $('[data-fav-empty]', page).classList.toggle('hidden', !!(channels || vod));
+    };
+    // Movies and shows (Emby favorites).
+    const pager = makePager(vodGrid, $('.sentinel', page), isCurrent, async (start, limit) => {
+      const res = await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series,Episode', SortBy: 'SortName', StartIndex: start, Limit: limit });
+      vod = res?.TotalRecordCount || 0;
+      if (!vod) vodGrid.dataset.empty = '1';
+      return res;
+    });
+    // makePager writes its own "Nothing here yet" line when empty; the page-level message replaces it.
+    new MutationObserver(() => { if (vodGrid.querySelector(':scope > .empty-msg')) { vodGrid.innerHTML = ''; vod = 0; settle(); } }).observe(vodGrid, { childList: true });
     pager.reset();
+    // Live channels: the TV provider's, and Emby Live TV's favorites.
+    (async () => {
+      await syncFavorites().catch(() => {});
+      if (!isCurrent()) return;
+      const list = iptvOn() ? iptvFavChannels() : [];
+      list.forEach((ch, idx) => { const t = createIptvTile(ch, () => playIptv(list, idx, 'Favorites')); liveGrid.appendChild(t); watchNow(t, ch); });
+      channels = list.length;
+      if (hasLiveTv() && !iptvOn()) {
+        try {
+          const res = await getChannels({ IsFavorite: true, Limit: 200 });
+          (res?.Items || []).forEach((c) => { liveGrid.appendChild(createChannelCard(c)); channels++; });
+        } catch { /* Emby Live TV not available */ }
+      }
+      if (!isCurrent()) return;
+      liveBox.classList.toggle('hidden', !channels);
+      settle();
+    })();
   }
 
   // ---------- Search ----------
@@ -1040,7 +1085,7 @@
             <button class="btn btn-white" data-act="play">${ICONS.play} <span>${resumeTicks ? 'Resume' : 'Play'}</span></button>
             ${resumeTicks ? `<button class="btn btn-gray" data-act="restart">Start Over</button>` : ''}
             ${hasTrailer(item) ? `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>` : ''}
-            <button class="circle-btn" data-act="fav" title="Add to My List"></button>
+            <button class="circle-btn" data-act="fav" title="Add to Favorites"></button>
             <button class="circle-btn" data-act="played" title="Mark as watched"></button>
           </div>
         </div>
@@ -1071,7 +1116,7 @@
     const favBtn = $('[data-act="fav"]', content), playedBtn = $('[data-act="played"]', content);
     const paintToggles = () => {
       favBtn.innerHTML = item.UserData?.IsFavorite ? '&#10003;' : '+';
-      favBtn.title = item.UserData?.IsFavorite ? 'Remove from My List' : 'Add to My List';
+      favBtn.title = item.UserData?.IsFavorite ? 'Remove from Favorites' : 'Add to Favorites';
       favBtn.classList.toggle('active', !!item.UserData?.IsFavorite);
       playedBtn.innerHTML = ICONS.eye;
       playedBtn.style.color = item.UserData?.Played ? 'var(--green)' : '';
@@ -1083,8 +1128,9 @@
       try {
         item.UserData = await api(userPath(`/FavoriteItems/${item.Id}`), { method: on ? 'POST' : 'DELETE' });
         paintToggles();
-        toast(on ? 'Added to My List' : 'Removed from My List', 1800);
-      } catch (e) { toast('Could not update My List: ' + e.message); }
+        rowCache.clear();
+        toast(on ? 'Added to Favorites' : 'Removed from Favorites', 1800);
+      } catch (e) { toast('Could not update Favorites: ' + e.message); }
     });
     playedBtn.addEventListener('click', async () => {
       const on = !item.UserData?.Played;
@@ -1676,13 +1722,142 @@
     iptvPlaying = { list: slice, offset: from, group: groupName };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
-      ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c) }
-      : { name: c.name, url: c.url, logo: c.logo || '', num: c.num, now: '' }))),
+      ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c), fav: isIptvFav(c) }
+      : { name: c.name, url: c.url, logo: c.logo || '', num: c.num, now: '', fav: isIptvFav(c) }))),
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
         device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), stallSeconds: stallSeconds() || undefined }));
   }
+  // ----- Favorites -----
+  // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
+  // Emby, so they're kept per account in the viewer's display preferences ("aurora-favorites"): the same list on every
+  // device. A channel is told apart by its provider stream number (Xtream) or its address (M3U), which stay the same
+  // when the list is reloaded, unlike the position-based ids.
+  const FAV_PREFS = 'aurora-favorites', FAV_MAX = 300;
+  let iptvFavs = null, favSynced = 0;
+  const favLocalKey = () => 'ef.iptv.fav.' + state.userId;
+  const favId = (ch) => (ch?.streamId ? 'x' + ch.streamId : ch?.url || '');
+  function iptvFavList() {
+    if (!iptvFavs) { try { iptvFavs = JSON.parse(store.get(favLocalKey()) || '[]'); } catch { iptvFavs = []; } }
+    return iptvFavs;
+  }
+  const isIptvFav = (ch) => { const k = favId(ch); return !!k && iptvFavList().some((f) => f.k === k); };
+  const saveFavLocal = (list) => { iptvFavs = list; store.set(favLocalKey(), JSON.stringify(list)); };
+  // Playable channel objects for this source (Xtream channels are rebuilt, so a changed password still works).
+  function iptvFavChannels() {
+    const cfg = iptv.config;
+    if (!cfg) return [];
+    return iptvFavList().map((f, i) => {
+      if (cfg.type === 'xtream') return f.streamId ? xtChannel(cfg, { stream_id: f.streamId, name: f.name, stream_icon: f.logo, num: f.num || undefined, category_id: f.group, epg_channel_id: f.epgId }) : null;
+      return f.url && !f.streamId ? { id: 'f' + i, name: f.name, logo: f.logo, num: f.num, group: f.group, url: f.url, epgId: f.epgId } : null;
+    }).filter(Boolean);
+  }
+  const favCount = () => iptvFavChannels().length;
+  function repaintFavMarks() {
+    $$('#page .iptv-tile').forEach((t) => {
+      const on = isIptvFav(t.__ch);
+      t.classList.toggle('is-fav', on);
+      const b = $('.fav-btn', t);
+      if (b) { b.textContent = on ? '\u2605' : '\u2606'; b.title = on ? 'Remove from Favorites' : 'Add to Favorites'; }
+    });
+    $$('#page .guide-row').forEach((r) => r.classList.toggle('is-fav', !!r.__guide && isIptvFav(r.__guide.ch)));
+  }
+  // Another device may have changed the list: read it now and then. If a save failed earlier, send ours instead.
+  async function syncFavorites({ force = false } = {}) {
+    if (!state.userId || !state.apiKey || (!force && Date.now() - favSynced < 600000)) return;
+    favSynced = Date.now();
+    try {
+      if (store.get(favLocalKey() + '.dirty')) {
+        await writeAuroraPref(FAV_PREFS, state.userId, { channels: iptvFavList() });
+        store.del(favLocalKey() + '.dirty');
+        return;
+      }
+      const d = await readAuroraPref(FAV_PREFS);
+      if (Array.isArray(d?.channels)) { saveFavLocal(d.channels); repaintFavMarks(); }
+    } catch { favSynced = 0; }
+  }
+  // One change at a time, applied to the saved list (not overwriting it with ours), so two devices don't undo each other.
+  let favWrite = Promise.resolve();
+  function pushFavChange(entry, on) {
+    favWrite = favWrite.then(async () => {
+      try {
+        const d = await readAuroraPref(FAV_PREFS);
+        let list = (Array.isArray(d?.channels) ? d.channels : []).filter((f) => f.k !== entry.k);
+        if (on) list.unshift(entry);
+        await writeAuroraPref(FAV_PREFS, state.userId, { channels: list.slice(0, FAV_MAX) });
+        store.del(favLocalKey() + '.dirty');
+      } catch (e) {
+        store.set(favLocalKey() + '.dirty', '1'); // sent again at the next sync
+        appLog.add('info', 'Favorites not saved yet: ' + e.message);
+      }
+    });
+  }
+  function toggleIptvFav(ch, { silent = false, set } = {}) {
+    const k = favId(ch);
+    if (!k) return false;
+    const on = set === undefined ? !isIptvFav(ch) : !!set;
+    if (on === isIptvFav(ch)) return on;
+    const entry = { k, name: ch.name, logo: ch.logo || '', num: ch.num || '', group: ch.group ?? '', epgId: ch.epgId || '', streamId: ch.streamId || undefined, url: ch.streamId ? undefined : ch.url };
+    saveFavLocal(on ? [entry, ...iptvFavList().filter((f) => f.k !== k)].slice(0, FAV_MAX) : iptvFavList().filter((f) => f.k !== k));
+    pushFavChange(entry, on);
+    repaintFavMarks();
+    if (!silent) toast(on ? `${ch.name} added to Favorites` : `${ch.name} removed from Favorites`, 2000);
+    return on;
+  }
+  async function toggleItemFav(item, onDone) {
+    const on = !item.UserData?.IsFavorite;
+    try {
+      item.UserData = await api(userPath(`/FavoriteItems/${item.Id}`), { method: on ? 'POST' : 'DELETE' });
+      rowCache.clear();
+      toast(on ? 'Added to Favorites' : 'Removed from Favorites', 2000);
+      onDone?.(on);
+    } catch (e) { toast('Could not update Favorites: ' + e.message); }
+  }
+  // What the options menu (long-press, Menu key, or holding OK on a TV remote) does for each kind of thing on screen.
+  function openChoiceMenu(title, choices) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `<div class="m-body notice-body"><h2>${esc(title)}</h2>
+      <div class="report-reasons">${choices.map((c, i) => `<button class="btn ${i === 0 ? 'btn-white' : 'btn-gray'}" data-choice="${i}"${i === 0 ? ' data-autofocus' : ''}>${esc(c.label)}</button>`).join('')}</div>
+      <div class="m-actions"><button class="btn btn-gray" data-act="cancel">Cancel</button></div></div>`;
+    modal.classList.remove('hidden');
+    $('[data-act="cancel"]', content).addEventListener('click', closeModal);
+    $$('[data-choice]', content).forEach((b) => b.addEventListener('click', () => { closeModal(); choices[Number(b.dataset.choice)].run(); }));
+    autoFocus($('[data-choice]', content));
+  }
+  function openChannelMenu(ch) {
+    openChoiceMenu(ch.name, [
+      { label: isIptvFav(ch) ? '\u2605  Remove from Favorites' : '\u2606  Add to Favorites', run: () => toggleIptvFav(ch) },
+      ...(guardEnabled ? [{ label: 'Report a problem with this channel', run: () => openReportDialog(ch) }] : []),
+    ]);
+  }
+  function openEmbyChannelMenu(ch, card) {
+    const fav = !!ch.UserData?.IsFavorite;
+    openChoiceMenu(ch.Name, [{ label: fav ? '\u2605  Remove from Favorites' : '\u2606  Add to Favorites', run: () => toggleItemFav(ch, (on) => card?.classList.toggle('is-fav', on)) }]);
+  }
+  function openItemMenu(item, el) {
+    const fav = !!item.UserData?.IsFavorite;
+    openChoiceMenu(item.Type === 'Episode' ? (item.SeriesName || item.Name) : item.Name, [
+      { label: fav ? '\u2605  Remove from Favorites' : '\u2606  Add to Favorites', run: () => toggleItemFav(item, (on) => { el?.classList.toggle('is-fav', on); if (!on && /^#\/mylist/.test(location.hash)) route(); }) },
+      { label: 'Open', run: () => openItem(item) },
+    ]);
+  }
+  // What the TV remote's held OK button (or Menu key) is on.
+  function holdTarget(el) {
+    if (!el || !el.closest) return null;
+    const t = el.closest('.iptv-tile');
+    if (t?.__ch) return () => openChannelMenu(t.__ch);
+    const row = el.closest('.guide-row');
+    if (row?.__guide?.ch) return () => openChannelMenu(row.__guide.ch);
+    const c = el.closest('.channel-card');
+    if (c?.__embyCh) return () => openEmbyChannelMenu(c.__embyCh, c);
+    const p = el.closest('.poster, .card');
+    if (p?.__item) return () => openItemMenu(p.__item, p);
+    return null;
+  }
+
   // ----- Reporting a channel -----
   // Reports go to Aurora Guard, which keeps them for Admin → Channel reports and, if the admin set it up, passes them
   // to the TV provider with the provider's API key (kept only on the guard's PC; the app never sees it).
@@ -1720,6 +1895,8 @@
     const p = iptvPlaying;
     iptvPlaying = null;
     if (!p || index < 0) return;
+    // Channels the viewer starred (or un-starred) from inside the player.
+    for (const f of stats?.favs || []) { const c = p.list[f.index]; if (c) toggleIptvFav(c, { silent: true, set: f.fav }); }
     const ch = p.list[index];
     // Kept stopping to buffer: note it (it reaches the admins with the automatic reports) and suggest a bigger buffer.
     if (stats?.stalls >= 3) {
@@ -1749,12 +1926,18 @@
     tile.__ch = ch;
     tile.innerHTML = `
       <div class="iptv-logo"><span class="iptv-fallback">${esc(ch.name)}</span></div>
+      <button class="fav-btn" tabindex="-1" aria-label="Favorite"></button>
       <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now></div></div>`;
     paintTile(tile);
+    const on = isIptvFav(ch), star = $('.fav-btn', tile);
+    tile.classList.toggle('is-fav', on);
+    star.textContent = on ? '\u2605' : '\u2606';
+    star.title = on ? 'Remove from Favorites' : 'Add to Favorites';
+    star.addEventListener('click', (e) => { e.stopPropagation(); toggleIptvFav(ch); });
     tile.addEventListener('click', onPlay);
-    // Long-press on a phone, or the Menu button on a TV remote: report a problem with this channel.
-    tile.addEventListener('contextmenu', (e) => { e.preventDefault(); openReportDialog(ch); });
-    tile.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openReportDialog(ch); } });
+    // Long-press on a phone, the Menu button, or holding OK on a TV remote: favorite it, or report a problem.
+    tile.addEventListener('contextmenu', (e) => { e.preventDefault(); openChannelMenu(ch); });
+    tile.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openChannelMenu(ch); } });
     return tile;
   }
 
@@ -1812,7 +1995,9 @@
     if (iptv.guide && Date.now() - (iptv.guide.at || 0) > GUIDE_REFRESH) { iptv.guide = null; iptv.guideLoad = null; }
     let guidePending = !iptv.guide;
     const recent = iptvRecent();
+    await syncFavorites();
     const cats = [
+      ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
       ...src.categories,
@@ -1920,6 +2105,13 @@
       band.style.left = `${l}px`;
       band.style.width = `${Math.max(0, r - l)}px`;
     };
+    // Long-press / Menu key on a channel: favorite it or report a problem.
+    root.addEventListener('contextmenu', (e) => {
+      const el = e.target.closest('.guide-row');
+      if (!el?.__guide?.ch) return;
+      e.preventDefault();
+      openChannelMenu(el.__guide.ch);
+    });
     // Mouse and touch: hovering a show previews it too.
     root.addEventListener('mouseover', (e) => {
       if (nav.on) return;
@@ -2012,6 +2204,7 @@
         <div class="guide-progs" style="width:${width}px"></div>`;
       const play = () => playIptv(list, idx, groupName);
       el.__guide = { ch, play };
+      el.classList.toggle('is-fav', isIptvFav(ch));
       const chBtn = $('.guide-ch', el);
       chBtn.addEventListener('click', play);
       chBtn.__onLeftEdge = openGroups; // Left from the channel column opens the groups, as in TiviMate
@@ -2063,7 +2256,7 @@
       $('span', groupBtn).textContent = cat?.name || '';
       rows.innerHTML = '<div class="spinner"></div>';
       try {
-        const chans = id === '__recent' ? iptvRecent() : await iptvChannels(id);
+        const chans = id === '__fav' ? iptvFavChannels() : id === '__recent' ? iptvRecent() : await iptvChannels(id);
         if (t !== token || !isCurrent()) return;
         list = chans; drawn = 0; groupName = cat?.name || '';
         rows.innerHTML = list.length ? '' : '<p class="empty-msg">No channels here.</p>';
@@ -2148,7 +2341,9 @@
     }
     if (!isCurrent()) return;
     const recent = iptvRecent();
+    await syncFavorites();
     const cats = [
+      ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
       ...src.categories,
@@ -2192,7 +2387,7 @@
       const cat = cats.find((c) => c.id === id);
       grid.innerHTML = '<div class="spinner"></div>';
       try {
-        const list = id === '__recent' ? iptvRecent() : await iptvChannels(id);
+        const list = id === '__fav' ? iptvFavChannels() : id === '__recent' ? iptvRecent() : await iptvChannels(id);
         if (t !== token || !isCurrent()) return;
         show(list, cat?.name || '');
         if (focus) focusEl($('.iptv-tile', grid));
@@ -2268,13 +2463,17 @@
     const prog = ch.CurrentProgram;
     card.innerHTML = `
       <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
-      ${ch.UserData?.IsFavorite ? '<div class="badge-watched" title="Favorite">&#9733;</div>' : ''}
+      <div class="badge-fav" title="Favorite">&#9733;</div>
       <div class="card-info">
         <div>${esc(prog?.Name || ch.Name)}</div>
         <div class="sub">${esc(channelLabel(ch))}${prog ? ' · ' + esc(timeRange(prog)) : ''}</div>
       </div>
       ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}`;
     card.addEventListener('click', () => playItem(ch));
+    card.__embyCh = ch;
+    card.classList.toggle('is-fav', !!ch.UserData?.IsFavorite);
+    card.addEventListener('contextmenu', (e) => { e.preventDefault(); openEmbyChannelMenu(ch, card); });
+    card.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openEmbyChannelMenu(ch, card); } });
     return card;
   }
 
@@ -6817,9 +7016,28 @@
   }
 
   // action: up/down/left/right/select/back or a media key. fromNative: sent by the Android app.
+  let selHold = null;
   function handleKey(action, fromNative = false) {
     const el = document.activeElement;
     if (action !== 'back') enableNav();
+    // OK held down on a TV remote (the Android app sends selectdown, selecthold, selectup). On something with an options
+    // menu (a channel, a movie or show) a quick press still acts when OK is let go, and holding opens the menu
+    // (add to Favorites...). Everywhere else OK acts the moment it's pressed, as before.
+    if (action === 'selectdown') {
+      selHold = null;
+      if (!isPlayerOpen() && !isTextInput(el) && holdTarget(el)) { selHold = { el, held: false }; return true; }
+      return handleKey('select', true);
+    }
+    if (action === 'selecthold') {
+      if (selHold && !selHold.held && document.activeElement === selHold.el) { selHold.held = true; holdTarget(selHold.el)?.(); }
+      return true;
+    }
+    if (action === 'selectup') {
+      const h = selHold;
+      selHold = null;
+      if (h && !h.held) return handleKey('select', true);
+      return true;
+    }
     if (action === 'guide' && isPlayerOpen()) closePlayer();
     else if (isPlayerOpen() && handlePlayerKey(action)) return true;
     if (['up', 'down', 'left', 'right'].includes(action)) {

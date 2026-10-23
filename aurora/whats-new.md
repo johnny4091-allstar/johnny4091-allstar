@@ -1,3 +1,3 @@
-- Fixes from another full check: the app lock no longer locks right after a movie, a movie that fails to start doesn't reopen after you press Back, and the TV guide keeps working from its saved copy when the provider is unreachable.
+- New: Favorites. Save movies, shows and Live TV channels to the Favorites tab: tap the star on a channel, the + on a movie or show, or hold OK on a TV remote. Channels can also be starred while watching, and the list follows you to your other devices.
 - Settings now shows whether Aurora is online or offline.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌

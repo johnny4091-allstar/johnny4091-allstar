@@ -78,6 +78,7 @@ public class LivePlayerActivity extends Activity {
     static final String RESULT_INDEX = "index";
     static final String RESULT_STALLS = "stalls", RESULT_MINUTES = "minutes", RESULT_BUFFER = "buffer";
     /** Channels that stopped working while open (for Admin → Playback problems): how many, the last one, and why. */
+    static final String RESULT_FAVS = "favs"; // JSON [{index, fav}] for channels the viewer starred or un-starred
     static final String RESULT_FAILED = "failed", RESULT_FAILED_NAME = "failedName", RESULT_FAILED_CODE = "failedCode";
 
     private static final int ACCENT = Color.parseColor("#2AD4D0");
@@ -121,6 +122,8 @@ public class LivePlayerActivity extends Activity {
 
     static final class Channel {
         String name, url, logo, num, now;
+        /** In the viewer's Favorites; favInitial is how it was when the player opened (only changes are handed back). */
+        boolean fav, favInitial;
         /** The same channel in the other format (MPEG-TS / HLS), tried when the first keeps failing. */
         boolean triedOther;
     }
@@ -142,6 +145,7 @@ public class LivePlayerActivity extends Activity {
                 c.logo = o.optString("logo", "");
                 c.num = o.optString("num", "");
                 c.now = o.optString("now", "");
+                c.fav = c.favInitial = o.optBoolean("fav", false);
                 channels.add(c);
             }
         } catch (Exception e) {
@@ -503,6 +507,12 @@ public class LivePlayerActivity extends Activity {
             backButton.setVisibility(View.GONE);
             root.addView(backButton);
         }
+        // Phones: a star to save the channel to Favorites (a TV remote does it with the right arrow while the banner shows).
+        favButton = PlayerUi.starButton(this, this::toggleFavorite);
+        if (favButton != null) {
+            favButton.setVisibility(View.GONE);
+            root.addView(favButton);
+        }
 
         setContentView(root);
     }
@@ -520,9 +530,14 @@ public class LivePlayerActivity extends Activity {
         return s;
     }
 
-    private TextView backButton; // null on a TV
+    private TextView backButton, favButton; // null on a TV
     private final Runnable hideBanner = () -> {
         banner.animate().alpha(0f).setDuration(300).start();
+        if (favButton != null && !listOpen()) {
+            favButton.animate().alpha(0f).setDuration(300).withEndAction(() -> {
+                if (favButton.getAlpha() == 0f) favButton.setVisibility(View.GONE);
+            }).start();
+        }
         if (backButton != null && !listOpen()) {
             backButton.animate().alpha(0f).setDuration(300).withEndAction(() -> {
                 if (backButton.getAlpha() == 0f) backButton.setVisibility(View.GONE);
@@ -532,7 +547,14 @@ public class LivePlayerActivity extends Activity {
 
     private void showBanner() {
         Channel c = channels.get(index);
-        bannerTitle.setText((c.num.isEmpty() ? "" : c.num + "   ") + c.name);
+        bannerTitle.setText((c.fav ? "\u2605  " : "") + (c.num.isEmpty() ? "" : c.num + "   ") + c.name);
+        if (favButton != null) {
+            favButton.setText(c.fav ? "\u2605" : "\u2606");
+            favButton.setTextColor(c.fav ? Color.parseColor("#FFD166") : Color.WHITE);
+            favButton.animate().cancel();
+            favButton.setAlpha(1f);
+            favButton.setVisibility(View.VISIBLE);
+        }
         bannerNow.setText(c.now.isEmpty() ? "" : "Now: " + c.now);
         bannerNow.setVisibility(c.now.isEmpty() ? View.GONE : View.VISIBLE);
         bannerGroup.setText(group.toUpperCase());
@@ -546,11 +568,21 @@ public class LivePlayerActivity extends Activity {
             backButton.setAlpha(1f);
             backButton.setVisibility(View.VISIBLE);
         }
+        bannerShownAt = System.currentTimeMillis();
         handler.removeCallbacks(hideBanner);
         handler.postDelayed(hideBanner, 4500);
     }
+    private long bannerShownAt;
 
     private boolean listOpen() { return listPanel.getVisibility() == View.VISIBLE; }
+
+    /** Saves or removes the channel on screen from the viewer's Favorites (the page applies it when the player closes). */
+    private void toggleFavorite() {
+        Channel c = channels.get(index);
+        c.fav = !c.fav;
+        android.widget.Toast.makeText(this, c.fav ? "Added to Favorites" : "Removed from Favorites", android.widget.Toast.LENGTH_SHORT).show();
+        showBanner();
+    }
 
     private void showList() {
         listPanel.setVisibility(View.VISIBLE);
@@ -735,6 +767,12 @@ public class LivePlayerActivity extends Activity {
                 return true;
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_INFO:
+                // Right once shows what's on; right again while it shows saves the channel to Favorites.
+                if (code == KeyEvent.KEYCODE_DPAD_RIGHT && event.getRepeatCount() == 0 && banner.getAlpha() > 0.9f && bannerShownAt > 0
+                        && System.currentTimeMillis() - bannerShownAt < 4000 && PlayerUi.isTv(this)) {
+                    toggleFavorite();
+                    return true;
+                }
                 showBanner();
                 return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
@@ -767,6 +805,16 @@ public class LivePlayerActivity extends Activity {
         result.putExtra(RESULT_STALLS, stalls);
         result.putExtra(RESULT_MINUTES, (int) ((System.currentTimeMillis() - openedAt) / 60000));
         result.putExtra(RESULT_BUFFER, bufferLevel);
+        try {
+            JSONArray favs = new JSONArray();
+            for (int i = 0; i < channels.size(); i++) {
+                Channel c = channels.get(i);
+                if (c.fav != c.favInitial) favs.put(new JSONObject().put("index", i).put("fav", c.fav));
+            }
+            if (favs.length() > 0) result.putExtra(RESULT_FAVS, favs.toString());
+        } catch (Exception ignored) {
+            // Favorites are saved on the next visit instead.
+        }
         result.putExtra(RESULT_FAILED, failedChannels);
         result.putExtra(RESULT_FAILED_NAME, failedName);
         result.putExtra(RESULT_FAILED_CODE, failedCode);

@@ -235,6 +235,7 @@ public class MainActivity extends Activity {
                 stats = new JSONObject().put("stalls", data.getIntExtra(LivePlayerActivity.RESULT_STALLS, 0))
                         .put("minutes", data.getIntExtra(LivePlayerActivity.RESULT_MINUTES, 0))
                         .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER)))
+                        .put("favs", new org.json.JSONArray(data.getStringExtra(LivePlayerActivity.RESULT_FAVS) == null ? "[]" : data.getStringExtra(LivePlayerActivity.RESULT_FAVS)))
                         .put("failed", data.getIntExtra(LivePlayerActivity.RESULT_FAILED, 0))
                         .put("failedName", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_FAILED_NAME)))
                         .put("failedCode", data.getIntExtra(LivePlayerActivity.RESULT_FAILED_CODE, 0)).toString();
@@ -491,7 +492,6 @@ public class MainActivity extends Activity {
     /** Remote buttons the web page can't receive reliably are forwarded to window.embyflixKey(). */
     private static String remoteAction(int keyCode) {
         switch (keyCode) {
-            case KeyEvent.KEYCODE_DPAD_CENTER: return "select";
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
             case KeyEvent.KEYCODE_HEADSETHOOK: return "playpause";
             case KeyEvent.KEYCODE_MEDIA_PLAY: return "play";
@@ -509,6 +509,15 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // OK on a TV remote is sent in three parts (pressed, held, released) so the page can tell a press from a hold
+        // (hold OK on a channel or title: add to Favorites). A plain press acts as before.
+        if (customView == null && event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER) {
+            String part = null;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) part = event.getRepeatCount() == 0 ? "selectdown" : event.getRepeatCount() == 1 ? "selecthold" : null;
+            else if (event.getAction() == KeyEvent.ACTION_UP) part = "selectup";
+            if (part != null) webView.evaluateJavascript("window.embyflixKey && window.embyflixKey('" + part + "')", null);
+            return true;
+        }
         String action = customView == null ? remoteAction(event.getKeyCode()) : null;
         if (action != null) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
