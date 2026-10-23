@@ -1001,3 +1001,17 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .service-status.online .service-dot { background: #2fbf71; box-shadow: 0 0 0 3px rgba(47,191,113,.25); }
 .service-status.offline { color: #ff8a8f; }
 .service-status.offline .service-dot { background: #e5484d; box-shadow: 0 0 0 3px rgba(229,72,77,.25); }
+
+/* Settings: My account. Admin: extension requests */
+.account-note { margin: .8rem 0 0; padding: .7rem 1rem; border-radius: 8px; background: rgba(255,255,255,.06); line-height: 1.45; }
+.account-note.good { background: rgba(47,191,113,.15); color: #b6f0cf; }
+.account-note.bad { background: rgba(229,72,77,.15); color: #ffc2c5; }
+.account-soon { color: #ffd166; }
+.account-request { display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; margin-top: 1rem; }
+.account-note-input { flex: 1 1 14rem; min-width: 0; box-sizing: border-box; padding: .7rem .9rem; border-radius: 8px; border: 1px solid rgba(255,255,255,.15); background: var(--bg-3); color: #fff; font: inherit; }
+.account-note-input:focus { outline: none; border-color: var(--accent, #2ad4d0); }
+.ext-card { border: 1px solid rgba(255,209,102,.35); }
+.ext-note { margin-top: .3rem; color: #d5dcef; font-style: italic; }
+.ext-actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin-top: .7rem; }
+.ext-actions select { padding: .55rem .8rem; border-radius: 8px; background: var(--bg-3); color: #fff; border: 1px solid rgba(255,255,255,.15); font: inherit; }
+.ext-banner { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; border: 1px solid rgba(255,209,102,.5); color: #fff; text-decoration: none; }

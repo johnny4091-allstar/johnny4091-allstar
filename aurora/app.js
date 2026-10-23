@@ -3418,6 +3418,53 @@
     const timer = setInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
   }
 
+  // "My account": the plan (how many devices at once, how many in use), the date access ends, and a way to ask for more
+  // time. Comes from Aurora Guard (GET /account, about this account only); the admin approves in Admin -> Users.
+  async function showAccountInfo(section, isCurrent) {
+    const box = $('[data-account-body]', section);
+    if (!guardEnabled) { section.remove(); return; }
+    const draw = async () => {
+      let a;
+      try { a = await guard('/account', { params: { userId: state.userId } }); }
+      catch (e) {
+        if (!isCurrent() || !section.isConnected) return;
+        box.innerHTML = '<p class="setting-desc">Your plan details can\'t be shown right now. Try again in a moment.</p>';
+        return;
+      }
+      if (!isCurrent() || !section.isConnected) return;
+      if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
+      const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
+      const soon = a.daysLeft != null && a.daysLeft <= 7;
+      const endText = a.expires ? `${fmtDay(a.expires)}${a.expired ? '' : ` · ${a.daysLeft <= 0 ? 'ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left'}`}` : 'No end date';
+      const r = a.request;
+      let reqHtml = '';
+      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}. The admin will review it.</p>`;
+      else if (r?.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note good">Your extension was approved${r.newExpires ? `: access now runs until ${esc(fmtDay(r.newExpires))}` : ''}.${r.message ? ' ' + esc(r.message) : ''}</p>`;
+      else if (r?.status === 'denied' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note bad">Your last request wasn't approved.${r.message ? ' ' + esc(r.message) : ' Please contact the admin.'}</p>`;
+      box.innerHTML = `
+        ${settingRow('Plan', 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
+        ${settingRow('In use right now', null, `<span class="setting-value">${a.activeDevices} of ${n}</span>`)}
+        ${settingRow('Access until', soon && !a.expired ? 'Your access ends soon. You can ask for more time below.' : null, `<span class="setting-value${soon ? ' account-soon' : ''}">${esc(endText)}</span>`)}
+        ${reqHtml}
+        ${a.canRequest ? `<div class="account-request">
+          ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-note maxlength="200" placeholder="Add a note for the admin (optional)" autocomplete="off">'}
+          <button class="btn btn-white" data-ext-send>Request an extension</button></div>` : ''}`;
+      // While a request waits, look again every 30 s so the answer appears without leaving the page.
+      if (r?.status === 'pending') setTimeout(() => { if (isCurrent() && section.isConnected) draw(); }, 30000);
+      $('[data-ext-send]', box)?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        try {
+          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '' } });
+          toast('Request sent to the admin', 3000);
+        } catch (err) { toast(err.message || "Couldn't send the request. Try again in a moment.", 5000); }
+        draw();
+      });
+    };
+    draw();
+  }
+
   async function renderSettings(page, isCurrent) {
     page.innerHTML = `<div class="page-pad settings-page"><div class="page-head"><h1>Settings</h1></div><div class="spinner"></div></div>`;
     let user = state.user;
@@ -3430,6 +3477,7 @@
     $('.settings-page', page).innerHTML = `
       <div class="page-head"><h1>Settings</h1>
         <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
+      <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
       <section class="settings-section">
         <h2>Language &amp; subtitles <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
         ${settingRow('Audio language', 'Pick this language when a title has more than one.', selectHtml('audioLang', langs(cfg.AudioLanguagePreference), cfg.AudioLanguagePreference || ''))}
@@ -3472,6 +3520,7 @@
       </section>`;
     applySubtitleStyle();
     showServiceStatus($('[data-service-status]', page), isCurrent);
+    showAccountInfo($('[data-account]', page), isCurrent);
 
     // Saves run one at a time so quick changes don't overwrite each other.
     let saving = Promise.resolve();
@@ -4086,7 +4135,12 @@
     const failedTasks = list(tasks).filter((t) => t.LastExecutionResult?.Status === 'Failed');
     const errors = list(activity).filter((a) => /error|fatal/i.test(a.Severity || '') || /failed/i.test(a.Type || ''));
 
+    // Waiting extension requests (Aurora Guard 1.4.0+), up top where the admin looks first.
+    let waiting = 0;
+    if (guardEnabled) { try { waiting = (await guard('/extensions', { quick: true })).pending.length; } catch { /* older or unreachable guard */ } }
+    if (!isCurrent()) return;
     body.innerHTML = `
+      ${waiting ? `<a class="admin-card ext-banner" href="#/admin?tab=users"><strong>${waiting} extension ${waiting === 1 ? 'request' : 'requests'} waiting</strong> <span class="muted">Tap to review and approve</span></a>` : ''}
       <div class="stat-grid">
         ${statTile('Watching now', active.length + live.now.length, active.length + live.now.length
           ? `${live.now.length} live TV · ${transcoding} converting (transcode), ${active.length - transcoding} direct` : 'Nobody is watching')}
@@ -4696,6 +4750,44 @@
   const userStatus = (u, lim) => (isExpired(lim) ? 'expired' : u.Policy?.IsDisabled ? 'disabled' : 'active');
   const statusPill = (st) => `<span class="pill ${st === 'active' ? 'good' : st === 'expired' ? 'bad' : 'warn'}">${st === 'active' ? 'Active' : st === 'expired' ? 'Expired' : 'Disabled'}</span>`;
 
+  // ----- Extension requests (Admin -> Users) -----
+  const EXT_DAYS = [[7, '7 days'], [14, '14 days'], [30, '30 days'], [60, '60 days'], [90, '90 days'], [180, '6 months'], [365, '1 year']];
+  function extensionsCardHtml(ext) {
+    if (!ext || (!ext.pending?.length && !ext.decided?.length)) return '';
+    const row = (x) => `<div class="admin-row ext-row" data-ext="${esc(x.id)}"><div class="admin-row-main">
+        <strong>${esc(x.name)}</strong> <span class="pill warn">Asked for more time</span>
+        <div class="muted">${x.currentExpires ? `Ends ${esc(fmtDay(x.currentExpires))}${isExpired({ expires: x.currentExpires }) ? ' (expired)' : ''}` : 'No end date set'} · asked ${esc(timeAgo(x.at))}</div>
+        ${x.note ? `<div class="ext-note">"${esc(x.note)}"</div>` : ''}
+        <div class="ext-actions">
+          <select data-ext-days aria-label="Extend by">${EXT_DAYS.map(([d, l]) => `<option value="${d}"${d === 30 ? ' selected' : ''}>${l}</option>`).join('')}</select>
+          <button class="btn btn-white" data-ext-approve>Approve</button>
+          <button class="btn btn-gray" data-ext-deny>Deny</button>
+        </div></div></div>`;
+    const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.days} days, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
+        <div class="admin-row-time">${esc(timeAgo(x.decidedAt))}</div></div>`;
+    return `<section class="admin-card ext-card">
+      <h2>Extension requests <small>${ext.pending.length ? `${ext.pending.length} waiting` : 'None waiting'}</small></h2>
+      <div class="admin-list">${ext.pending.map(row).join('') || '<p class="muted">Nobody is waiting for an answer.</p>'}</div>
+      ${ext.decided.length ? `<details class="conn-list"><summary>Recent decisions</summary><div class="admin-list">${ext.decided.slice(0, 10).map(done).join('')}</div></details>` : ''}
+    </section>`;
+  }
+  function bindExtensions(body, isCurrent) {
+    $$('[data-ext]', body).forEach((rowEl) => {
+      const id = rowEl.dataset.ext;
+      const decide = async (action, btn) => {
+        $$('button', rowEl).forEach((b) => { b.disabled = true; });
+        try {
+          const days = Number($('[data-ext-days]', rowEl).value);
+          const r = await guard(`/extensions/${encodeURIComponent(id)}`, { method: 'PUT', body: { action, days } });
+          toast(action === 'approve' ? `Approved: now ends ${fmtDay(r.request.newExpires)}` : 'Denied', 3000);
+        } catch (e) { toast(e.status === 404 ? 'Update Aurora Guard to 1.4.0 first.' : e.message, 5000); }
+        if (isCurrent()) adminUsers(body, isCurrent);
+      };
+      $('[data-ext-approve]', rowEl).addEventListener('click', (e) => decide('approve', e.currentTarget));
+      $('[data-ext-deny]', rowEl).addEventListener('click', (e) => decide('deny', e.currentTarget));
+    });
+  }
+
   async function adminUsers(body, isCurrent) {
     const params = new URLSearchParams(location.hash.split('?')[1] || '');
     if (params.get('user') === 'new') return adminUserNew(body, isCurrent);
@@ -4707,6 +4799,7 @@
       users = users || [];
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
     if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { guardError = e; } }
+    const ext = g ? await guard('/extensions').catch(() => null) : null;
     if (!isCurrent()) return;
     // Once only (the guard remembers): any account can write its own display preferences, so values found
     // there later must not be trusted.
@@ -4755,6 +4848,7 @@
     let filter = store.get('ef.usersFilter') || 'all', query = '';
     if (!filters.includes(filter)) filter = 'all';
     body.innerHTML = `
+      ${extensionsCardHtml(ext)}
       <section class="admin-card">
         <div class="users-head">
           <h2>Users <small>${rows.length}</small></h2>
@@ -4782,6 +4876,7 @@
             : a.type === 'disabled' ? `disabled, ${a.why}` : a.type === 'enabled' ? `enabled again, ${a.why}` : a.why || a.type)}</div>
           <div class="admin-row-time">${esc(timeAgo(new Date(a.at)))}</div></div>`).join('') || '<p class="muted">Nothing done yet.</p>'}</div>
       </section>`}`;
+    bindExtensions(body, isCurrent);
     const list = $('.users-list', body);
     const draw = () => {
       const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));

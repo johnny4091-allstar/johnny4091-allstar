@@ -78,10 +78,26 @@ Administrator accounts are never limited or disabled.
 | `GET /reports`, `DELETE /reports` | Emby administrators | The reported channels. |
 | `GET /status` | Anyone | Two plain-text lines: `Guard: online` and `Aurora: online/offline`. |
 | `GET /status/users` | Emby administrators | Live device counts per account (see above). |
+| `GET /account?userId=` | The signed-in user, about themselves | Their plan: devices allowed and in use, the date access ends, and the state of an extension request. |
+| `POST /extension` | The signed-in customer | Asks for an extension (one waiting at a time, 4 a month). Sends an alert. |
+| `GET /extensions`, `PUT /extensions/{id}` | Emby administrators | The requests; `{action: "approve", days}` or `{action: "deny", message}`. |
 | `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
 | `GET /limits`, `GET /actions` | Emby administrators | Reads the store and the recent actions. |
 | `PUT /limits/{userId}` | Emby administrators | Sets `{limit, expires: "YYYY-MM-DD" or null}` and applies it at once. |
 | `DELETE /limits/{userId}`, `PUT /limits/{userId}/manual`, `PUT /migrated` | Emby administrators | Housekeeping. |
+
+## Plan details and extension requests (guard 1.4.0)
+
+Settings → **My account** shows each customer their plan: how many devices can be in use at once (the limit set in
+Admin → Users), how many are in use now, and the date their access ends, with a **Request an extension** button
+(with an optional note on phones). The request appears in Admin → Overview (a banner) and Admin → Users, where you pick
+how long to add (7 days to a year) and **Approve** or **Deny**. Approving adds the time to whichever is later, today or
+the current end date, so time already paid for is never lost, and switches the account back on if the guard had
+switched it off. If `alertWebhookUrl` is set, a new request also sends you an alert. A customer sees "requested",
+"approved until ..." or "not approved" in Settings. Nothing new is needed in `config.json`.
+
+An account that has already expired is switched off in Emby, so its owner can't sign in to ask: they need to contact you.
+The button is for the days before the end.
 
 ## TV provider connections (guard 1.3.0)
 
@@ -126,7 +142,7 @@ is recent), otherwise `offline`. For a few seconds after the guard starts it say
 load at all, the guard itself isn't running or can't be reached (for example a certificate problem).
 
 **Which version is running?** `https://your-address:8922/health`, the first line of `node aurora-guard.js --check`, and
-the "Aurora Guard 1.3.2 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
+the "Aurora Guard 1.4.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
 none of the new settings works exactly as before.
 
 ## Channel reports and the TV provider's API (guard 1.1.0)

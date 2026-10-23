@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.3.2';
+const VERSION = '1.4.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -173,7 +173,7 @@ function flushAlerts() {
 // ---------- Store ----------
 // { users: { userId: { limit, expires: "YYYY-MM-DD" | null, name, updated, updatedBy } },
 //   disabledByGuard: { userId: true }, firstSeen: { userId: { deviceId: ms } }, actions: [...] }
-function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], reports: [] }; }
+function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], reports: [], extensions: [] }; }
 let store = emptyStore();
 try { store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) }; } catch (e) {
   if (e.code !== 'ENOENT') { log('Could not read', STORE_FILE, '-', e.message, '(starting with an empty store; the old file is kept as limits.json.bad)'); try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.bad'); } catch {} }
@@ -245,6 +245,18 @@ const reportCount = new Map(); // userId -> { n, since }
 function recordAction(action) {
   store.actions.unshift({ at: Date.now(), ...action });
   store.actions = store.actions.slice(0, 300);
+}
+
+// ---------- Plan details and extension requests ----------
+// A customer sees their own plan (devices allowed, in use now, the date access ends) and may ask for more time;
+// the admin approves or denies it in Admin -> Users. Approving moves the expiration date on (from today, or from the
+// current date if that is later) and switches the account back on if the guard had switched it off.
+const localDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function addDays(day, n) { const d = new Date(day + 'T12:00:00'); d.setDate(d.getDate() + n); return localDay(d); }
+const daysUntil = (day) => Math.ceil((new Date(day + 'T23:59:59').getTime() - Date.now()) / 86400000);
+const MAX_REQUESTS_PER_MONTH = 4;
+function publicRequest(r) {
+  return r && { id: r.id, status: r.status, at: r.at, note: r.note, decidedAt: r.decidedAt || null, days: r.days || null, message: r.message || '', newExpires: r.newExpires || null };
 }
 
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s + 'T00:00:00'));
@@ -668,6 +680,45 @@ async function handle(req, res) {
     return send(res, 200, { ok: true });
   }
 
+  // A signed-in customer's own plan: how many devices at once, how many in use, when access ends, and the state of
+  // an extension request. About themselves only; nothing about anyone else.
+  if (url.pathname === '/account' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    if (me.Policy?.IsAdministrator) return send(res, 200, { admin: true, name: me.Name });
+    const rec = store.users[me.Id];
+    const devices = activeByUser(await sessionsShared()).get(me.Id);
+    const mine = (store.extensions || []).filter((x) => x.userId === me.Id);
+    const latest = mine[0] || null;
+    const expires = rec?.expires || null;
+    return send(res, 200, {
+      name: me.Name, limit: limitOf(me.Id), activeDevices: devices ? devices.size : 0,
+      expires, expired: isExpired(rec), daysLeft: expires ? daysUntil(expires) : null, disabled: !!me.Policy?.IsDisabled,
+      request: publicRequest(latest),
+      canRequest: !!expires && !(latest && latest.status === 'pending')
+        && mine.filter((x) => Date.now() - x.at < 30 * 86400000).length < MAX_REQUESTS_PER_MONTH,
+    });
+  }
+  if (url.pathname === '/extension' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const me = await userOfToken(token, String(body.userId || ''));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    if (me.Policy?.IsAdministrator) return send(res, 400, { error: 'Administrator accounts have no expiration.' });
+    const rec = store.users[me.Id];
+    if (!rec?.expires) return send(res, 400, { error: 'This account has no end date, so there is nothing to extend.' });
+    const mine = (store.extensions || []).filter((x) => x.userId === me.Id);
+    if (mine[0]?.status === 'pending') return send(res, 409, { error: 'You already have a request waiting.' });
+    if (mine.filter((x) => Date.now() - x.at < 30 * 86400000).length >= MAX_REQUESTS_PER_MONTH) return send(res, 429, { error: 'Too many requests this month. Please contact the admin.' });
+    const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires };
+    store.extensions = [entry, ...(store.extensions || [])].slice(0, 500);
+    recordAction({ type: 'extensionRequested', userId: me.Id, name: me.Name, why: `asked for an extension (expires ${rec.expires})` });
+    saveStore();
+    log('Extension requested by', me.Name, `(expires ${rec.expires})`);
+    sendAlert('Aurora: extension requested', `${me.Name} asked for more time (access ends ${rec.expires}).${entry.note ? '\n"' + entry.note + '"' : ''}`, false);
+    return send(res, 200, { ok: true, request: publicRequest(entry) });
+  }
+
   // Everything else: Emby administrators only.
   if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
   let admin = false;
@@ -711,6 +762,43 @@ async function handle(req, res) {
       emby: { online: embyReach.ok, checkedAt: embyReach.at ? new Date(embyReach.at).toISOString() : null, error: embyReach.error },
       lastRun, totals: { accounts: list.length, over: list.filter((x) => x.over).length, activeDevices: list.reduce((n, x) => n + x.activeDevices, 0) }, users: list,
     });
+  }
+
+  // Extension requests, for Admin -> Users.
+  if (url.pathname === '/extensions' && req.method === 'GET') {
+    const list = (store.extensions || []).map((x) => ({ ...x, currentExpires: store.users[x.userId]?.expires || null }));
+    return send(res, 200, { pending: list.filter((x) => x.status === 'pending').reverse(), decided: list.filter((x) => x.status !== 'pending').slice(0, 30) });
+  }
+  const ex = url.pathname.match(/^\/extensions\/([\w-]{1,32})$/);
+  if (ex && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const r = (store.extensions || []).find((x) => x.id === ex[1]);
+    if (!r) return send(res, 404, { error: 'No such request' });
+    if (r.status !== 'pending') return send(res, 409, { error: `Already ${r.status}.` });
+    const message = String(body.message || '').slice(0, 200).trim();
+    if (body.action === 'deny') {
+      r.status = 'denied'; r.decidedAt = Date.now(); r.message = message;
+      recordAction({ type: 'extensionDenied', userId: r.userId, name: r.name, why: 'extension denied' });
+      saveStore();
+      return send(res, 200, { ok: true, request: r });
+    }
+    if (body.action !== 'approve') return send(res, 400, { error: 'action must be approve or deny' });
+    const days = Number(body.days);
+    if (!Number.isInteger(days) || days < 1 || days > 730) return send(res, 400, { error: 'days must be a whole number from 1 to 730' });
+    let user;
+    try { user = await emby('GET', `/Users/${r.userId}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'That account no longer exists' : e.message }); }
+    const rec = store.users[r.userId] || (store.users[r.userId] = { limit: limitOf(r.userId), expires: null, name: user.Name, updated: Date.now() });
+    const today = localDay(new Date());
+    const from = rec.expires && rec.expires > today ? rec.expires : today; // time already left is kept, never lost
+    rec.expires = addDays(from, days); rec.name = user.Name; rec.updated = Date.now();
+    r.status = 'approved'; r.decidedAt = Date.now(); r.days = days; r.message = message; r.newExpires = rec.expires;
+    recordAction({ type: 'extended', userId: r.userId, name: r.name, why: `extended ${days} days, now ends ${rec.expires}` });
+    saveStore();
+    log('Extended', r.name, days, 'days, now ends', rec.expires);
+    let applied = true;
+    try { await enforce(r.userId); } catch (e) { applied = false; log('Applying', r.name, 'failed:', e.message); }
+    return send(res, 200, { ok: true, applied, request: r });
   }
 
   // TV provider connections in use (counted every minute), today's peak, and the limit and warning level.
