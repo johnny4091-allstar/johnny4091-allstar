@@ -4299,10 +4299,9 @@
         if (!rel) return bad("Couldn't read the releases on GitHub, so apps can't find updates right now.");
         const devices = await api('/Devices').catch(() => null);
         const list = (Array.isArray(devices) ? devices : devices?.Items || []).filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY);
-        const oldKey = list.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < 166);
         const behind = list.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < rel.code);
         const t = `Latest is ${rel.name} · ${behind.length} of ${list.length} devices behind`;
-        return oldKey.length ? warn(`${t}. ${oldKey.length} still on the old signing key (1.2.165 or older): they must uninstall and reinstall once (${oldKey.map((d) => d.Name).slice(0, 5).join(', ')}).`) : ok(t);
+        return behind.length && behind.length === list.length ? warn(t) : ok(t);
       }),
       check('App settings file', async () => {
         for (const url of REMOTE_CONFIG_URLS) {
@@ -5651,12 +5650,12 @@
   function releaseNotes(body) {
     const m = (body || '').match(/<!-- notes -->([\s\S]*?)<!-- \/notes -->/);
     if (!m) return [];
-    // A line ending in two invisible characters is only for copies older than 1.2.166, which have the old signing key
-    // and need telling to reinstall. Newer copies don't show it (older ones just see it as a normal line).
-    const OLD_KEY_NOTE = '\u200b\u200c', oldKeyCopy = (nativeApp?.getVersionCode?.() || 999) < 166;
+    // Older releases (1.2.166 to 1.2.173) carry a "reinstall, new signing key" line that ends in two invisible
+    // characters. Every device has the new key now, so those lines are never shown.
+    const OLD_KEY_NOTE = '\u200b\u200c';
     return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l))
-      .filter((l) => oldKeyCopy || !l.endsWith(OLD_KEY_NOTE))
-      .map((l) => brand(l.slice(2).replace(OLD_KEY_NOTE, '').trim())).filter(Boolean);
+      .filter((l) => !l.endsWith(OLD_KEY_NOTE))
+      .map((l) => brand(l.slice(2).trim())).filter(Boolean);
   }
 
   async function checkForUpdate() {

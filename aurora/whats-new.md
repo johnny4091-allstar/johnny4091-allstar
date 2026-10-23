@@ -1,3 +1,1 @@
-- New: Favorites. Save movies, shows and Live TV channels to the Favorites tab: tap the star on a channel, the + on a movie or show, or hold OK on a TV remote. Channels can also be starred while watching, and the list follows you to your other devices.
-- Settings now shows whether Aurora is online or offline.
-- IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌
+- Behind the scenes: removed the old reminder to reinstall, now that every device has the new version.
