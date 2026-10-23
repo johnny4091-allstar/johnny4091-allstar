@@ -2314,7 +2314,7 @@
 
   function renderIptvLive(page, tab, isCurrent) {
     store.set('ef.iptv.used', String(Date.now()));
-    const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ...(hasLiveTv() ? [['recordings', 'Recordings']] : [])];
+    const tabs = [['channels', 'Channels'], ['guide', 'Guide']];
     if (!tabs.some(([id]) => id === tab)) tab = 'channels';
     page.innerHTML = `
       <div class="page-pad live-page iptv-page${tab === 'guide' ? ' guide-tab' : ''}">
@@ -2326,7 +2326,6 @@
         <div data-live-body><div class="spinner"></div></div>
       </div>`;
     const body = $('[data-live-body]', page);
-    if (tab === 'recordings') { renderRecordings(body, isCurrent); autoFocus($('.tab.active', page)); return; }
     if (tab === 'guide') { renderIptvGuide(body, isCurrent); return; }
     renderIptvChannels(page, body, isCurrent);
     // Logos and what's on fill in when the guide arrives.
@@ -2478,7 +2477,7 @@
   }
 
   function renderLiveTv(page, tab, isCurrent) {
-    const tabs = [['guide', 'Guide'], ['channels', 'Channels'], ['recordings', 'Recordings']];
+    const tabs = [['guide', 'Guide'], ['channels', 'Channels']];
     if (!tabs.some(([id]) => id === tab)) tab = 'guide';
     page.innerHTML = `
       <div class="page-pad live-page">
@@ -2492,7 +2491,6 @@
       </div>`;
     const body = $('[data-live-body]', page);
     if (tab === 'channels') renderChannels(body, isCurrent);
-    else if (tab === 'recordings') renderRecordings(body, isCurrent);
     else renderGuide(body, isCurrent);
     autoFocus($('.tab.active', page));
   }
@@ -2607,7 +2605,7 @@
         if (right - left < 4) continue;
         const btn = document.createElement('button');
         const airing = ps <= now && pe > now;
-        btn.className = 'guide-prog' + (airing ? ' now' : '') + (p.TimerId ? ' recording' : '');
+        btn.className = 'guide-prog' + (airing ? ' now' : '');
         btn.style.left = left + 'px';
         btn.style.width = (right - left - 3) + 'px';
         btn.innerHTML = `<strong>${esc(p.Name)}</strong><span>${esc(timeRange(p))}</span>`;
@@ -2658,120 +2656,10 @@
         <p class="overview">${esc(p.Overview || '')}</p>
         <div class="m-actions program-actions">
           ${airing ? `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch Live</button>` : ''}
-          <button class="btn btn-gray" data-act="record"></button>
-          ${p.IsSeries ? '<button class="btn btn-gray" data-act="series"></button>' : ''}
         </div>
       </div>`;
-    const recBtn = $('[data-act="record"]', content), seriesBtn = $('[data-act="series"]', content);
-    const paint = () => {
-      recBtn.innerHTML = p.TimerId ? '&#9679; Cancel Recording' : '&#9679; Record';
-      if (seriesBtn) seriesBtn.textContent = p.SeriesTimerId ? 'Cancel Series Recording' : 'Record Series';
-    };
-    paint();
     $('[data-act="watch"]', content)?.addEventListener('click', () => playItem(channel || { Id: p.ChannelId, Type: 'TvChannel' }));
-    recBtn.addEventListener('click', async () => {
-      try {
-        if (p.TimerId) {
-          await api(`/LiveTv/Timers/${p.TimerId}`, { method: 'DELETE' });
-          p.TimerId = null;
-          toast('Recording cancelled');
-        } else {
-          const defaults = await api('/LiveTv/Timers/Defaults', { params: { ProgramId: p.Id } });
-          await api('/LiveTv/Timers', { method: 'POST', body: { ...defaults, ProgramId: p.Id } });
-          const fresh = await api(`/LiveTv/Programs/${p.Id}`, { params: { UserId: state.userId } });
-          p.TimerId = fresh?.TimerId || 'pending';
-          toast('Recording scheduled');
-        }
-        paint();
-      } catch (e) { toast(e.status === 403 ? "Your account isn't allowed to record." : 'Could not update recording: ' + e.message); }
-    });
-    seriesBtn?.addEventListener('click', async () => {
-      try {
-        if (p.SeriesTimerId) {
-          await api(`/LiveTv/SeriesTimers/${p.SeriesTimerId}`, { method: 'DELETE' });
-          p.SeriesTimerId = null;
-          toast('Series recording cancelled');
-        } else {
-          const defaults = await api('/LiveTv/Timers/Defaults', { params: { ProgramId: p.Id } });
-          await api('/LiveTv/SeriesTimers', { method: 'POST', body: { ...defaults, ProgramId: p.Id } });
-          const fresh = await api(`/LiveTv/Programs/${p.Id}`, { params: { UserId: state.userId } });
-          p.SeriesTimerId = fresh?.SeriesTimerId || 'pending';
-          toast('Series recording scheduled');
-        }
-        paint();
-      } catch (e) { toast(e.status === 403 ? "Your account isn't allowed to record." : 'Could not update recording: ' + e.message); }
-    });
     autoFocus($('.program-actions button', content));
-  }
-
-  // Newer Emby versions file finished recordings in recording folders (browsed like a library);
-  // /LiveTv/Recordings can come back empty there, so read both and merge.
-  async function loadRecordings() {
-    const fields = ITEM_FIELDS + ',Path';
-    const [direct, folders] = await Promise.allSettled([
-      api('/LiveTv/Recordings', { params: { UserId: state.userId, Fields: fields, ...IMAGE_PARAMS, Limit: 500 } }),
-      api('/LiveTv/Recordings/Folders', { params: { UserId: state.userId } }),
-    ]);
-    const lists = [];
-    if (direct.status === 'fulfilled') lists.push(direct.value?.Items);
-    if (folders.status === 'fulfilled') {
-      const inFolders = await Promise.allSettled((folders.value?.Items || []).map((f) => getItems({
-        ParentId: f.Id, IsFolder: false, MediaTypes: 'Video', Fields: fields,
-        SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 500,
-      })));
-      inFolders.forEach((r) => { if (r.status === 'fulfilled') lists.push(r.value?.Items); });
-    }
-    if (direct.status === 'rejected' && folders.status === 'rejected') throw direct.reason;
-    // The same recording can come back from both sources; match on id or file path.
-    const seen = new Set(), out = [];
-    for (const it of lists.flat()) {
-      if (!it) continue;
-      const keys = [it.Id, it.Path].filter(Boolean);
-      if (keys.some((k) => seen.has(k))) continue;
-      keys.forEach((k) => seen.add(k));
-      out.push(it);
-    }
-    return out.sort((a, b) => (parseDate(b.DateCreated) || 0) - (parseDate(a.DateCreated) || 0));
-  }
-
-  async function renderRecordings(body, isCurrent) {
-    body.innerHTML = `
-      <h2 class="row-title flush">Recordings</h2>
-      <div class="grid" data-recordings><div class="spinner" style="grid-column:1/-1"></div></div>
-      <h2 class="row-title flush" style="margin-top:2.5rem">Scheduled</h2>
-      <div class="timer-list" data-timers><div class="spinner"></div></div>`;
-    const grid = $('[data-recordings]', body), timers = $('[data-timers]', body);
-    loadRecordings().then((items) => {
-      if (!isCurrent()) return;
-      grid.innerHTML = items.length ? '' : '<p class="empty-msg" style="grid-column:1/-1">No recordings yet.</p>';
-      items.forEach((it) => grid.appendChild(createPoster(it)));
-    }).catch((e) => { grid.innerHTML = `<p class="empty-msg" style="grid-column:1/-1">Could not load recordings: ${esc(e.message)}</p>`; });
-
-    const loadTimers = () => api('/LiveTv/Timers', { params: { IsActive: false } }).then((res) => {
-      if (!isCurrent()) return;
-      const items = (res?.Items || []).sort((a, b) => parseDate(a.StartDate) - parseDate(b.StartDate));
-      timers.innerHTML = items.length ? '' : '<p class="empty-msg">Nothing scheduled. Choose a show in the Guide and press Record.</p>';
-      for (const t of items) {
-        const row = document.createElement('div');
-        row.className = 'timer-row';
-        const start = parseDate(t.StartDate);
-        row.innerHTML = `
-          <div class="timer-text">
-            <strong>${esc(t.Name)}</strong>
-            <span>${esc(t.ChannelName || '')} · ${esc(start.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}, ${esc(timeRange(t))}</span>
-          </div>
-          <button class="btn btn-gray">Cancel</button>`;
-        $('button', row).addEventListener('click', async () => {
-          try {
-            await api(`/LiveTv/Timers/${t.Id}`, { method: 'DELETE' });
-            toast('Recording cancelled');
-            loadTimers();
-          } catch (e) { toast('Could not cancel: ' + e.message); }
-        });
-        timers.appendChild(row);
-      }
-    }).catch((e) => { timers.innerHTML = `<p class="empty-msg">Could not load scheduled recordings: ${esc(e.message)}</p>`; });
-    loadTimers();
   }
 
   async function changeChannel(delta) {

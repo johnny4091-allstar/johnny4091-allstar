@@ -1,1 +1,1 @@
-- Behind the scenes: removed the old reminder to reinstall, now that every device has the new version.
+- Removed Recordings from Live TV: the Recordings tab and the Record buttons are gone.
