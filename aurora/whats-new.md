@@ -1,1 +1,1 @@
-- Fixes from another full check: a Live TV channel that goes silent now reconnects every time, a movie on a shaky connection retries before being converted, and trailers open in the YouTube app.
+- Behind the scenes: the app now reads its settings only from the main copy of the settings file.

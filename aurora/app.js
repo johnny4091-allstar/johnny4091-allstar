@@ -5,7 +5,7 @@
   const DEFAULT_SERVER = 'https://emby4836.duckdns.org:8920';
   // Requests (Jellyseerr) are switched on and pointed at a server from aurora-config.json in the GitHub repo
   // (see loadRemoteConfig), so both can change without a new APK. Until then the tab says "Coming soon".
-  const REMOTE_CONFIG_URLS = ['main', 'ccr-ab072e58-qfaibp']
+  const REMOTE_CONFIG_URLS = ['main']
     .map((branch) => `https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/${branch}/aurora-config.json`);
   const TICKS_PER_SECOND = 10000000;
   const ITEM_FIELDS = 'Overview,Genres,ProductionYear,OfficialRating,CommunityRating,RunTimeTicks,PrimaryImageAspectRatio,DateCreated';
