@@ -7,18 +7,17 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - Sign in with your Emby username and password; everyone who signs in on a device gets a "Who's watching?" tile
   so they can switch back without retyping their password
 - Works with a TV remote or keyboard: arrow keys move around, OK/Enter selects, Back closes
-- Home page with a rotating hero banner and rows: Continue Watching, Next Up, My List,
+- Home page with a rotating hero banner and rows: Continue Watching, Next Up, Favorites,
   Recently Added for each library, Top Rated, Popular TV, and random genre rows
 - TV Shows and Movies pages with genre, sort, and watched filters and infinite scroll
 - Search
 - Details pop-up with cast, genres, and rating; season picker and episode list for shows; "More Like This" for movies
-- Add to My List (Emby favorites) and mark as watched/unwatched
+- Favorites: save movies, shows and Live TV channels to the Favorites tab (the + on a title, the star on a channel, or hold OK on a TV remote), and mark as watched/unwatched
 - Video player that plays files directly when the browser supports them and asks Emby to transcode (HLS) when it doesn't
 - Player controls: play/pause, 10-second skip, seek bar, mute, full screen, audio track, subtitles, streaming quality,
   Skip Intro (when Emby has intro markers) and Next Episode
 - Live TV (when it's set up in Emby and allowed for the user): a TV guide, a channel list, an "On Now" row on Home,
-  live playback with channel up/down, and recording single shows or whole series, plus a Recordings page with
-  scheduled recordings you can cancel
+  and live playback with channel up/down. Channels from an M3U playlist or Xtream account work too
 - Next-episode countdown when the credits start (Play Now or Watch Credits), and "Are you still watching?" after
   3 episodes in a row, or 4 hours of Live TV, with no button pressed (the stream stops so it doesn't use bandwidth or a tuner)
 - Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size and

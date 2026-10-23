@@ -295,8 +295,10 @@ public class LivePlayerActivity extends Activity {
 
     private final Runnable retryRunnable = () -> {
         if (player == null) return;
-        bufferingSince = 0;
-        player.seekToDefaultPosition();
+        // A real reconnect: load the channel afresh. (prepare() alone does nothing while the player is still "buffering" on a
+        // stream that went silent.) And start timing again, so if it stays silent the watchdog tries again, then switches format.
+        bufferingSince = System.currentTimeMillis();
+        player.setMediaItem(mediaItem(channels.get(index).url));
         player.prepare();
         player.setPlayWhenReady(true);
     };

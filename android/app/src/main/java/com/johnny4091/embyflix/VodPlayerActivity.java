@@ -284,7 +284,7 @@ public class VodPlayerActivity extends Activity {
             return;
         }
         // A file the device can't play as it is: let the page ask Emby to convert it instead.
-        if (!"Transcode".equals(playMethod) && (!everReady || isDecodeError(e))) {
+        if (!"Transcode".equals(playMethod) && (isDecodeError(e) || (!everReady && !isTransientNetworkError(e)))) {
             error = "unplayable:" + why;
             close(false);
             return;
@@ -298,6 +298,8 @@ public class VodPlayerActivity extends Activity {
             handler.removeCallbacks(retry);
             handler.postDelayed(retry, 1500L * retries);
         } else {
+            // A file that never started even after reconnecting: let the page ask Emby to convert it.
+            if (!everReady && !"Transcode".equals(playMethod)) { error = "unplayable:" + why; close(false); return; }
             error = "failed:" + why + httpSuffix(e);
             // Nothing played and the page has another way to try: don't ask the viewer, hand back at once.
             if (!everReady && canFallback) { autoFallback = true; close(false); return; }
@@ -315,6 +317,20 @@ public class VodPlayerActivity extends Activity {
             if (t.getCause() == t) break;
         }
         return "";
+    }
+
+    /** A dropped or slow connection, or the server briefly failing (5xx, timeout, too many requests): worth retrying. */
+    private static boolean isTransientNetworkError(PlaybackException e) {
+        int c = e.errorCode;
+        if (c == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED || c == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT) return true;
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            if (t instanceof androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) {
+                int code = ((androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException) t).responseCode;
+                return code >= 500 || code == 408 || code == 429;
+            }
+            if (t.getCause() == t) break;
+        }
+        return false;
     }
 
     private static boolean isDecodeError(PlaybackException e) {

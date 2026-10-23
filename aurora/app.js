@@ -3418,8 +3418,12 @@
   function openYouTube(url, title) {
     const id = youTubeId(url);
     if (!id) return toast('No trailer available.');
-    // The Android app hands it to the YouTube app; without one (or in a browser) it plays in a window here.
-    if (nativeApp?.openYouTube?.(id)) return;
+    // The Android app hands it to the YouTube app. Without one it says so: a YouTube page inside the app's own window
+    // could reach the app's private functions (any page loaded in the window can), so that's only done in a browser.
+    if (nativeApp?.openYouTube) {
+      if (!nativeApp.openYouTube(id)) toast('Trailers open in the YouTube app. Install it to watch this one.', 5000);
+      return;
+    }
     showTrailerWindow(id, title);
   }
 

@@ -1,1 +1,1 @@
-- Removed Recordings from Live TV: the Recordings tab and the Record buttons are gone.
+- Fixes from another full check: a Live TV channel that goes silent now reconnects every time, a movie on a shaky connection retries before being converted, and trailers open in the YouTube app.

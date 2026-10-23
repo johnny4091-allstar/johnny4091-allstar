@@ -228,7 +228,9 @@ function sendToProvider(values) {
       headers['Content-Length'] = data.length;
     }
     const lib = target.protocol === 'https:' ? https : http;
-    const req = lib.request(target, { method, headers, timeout: 10000 }, (r) => {
+    let req;
+    try {
+    req = lib.request(target, { method, headers, timeout: 10000 }, (r) => {
       const chunks = []; let size = 0;
       r.on('data', (c) => { size += c.length; if (size < 4096) chunks.push(c); });
       r.on('end', () => resolve({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode, text: Buffer.concat(chunks).toString('utf8').slice(0, 300) }));
@@ -237,6 +239,10 @@ function sendToProvider(values) {
     req.on('error', (e) => resolve({ ok: false, status: 0, text: String(e.message).split(provider.key).join('***') }));
     if (data) req.write(data);
     req.end();
+    } catch (e) {
+      // A header name or value Node refuses (a space in the name, a line break in the key): say so instead of failing the request.
+      resolve({ ok: false, status: 0, text: String(e.message).split(provider.key).join('***') });
+    }
   });
 }
 const REASONS = ['Buffering', 'No picture', 'No sound', 'Wrong channel', 'Channel is down', 'Other'];
@@ -259,7 +265,11 @@ function publicRequest(r) {
   return r && { id: r.id, status: r.status, at: r.at, note: r.note, decidedAt: r.decidedAt || null, days: r.days || null, message: r.message || '', newExpires: r.newExpires || null };
 }
 
-const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s + 'T00:00:00'));
+const isDate = (s) => {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(s + 'T12:00:00Z'); // a real calendar day: 2026-02-31 would roll over into March
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+};
 // The account works until the end of its expiration day (server's local time).
 const isExpired = (rec) => !!rec?.expires && Date.now() > new Date(rec.expires + 'T23:59:59').getTime();
 const limitOf = (userId) => Math.max(1, Number(store.users[userId]?.limit) || cfg.defaultLimit);
@@ -796,7 +806,13 @@ async function handle(req, res) {
     if (!Number.isInteger(days) || days < 1 || days > 730) return send(res, 400, { error: 'days must be a whole number from 1 to 730' });
     let user;
     try { user = await emby('GET', `/Users/${r.userId}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'That account no longer exists' : e.message }); }
-    const rec = store.users[r.userId] || (store.users[r.userId] = { limit: limitOf(r.userId), expires: null, name: user.Name, updated: Date.now() });
+    // The admin may have made the account permanent since it asked: approving would put an end date back on it.
+    if (!store.users[r.userId]?.expires) {
+      r.status = 'denied'; r.decidedAt = Date.now(); r.message = 'This account no longer has an end date.';
+      saveStore();
+      return send(res, 409, { error: 'This account no longer has an end date, so there is nothing to extend. The request was closed.' });
+    }
+    const rec = store.users[r.userId];
     const today = localDay(new Date());
     const from = rec.expires && rec.expires > today ? rec.expires : today; // time already left is kept, never lost
     rec.expires = addDays(from, days); rec.name = user.Name; rec.updated = Date.now();
@@ -837,6 +853,8 @@ async function handle(req, res) {
     if (u && !/^https?:\/\//i.test(u)) return send(res, 400, { error: 'The address must start with https:// or http://' });
     if (body.method && !['GET', 'POST'].includes(body.method)) return send(res, 400, { error: 'method must be GET or POST' });
     if (body.keyIn && !['header', 'bearer', 'query'].includes(body.keyIn)) return send(res, 400, { error: 'keyIn must be header, bearer or query' });
+    if (body.keyName && !/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,60}$/.test(String(body.keyName).trim())) return send(res, 400, { error: 'The key name can only use letters, numbers and - _ . (no spaces), like X-API-Key.' });
+    if (typeof body.key === 'string' && body.key.trim() && !/^[\x21-\x7E]+$/.test(body.key.trim())) return send(res, 400, { error: 'The key has a space or a character that can\'t be sent. Paste it again without spaces or line breaks.' });
     if (body.body && String(body.body).trim()) {
       // A JSON template must still be valid JSON once filled in.
       try { JSON.parse(fillTemplate(body.body, { channel: 'x', channelId: '1', reason: 'r', note: 'n', device: 'd', user: 'u', group: 'g', time: 't' }, 'json')); } catch { return send(res, 400, { error: 'The body is not valid JSON. Check the quotes and commas.' }); }

@@ -588,6 +588,7 @@ sub onDetailButton()
     else
         on = (label = "Mark as watched")
         setPlayed(m.item.Id, on)
+        if m.item.UserData = invalid then m.item.UserData = {}
         m.item.UserData.Played = on
         setPlayButtons()
     end if

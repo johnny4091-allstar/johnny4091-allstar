@@ -30,6 +30,7 @@ final class LiveReporter {
     private final String base, apiKey, userId, deviceId, device, auth;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private JSONObject current;   // what's playing (touched on the worker thread only)
+    private JSONObject pending;   // the channel just started, until the first save has gone through
     private long started;
 
     private LiveReporter(JSONObject r) {
@@ -61,6 +62,8 @@ final class LiveReporter {
             try {
                 JSONObject entry = new JSONObject().put("name", name).put("num", num).put("logo", logo)
                         .put("group", group).put("now", now).put("device", device);
+                started = at;
+                pending = entry; // so the heartbeat can still send it if this first save fails
                 write(entry, true, at);
             } catch (Exception ignored) {
                 // Reporting is best effort.
@@ -72,8 +75,9 @@ final class LiveReporter {
     void heartbeat() {
         if (worker.isShutdown()) return;
         worker.execute(() -> {
-            if (current == null) return;
-            try { write(current, false, System.currentTimeMillis()); } catch (Exception ignored) { /* best effort */ }
+            JSONObject now = current != null ? current : pending;
+            if (now == null) return;
+            try { write(now, false, System.currentTimeMillis()); } catch (Exception ignored) { /* best effort */ }
         });
     }
 
@@ -81,6 +85,7 @@ final class LiveReporter {
     void stopped() {
         if (worker.isShutdown()) return;
         worker.execute(() -> {
+            pending = null;
             try { write(null, false, System.currentTimeMillis()); } catch (Exception ignored) { /* best effort */ }
         });
     }
