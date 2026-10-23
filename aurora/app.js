@@ -3131,7 +3131,13 @@
   // copies ("aurora-limits") are only read once more, to move them into the guard (see adminUsers).
   const OLD_LIMITS_PREFS = 'aurora-limits';
   const DEFAULT_GUARD_URL = 'https://emby4836.duckdns.org:8922';
-  let guardUrl = store.get('ef.guardUrl') || DEFAULT_GUARD_URL;
+  // The guard receives people's sign-in tokens (an administrator's too), so its address is only trusted when it is
+  // https and on the same host as the Emby server (the guard runs on that PC). An address from aurora-config.json,
+  // or one saved by an earlier version, that fails this is ignored.
+  const trustedGuardUrl = (u) => {
+    try { const x = new URL(u); return x.protocol === 'https:' && x.hostname === new URL(DEFAULT_SERVER).hostname && !x.username && !x.password; } catch { return false; }
+  };
+  let guardUrl = trustedGuardUrl(store.get('ef.guardUrl') || '') ? store.get('ef.guardUrl') : DEFAULT_GUARD_URL;
   // SWITCHED OFF by default: with it off, Aurora never contacts the guard (no checks at sign-in or play start,
   // no delays, nothing in the app log). Turn it on with "guardEnabled": true in aurora-config.json, once the
   // guard service is set up, reachable and tested.
@@ -3282,7 +3288,8 @@
         if (!res.ok) continue;
         const cfg = await res.json();
         if (typeof cfg.guardEnabled === 'boolean') { guardEnabled = cfg.guardEnabled; store.set('ef.guardEnabled', guardEnabled ? '1' : '0'); }
-        if (typeof cfg.guardUrl === 'string' && /^https?:\/\//.test(cfg.guardUrl)) { guardUrl = cfg.guardUrl.trim(); store.set('ef.guardUrl', guardUrl); }
+        if (typeof cfg.guardUrl === 'string' && trustedGuardUrl(cfg.guardUrl.trim())) { guardUrl = cfg.guardUrl.trim(); store.set('ef.guardUrl', guardUrl); }
+        else if (typeof cfg.guardUrl === 'string' && cfg.guardUrl.trim()) appLog.add('warn', 'Ignored a guard address from the settings file: it must be https and on the same host as the server.');
         if (hasOverride) return;
         if (!store.get('ef.forceUpdateFromAdmin') && cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
           forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
@@ -6067,6 +6074,8 @@
         audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
       },
       stallSeconds: stallSeconds() || undefined,
+      // If Emby's conversion never starts, hand back at once (no "press OK" screen) so Aurora can try playing the file as it is.
+      canFallback: player.playMethod === 'Transcode' && !player.noCap && !forceTranscode && autoQuality() && (player.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate),
     };
     vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap };
     // The native screen reports to Emby from here on.
@@ -6121,7 +6130,7 @@
     }
     // Emby's own conversion failed before anything played (it refused, or its converter broke): try once more without
     // the measured quality limit, which lets a file the device can play as it is play directly instead of converting.
-    if (r.error?.startsWith('failed') && !r.ready && s.playMethod === 'Transcode' && !s.noCap && !s.forceTranscode && autoQuality() && (s.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate)) {
+    if (r.autoFallback && r.error?.startsWith('failed') && !r.ready && s.playMethod === 'Transcode' && !s.noCap && !s.forceTranscode && autoQuality() && (s.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate)) {
       toast('Trying another way to play this…');
       measuredBitrate = null;
       playItem(s.item, { startTicks: Math.round((s.startMs || 0) * 10000), auto: true, noCap: true });

@@ -98,6 +98,8 @@ public class VodPlayerActivity extends Activity {
     /** How long a film may sit buffering before the player reconnects; the page can set it (Admin → Playback). */
     private long stallMs = 30000;
     private String error;
+    /** The page can try another way if this one never starts (see canFallback in the spec); then we leave by ourselves. */
+    private boolean canFallback, autoFallback;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -121,6 +123,7 @@ public class VodPlayerActivity extends Activity {
         report = spec.optJSONObject("report");
         if (report == null) report = new JSONObject();
         playMethod = report.optString("playMethod", "DirectPlay");
+        canFallback = spec.optBoolean("canFallback");
         int stallSeconds = spec.optInt("stallSeconds", 30);
         if (stallSeconds >= 8 && stallSeconds <= 120) stallMs = stallSeconds * 1000L;
         JSONArray s = spec.optJSONArray("subs");
@@ -296,6 +299,8 @@ public class VodPlayerActivity extends Activity {
             handler.postDelayed(retry, 1500L * retries);
         } else {
             error = "failed:" + why + httpSuffix(e);
+            // Nothing played and the page has another way to try: don't ask the viewer, hand back at once.
+            if (!everReady && canFallback) { autoFallback = true; close(false); return; }
             status.setText("This video stopped playing (" + why + ").\nPress OK to try again, or Back to leave.");
             status.setVisibility(View.VISIBLE);
         }
@@ -347,7 +352,8 @@ public class VodPlayerActivity extends Activity {
             }
             // Never got going at all (the server accepted the request but sends nothing): give up on this way of
             // playing. A file played as it is gets converted by Emby instead; a conversion is tried again.
-            boolean loading = !everReady && player.getPlayWhenReady() && player.getPlaybackState() != Player.STATE_READY;
+            // (Not while the "Press OK to try again" screen is up: that failure, with its real error, is already recorded.)
+            boolean loading = !everReady && error == null && player.getPlayWhenReady() && player.getPlaybackState() != Player.STATE_READY;
             if (!loading) loadingSince = 0;
             else if (loadingSince == 0) loadingSince = System.currentTimeMillis();
             else if (System.currentTimeMillis() - loadingSince > Math.max(45000L, stallMs)) {
@@ -360,7 +366,7 @@ public class VodPlayerActivity extends Activity {
                     status.setVisibility(View.VISIBLE);
                     handler.removeCallbacks(retry);
                     handler.post(retry);
-                } else { error = "failed:StartTimeout"; close(false); return; }
+                } else { error = "failed:StartTimeout"; autoFallback = canFallback; close(false); return; }
             }
             if (!stuckAtEnd) endStuckSince = 0;
             else if (endStuckSince == 0) endStuckSince = System.currentTimeMillis();
@@ -678,6 +684,7 @@ public class VodPlayerActivity extends Activity {
                     .put("stalledMs", stalledMs + (stallStart != 0 ? System.currentTimeMillis() - stallStart : 0))
                     .put("watchedMs", playingSince == 0 ? 0 : System.currentTimeMillis() - playingSince);
             if (error != null) result.put("error", error);
+            if (autoFallback) result.put("autoFallback", true);
             setResult(RESULT_OK, new Intent().putExtra(RESULT_JSON, result.toString()));
         } catch (Exception ignored) {
             setResult(RESULT_OK);

@@ -90,7 +90,33 @@ final class LiveReporter {
         worker.shutdown();
     }
 
+    /**
+     * Two devices on one account share this one setting and each saves the whole thing, so they can overwrite each
+     * other's entry when both save within the same moment. So after saving, look again: if this device's entry is
+     * missing (or, when closing, still there) save once more after a short random wait. Up to 3 tries.
+     */
     private void write(JSONObject entry, boolean newChannel, long now) throws Exception {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            writeOnce(entry, attempt == 0 && newChannel, attempt == 0 ? now : System.currentTimeMillis());
+            if (saved(entry)) return;
+            try { Thread.sleep(200 + (long) (Math.random() * 600)); } catch (InterruptedException e) { return; }
+        }
+    }
+
+    /** Is this device's entry in the saved setting as it should be? (A failed read counts as fine: nothing to compare.) */
+    private boolean saved(JSONObject entry) {
+        try {
+            JSONObject custom = read().optJSONObject("CustomPrefs");
+            JSONObject data = new JSONObject(custom == null ? "{}" : custom.optString("config", "{}"));
+            JSONObject devices = data.optJSONObject("devices");
+            JSONObject mine = devices == null ? null : devices.optJSONObject(deviceId);
+            return entry == null ? mine == null : mine != null && mine.optLong("at") == entry.optLong("at");
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    private void writeOnce(JSONObject entry, boolean newChannel, long now) throws Exception {
         JSONObject prefs = read();
         JSONObject custom = prefs.optJSONObject("CustomPrefs");
         if (custom == null) custom = new JSONObject();

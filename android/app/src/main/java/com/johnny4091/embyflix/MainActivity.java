@@ -558,6 +558,9 @@ public class MainActivity extends Activity {
         super.onStart();
         // Away for a while (not just watching something in the player): ask again.
         if (!locked && !unlocking && !inPlayer && leftAt > 0 && System.currentTimeMillis() - leftAt > LOCK_AFTER_MS) lockNow();
+        // Back within the grace period: forget when we left, or an old time would lock the app right after the next
+        // movie (when the player closes, onStart sees that old time).
+        if (!locked && !unlocking && !inPlayer) leftAt = 0;
     }
 
     @Override

@@ -76,6 +76,11 @@ final class EpgLoader {
             this.data = new java.io.RandomAccessFile(file, "r");
         }
 
+        /** Lets go of the file once a newer guide has replaced this one (a lookup still in flight just finds nothing). */
+        synchronized void close() {
+            try { data.close(); } catch (IOException ignored) { /* nothing to do */ }
+        }
+
         synchronized Entry read(String key) {
             long[] at = lineById.get(key);
             if (at == null) return null;
@@ -106,9 +111,17 @@ final class EpgLoader {
             Guide g = current;
             long now = System.currentTimeMillis();
             if (g == null || !g.url.equals(url) || now - g.builtAt > STALE_MS) {
-                g = readSaved(context, url);
-                if (g == null || now - g.builtAt > STALE_MS) g = build(context, url, userAgent);
+                Guide saved = readSaved(context, url);
+                if (saved != null && now - saved.builtAt <= STALE_MS) g = saved;
+                else {
+                    // Out of date or not saved yet: build a fresh one. If that fails (no connection, the provider refuses
+                    // this one), an old saved guide is still better than none.
+                    try { g = build(context, url, userAgent); if (saved != null) saved.close(); }
+                    catch (Exception e) { if (saved == null) throw e; g = saved; }
+                }
+                Guide old = current;
                 current = g;
+                if (old != null && old != g) old.close();
             }
             if (now - g.builtAt > FRESH_MS) refreshLater(context, url, userAgent);
             return summary(g);
@@ -280,7 +293,8 @@ final class EpgLoader {
             try {
                 Guide g = build(context, url, userAgent);
                 Guide c = current;
-                if (c == null || c.url.equals(url)) current = g;
+                if (c == null || c.url.equals(url)) { current = g; if (c != null && c != g) c.close(); }
+                else g.close(); // the viewer has moved on to another guide meanwhile
             } catch (Throwable ignored) {
                 // Keep using the guide we have.
             } finally {
@@ -354,12 +368,23 @@ final class EpgLoader {
         return s == null ? "" : s.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "");
     }
 
+    private static final ThreadLocal<SimpleDateFormat> PLAIN_TIME = ThreadLocal.withInitial(() -> {
+        SimpleDateFormat f = new SimpleDateFormat("yyyyMMddHHmmss", Locale.ROOT);
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return f;
+    });
+    private static final ThreadLocal<SimpleDateFormat> ZONED_TIME = ThreadLocal.withInitial(() -> {
+        SimpleDateFormat f = new SimpleDateFormat("yyyyMMddHHmmss Z", Locale.ROOT);
+        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        return f;
+    });
+
     /** XMLTV times look like "20240101203000 +0100"; the offset is optional (then UTC). */
     static long time(String s) {
         if (s == null || s.length() < 14) return 0;
         String digits = s.substring(0, 14), rest = s.substring(14).trim();
-        SimpleDateFormat f = new SimpleDateFormat(rest.isEmpty() ? "yyyyMMddHHmmss" : "yyyyMMddHHmmss Z", Locale.ROOT);
-        f.setTimeZone(TimeZone.getTimeZone("UTC"));
+        // One formatter per thread and shape, not one per programme (a big guide has hundreds of thousands).
+        SimpleDateFormat f = (rest.isEmpty() ? PLAIN_TIME : ZONED_TIME).get();
         java.util.Date d = f.parse(rest.isEmpty() ? digits : digits + " " + rest.split("\\s+")[0], new ParsePosition(0));
         return d == null ? 0 : d.getTime();
     }

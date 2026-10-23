@@ -350,11 +350,19 @@ async function userOfToken(token, userId) {
   }
   return me;
 }
+// For Emby versions that fail /Users/Me. Reading /Users/{id} alone proves nothing (the caller names the id, and some
+// Emby versions let any signed-in user read other accounts' records), so the same token must also be allowed into that
+// account's own views, which Emby only lets the account itself (or an administrator) open.
+async function userByIdProvingOwnership(token, userId) {
+  const me = await emby('GET', `/Users/${userId}`, { token });
+  await emby('GET', `/Users/${userId}/Views`, { token });
+  return me;
+}
 async function lookupUser(token, userId) {
   try {
     const me = await emby('GET', '/Users/Me', { token }).catch(async (e) => {
       // Some Emby versions answer /Users/Me with a 500 for certain tokens (seen with Android TV boxes): ask by id instead.
-      if (e.status === 404 || e.status === 400 || e.status >= 500) return emby('GET', `/Users/${userId}`, { token });
+      if (e.status === 404 || e.status === 400 || e.status >= 500) return userByIdProvingOwnership(token, userId);
       throw e;
     });
     if (me && String(me.Id).toLowerCase() === String(userId).toLowerCase()) return me;

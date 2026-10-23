@@ -139,13 +139,22 @@ sub showUpdateDialog(message as string)
     dlg.message = message
     dlg.buttons = ["OK"]
     dlg.observeField("buttonSelected", "onUpdateDialog")
+    ' Back closes a dialog without choosing a button: a required update must come back either way.
+    dlg.observeField("wasClosed", "onUpdateDialogClosed")
     m.top.dialog = dlg
 end sub
 
+sub onUpdateDialogClosed()
+    if m.updateRequired = true and m.updateReopening <> true
+        m.updateReopening = true
+        showUpdateDialog("Please install the newest version of Aurora to carry on.")
+        m.updateReopening = false
+    end if
+end sub
+
 sub onUpdateDialog()
+    ' Closing it also fires wasClosed, which brings it back again if the update is required.
     m.top.dialog.close = true
-    ' An update that is required keeps the app closed to everything else.
-    if m.updateRequired = true then showUpdateDialog("Please install the newest version of Aurora to carry on.")
 end sub
 
 ' ---------- Start up and sign in ----------
@@ -502,6 +511,11 @@ sub openItem(id as string, kind as string)
     m.episodeList.visible = false
     m.dHint.visible = false
     m.item = invalid
+    ' Nothing from the title before this one may be shown or changed by a late answer.
+    m.openId = id
+    m.seasons = []
+    m.episodes = []
+    m.seasonId = ""
     busy(true)
     get("/Users/" + m.global.userId + "/Items/" + id, {}, "onItemLoaded")
 end sub
@@ -515,6 +529,7 @@ sub onItemLoaded(event as object)
         return
     end if
     it = r.json
+    if it.Id <> m.openId then return ' a late answer for a title the viewer already left
     m.item = it
     m.dTitle.text = txt(it.Name)
     meta = []
@@ -587,6 +602,8 @@ end sub
 sub onSeasons(event as object)
     r = answer(event)
     items = itemsOf(r)
+    if m.item = invalid then return
+    if items.count() > 0 and items[0].SeriesId <> invalid and items[0].SeriesId <> m.item.Id then return ' another show's seasons
     m.seasons = items
     root = CreateObject("roSGNode", "ContentNode")
     for each s in items
@@ -624,6 +641,7 @@ end sub
 
 sub onEpisodes(event as object)
     items = itemsOf(answer(event))
+    if items.count() > 0 and items[0].SeasonId <> invalid and items[0].SeasonId <> m.seasonId then return ' another season's episodes (a late answer)
     m.episodes = items
     root = CreateObject("roSGNode", "ContentNode")
     for each e in items
@@ -671,7 +689,7 @@ end sub
 
 sub markSeason()
     i = m.seasonList.itemFocused
-    if i < 0 or m.seasons = invalid or i >= m.seasons.count() then return
+    if i < 0 or m.seasons = invalid or i >= m.seasons.count() or m.episodes = invalid then return
     sid = m.seasons[i].Id
     if sid <> m.seasonId
         loadEpisodes(sid)
@@ -708,7 +726,7 @@ function deviceProfile() as object
 end function
 
 sub play(item as object, startTicks as dynamic)
-    m.playing = { item: item, start: startTicks, started: false }
+    m.playing = { item: item, start: startTicks, started: false, offset: 0 }
     busy(true)
     p = { UserId: m.global.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: 20000000 }
     if startTicks > 0 then p.StartTimeTicks = startTicks
@@ -741,7 +759,12 @@ sub onPlaybackInfo(event as object)
         c.streamFormat = container
         if src.SupportsDirectPlay = true then m.playing.method = "DirectPlay" else m.playing.method = "DirectStream"
     end if
-    if m.playing.start > 0 then c.PlayStart = Int(m.playing.start / 10000000)
+    ' A converted stream already begins at the resume point (Emby was told StartTimeTicks), so don't seek into it again;
+    ' instead remember the offset: the player's position is then counted from that point.
+    m.playing.offset = 0
+    if m.playing.start > 0
+        if m.playing.method = "Transcode" then m.playing.offset = Int(m.playing.start / 10000000) else c.PlayStart = Int(m.playing.start / 10000000)
+    end if
     m.playing.sourceId = src.Id
     m.playing.session = txt(r.json.PlaySessionId)
     m.video.content = c
@@ -768,7 +791,7 @@ function reportBody(paused as boolean, seconds as dynamic) as object
     p = m.playing
     return {
         ItemId: p.item.Id, MediaSourceId: p.sourceId, PlaySessionId: p.session,
-        PositionTicks: Int(seconds) * 10000000&, IsPaused: paused, PlayMethod: p.method, CanSeek: true
+        PositionTicks: (Int(seconds) + p.offset) * 10000000&, IsPaused: paused, PlayMethod: p.method, CanSeek: true
     }
 end function
 
@@ -802,12 +825,17 @@ sub finishPlayback(ended as boolean)
     if p = invalid then return
     m.progressTimer.control = "stop"
     startPos = m.video.position
-    dur = m.video.duration
+    dur = m.video.duration + p.offset
+    if p.item.RunTimeTicks <> invalid then dur = p.item.RunTimeTicks / 10000000
     m.video.control = "stop"
     m.video.visible = false
     if p.started then call("POST", "/Sessions/Playing/Stopped", {}, reportBody(false, startPos), "ignore")
+    ' Let the server stop converting this video (it would otherwise carry on for a while).
+    if p.method <> invalid and p.session <> invalid
+        if p.method = "Transcode" then call("DELETE", "/Videos/ActiveEncodings", { DeviceId: m.global.deviceId, PlaySessionId: p.session }, invalid, "ignore")
+    end if
     m.playing = invalid
-    done = ended or (dur > 0 and startPos >= dur * 0.9)
+    done = ended or (dur > 0 and (startPos + p.offset) >= dur * 0.9)
     if done and p.started then setPlayed(p.item.Id, true)
     ' Carry on with the next episode of the season.
     if ended and p.item.Type = "Episode" and m.item <> invalid and m.item.Type = "Series" and m.episodes <> invalid and m.playIndex <> invalid

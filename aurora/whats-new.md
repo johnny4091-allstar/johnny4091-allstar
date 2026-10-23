@@ -1,3 +1,3 @@
-- New: Settings → My account shows your plan (how many devices you can use), how many are in use, and when your access ends. You can ask for an extension there.
+- Fixes from another full check: the app lock no longer locks right after a movie, a movie that fails to start doesn't reopen after you press Back, and the TV guide keeps working from its saved copy when the provider is unreachable.
 - Settings now shows whether Aurora is online or offline.
 - IMPORTANT, one time only: this version is signed with a new security key, so it cannot be installed over the old one. Uninstall Aurora first, then download and install the new Aurora.apk from github.com/johnny4091-allstar/johnny4091-allstar/releases. Your account and watch history stay on the server.​‌
