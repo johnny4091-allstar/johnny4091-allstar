@@ -1,0 +1,94 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The web app in ../../aurora is bundled into the APK as assets.
+def webAppDir = file('../../aurora')
+def webAssetsDir = layout.buildDirectory.dir('generated/webassets').get().asFile
+
+def copyWebApp = tasks.register('copyWebApp', Sync) {
+    from(webAppDir) {
+        exclude 'README.md'
+    }
+    into webAssetsDir
+}
+
+def appVersionCode = (findProperty('versionCode') ?: '1') as int
+
+def signingProps = new Properties()
+def signingPropsFile = rootProject.file('keystore.properties')
+if (signingPropsFile.exists()) signingPropsFile.withInputStream { signingProps.load(it) }
+def signingSetting = { String envName, String propName -> System.getenv(envName) ?: signingProps.getProperty(propName) }
+def releaseStoreFile = signingSetting('AURORA_KEYSTORE_FILE', 'storeFile')
+def releaseStorePassword = signingSetting('AURORA_KEYSTORE_PASSWORD', 'storePassword')
+def releaseKeyAlias = signingSetting('AURORA_KEY_ALIAS', 'keyAlias') ?: 'aurora'
+// PKCS12 keystores use one password for the store and the key.
+def releaseKeyPassword = signingSetting('AURORA_KEY_PASSWORD', 'keyPassword') ?: releaseStorePassword
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && rootProject.file(releaseStoreFile).exists()
+
+// A release build with no key must fail loudly, never fall back to some other key.
+gradle.taskGraph.whenReady { graph ->
+    if (!hasReleaseSigning && graph.allTasks.any { it.project == project && it.name.toLowerCase().contains('release') }) {
+        throw new GradleException('No release signing key. Set AURORA_KEYSTORE_FILE and AURORA_KEYSTORE_PASSWORD, or create android/keystore.properties. See android/SIGNING.md.')
+    }
+}
+
+android {
+    namespace 'com.johnny4091.embyflix'
+    compileSdk 35
+
+    defaultConfig {
+        // Kept from the EmbyFlix name so installed copies update in place.
+        applicationId 'com.johnny4091.embyflix'
+        minSdk 26
+        targetSdk 34
+        versionCode appVersionCode
+        versionName "1.2.${appVersionCode}"
+    }
+
+    // The release key is NEVER in the repository. It comes from the environment (the build workflow sets these from
+    // GitHub secrets) or from android/keystore.properties (a gitignored file for building on your own computer).
+    // See android/SIGNING.md.
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile rootProject.file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasReleaseSigning) signingConfig signingConfigs.release
+        }
+        // Debug builds use Android's own throw-away debug key, never the release key.
+    }
+
+    sourceSets {
+        main {
+            assets.srcDirs += [webAssetsDir]
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+tasks.named('preBuild') {
+    dependsOn copyWebApp
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    implementation 'androidx.core:core:1.13.1'
+    // Native live TV player for M3U / Xtream streams (MPEG-TS and HLS).
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
+    implementation 'androidx.media3:media3-exoplayer-hls:1.4.1'
+    implementation 'androidx.media3:media3-ui:1.4.1'
+}

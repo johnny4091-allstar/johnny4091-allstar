@@ -1,0 +1,1027 @@
+package com.johnny4091.embyflix;
+
+import android.annotation.SuppressLint;
+import android.app.Activity;
+import android.app.KeyguardManager;
+import android.app.UiModeManager;
+import android.app.PendingIntent;
+import android.content.ActivityNotFoundException;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.pm.PackageInstaller;
+import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
+import android.graphics.Bitmap;
+import android.graphics.Color;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
+import android.view.KeyEvent;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.FrameLayout;
+
+import androidx.core.content.FileProvider;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
+import androidx.webkit.WebViewAssetLoader;
+
+import org.json.JSONObject;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+
+/** Hosts the Aurora web app (bundled in assets/) in a full-screen WebView. */
+public class MainActivity extends Activity {
+    private static final String APP_HOST = "appassets.androidplatform.net";
+    /** Updates come only from this repository's releases. */
+    private static final String UPDATE_URL_PREFIX = "https://github.com/johnny4091-allstar/johnny4091-allstar/releases/download/";
+    private static final String START_URL = "https://" + APP_HOST + "/assets/index.html";
+
+    private FrameLayout root;
+    private WebView webView;
+    private View customView;
+    private WebChromeClient.CustomViewCallback customViewCallback;
+    private boolean playerMode;
+    /**
+     * HTTP for services that don't allow cross-site calls from a web page (Jellyseerr).
+     * Result goes to window.auroraHttpDone(id, {status, body, setCookie}); status 0 means a network error.
+     */
+    private void nativeHttp(String id, String method, String url, String headersJson, String body) {
+        JSONObject result = new JSONObject();
+        HttpURLConnection conn = null;
+        try {
+            JSONObject headers = new JSONObject(headersJson == null || headersJson.isEmpty() ? "{}" : headersJson);
+            String at = url;
+            int status;
+            for (int hop = 0; ; hop++) {
+                if (!at.startsWith("https://") && !at.startsWith("http://")) throw new IOException("unsupported address");
+                conn = (HttpURLConnection) new URL(at).openConnection();
+                conn.setRequestMethod(method);
+                conn.setConnectTimeout(15000);
+                conn.setReadTimeout(30000);
+                // Followed below, so a move between http and https (common with TV providers) works too.
+                conn.setInstanceFollowRedirects(false);
+                for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
+                    String key = it.next();
+                    conn.setRequestProperty(key, headers.getString(key));
+                }
+                if (body != null && !body.isEmpty()) {
+                    conn.setDoOutput(true);
+                    try (OutputStream out = conn.getOutputStream()) {
+                        out.write(body.getBytes(StandardCharsets.UTF_8));
+                    }
+                }
+                status = conn.getResponseCode();
+                String next = status >= 300 && status < 400 && "GET".equals(method) && hop < 5 ? conn.getHeaderField("Location") : null;
+                if (next == null) break;
+                conn.disconnect();
+                at = new URL(new URL(at), next).toString();
+            }
+            InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            result.put("status", status);
+            result.put("body", in == null ? "" : readAll(in));
+            // Keep just the name=value part of each cookie, to send back on later calls.
+            StringBuilder cookies = new StringBuilder();
+            for (Map.Entry<String, List<String>> h : conn.getHeaderFields().entrySet()) {
+                if (h.getKey() == null || !h.getKey().equalsIgnoreCase("Set-Cookie")) continue;
+                for (String c : h.getValue()) {
+                    if (cookies.length() > 0) cookies.append("; ");
+                    cookies.append(c.split(";", 2)[0].trim());
+                }
+            }
+            result.put("setCookie", cookies.toString());
+        } catch (Exception e) {
+            try {
+                result.put("status", 0).put("error", String.valueOf(e.getMessage()));
+            } catch (Exception ignored) {
+                // Leave the result empty.
+            }
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        String js = "window.auroraHttpDone && window.auroraHttpDone(" + JSONObject.quote(id) + "," + result + ")";
+        runOnUiThread(() -> webView.evaluateJavascript(js, null));
+    }
+
+    private static final int REQUEST_LIVE = 7;
+    private static final int REQUEST_VOD = 8;
+    private static final int REQUEST_UNLOCK = 9;
+
+    // ---- App lock (phones only): the phone's own PIN, pattern or fingerprint to open Aurora ----
+    private static final long LOCK_AFTER_MS = 60_000;
+    private boolean appLockOn, locked, unlocking, inPlayer, tvDevice;
+    private long leftAt;
+    private View lockView;
+
+    private boolean deviceSecure() {
+        KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        return km != null && km.isDeviceSecure();
+    }
+
+    /** Covers the app and asks for the phone's lock. Never on a TV, and not if the phone has no screen lock. */
+    private void lockNow() {
+        if (tvDevice || !appLockOn || locked || !deviceSecure()) return;
+        locked = true;
+        if (lockView == null) {
+            FrameLayout cover = new FrameLayout(this);
+            cover.setBackgroundColor(Color.parseColor("#070C1C"));
+            android.widget.LinearLayout col = new android.widget.LinearLayout(this);
+            col.setOrientation(android.widget.LinearLayout.VERTICAL);
+            col.setGravity(android.view.Gravity.CENTER);
+            android.widget.TextView title = new android.widget.TextView(this);
+            title.setText("Aurora is locked");
+            title.setTextColor(Color.WHITE);
+            title.setTextSize(22);
+            android.widget.TextView button = new android.widget.TextView(this);
+            button.setText("Unlock");
+            button.setTextColor(Color.parseColor("#031317"));
+            button.setBackgroundColor(Color.parseColor("#2AD4D0"));
+            button.setTextSize(18);
+            button.setPadding(80, 36, 80, 36);
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lp.topMargin = 60;
+            button.setOnClickListener(v -> requestUnlock());
+            col.addView(title);
+            col.addView(button, lp);
+            cover.addView(col, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            cover.setClickable(true); // nothing underneath can be touched
+            lockView = cover;
+        }
+        if (lockView.getParent() == null) {
+            root.addView(lockView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        requestUnlock();
+    }
+
+    @SuppressWarnings("deprecation")
+    private void requestUnlock() {
+        if (unlocking) return;
+        KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        Intent confirm = km == null ? null : km.createConfirmDeviceCredentialIntent("Unlock Aurora", "Confirm it's you to open Aurora.");
+        if (confirm == null) { unlock(); return; }
+        unlocking = true;
+        try {
+            startActivityForResult(confirm, REQUEST_UNLOCK);
+        } catch (Exception e) {
+            unlocking = false;
+        }
+    }
+
+    private void unlock() {
+        locked = false;
+        leftAt = 0;
+        if (lockView != null && lockView.getParent() != null) root.removeView(lockView);
+    }
+
+    /** Tells the page which channel was last watched when the native live player closes. */
+    @SuppressWarnings("deprecation")
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_UNLOCK) {
+            unlocking = false;
+            if (resultCode == RESULT_OK) unlock();
+            return;
+        }
+        if (requestCode == REQUEST_VOD || requestCode == REQUEST_LIVE) inPlayer = false;
+        if (requestCode == REQUEST_VOD) {
+            String result = data == null ? null : data.getStringExtra(VodPlayerActivity.RESULT_JSON);
+            webView.evaluateJavascript("window.auroraVodClosed && window.auroraVodClosed("
+                    + (result == null ? "null" : result) + ")", null);
+            return;
+        }
+        if (requestCode != REQUEST_LIVE) return;
+        LivePlayerActivity.pendingChannels = null;
+        int index = data == null ? -1 : data.getIntExtra(LivePlayerActivity.RESULT_INDEX, -1);
+        String stats = "null";
+        if (data != null) {
+            try {
+                stats = new JSONObject().put("stalls", data.getIntExtra(LivePlayerActivity.RESULT_STALLS, 0))
+                        .put("minutes", data.getIntExtra(LivePlayerActivity.RESULT_MINUTES, 0))
+                        .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER)))
+                        .put("favs", new org.json.JSONArray(data.getStringExtra(LivePlayerActivity.RESULT_FAVS) == null ? "[]" : data.getStringExtra(LivePlayerActivity.RESULT_FAVS)))
+                        .put("failed", data.getIntExtra(LivePlayerActivity.RESULT_FAILED, 0))
+                        .put("failedName", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_FAILED_NAME)))
+                        .put("failedCode", data.getIntExtra(LivePlayerActivity.RESULT_FAILED_CODE, 0)).toString();
+            } catch (Exception ignored) {
+                // No stats.
+            }
+        }
+        webView.evaluateJavascript("window.auroraLiveClosed && window.auroraLiveClosed(" + index + "," + stats + ")", null);
+    }
+
+    private static final String CREDENTIAL_KEY = "aurora-credentials";
+
+    /** AES key that lives in Android's key store and can't be read out of it, even by this app. */
+    private static SecretKey credentialKey() throws Exception {
+        KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+        keyStore.load(null);
+        if (keyStore.containsAlias(CREDENTIAL_KEY)) {
+            return ((KeyStore.SecretKeyEntry) keyStore.getEntry(CREDENTIAL_KEY, null)).getSecretKey();
+        }
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(CREDENTIAL_KEY,
+                KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build());
+        return generator.generateKey();
+    }
+
+    private static String readAll(InputStream in) throws IOException {
+        try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[16 * 1024];
+            int n;
+            while ((n = input.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toString("UTF-8");
+        }
+    }
+
+    /** A downloaded update waiting for the "install unknown apps" permission. */
+    private File pendingApk;
+    /** The last downloaded update, for "Try again" when the installer didn't show. */
+    private File downloadedApk;
+    private static final String ACTION_INSTALL_STATUS = "com.johnny4091.embyflix.INSTALL_STATUS";
+    private BroadcastReceiver installReceiver;
+
+    @SuppressLint("SetJavaScriptEnabled")
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        CrashRecorder.install(this);
+        tvDevice = detectTv();
+        appLockOn = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("appLock", false);
+
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.parseColor("#070C1C"));
+        setContentView(root);
+        createWebView();
+
+        if (savedInstanceState != null) {
+            webView.restoreState(savedInstanceState);
+        } else {
+            webView.loadUrl(START_URL);
+        }
+        lockNow();
+    }
+
+    /** Builds the WebView that shows the app. Also used to start over if Android stops the WebView's engine. */
+    @SuppressLint("SetJavaScriptEnabled")
+    private void createWebView() {
+        webView = new WebView(this) {
+            // TV remote: while a text box has the focus, Up and Down go to the keyboard system before the page, and with
+            // no on-screen keyboard open nothing uses them, so the remote got stuck there (Settings → Help & feedback,
+            // just below "Streaming quality"). With the keyboard closed, hand them to the page's own navigation instead.
+            // With the keyboard open, they still move around the keyboard.
+            @Override
+            public boolean dispatchKeyEventPreIme(KeyEvent event) {
+                int code = event.getKeyCode();
+                if (tvDevice && (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_DOWN)
+                        && onCheckIsTextEditor() && !keyboardShowing(this)) {
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                        evaluateJavascript("window.embyflixKey && window.embyflixKey('" + (code == KeyEvent.KEYCODE_DPAD_UP ? "up" : "down") + "')", null);
+                    }
+                    return true;
+                }
+                return super.dispatchKeyEventPreIme(event);
+            }
+        };
+        // No scroll bars along the edges (the page scrolls with the remote or a swipe).
+        webView.setVerticalScrollBarEnabled(false);
+        webView.setHorizontalScrollBarEnabled(false);
+        // Keep the page's engine at full priority while the live TV player covers it. By default Android
+        // treats it as background work and stops it first when memory runs short, and the app then had to
+        // load everything again when the viewer pressed Back.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            webView.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);
+        }
+        webView.setBackgroundColor(Color.parseColor("#070C1C"));
+        root.addView(webView, 0, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        WebSettings settings = webView.getSettings();
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
+        // The app is only ever loaded from its own bundled address; nothing needs the phone's files.
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setMediaPlaybackRequiresUserGesture(false);
+        // Allow http:// Emby servers even though the app itself is served from https://.
+        settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+        // Honour the page's viewport width so TV mode can lay out on a fixed canvas scaled to the screen.
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(true);
+        settings.setSupportZoom(false);
+        settings.setUserAgentString(settings.getUserAgentString() + " AuroraAndroid/" + versionName());
+
+        final WebViewAssetLoader assetLoader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                .build();
+
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return assetLoader.shouldInterceptRequest(request.getUrl());
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                restartWebView(view);
+                return true; // handled: keep the app running
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                Uri uri = request.getUrl();
+                if (APP_HOST.equals(uri.getHost())) return false;
+                // Links to anything else open in the regular browser.
+                try {
+                    startActivity(new Intent(Intent.ACTION_VIEW, uri));
+                } catch (ActivityNotFoundException ignored) {
+                    // No browser installed; ignore the link.
+                }
+                return true;
+            }
+        });
+
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                customView = view;
+                customViewCallback = callback;
+                root.addView(view, new FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                webView.setVisibility(View.GONE);
+                setSystemBarsHidden(true);
+                setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                exitFullscreen();
+            }
+
+            @Override
+            public Bitmap getDefaultVideoPoster() {
+                // Avoid the grey placeholder WebView draws before a video starts.
+                return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
+            }
+        });
+
+        webView.addJavascriptInterface(new NativeBridge(), "EmbyFlixAndroid");
+
+        webView.setFocusable(true);
+        webView.setFocusableInTouchMode(true);
+        webView.requestFocus();
+    }
+
+    /**
+     * Android stopped the WebView's engine, usually to free memory for the live TV player on a TV box. Without
+     * this the whole app would close; instead start the app page again in a fresh WebView.
+     */
+    private void restartWebView(WebView gone) {
+        if (gone != webView || isFinishing() || isDestroyed()) return;
+        if (customView != null) {
+            root.removeView(customView);
+            customView = null;
+            customViewCallback = null;
+        }
+        root.removeView(gone);
+        gone.destroy();
+        createWebView();
+        webView.loadUrl(START_URL);
+        if (playerMode) {
+            playerMode = false;
+            setSystemBarsHidden(false);
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        }
+    }
+
+    private String versionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "1";
+        }
+    }
+
+    private void exitFullscreen() {
+        if (customView == null) return;
+        root.removeView(customView);
+        customView = null;
+        webView.setVisibility(View.VISIBLE);
+        setSystemBarsHidden(playerMode);
+        setRequestedOrientation(playerMode
+                ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+        if (customViewCallback != null) {
+            customViewCallback.onCustomViewHidden();
+            customViewCallback = null;
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private void setSystemBarsHidden(boolean on) {
+        View decor = getWindow().getDecorView();
+        if (on) {
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    | View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        } else {
+            decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+        }
+    }
+
+    private boolean detectTv() {
+        UiModeManager uiMode = (UiModeManager) getSystemService(UI_MODE_SERVICE);
+        return (uiMode != null && uiMode.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION)
+                || getPackageManager().hasSystemFeature(PackageManager.FEATURE_LEANBACK)
+                // Many Android TV boxes report neither of the above, but none has a touchscreen.
+                || !getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
+    }
+
+    /** Whether the on-screen keyboard is open over this view. */
+    private static boolean keyboardShowing(View v) {
+        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(v);
+        return insets != null && insets.isVisible(WindowInsetsCompat.Type.ime());
+    }
+
+    /** Remote buttons the web page can't receive reliably are forwarded to window.embyflixKey(). */
+    private static String remoteAction(int keyCode) {
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+            case KeyEvent.KEYCODE_HEADSETHOOK: return "playpause";
+            case KeyEvent.KEYCODE_MEDIA_PLAY: return "play";
+            case KeyEvent.KEYCODE_MEDIA_PAUSE: return "pause";
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: return "ff";
+            case KeyEvent.KEYCODE_MEDIA_REWIND: return "rw";
+            case KeyEvent.KEYCODE_MEDIA_NEXT: return "next";
+            case KeyEvent.KEYCODE_CHANNEL_UP: return "chup";
+            case KeyEvent.KEYCODE_CHANNEL_DOWN: return "chdown";
+            case KeyEvent.KEYCODE_GUIDE:
+            case KeyEvent.KEYCODE_TV: return "guide";
+            default: return null;
+        }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        // OK on a TV remote is sent in three parts (pressed, held, released) so the page can tell a press from a hold
+        // (hold OK on a channel or title: add to Favorites). A plain press acts as before.
+        if (customView == null && event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER) {
+            String part = null;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) part = event.getRepeatCount() == 0 ? "selectdown" : event.getRepeatCount() == 1 ? "selecthold" : null;
+            else if (event.getAction() == KeyEvent.ACTION_UP) part = "selectup";
+            if (part != null) webView.evaluateJavascript("window.embyflixKey && window.embyflixKey('" + part + "')", null);
+            return true;
+        }
+        String action = customView == null ? remoteAction(event.getKeyCode()) : null;
+        if (action != null) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                webView.evaluateJavascript("window.embyflixKey && window.embyflixKey('" + action + "')", null);
+            }
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @SuppressWarnings("deprecation")
+    @Override
+    public void onBackPressed() {
+        if (locked) { moveTaskToBack(true); return; }
+        if (customView != null) {
+            exitFullscreen();
+            return;
+        }
+        // Let the web app close the player, details pop-up, or go back to Home first.
+        webView.evaluateJavascript("window.embyflixBack ? window.embyflixBack() : false", value -> {
+            if (!"true".equals(value)) finish();
+        });
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        super.onSaveInstanceState(outState);
+        webView.saveState(outState);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Save the playback position before the WebView stops running the page.
+        webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
+        webView.onPause();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        if (!unlocking && !inPlayer) leftAt = System.currentTimeMillis();
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        // Away for a while (not just watching something in the player): ask again.
+        if (!locked && !unlocking && !inPlayer && leftAt > 0 && System.currentTimeMillis() - leftAt > LOCK_AFTER_MS) lockNow();
+        // Back within the grace period: forget when we left, or an old time would lock the app right after the next
+        // movie (when the player closes, onStart sees that old time).
+        if (!locked && !unlocking && !inPlayer) leftAt = 0;
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        webView.onResume();
+        // Back from the "install unknown apps" screen: carry on with the update.
+        if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) installPendingApk();
+    }
+
+    @SuppressWarnings("deprecation")
+    private int versionCode() {
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? (int) info.getLongVersionCode() : info.versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /** Sends update progress to window.auroraUpdate() in the page. */
+    private void notifyUpdate(String state, Object value) {
+        try {
+            JSONObject json = new JSONObject().put("state", state);
+            if (value instanceof Integer) json.put("pct", value);
+            else if (value != null) json.put("message", String.valueOf(value));
+            String js = "window.auroraUpdate && window.auroraUpdate(" + json + ")";
+            runOnUiThread(() -> webView.evaluateJavascript(js, null));
+        } catch (Exception ignored) {
+            // Nothing useful to report.
+        }
+    }
+
+    private void downloadUpdate(String url) {
+        HttpURLConnection conn = null;
+        try {
+            File dir = new File(getCacheDir(), "updates");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("no storage");
+            File apk = new File(dir, "Aurora.apk");
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setInstanceFollowRedirects(true);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            int status = conn.getResponseCode();
+            if (status >= 400) throw new IOException("HTTP " + status);
+            // GitHub hands the file over from its own download servers; anything else is refused.
+            String host = conn.getURL().getHost();
+            if (!"https".equals(conn.getURL().getProtocol()) || !(host.equals("github.com") || host.endsWith(".github.com") || host.endsWith(".githubusercontent.com"))) {
+                throw new IOException("the download came from an unexpected place");
+            }
+            long total = conn.getContentLengthLong(), done = 0;
+            int lastPct = -1;
+            try (InputStream in = conn.getInputStream(); OutputStream out = new FileOutputStream(apk)) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                    done += n;
+                    int pct = total > 0 ? (int) (done * 100 / total) : -1;
+                    if (pct >= 0 && pct != lastPct) {
+                        lastPct = pct;
+                        notifyUpdate("progress", pct);
+                    }
+                }
+            }
+            if (total > 0 && done != total) throw new IOException("the download was cut short");
+            downloadedApk = apk;
+            pendingApk = apk;
+            runOnUiThread(this::installPendingApk);
+        } catch (Exception e) {
+            notifyUpdate("error", e.getMessage());
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    private void installPendingApk() {
+        File apk = pendingApk;
+        if (apk == null) return;
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            notifyUpdate("permission", null);
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName())));
+                return; // onResume continues once it's allowed
+            } catch (ActivityNotFoundException e) {
+                // Some TV boxes have no such screen; try the installer anyway, which asks on its own.
+            }
+        }
+        pendingApk = null;
+        notifyUpdate("installing", null);
+        // Android's installer service: the way app stores install updates, and the one TV boxes reliably show.
+        // The older "open this file" route (below) is the fallback, and what "Try again" uses.
+        new Thread(() -> {
+            try {
+                installWithSession(apk);
+            } catch (Exception e) {
+                runOnUiThread(() -> openInstaller(apk));
+            }
+        }, "aurora-install").start();
+    }
+
+    private void installWithSession(File apk) throws IOException {
+        registerInstallReceiver();
+        PackageInstaller installer = getPackageManager().getPackageInstaller();
+        PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+        params.setAppPackageName(getPackageName());
+        params.setSize(apk.length());
+        int id = installer.createSession(params);
+        try (PackageInstaller.Session session = installer.openSession(id)) {
+            try (InputStream in = new FileInputStream(apk); OutputStream out = session.openWrite("aurora.apk", 0, apk.length())) {
+                byte[] buf = new byte[256 * 1024];
+                for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                session.fsync(out);
+            }
+            Intent status = new Intent(ACTION_INSTALL_STATUS).setPackage(getPackageName());
+            int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
+            PendingIntent sender = PendingIntent.getBroadcast(this, id, status, flags);
+            session.commit(sender.getIntentSender());
+        } catch (IOException | RuntimeException e) {
+            try { installer.abandonSession(id); } catch (Exception ignored) { /* already gone */ }
+            throw e;
+        }
+    }
+
+    /** Hears back from the installer service: show its confirmation screen, or report a failure. */
+    private void registerInstallReceiver() {
+        if (installReceiver != null) return;
+        installReceiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+                if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                    @SuppressWarnings("deprecation")
+                    Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                    if (confirm == null) { openInstaller(downloadedApk); return; }
+                    try {
+                        startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                    } catch (Exception e) {
+                        openInstaller(downloadedApk);
+                    }
+                } else if (status == PackageInstaller.STATUS_FAILURE_ABORTED) {
+                    notifyUpdate("cancelled", null);
+                } else if (status != PackageInstaller.STATUS_SUCCESS) {
+                    String message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE);
+                    notifyUpdate("error", "the installer said: " + (message == null ? "status " + status : message));
+                }
+            }
+        };
+        IntentFilter filter = new IntentFilter(ACTION_INSTALL_STATUS);
+        // Not exported on any Android version: other apps must not be able to send it a made-up result.
+        androidx.core.content.ContextCompat.registerReceiver(this, installReceiver, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED);
+    }
+
+    /** The older route: open the file with the system installer. */
+    private void openInstaller(File apk) {
+        if (apk == null || !apk.exists()) { notifyUpdate("error", "the download is gone; press Update now again"); return; }
+        try {
+            Uri uri = FileProvider.getUriForFile(this, getPackageName() + ".updates", apk);
+            Intent install = new Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            notifyUpdate("installing", null);
+            startActivity(install);
+        } catch (Exception e) {
+            notifyUpdate("error", e.getMessage());
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (installReceiver != null) {
+            try { unregisterReceiver(installReceiver); } catch (Exception ignored) { /* not registered */ }
+        }
+        root.removeAllViews();
+        webView.destroy();
+        super.onDestroy();
+    }
+
+    /** Methods the web app can call as window.EmbyFlixAndroid.*. */
+    private class NativeBridge {
+        private final boolean tv = detectTv();
+
+        @JavascriptInterface
+        public boolean isTv() {
+            return tv;
+        }
+
+        @JavascriptInterface
+        public int getVersionCode() {
+            return versionCode();
+        }
+
+        @JavascriptInterface
+        public String getVersionName() {
+            return versionName();
+        }
+
+        /** Maker and model, e.g. "Arris FibeTV", so the admin dashboard can tell devices apart. */
+        @JavascriptInterface
+        public String getDeviceName() {
+            String maker = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER.trim();
+            String model = Build.MODEL == null ? "" : Build.MODEL.trim();
+            if (!maker.isEmpty() && model.toLowerCase().startsWith(maker.toLowerCase())) return model;
+            String name = (maker.isEmpty() ? "" : Character.toUpperCase(maker.charAt(0)) + maker.substring(1) + " ") + model;
+            return name.trim().isEmpty() ? "Android device" : name.trim();
+        }
+
+        /**
+         * Makes the XMLTV guide at url ready in the background. Then window.auroraEpgDone(id, data) gets a short
+         * summary ({channels, programmes}) or {error}; the page asks for listings with epgLookup.
+         */
+        @JavascriptInterface
+        public void loadEpg(String id, String url, String userAgent) {
+            new Thread(() -> {
+                // Reading a big guide is long, busy work: keep it behind the app's screens and video.
+                android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                String result;
+                try {
+                    String ua = userAgent == null || userAgent.isEmpty() ? "Aurora/" + versionName() + " (Android)" : userAgent;
+                    result = EpgLoader.load(MainActivity.this, url, ua);
+                } catch (Throwable e) {
+                    result = "{\"error\":" + JSONObject.quote(e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()) + "}";
+                }
+                String js = "window.auroraEpgDone && window.auroraEpgDone(" + JSONObject.quote(id) + "," + result + ")";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            }, "aurora-epg").start();
+        }
+
+        /** Guide entries for the channels the page is showing; see EpgLoader.lookup. */
+        @JavascriptInterface
+        public String epgLookup(String url, String requestJson) {
+            return EpgLoader.lookup(url, requestJson);
+        }
+
+        /** How many of the given channels the guide covers; see EpgLoader.count. */
+        @JavascriptInterface
+        public String epgCount(String url, String requestJson) {
+            return EpgLoader.count(url, requestJson);
+        }
+
+        /** Fetches a picture the page couldn't load itself; window.auroraImageDone(id, dataUrl or ""). */
+        @JavascriptInterface
+        public void fetchImage(String id, String url, String userAgent) {
+            new Thread(() -> {
+                String dataUrl = "";
+                HttpURLConnection conn = null;
+                try {
+                    conn = (HttpURLConnection) new URL(url).openConnection();
+                    conn.setConnectTimeout(8000);
+                    conn.setReadTimeout(8000);
+                    conn.setInstanceFollowRedirects(true);
+                    if (userAgent != null && !userAgent.isEmpty()) conn.setRequestProperty("User-Agent", userAgent);
+                    if (conn.getResponseCode() < 400) {
+                        String type = conn.getContentType();
+                        if (type == null || !type.startsWith("image/")) type = "image/png";
+                        try (InputStream in = conn.getInputStream()) {
+                            ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                            byte[] chunk = new byte[16384];
+                            for (int n; (n = in.read(chunk)) > 0 && buf.size() < 600_000; ) buf.write(chunk, 0, n);
+                            if (buf.size() < 600_000) dataUrl = "data:" + type.split(";")[0] + ";base64," + Base64.encodeToString(buf.toByteArray(), Base64.NO_WRAP);
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // No picture.
+                } finally {
+                    if (conn != null) conn.disconnect();
+                }
+                String js = "window.auroraImageDone && window.auroraImageDone(" + JSONObject.quote(id) + "," + JSONObject.quote(dataUrl) + ")";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            }, "aurora-image").start();
+        }
+
+        /** Details of a crash from the last time the app ran ("" if none); reading clears it. */
+        @JavascriptInterface
+        public String getLastCrash() {
+            return CrashRecorder.take(MainActivity.this);
+        }
+
+        /** Plays M3U / Xtream live channels in the native player. channelsJson: [{name, url, logo, num, now}]. */
+        @JavascriptInterface
+        public void playLive(String channelsJson, int index, String group, String userAgent, String reportJson) {
+            runOnUiThread(() -> {
+                LivePlayerActivity.pendingChannels = channelsJson;
+                inPlayer = true;
+                Intent intent = new Intent(MainActivity.this, LivePlayerActivity.class);
+                intent.putExtra(LivePlayerActivity.EXTRA_INDEX, index);
+                intent.putExtra(LivePlayerActivity.EXTRA_GROUP, group);
+                intent.putExtra(LivePlayerActivity.EXTRA_USER_AGENT, userAgent);
+                intent.putExtra(LivePlayerActivity.EXTRA_REPORT, reportJson);
+                startActivityForResult(intent, REQUEST_LIVE);
+            });
+        }
+
+        /** Plays an Emby movie or episode in the native player; specJson is described in VodPlayerActivity. */
+        @JavascriptInterface
+        public void playVod(String specJson) {
+            runOnUiThread(() -> {
+                inPlayer = true;
+                Intent intent = new Intent(MainActivity.this, VodPlayerActivity.class);
+                intent.putExtra(VodPlayerActivity.EXTRA_SPEC, specJson);
+                startActivityForResult(intent, REQUEST_VOD);
+            });
+        }
+
+        /**
+         * What this device's decoders handle, so Emby sends files as they are whenever it can:
+         * {"video": ["h264", "hevc", …], "audio": ["aac", "ac3", …], "hevc10": true, "maxWidth": 3840}.
+         */
+        @JavascriptInterface
+        public String getCodecs() {
+            return Codecs.describe();
+        }
+
+        /** Opens a YouTube video in the YouTube app. Returns false if there isn't one (the page then plays it itself). */
+        @JavascriptInterface
+        public boolean openYouTube(String videoId) {
+            if (videoId == null || !videoId.matches("[\\w-]{11}")) return false;
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("vnd.youtube:" + videoId))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(intent);
+                return true;
+            } catch (ActivityNotFoundException e) {
+                return false;
+            }
+        }
+
+        /** Encrypts text with the key-store key; returns "iv:ciphertext" in Base64, or null on failure. */
+        @JavascriptInterface
+        public String encrypt(String plain) {
+            try {
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, credentialKey());
+                byte[] sealed = cipher.doFinal(plain.getBytes(StandardCharsets.UTF_8));
+                return Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP) + ":" + Base64.encodeToString(sealed, Base64.NO_WRAP);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        /** Reverses encrypt(); null if the text can't be decrypted (for example after the key store was reset). */
+        @JavascriptInterface
+        public String decrypt(String blob) {
+            try {
+                String[] parts = blob.split(":", 2);
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, credentialKey(), new GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)));
+                return new String(cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+
+        @JavascriptInterface
+        public void httpRequest(String id, String method, String url, String headersJson, String body) {
+            new Thread(() -> nativeHttp(id, method, url, headersJson, body), "aurora-http").start();
+        }
+
+        /**
+         * Gets a channel list from the TV provider (see IptvFetcher). Then window.auroraIptvDone(id, {status, stale,
+         * error}); the page reads the text with iptvOpen / iptvRead.
+         */
+        @JavascriptInterface
+        public void iptvFetch(String id, String url, String userAgent, double maxAgeMs, boolean allowStale, boolean liveOnly, int timeoutMs) {
+            new Thread(() -> {
+                String ua = userAgent == null || userAgent.isEmpty() ? "Aurora/" + versionName() + " (Android)" : userAgent;
+                JSONObject r = IptvFetcher.fetch(MainActivity.this, url, ua, (long) maxAgeMs, allowStale, liveOnly, timeoutMs);
+                String js = "window.auroraIptvDone && window.auroraIptvDone(" + JSONObject.quote(id) + "," + r + ")";
+                runOnUiThread(() -> webView.evaluateJavascript(js, null));
+            }, "aurora-iptv").start();
+        }
+
+        @JavascriptInterface
+        public int iptvOpen(String url, boolean liveOnly) {
+            return IptvFetcher.open(MainActivity.this, url, liveOnly);
+        }
+
+        @JavascriptInterface
+        public String iptvRead(int handle, int maxChars) {
+            return IptvFetcher.read(handle, maxChars);
+        }
+
+        @JavascriptInterface
+        public void iptvClose(int handle) {
+            IptvFetcher.close(handle);
+        }
+
+        /** Downloads the APK at url and opens the system installer. Progress goes to window.auroraUpdate(). */
+        @JavascriptInterface
+        public void installUpdate(String url) {
+            if (url == null || !url.startsWith(UPDATE_URL_PREFIX)) {
+                notifyUpdate("error", "unexpected download address");
+                return;
+            }
+            new Thread(() -> downloadUpdate(url), "aurora-update").start();
+        }
+
+        /** "Try again" on the update screen: open the downloaded update with the system installer. */
+        @JavascriptInterface
+        public void openInstaller() {
+            runOnUiThread(() -> {
+                if (downloadedApk != null && downloadedApk.exists()) MainActivity.this.openInstaller(downloadedApk);
+                else notifyUpdate("error", "the download is gone; press Update now again");
+            });
+        }
+
+        /** Phones: whether the phone has a screen lock Aurora can ask for. Always false on a TV. */
+        @JavascriptInterface
+        public boolean canAppLock() {
+            return !tv && deviceSecure();
+        }
+
+        /** Turns the start-up lock on or off. Ignored on a TV. */
+        @JavascriptInterface
+        public void setAppLock(boolean on) {
+            if (tv) return;
+            appLockOn = on;
+            getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("appLock", on).apply();
+        }
+
+        /** Opens the on-screen keyboard for the focused text field (needed with a TV remote). */
+        @JavascriptInterface
+        public void showKeyboard() {
+            runOnUiThread(() -> {
+                webView.requestFocus();
+                InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+                if (imm == null) return;
+                // Give the page a moment to focus its text box, then ask. Some TV-provider keyboards
+                // ignore a polite request, so fall back to a forced one.
+                webView.postDelayed(() -> {
+                    if (!imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)) {
+                        imm.showSoftInput(webView, InputMethodManager.SHOW_FORCED);
+                    }
+                }, 150);
+            });
+        }
+
+        /** Video player open: keep the screen on, hide the system bars and turn to landscape. */
+        @JavascriptInterface
+        public void setPlayerMode(boolean on) {
+            runOnUiThread(() -> {
+                playerMode = on;
+                if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                if (customView == null) {
+                    setSystemBarsHidden(on);
+                    setRequestedOrientation(on
+                            ? ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                            : ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+                }
+            });
+        }
+    }
+}
