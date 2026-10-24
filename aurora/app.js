@@ -14,6 +14,15 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+  // A request deadline. AbortSignal.timeout() is missing from older Android System WebViews (a function that doesn't exist
+  // made every update check and guard call fail on exactly the devices that most need them).
+  function timeoutSignal(ms) {
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return AbortSignal.timeout(ms);
+    const c = new AbortController();
+    setTimeout(() => c.abort(), ms);
+    return c.signal;
+  }
+
   // ---------- Storage ----------
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -121,8 +130,9 @@
     if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
     ['ef.authMode', 'ef.server'].forEach(store.del);
     state.apiKey = store.get('ef.apiKey') || '';
-    state.requestsServer = store.get('ef.requestsServer') || '';
-    state.requestsEnabled = store.get('ef.requestsEnabled') === '1';
+    if (store.get('ef.requestsServer') && !/^https:\/\//i.test(store.get('ef.requestsServer'))) store.del('ef.requestsServer'); // an older plain-http address
+    state.requestsServer = /^https:\/\//i.test(store.get('ef.requestsServer') || '') ? store.get('ef.requestsServer') : '';
+    state.requestsEnabled = !!state.requestsServer && store.get('ef.requestsEnabled') === '1';
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
     if (!deviceId) {
@@ -1399,7 +1409,7 @@
       if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
       return r.body || '';
     }
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(url, { signal: timeoutSignal(timeoutMs) });
     if (!res.ok) throw new Error(`The TV provider answered ${res.status}.`);
     return res.text();
   }
@@ -3171,7 +3181,14 @@
     return { saved, failed, total: (users || []).length };
   }
 
+  // Customers' sign-in details are sent to the Requests server, so only a secure (https) address is used. An http one, or a
+  // typo in the settings file, is ignored instead of sending passwords in the clear.
+  const secureAddress = (u) => /^https:\/\/[^\s/]+/i.test(String(u || ''));
   function applyRequestsServer(value, enabled) {
+    if (value && !secureAddress(value)) {
+      appLog.add('warn', 'Ignored a Requests address that does not start with https://');
+      value = ''; enabled = false;
+    }
     if (value === state.requestsServer && enabled === state.requestsEnabled) return;
     state.requestsServer = value;
     state.requestsEnabled = enabled;
@@ -3241,7 +3258,7 @@
     let res;
     try {
       res = await fetch(url, {
-        method, cache: 'no-store', signal: AbortSignal.timeout(quick ? 3000 : 15000),
+        method, cache: 'no-store', signal: timeoutSignal(quick ? 3000 : 15000),
         headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -3384,7 +3401,7 @@
           applyRequiredUpdate();
         }
         const value = typeof cfg.requestsServer === 'string' ? cfg.requestsServer.trim().replace(/\/+$/, '') : '';
-        if (value && !/^https?:\/\//.test(value)) return;
+        if (value && !secureAddress(value)) return;
         if (requestsOverride) return;
         applyRequestsServer(value, cfg.requestsEnabled === true && !!value);
         return;
@@ -3495,13 +3512,13 @@
   async function serviceOnline() {
     if (guardEnabled) {
       try {
-        const res = await fetch(guardUrl.replace(/\/+$/, '') + '/status', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+        const res = await fetch(guardUrl.replace(/\/+$/, '') + '/status', { cache: 'no-store', signal: timeoutSignal(6000) });
         const m = res.ok ? (await res.text()).match(/Aurora:\s*(online|offline)/i) : null;
         if (m) return m[1].toLowerCase() === 'online';
       } catch { /* ask the server instead */ }
     }
     try {
-      const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: timeoutSignal(8000) });
       return res.ok;
     } catch { return false; }
   }
@@ -3897,7 +3914,7 @@
   async function latestAuroraRelease() {
     try {
       const res = await fetch('https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest',
-        { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+        { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000) });
       if (!res.ok) return null;
       const rel = await res.json();
       return { name: rel.name || rel.tag_name, code: Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0), date: rel.published_at, notes: releaseNotes(rel.body) };
@@ -4197,7 +4214,7 @@
       }),
       check('App settings file', async () => {
         for (const url of REMOTE_CONFIG_URLS) {
-          try { const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(8000) }); if (r.ok) { await r.json(); return ok('aurora-config.json loads'); } } catch { /* next */ }
+          try { const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store', signal: timeoutSignal(8000) }); if (r.ok) { await r.json(); return ok('aurora-config.json loads'); } } catch { /* next */ }
         }
         return bad("aurora-config.json couldn't be read, so apps keep their last settings (guard address, Requests).");
       }),
@@ -4381,6 +4398,7 @@
     let confirmUnreachable = false;
     $('[data-save]', body).addEventListener('click', async () => {
       const v = value();
+      if (v && !secureAddress(v)) return say('The address must start with https:// (customers\' sign-in details are sent to it, so a plain http:// address is not allowed).', 'bad');
       say('<div class="spinner"></div> Checking the address…');
       let note = '';
       try { note = await test(v); } catch (e) {
@@ -5203,7 +5221,7 @@
 
   async function auroraReleaseCodes() {
     try {
-      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000) });
       if (!res.ok) return null;
       return (await res.json()).filter((r) => !r.draft && !r.prerelease && /^aurora-v/.test(r.tag_name || ''))
         .map((r) => Number(r.tag_name.match(/(\d+)$/)?.[1] || 0)).filter(Boolean).sort((a, b) => b - a);
@@ -5555,7 +5573,7 @@
     try {
       // Always ask GitHub fresh, and give up after 8 seconds rather than hanging on a slow connection.
       const res = await fetch(RELEASES_URL, {
-        headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000),
+        headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000),
       });
       if (!res.ok) throw new Error(res.status);
       const installed = nativeApp.getVersionCode();
@@ -5564,9 +5582,12 @@
         .map((rel) => ({ rel, code: Number(rel.tag_name.match(/(\d+)$/)?.[1] || 0) }))
         .filter((r) => r.code > installed)
         .sort((a, b) => b.code - a.code);
-      const latest = newer[0];
-      const apk = latest && (latest.rel.assets || []).find((a) => /\.apk$/i.test(a.name));
-      if (!apk) return { status: 'current' };
+      // The newest release that already has its APK. (A release can exist for a few seconds before its file is attached;
+      // saying "up to date" then would also release the update lock.) Newer releases with no APK yet: ask again later.
+      const withApk = newer.filter((r) => (r.rel.assets || []).some((a) => /\.apk$/i.test(a.name)));
+      if (!withApk.length) return { status: newer.length ? 'error' : 'current' };
+      const latest = withApk[0];
+      const apk = latest.rel.assets.find((a) => /\.apk$/i.test(a.name));
       // Newest first, without repeating a line that appears in more than one version.
       const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 12);
       return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes, behind: newer.length };

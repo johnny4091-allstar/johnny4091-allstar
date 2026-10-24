@@ -48,6 +48,8 @@ final class EpgLoader {
     // The guide page shows six hours; 14 hours ahead covers a saved guide up to STALE_MS old.
     private static final long BEFORE_MS = 3600_000L, AHEAD_MS = 14 * 3600_000L;
     private static final int MAX_DESC = 180;
+    /** Memory limits while a guide is read (a provider's file can cover 10,000 channels): per channel, and in all. */
+    private static final int MAX_PER_CHANNEL = 40, MAX_PROGRAMMES = 450_000;
     private static final int MAX_REDIRECTS = 5;
 
     /** One channel in the guide: its name, logo, and programmes as a JSON array [[start, end, title, desc], ...]. */
@@ -235,10 +237,11 @@ final class EpgLoader {
                         channels.put(key(chId), new String[]{chName == null ? "" : chName, chIcon == null ? "" : chIcon});
                         chId = null;
                     } else if ("programme".equals(tag)) {
-                        if (inProg && title != null) {
+                        if (inProg && title != null && count < MAX_PROGRAMMES) {
                             String k = key(progCh);
                             List<String> list = progs.get(k);
                             if (list == null) progs.put(k, list = new ArrayList<>());
+                            if (list.size() >= MAX_PER_CHANNEL) { inProg = false; continue; }
                             list.add("[" + start + "," + stop + "," + JSONObject.quote(title) + "," + JSONObject.quote(desc == null ? "" : desc) + "]");
                             count++;
                         }
@@ -288,10 +291,11 @@ final class EpgLoader {
         synchronized (refreshing) {
             if (!refreshing.add(url)) return;
         }
+        final Context app = context.getApplicationContext(); // not the screen: this thread can outlive it by minutes
         Thread t = new Thread(() -> {
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND);
             try {
-                Guide g = build(context, url, userAgent);
+                Guide g = build(app, url, userAgent);
                 Guide c = current;
                 if (c == null || c.url.equals(url)) { current = g; if (c != null && c != g) c.close(); }
                 else g.close(); // the viewer has moved on to another guide meanwhile

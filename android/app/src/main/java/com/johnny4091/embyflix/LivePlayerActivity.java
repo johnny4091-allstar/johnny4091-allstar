@@ -212,6 +212,9 @@ public class LivePlayerActivity extends Activity {
         DefaultRenderersFactory renderers = new DefaultRenderersFactory(this).setEnableDecoderFallback(true);
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
+                .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true) // pause for a call, play nicely with other apps
+                .setHandleAudioBecomingNoisy(true) // headphones unplugged or Bluetooth lost: pause, don't blast the speaker
                 // Keep Wi-Fi awake while watching; some boxes otherwise let it doze and the stream drops.
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(new DefaultDataSource.Factory(this, http),
@@ -570,11 +573,10 @@ public class LivePlayerActivity extends Activity {
             backButton.setAlpha(1f);
             backButton.setVisibility(View.VISIBLE);
         }
-        bannerShownAt = System.currentTimeMillis();
         handler.removeCallbacks(hideBanner);
         handler.postDelayed(hideBanner, 4500);
     }
-    private long bannerShownAt;
+    private long rightArmedUntil;
 
     private boolean listOpen() { return listPanel.getVisibility() == View.VISIBLE; }
 
@@ -614,6 +616,9 @@ public class LivePlayerActivity extends Activity {
         Bitmap cached = logoCache.get(url);
         if (cached != null) { into.setImageBitmap(cached); return; }
         if (isFinishing()) return;
+        // One fetch per address at a time, and an address that failed isn't tried again while this screen is open
+        // (a scrolling list used to queue thousands of repeats, and dead hosts kept all the threads busy).
+        if (logoFailed.contains(url) || !logoPending.add(url)) return;
         try {
             logoLoader.execute(() -> {
                 Bitmap bmp = null;
@@ -623,6 +628,15 @@ public class LivePlayerActivity extends Activity {
                     conn.setConnectTimeout(8000);
                     conn.setReadTimeout(8000);
                     conn.setInstanceFollowRedirects(true);
+                    // Java won't follow a move between http and https by itself; do that one step here.
+                    int code = conn.getResponseCode();
+                    if (code >= 300 && code < 400 && conn.getHeaderField("Location") != null) {
+                        String to = new URL(new URL(url), conn.getHeaderField("Location")).toString();
+                        conn.disconnect();
+                        conn = (HttpURLConnection) new URL(to).openConnection();
+                        conn.setConnectTimeout(8000);
+                        conn.setReadTimeout(8000);
+                    }
                     byte[] data;
                     try (InputStream in = conn.getInputStream(); ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
                         byte[] chunk = new byte[16 * 1024];
@@ -649,16 +663,19 @@ public class LivePlayerActivity extends Activity {
                     // No logo; the name is enough.
                 } finally {
                     if (conn != null) conn.disconnect();
+                    logoPending.remove(url);
                 }
-                if (bmp == null) return;
+                if (bmp == null) { logoFailed.add(url); return; }
                 final Bitmap result = bmp;
                 logoCache.put(url, result);
                 handler.post(() -> { if (url.equals(into.getTag())) into.setImageBitmap(result); });
             });
         } catch (RejectedExecutionException ignored) {
-            // Closing.
+            logoPending.remove(url); // closing
         }
     }
+    private final java.util.Set<String> logoPending = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+    private final java.util.Set<String> logoFailed = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
 
     private final class ChannelAdapter extends BaseAdapter {
         @Override public int getCount() { return channels.size(); }
@@ -770,12 +787,15 @@ public class LivePlayerActivity extends Activity {
             case KeyEvent.KEYCODE_DPAD_RIGHT:
             case KeyEvent.KEYCODE_INFO:
                 // Right once shows what's on; right again while it shows saves the channel to Favorites.
-                if (code == KeyEvent.KEYCODE_DPAD_RIGHT && event.getRepeatCount() == 0 && banner.getAlpha() > 0.9f && bannerShownAt > 0
-                        && System.currentTimeMillis() - bannerShownAt < 4000 && PlayerUi.isTv(this)) {
+                if (code == KeyEvent.KEYCODE_DPAD_RIGHT && event.getRepeatCount() == 0 && PlayerUi.isTv(this)
+                        && System.currentTimeMillis() < rightArmedUntil) {
+                    rightArmedUntil = 0;
                     toggleFavorite();
                     return true;
                 }
                 showBanner();
+                // Only a Right press that showed the banner arms the second press (not Up/Down, OK, or the banner on its own).
+                if (code == KeyEvent.KEYCODE_DPAD_RIGHT && PlayerUi.isTv(this)) rightArmedUntil = System.currentTimeMillis() + 4000;
                 return true;
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
             case KeyEvent.KEYCODE_MEDIA_PAUSE:
@@ -829,6 +849,8 @@ public class LivePlayerActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        // Away for over a minute with the app lock on: close, and the app asks for the PIN.
+        if (stopped && !isFinishing() && listPanel != null && MainActivity.lockDue()) { stopped = false; finishWithResult(); return; }
         if (stopped && !isFinishing() && listPanel != null) {
             // Coming back to live TV: start the channel again at "now".
             stopped = false;
@@ -840,6 +862,7 @@ public class LivePlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        MainActivity.noteLeft();
         handler.removeCallbacks(reportChannel);
         handler.removeCallbacks(heartbeat);
         if (reporter != null) reporter.stopped();

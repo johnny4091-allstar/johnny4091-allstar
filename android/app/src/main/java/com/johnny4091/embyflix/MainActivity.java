@@ -19,6 +19,7 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -88,6 +89,8 @@ public class MainActivity extends Activity {
             JSONObject headers = new JSONObject(headersJson == null || headersJson.isEmpty() ? "{}" : headersJson);
             String at = url;
             int status;
+            final String firstHost = new URL(url).getHost();
+            StringBuilder cookies = new StringBuilder();
             for (int hop = 0; ; hop++) {
                 if (!at.startsWith("https://") && !at.startsWith("http://")) throw new IOException("unsupported address");
                 conn = (HttpURLConnection) new URL(at).openConnection();
@@ -96,8 +99,11 @@ public class MainActivity extends Activity {
                 conn.setReadTimeout(30000);
                 // Followed below, so a move between http and https (common with TV providers) works too.
                 conn.setInstanceFollowRedirects(false);
+                boolean sameHost = new URL(at).getHost().equalsIgnoreCase(firstHost);
                 for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
                     String key = it.next();
+                    // Sign-in details go only to the host that was asked, never on to wherever a redirect points.
+                    if (!sameHost && key.matches("(?i)cookie|authorization|x-api-key|x-emby-token|x-emby-authorization")) continue;
                     conn.setRequestProperty(key, headers.getString(key));
                 }
                 if (body != null && !body.isEmpty()) {
@@ -107,6 +113,14 @@ public class MainActivity extends Activity {
                     }
                 }
                 status = conn.getResponseCode();
+                // Keep just the name=value part of each cookie (from every step of a redirect), to send back on later calls.
+                for (Map.Entry<String, List<String>> h : conn.getHeaderFields().entrySet()) {
+                    if (h.getKey() == null || !h.getKey().equalsIgnoreCase("Set-Cookie")) continue;
+                    for (String c : h.getValue()) {
+                        if (cookies.length() > 0) cookies.append("; ");
+                        cookies.append(c.split(";", 2)[0].trim());
+                    }
+                }
                 String next = status >= 300 && status < 400 && "GET".equals(method) && hop < 5 ? conn.getHeaderField("Location") : null;
                 if (next == null) break;
                 conn.disconnect();
@@ -115,15 +129,6 @@ public class MainActivity extends Activity {
             InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
             result.put("status", status);
             result.put("body", in == null ? "" : readAll(in));
-            // Keep just the name=value part of each cookie, to send back on later calls.
-            StringBuilder cookies = new StringBuilder();
-            for (Map.Entry<String, List<String>> h : conn.getHeaderFields().entrySet()) {
-                if (h.getKey() == null || !h.getKey().equalsIgnoreCase("Set-Cookie")) continue;
-                for (String c : h.getValue()) {
-                    if (cookies.length() > 0) cookies.append("; ");
-                    cookies.append(c.split(";", 2)[0].trim());
-                }
-            }
             result.put("setCookie", cookies.toString());
         } catch (Exception e) {
             try {
@@ -144,8 +149,16 @@ public class MainActivity extends Activity {
 
     // ---- App lock (phones only): the phone's own PIN, pattern or fingerprint to open Aurora ----
     private static final long LOCK_AFTER_MS = 60_000;
-    private boolean appLockOn, locked, unlocking, inPlayer, tvDevice;
-    private long leftAt;
+    private boolean appLockOn, locked, unlocking, inPlayer, tvDevice, resumed;
+    /**
+     * Shared with the player screens: when any Aurora screen was last left (elapsed time, so changing the phone's clock
+     * can't dodge it), and whether the lock is on. A player the viewer comes back to after a minute away closes itself
+     * and the app lock asks for the PIN; before this, the players sat outside the lock.
+     */
+    static volatile boolean lockActive;
+    static volatile long awayAt;
+    static void noteLeft() { awayAt = SystemClock.elapsedRealtime(); }
+    static boolean lockDue() { return lockActive && awayAt > 0 && SystemClock.elapsedRealtime() - awayAt > LOCK_AFTER_MS; }
     private View lockView;
 
     private boolean deviceSecure() {
@@ -157,6 +170,9 @@ public class MainActivity extends Activity {
     private void lockNow() {
         if (tvDevice || !appLockOn || locked || !deviceSecure()) return;
         locked = true;
+        // Nothing under the cover may be reached by keyboard, remote or a screen reader.
+        webView.clearFocus();
+        webView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         if (lockView == null) {
             FrameLayout cover = new FrameLayout(this);
             cover.setBackgroundColor(Color.parseColor("#070C1C"));
@@ -205,7 +221,8 @@ public class MainActivity extends Activity {
 
     private void unlock() {
         locked = false;
-        leftAt = 0;
+        awayAt = 0;
+        if (webView != null) webView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
         if (lockView != null && lockView.getParent() != null) root.removeView(lockView);
     }
 
@@ -219,7 +236,12 @@ public class MainActivity extends Activity {
             if (resultCode == RESULT_OK) unlock();
             return;
         }
-        if (requestCode == REQUEST_VOD || requestCode == REQUEST_LIVE) inPlayer = false;
+        if (requestCode == REQUEST_VOD || requestCode == REQUEST_LIVE) {
+            inPlayer = false;
+            // Away from Aurora for over a minute while in the player (it closed itself): lock now.
+            if (!locked && !unlocking && lockDue()) lockNow();
+            if (!locked && !unlocking) awayAt = 0;
+        }
         if (requestCode == REQUEST_VOD) {
             String result = data == null ? null : data.getStringExtra(VodPlayerActivity.RESULT_JSON);
             webView.evaluateJavascript("window.auroraVodClosed && window.auroraVodClosed("
@@ -268,7 +290,10 @@ public class MainActivity extends Activity {
         try (InputStream input = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buf = new byte[16 * 1024];
             int n;
-            while ((n = input.read(buf)) > 0) out.write(buf, 0, n);
+            while ((n = input.read(buf)) > 0) {
+                out.write(buf, 0, n);
+                if (out.size() > 16 * 1024 * 1024) throw new IOException("the answer is too large");
+            }
             return out.toString("UTF-8");
         }
     }
@@ -287,6 +312,8 @@ public class MainActivity extends Activity {
         CrashRecorder.install(this);
         tvDevice = detectTv();
         appLockOn = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("appLock", false);
+        lockActive = appLockOn && !tvDevice;
+        if (lockActive) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); // no picture of the app in the recents list
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#070C1C"));
@@ -419,8 +446,19 @@ public class MainActivity extends Activity {
      * Android stopped the WebView's engine, usually to free memory for the live TV player on a TV box. Without
      * this the whole app would close; instead start the app page again in a fresh WebView.
      */
+    private final java.util.ArrayDeque<Long> restarts = new java.util.ArrayDeque<>();
+
     private void restartWebView(WebView gone) {
         if (gone != webView || isFinishing() || isDestroyed()) return;
+        // A page that dies as soon as it loads would otherwise restart for ever: after 3 in a minute, give up.
+        long nowMs = SystemClock.elapsedRealtime();
+        while (!restarts.isEmpty() && nowMs - restarts.peekFirst() > 60_000) restarts.pollFirst();
+        if (restarts.size() >= 3) {
+            android.widget.Toast.makeText(this, "Aurora ran out of memory. Close other apps and open it again.", android.widget.Toast.LENGTH_LONG).show();
+            finish();
+            return;
+        }
+        restarts.addLast(nowMs);
         if (customView != null) {
             root.removeView(customView);
             customView = null;
@@ -430,6 +468,9 @@ public class MainActivity extends Activity {
         gone.destroy();
         createWebView();
         webView.loadUrl(START_URL);
+        // While a player has the screen (the usual reason Android reclaimed the engine) the new page waits, paused, until
+        // the app is back in front, rather than loading everything on top of the player's memory.
+        if (!resumed) webView.onPause();
         if (playerMode) {
             playerMode = false;
             setSystemBarsHidden(false);
@@ -509,6 +550,8 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // While locked only Back works: no key (keyboard, remote, media key) may reach the page under the cover.
+        if (locked) return event.getKeyCode() == KeyEvent.KEYCODE_BACK ? super.dispatchKeyEvent(event) : true;
         // OK on a TV remote is sent in three parts (pressed, held, released) so the page can tell a press from a hold
         // (hold OK on a channel or title: add to Favorites). A plain press acts as before.
         if (customView == null && event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER) {
@@ -537,9 +580,14 @@ public class MainActivity extends Activity {
             return;
         }
         // Let the web app close the player, details pop-up, or go back to Home first.
+        // "true": the page handled it. "false": nothing left to close, leave. "null": the page threw an error, so don't leave on
+        // a half-working page. No answer at all (a page that has hung): leave after a moment, so Back never goes dead.
+        final boolean[] answered = {false};
         webView.evaluateJavascript("window.embyflixBack ? window.embyflixBack() : false", value -> {
-            if (!"true".equals(value)) finish();
+            answered[0] = true;
+            if ("false".equals(value)) finish();
         });
+        webView.postDelayed(() -> { if (!answered[0] && !isFinishing()) finish(); }, 3000);
     }
 
     @Override
@@ -551,6 +599,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        resumed = false;
         // Save the playback position before the WebView stops running the page.
         webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
         webView.onPause();
@@ -559,22 +608,23 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
-        if (!unlocking && !inPlayer) leftAt = System.currentTimeMillis();
+        if (!unlocking) noteLeft();
     }
 
     @Override
     protected void onStart() {
         super.onStart();
         // Away for a while (not just watching something in the player): ask again.
-        if (!locked && !unlocking && !inPlayer && leftAt > 0 && System.currentTimeMillis() - leftAt > LOCK_AFTER_MS) lockNow();
+        if (!locked && !unlocking && !inPlayer && lockDue()) lockNow();
         // Back within the grace period: forget when we left, or an old time would lock the app right after the next
-        // movie (when the player closes, onStart sees that old time).
-        if (!locked && !unlocking && !inPlayer) leftAt = 0;
+        // movie (when the player closes, the result handler checks the time the player recorded).
+        if (!locked && !unlocking && !inPlayer) awayAt = 0;
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        resumed = true;
         webView.onResume();
         // Back from the "install unknown apps" screen: carry on with the update.
         if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) installPendingApk();
@@ -853,6 +903,9 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void playLive(String channelsJson, int index, String group, String userAgent, String reportJson) {
             runOnUiThread(() -> {
+                // A double tap (or a double OK press) must not open a second player: a second stream from the provider
+                // can push a one-connection account over its limit.
+                if (inPlayer) return;
                 LivePlayerActivity.pendingChannels = channelsJson;
                 inPlayer = true;
                 Intent intent = new Intent(MainActivity.this, LivePlayerActivity.class);
@@ -868,6 +921,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void playVod(String specJson) {
             runOnUiThread(() -> {
+                if (inPlayer) return;
                 inPlayer = true;
                 Intent intent = new Intent(MainActivity.this, VodPlayerActivity.class);
                 intent.putExtra(VodPlayerActivity.EXTRA_SPEC, specJson);
@@ -988,6 +1042,11 @@ public class MainActivity extends Activity {
         public void setAppLock(boolean on) {
             if (tv) return;
             appLockOn = on;
+            lockActive = on;
+            runOnUiThread(() -> {
+                if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+                else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            });
             getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("appLock", on).apply();
         }
 

@@ -1,1 +1,1 @@
-- Behind the scenes: the app now reads its settings only from the main copy of the settings file.
+- Fixes from a full check of the phone and TV app: the app lock now also covers the video players, Back can't get stuck, trailers and updates work on older phones, and video and Live TV handle calls and unplugged headphones properly.

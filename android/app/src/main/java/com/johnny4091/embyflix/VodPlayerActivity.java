@@ -177,6 +177,9 @@ public class VodPlayerActivity extends Activity {
                 .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON);
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
+                .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true) // pause for a call, play nicely with other apps
+                .setHandleAudioBecomingNoisy(true) // headphones unplugged or Bluetooth lost: pause, don't blast the speaker
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setSeekBackIncrementMs(SEEK_MS)
                 .setSeekForwardIncrementMs(SEEK_MS)
@@ -218,8 +221,9 @@ public class VodPlayerActivity extends Activity {
             }
 
             @Override
-            public void onIsPlayingChanged(boolean isPlaying) {
-                if (reportedStart && !closing) sendReport("/Sessions/Playing/Progress", isPlaying ? "Unpause" : "Pause");
+            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                // Paused or playing by the viewer (not just buffering, which is not a pause).
+                if (reportedStart && !closing) sendReport("/Sessions/Playing/Progress", playWhenReady ? "Unpause" : "Pause");
             }
 
             @Override
@@ -469,10 +473,13 @@ public class VodPlayerActivity extends Activity {
 
     /** Playback is over (for now): the final position, and let Emby stop converting the video. */
     private void reportStopped() {
-        if (!reportedStart) return;
-        reportedStart = false;
-        handler.removeCallbacks(progress);
-        sendReport("/Sessions/Playing/Stopped", null);
+        if (reportedStart) {
+            reportedStart = false;
+            handler.removeCallbacks(progress);
+            sendReport("/Sessions/Playing/Stopped", null);
+        }
+        // Even if it never got as far as playing, tell Emby to stop converting: it would otherwise keep going (and each
+        // retry would add another).
         if ("Transcode".equals(playMethod)) {
             post("/Videos/ActiveEncodings?DeviceId=" + Uri.encode(report.optString("deviceId"))
                     + "&PlaySessionId=" + Uri.encode(report.optString("playSessionId")), null, "DELETE");
@@ -713,6 +720,8 @@ public class VodPlayerActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        // Away for over a minute with the app lock on: close, and the app asks for the PIN.
+        if (stopped && !closing && MainActivity.lockDue()) { close(false); return; }
         if (stopped && !closing && playerView != null) {
             // Back in the app: carry on from where it was.
             stopped = false;
@@ -723,6 +732,7 @@ public class VodPlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        MainActivity.noteLeft();
         if (closing) return;
         // Home button, screen off: save the position with Emby and let go of the stream.
         if (player != null) resumeMs = Math.max(0, player.getCurrentPosition());
