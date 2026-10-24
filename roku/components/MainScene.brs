@@ -26,7 +26,6 @@ sub init()
     m.playing = invalid
     m.configUrls = [
         "https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/main/aurora-config.json"
-        "https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/ccr-ab072e58-qfaibp/aurora-config.json"
     ]
     m.configTry = 0
     checkForUpdate()
