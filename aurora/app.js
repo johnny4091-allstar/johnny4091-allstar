@@ -518,6 +518,7 @@
     refreshRequestsConfig();
     refreshAppConfig();
     syncFavorites({ force: true });
+    syncPlanCategories();
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
@@ -1474,9 +1475,34 @@
   // Which categories customers see, as chosen in Admin → Live TV: catsShown lists the ones to show (new ones from
   // the provider stay hidden), catsHidden lists the ones to hide (new ones show). Neither: everything shows.
   function catFilter(cfg) {
-    if (Array.isArray(cfg?.catsShown)) { const set = new Set(cfg.catsShown.map(String)); return (id) => set.has(String(id)); }
-    if (Array.isArray(cfg?.catsHidden) && cfg.catsHidden.length) { const set = new Set(cfg.catsHidden.map(String)); return (id) => !set.has(String(id)); }
-    return null;
+    let base = null;
+    if (Array.isArray(cfg?.catsShown)) { const set = new Set(cfg.catsShown.map(String)); base = (id) => set.has(String(id)); }
+    else if (Array.isArray(cfg?.catsHidden) && cfg.catsHidden.length) { const set = new Set(cfg.catsHidden.map(String)); base = (id) => !set.has(String(id)); }
+    // On top of that, a customer's plan may include only some categories (Admin -> Plans). Applies to the account's own app
+    // view; admins always see everything. (It limits what the app lists; the provider's own address still works for anyone
+    // who has it.)
+    const mine = planCategories();
+    if (!mine || cfg !== iptv.config) return base;
+    return (id) => mine.has(String(id)) && (!base || base(id));
+  }
+  const planCatsKey = () => 'ef.planCats.' + state.userId;
+  function planCategories() {
+    try { const v = JSON.parse(store.get(planCatsKey()) || 'null'); return Array.isArray(v) ? new Set(v.map(String)) : null; } catch { return null; }
+  }
+  // Called with what the guard says about this account (null: every category).
+  function applyPlanCategories(list) {
+    const next = Array.isArray(list) ? JSON.stringify(list) : 'null';
+    if (store.get(planCatsKey()) === next) return;
+    store.set(planCatsKey(), next);
+    resetIptvCaches();
+    if (/^#\/(livetv|mylist)/.test(location.hash)) route();
+  }
+  async function syncPlanCategories() {
+    if (!guardEnabled || !state.userId || !state.apiKey) return;
+    try {
+      const a = await guard('/account', { params: { userId: state.userId }, quick: true });
+      applyPlanCategories(a.admin ? null : a.categories);
+    } catch { /* keep what is known */ }
   }
 
   async function iptvSource(cfg = iptv.config) {
@@ -1758,7 +1784,8 @@
   function iptvFavChannels() {
     const cfg = iptv.config;
     if (!cfg) return [];
-    return iptvFavList().map((f, i) => {
+    const ok = catFilter(cfg);
+    return iptvFavList().filter((f) => !ok || f.group === undefined || f.group === '' || ok(f.group)).map((f, i) => {
       if (cfg.type === 'xtream') return f.streamId ? xtChannel(cfg, { stream_id: f.streamId, name: f.name, stream_icon: f.logo, num: f.num || undefined, category_id: f.group, epg_channel_id: f.epgId }) : null;
       return f.url && !f.streamId ? { id: 'f' + i, name: f.name, logo: f.logo, num: f.num, group: f.group, url: f.url, epgId: f.epgId } : null;
     }).filter(Boolean);
@@ -3547,21 +3574,26 @@
         return;
       }
       if (!isCurrent() || !section.isConnected) return;
+      applyPlanCategories(a.admin ? null : a.categories);
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
       const soon = a.daysLeft != null && a.daysLeft <= 7;
       const endText = a.expires ? `${fmtDay(a.expires)}${a.expired ? '' : ` · ${a.daysLeft <= 0 ? 'ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left'}`}` : 'No end date';
       const r = a.request;
       let reqHtml = '';
-      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}. The admin will review it.</p>`;
+      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}${r.wantedPlan ? ` (${esc(r.wantedPlan)})` : ''}. The admin will review it.</p>`;
       else if (r?.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note good">Your extension was approved${r.newExpires ? `: access now runs until ${esc(fmtDay(r.newExpires))}` : ''}.${r.message ? ' ' + esc(r.message) : ''}</p>`;
       else if (r?.status === 'denied' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note bad">Your last request wasn't approved.${r.message ? ' ' + esc(r.message) : ' Please contact the admin.'}</p>`;
+      let offered = [];
+      if (a.canRequest) { try { offered = (await guard('/plans/public', { params: { userId: state.userId }, quick: true })).plans || []; } catch { /* an older guard: no plan choice */ } }
+      if (!isCurrent() || !section.isConnected) return;
       box.innerHTML = `
-        ${settingRow('Plan', 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
+        ${settingRow(a.plan ? 'Plan' : 'Plan', a.plan ? `${a.plan.name}. How many devices can be signed in and in use at the same time.` : 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
         ${settingRow('In use right now', null, `<span class="setting-value">${a.activeDevices} of ${n}</span>`)}
         ${settingRow('Access until', soon && !a.expired ? 'Your access ends soon. You can ask for more time below.' : null, `<span class="setting-value${soon ? ' account-soon' : ''}">${esc(endText)}</span>`)}
         ${reqHtml}
         ${a.canRequest ? `<div class="account-request">
+          ${offered.length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}</select></label>` : ''}
           ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-note maxlength="200" placeholder="Add a note for the admin (optional)" autocomplete="off">'}
           <button class="btn btn-white" data-ext-send>Request an extension</button></div>` : ''}`;
       // While a request waits, look again every 30 s so the answer appears without leaving the page.
@@ -3571,7 +3603,7 @@
         btn.disabled = true;
         btn.textContent = 'Sending…';
         try {
-          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '' } });
+          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: $('[data-ext-plan]', box)?.value || undefined } });
           toast('Request sent to the admin', 3000);
         } catch (err) { toast(err.message || "Couldn't send the request. Try again in a moment.", 5000); }
         draw();
@@ -3859,7 +3891,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3901,7 +3933,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
     // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
     const bar = $('.tab-bar', page), active = $('.tab.active', bar);
@@ -4865,20 +4897,148 @@
   const userStatus = (u, lim) => (isExpired(lim) ? 'expired' : u.Policy?.IsDisabled ? 'disabled' : 'active');
   const statusPill = (st) => `<span class="pill ${st === 'active' ? 'good' : st === 'expired' ? 'bad' : 'warn'}">${st === 'active' ? 'Active' : st === 'expired' ? 'Expired' : 'Disabled'}</span>`;
 
+  // ----- Subscription plans (Admin -> Plans) -----
+  // A plan: a price for a length of time, a number of connections (devices at once) and, optionally, only some of the Live
+  // TV categories. Kept in Aurora Guard. Put on a customer (Admin -> Users, or when approving a request) it sets their device
+  // limit, end date and categories in one go, and adds a line to the subscription history. Aurora records the price; it
+  // doesn't take payments.
+  const money = (n) => '$' + (Number.isInteger(Number(n)) ? Number(n) : Number(n).toFixed(2));
+  const planLength = (p) => `${p.length} ${p.unit}${p.length === 1 ? '' : 's'}`;
+  const planSummary = (p) => `${money(p.price)} · ${planLength(p)} · ${p.connections} ${p.connections === 1 ? 'connection' : 'connections'}`;
+  const planCatsText = (p) => (p.categories ? `${p.categories.length} Live TV ${p.categories.length === 1 ? 'category' : 'categories'}` : 'All Live TV categories');
+  const planOptions = (plans, selected = '') => plans.filter((p) => p.active || p.id === selected)
+    .map((p) => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name)} — ${esc(money(p.price))}${p.active ? '' : ' (hidden)'}</option>`).join('');
+  // The provider's full category list (not narrowed to what customers see).
+  async function allLiveCategories() {
+    const cfg = iptv.config;
+    if (!iptvOn(cfg)) return [];
+    const src = await iptvSource({ ...cfg, catsShown: undefined, catsHidden: undefined, v: 'plans-' + (cfg.v || 0) });
+    return src.categories.map((c) => ({ id: String(c.id), name: c.name, count: c.count }));
+  }
+
+  async function adminPlans(body, isCurrent) {
+    if (!guardEnabled) { body.innerHTML = '<section class="admin-card"><h2>Plans</h2><p class="muted">Plans need Aurora Guard (it is switched off). See server/README.md.</p></section>'; return; }
+    let data;
+    try { data = await guard('/plans'); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Plans</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.5.0 to use plans (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const t = data.totals || { thisMonth: { count: 0, revenue: 0 }, lastMonth: { count: 0, revenue: 0 } };
+    const row = (p) => `<div class="admin-row" data-plan="${esc(p.id)}"><div class="admin-row-main">
+        <strong>${esc(p.name)}</strong>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}
+        <div class="muted">${esc(planSummary(p))} · ${esc(planCatsText(p))}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit>Edit</button><button class="btn btn-gray" data-del>Delete</button></div></div>`;
+    const sub = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.name)}</strong> · ${esc(e.planName)} <span class="pill">${esc(money(e.price))}</span>
+        <div class="muted">Until ${esc(fmtDay(e.expires))} · ${e.mode === 'today' ? 'started that day' : 'added to the time left'}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(e.at))}</div></div>`;
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('This month', money(t.thisMonth.revenue), `${t.thisMonth.count} ${t.thisMonth.count === 1 ? 'subscription' : 'subscriptions'}`)}
+        ${statTile('Last month', money(t.lastMonth.revenue), `${t.lastMonth.count} ${t.lastMonth.count === 1 ? 'subscription' : 'subscriptions'}`)}
+        ${statTile('Plans', data.plans.length, `${data.plans.filter((p) => p.active).length} on offer`)}
+      </div>
+      <section class="admin-card">
+        <h2>Plans <small>Put them on customers in Admin → Users</small></h2>
+        <div class="admin-list" data-plans>${data.plans.map(row).join('') || '<p class="muted">No plans yet. Add one below.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add>Add a plan</button></div>
+        <div class="plan-form hidden" data-form></div>
+      </section>
+      <section class="admin-card">
+        <h2>Subscription history <small>Newest first</small></h2>
+        <div class="admin-list">${data.subscriptions.map(sub).join('') || '<p class="muted">Nothing yet. A line is added each time you put a plan on a customer.</p>'}</div>
+      </section>`;
+    const form = $('[data-form]', body);
+    let cats = null;
+    const openForm = (p) => {
+      const edit = !!p;
+      p = p || { name: '', price: '', length: 1, unit: 'month', connections: 2, categories: null, active: true };
+      form.classList.remove('hidden');
+      form.innerHTML = `
+        <h3 class="admin-sub">${edit ? 'Edit plan' : 'New plan'}</h3>
+        <label class="admin-field"><span>Name</span><input type="text" data-p="name" maxlength="60" value="${esc(p.name)}" placeholder="1 Month · 2 Connections"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Price ($)</span><input type="number" data-p="price" min="0" step="0.01" inputmode="decimal" value="${esc(p.price)}"></label>
+          <label class="admin-field"><span>Length</span><input type="number" data-p="length" min="1" step="1" inputmode="numeric" value="${esc(p.length)}"></label>
+          <label class="admin-field"><span>&nbsp;</span><select data-p="unit"><option value="month"${p.unit === 'month' ? ' selected' : ''}>month(s)</option><option value="day"${p.unit === 'day' ? ' selected' : ''}>day(s)</option></select></label>
+          <label class="admin-field"><span>Connections</span><input type="number" data-p="connections" min="1" max="50" step="1" inputmode="numeric" value="${esc(p.connections)}"></label>
+        </div>
+        <label class="admin-check"><input type="checkbox" data-p="active"${p.active ? ' checked' : ''}> On offer (customers can ask for it, and it shows when you pick a plan)</label>
+        <div class="cat-pick-wrap">
+          <div class="cat-pick-head"><div><strong>Live TV categories</strong><div class="muted" data-cat-summary></div></div>
+            <div><label class="admin-check"><input type="radio" name="plancats" data-p="catsAll"${p.categories ? '' : ' checked'}> All categories</label>
+              <label class="admin-check"><input type="radio" name="plancats" data-p="catsSome"${p.categories ? ' checked' : ''}> Only the ones I choose</label></div></div>
+          <div class="cat-pick hidden" data-cat-box>
+            <div class="cat-pick-tools"><input type="search" data-cat-filter placeholder="Find a category" autocomplete="off">
+              <button class="btn btn-gray" data-cat-all>All</button><button class="btn btn-gray" data-cat-none>None</button></div>
+            <div class="cat-list" data-cat-list></div></div>
+        </div>
+        <div class="m-actions"><button class="btn btn-red" data-save>${edit ? 'Save changes' : 'Add plan'}</button><button class="btn btn-gray" data-cancel>Cancel</button></div>
+        <div class="live-result" data-result></div>`;
+      const chosen = new Set((p.categories || []).map(String));
+      const summary = $('[data-cat-summary]', form), box = $('[data-cat-box]', form), list = $('[data-cat-list]', form);
+      const say = (html, cls = '') => { const r = $('[data-result]', form); r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; };
+      const showSummary = () => { summary.textContent = $('[data-p="catsAll"]', form).checked ? 'Every category your Live TV source has' : `${chosen.size} chosen`; };
+      const paint = () => {
+        const q = $('[data-cat-filter]', form).value.trim().toLowerCase();
+        list.innerHTML = (cats || []).filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => `<label class="cat-row"><input type="checkbox" data-id="${esc(c.id)}"${chosen.has(c.id) ? ' checked' : ''}><span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</label>`).join('') || '<p class="muted">No categories match.</p>';
+        $$('input[data-id]', list).forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) chosen.add(cb.dataset.id); else chosen.delete(cb.dataset.id); showSummary(); }));
+      };
+      const loadCats = async () => {
+        box.classList.remove('hidden');
+        if (cats) return paint();
+        if (!iptvOn()) { list.innerHTML = '<p class="muted">Categories come from an M3U playlist or Xtream account (Admin → Live TV). Emby\'s own Live TV has none to choose.</p>'; return; }
+        list.innerHTML = '<div class="spinner"></div>';
+        try { cats = await allLiveCategories(); paint(); } catch (e) { list.innerHTML = `<p class="muted">Couldn't load the categories: ${esc(e.message)}</p>`; }
+      };
+      const mode = () => { const some = $('[data-p="catsSome"]', form).checked; box.classList.toggle('hidden', !some); if (some) loadCats(); showSummary(); };
+      $('[data-p="catsAll"]', form).addEventListener('change', mode);
+      $('[data-p="catsSome"]', form).addEventListener('change', mode);
+      $('[data-cat-filter]', form).addEventListener('input', () => cats && paint());
+      $('[data-cat-all]', form).addEventListener('click', () => { (cats || []).forEach((c) => chosen.add(c.id)); paint(); showSummary(); });
+      $('[data-cat-none]', form).addEventListener('click', () => { chosen.clear(); paint(); showSummary(); });
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      mode();
+      $('[data-save]', form).addEventListener('click', async () => {
+        const v = (n) => $(`[data-p="${n}"]`, form).value;
+        const payload = { name: v('name').trim(), price: Number(v('price')), length: Number(v('length')), unit: v('unit'), connections: Number(v('connections')),
+          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null };
+        if (v('price') === '' || Number.isNaN(payload.price)) return say('Enter the price.', 'bad');
+        say('<div class="spinner"></div>');
+        try {
+          await guard(edit ? `/plans/${encodeURIComponent(p.id)}` : '/plans', { method: edit ? 'PUT' : 'POST', body: payload });
+          toast(edit ? 'Plan saved' : 'Plan added', 2000);
+          if (isCurrent()) adminPlans(body, isCurrent);
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl($('[data-p="name"]', form)); else $('[data-p="name"]', form).scrollIntoView({ block: 'center' });
+    };
+    $('[data-add]', body).addEventListener('click', () => openForm(null));
+    $$('[data-plan]', body).forEach((el) => {
+      const p = data.plans.find((x) => x.id === el.dataset.plan);
+      $('[data-edit]', el).addEventListener('click', () => openForm(p));
+      $('[data-del]', el).addEventListener('click', async () => {
+        if (!(await confirmAction(`Delete "${p.name}"?`, 'Customers who already have it keep what they were given (their connections, end date and categories). It just disappears from the list.', 'Delete plan'))) return;
+        try { await guard(`/plans/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast('Plan deleted', 2000); if (isCurrent()) adminPlans(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
   // ----- Extension requests (Admin -> Users) -----
   const EXT_DAYS = [[7, '7 days'], [14, '14 days'], [30, '30 days'], [60, '60 days'], [90, '90 days'], [180, '6 months'], [365, '1 year']];
-  function extensionsCardHtml(ext) {
+  function extensionsCardHtml(ext, plans) {
     if (!ext || (!ext.pending?.length && !ext.decided?.length)) return '';
     const row = (x) => `<div class="admin-row ext-row" data-ext="${esc(x.id)}"><div class="admin-row-main">
         <strong>${esc(x.name)}</strong> <span class="pill warn">Asked for more time</span>
         <div class="muted">${x.currentExpires ? `Ends ${esc(fmtDay(x.currentExpires))}${isExpired({ expires: x.currentExpires }) ? ' (expired)' : ''}` : 'No end date set'} · asked ${esc(timeAgo(x.at))}</div>
+        ${x.wantedPlanName ? `<div class="ext-note">Wants: ${esc(x.wantedPlanName)}</div>` : ''}
         ${x.note ? `<div class="ext-note">"${esc(x.note)}"</div>` : ''}
         <div class="ext-actions">
-          <select data-ext-days aria-label="Extend by">${EXT_DAYS.map(([d, l]) => `<option value="${d}"${d === 30 ? ' selected' : ''}>${l}</option>`).join('')}</select>
+          <select data-ext-days aria-label="Extend by">${(plans || []).length ? `<optgroup label="Renew with a plan">${planOptions(plans, x.wantedPlanId || '').replace(/value="([^"]+)"/g, 'value="plan:$1"')}</optgroup><optgroup label="Or just add time">` : ''}${EXT_DAYS.map(([d, l]) => `<option value="${d}"${d === 30 && !x.wantedPlanId ? ' selected' : ''}>${l}</option>`).join('')}${(plans || []).length ? '</optgroup>' : ''}</select>
           <button class="btn btn-white" data-ext-approve>Approve</button>
           <button class="btn btn-gray" data-ext-deny>Deny</button>
         </div></div></div>`;
-    const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.days} days, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
+    const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.planName ? esc(x.planName) : x.days + ' days'}, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
         <div class="admin-row-time">${esc(timeAgo(x.decidedAt))}</div></div>`;
     return `<section class="admin-card ext-card">
       <h2>Extension requests <small>${ext.pending.length ? `${ext.pending.length} waiting` : 'None waiting'}</small></h2>
@@ -4892,8 +5052,8 @@
       const decide = async (action, btn) => {
         $$('button', rowEl).forEach((b) => { b.disabled = true; });
         try {
-          const days = Number($('[data-ext-days]', rowEl).value);
-          const r = await guard(`/extensions/${encodeURIComponent(id)}`, { method: 'PUT', body: { action, days } });
+          const pick = $('[data-ext-days]', rowEl).value;
+          const r = await guard(`/extensions/${encodeURIComponent(id)}`, { method: 'PUT', body: pick.startsWith('plan:') ? { action, planId: pick.slice(5) } : { action, days: Number(pick) } });
           toast(action === 'approve' ? `Approved: now ends ${fmtDay(r.request.newExpires)}` : 'Denied', 3000);
         } catch (e) { toast(e.status === 404 ? 'Update Aurora Guard to 1.4.0 first.' : e.message, 5000); }
         if (isCurrent()) adminUsers(body, isCurrent);
@@ -4915,6 +5075,7 @@
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
     if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { guardError = e; } }
     const ext = g ? await guard('/extensions').catch(() => null) : null;
+    const planList = g ? (await guard('/plans').catch(() => null))?.plans || [] : [];
     if (!isCurrent()) return;
     // Once only (the guard remembers): any account can write its own display preferences, so values found
     // there later must not be trusted.
@@ -4963,7 +5124,7 @@
     let filter = store.get('ef.usersFilter') || 'all', query = '';
     if (!filters.includes(filter)) filter = 'all';
     body.innerHTML = `
-      ${extensionsCardHtml(ext)}
+      ${extensionsCardHtml(ext, planList)}
       <section class="admin-card">
         <div class="users-head">
           <h2>Users <small>${rows.length}</small></h2>
@@ -4998,7 +5159,7 @@
       list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
         <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
           <div class="muted"><span data-live="${esc(r.u.Id)}">${liveHtml(r)}</span>
-            ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}` : ''}</div></div>
+            ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}${r.lim?.plan ? ` · ${esc(r.lim.plan.name)}` : ''}` : ''}</div></div>
         <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
     };
     draw();
@@ -5031,7 +5192,7 @@
   }
 
   // Device limit choices: 1-10.
-  const limitOptions = (cur) => Array.from({ length: 10 }, (_, i) => i + 1)
+  const limitOptions = (cur) => Array.from({ length: Math.max(10, cur || 0) }, (_, i) => i + 1)
     .map((n) => `<option value="${n}"${n === cur ? ' selected' : ''}>${n} ${n === 1 ? 'device' : 'devices'}</option>`).join('');
   const expiryFields = (expires) => `
     <label class="admin-field"><span>Expiration date</span>
@@ -5072,7 +5233,8 @@
       user = await api(`/Users/${userId}`);
       devices = await activeDevices(userId).catch(() => []);
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))} <a href="#/admin?tab=users">Back to users</a></p>`; return; }
-    if (guardEnabled) { try { g = await guard('/limits'); lim = g.users?.[userId] || null; } catch (e) { guardError = e; } }
+    let planData = null;
+    if (guardEnabled) { try { g = await guard('/limits'); lim = g.users?.[userId] || null; planData = await guard('/plans').catch(() => null); } catch (e) { guardError = e; } }
     if (!isCurrent()) return;
     const self = userId === state.userId, exempt = exemptFromLimits(user);
     const st = userStatus(user, lim);
@@ -5088,6 +5250,17 @@
         <p class="muted">Saved in Aurora Guard and applied straight away: an account past its date is switched off in Emby, and extending the date switches it back on.</p>
         <div class="live-result" data-limits-result></div>`}
       </section>
+      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
+        <h2>Subscription ${lim?.plan ? '<span class="pill good">' + esc(lim.plan.name) + '</span>' : ''}</h2>
+        <p class="muted">${lim?.plan ? `${esc(money(lim.plan.price))} · ${esc(planLength(lim.plan))} · ${lim.plan.connections} ${lim.plan.connections === 1 ? 'connection' : 'connections'} · ${lim.plan.categories ? lim.plan.categories.length + ' Live TV categories' : 'all Live TV categories'}${lim.expires ? ` · ${isExpired(lim) ? 'ended' : 'ends'} ${esc(fmtDay(lim.expires))}` : ''}` : 'No plan: the device limit and end date above were set by hand.'}</p>
+        ${planData?.plans?.length ? `
+        <label class="admin-field"><span>Plan</span><select data-plan-pick>${planOptions(planData.plans, lim?.plan?.id || '')}</select></label>
+        <label class="admin-field"><span>Start</span><select data-plan-mode><option value="extend">Add it after the time they have left</option><option value="today">Start from today</option></select></label>
+        <label class="admin-field"><span>Price paid (leave empty for the plan's price)</span><input type="number" data-plan-price min="0" step="0.01" inputmode="decimal"></label>
+        <div class="m-actions"><button class="btn btn-red" data-apply-plan>Apply plan</button></div>
+        <p class="muted">Sets their device limit, end date and Live TV categories, switches the account back on if it had expired, and adds a line to the subscription history.</p>
+        <div class="live-result" data-plan-result></div>` : '<p class="muted">No plans to choose from yet. Add them in Admin → Plans.</p>'}
+      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -5126,6 +5299,19 @@
         say('[data-limits-result]', 'Saved.' + note, 'good');
         setTimeout(reload, 1200);
       } catch (e) { say('[data-limits-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+
+    $('[data-apply-plan]', body)?.addEventListener('click', async () => {
+      const plan = planData.plans.find((x) => x.id === $('[data-plan-pick]', body).value);
+      if (!plan) return;
+      const mode = $('[data-plan-mode]', body).value, price = $('[data-plan-price]', body).value;
+      if (!(await confirmAction(`Put "${plan.name}" on ${user.Name}?`, `${planSummary(plan)}. ${mode === 'extend' ? 'Added after the time they have left.' : 'Starts from today.'}${price !== '' ? ' Price paid: ' + money(price) + '.' : ''}`, 'Apply plan'))) return;
+      say('[data-plan-result]', '<div class="spinner"></div>');
+      try {
+        const r = await guard(`/limits/${userId}/plan`, { method: 'POST', body: { planId: plan.id, mode, price: price === '' ? undefined : Number(price) } });
+        say('[data-plan-result]', `Done: ${esc(plan.name)} until ${esc(fmtDay(r.record.expires))}.${r.applied ? '' : ' It will be applied at the next guard check.'}`, 'good');
+        setTimeout(reload, 1200);
+      } catch (e) { say('[data-plan-result]', "Couldn't apply it: " + esc(e.message), 'bad'); }
     });
 
     $$('[data-signout]', body).forEach((b) => b.addEventListener('click', async () => {
@@ -5180,12 +5366,21 @@
         <h2>Add user</h2>
         <label class="admin-field"><span>Name (used to sign in)</span><input type="text" data-f="name" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
         ${passwordFields()}
-        ${guardEnabled ? `<label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
-        ${expiryFields(null)}` : ''}
+        ${guardEnabled ? `<label class="admin-field"><span>Plan (sets the device limit, end date and Live TV categories)</span><select data-f="plan"><option value="">No plan: set the limit and date by hand below</option></select></label>
+        <div data-by-hand><label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(null)}</div>` : ''}
         <div class="m-actions"><button class="btn btn-red" data-create>Create user</button></div>
         <div class="live-result" data-result></div>
       </section>`;
     const getExpiry = guardEnabled ? wireExpiry(body) : null;
+    let plans = [];
+    if (guardEnabled) {
+      try {
+        plans = (await guard('/plans')).plans.filter((p) => p.active);
+        $('[data-f="plan"]', body).insertAdjacentHTML('beforeend', plans.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(money(p.price))}</option>`).join(''));
+        $('[data-f="plan"]', body).addEventListener('change', (e) => $('[data-by-hand]', body).classList.toggle('hidden', !!e.target.value));
+      } catch { /* an older guard has no plans */ }
+    }
     const result = $('[data-result]', body);
     const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
     $('[data-create]', body).addEventListener('click', async () => {
@@ -5202,7 +5397,12 @@
       const problems = [];
       try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
       if (guardEnabled) {
-        try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+        const planId = $('[data-f="plan"]', body).value;
+        if (planId) {
+          try { await guard(`/limits/${user.Id}/plan`, { method: 'POST', body: { planId, mode: 'today' } }); } catch (e) { problems.push(`the plan (Aurora Guard: ${e.message})`); }
+        } else {
+          try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+        }
       }
       // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
       try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }

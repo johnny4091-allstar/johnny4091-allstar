@@ -1,1 +1,1 @@
-- Fixes from a full check of the phone and TV app: the app lock now also covers the video players, Back can't get stuck, trailers and updates work on older phones, and video and Live TV handle calls and unplugged headphones properly.
+- New: subscription plans. Your plan (connections, end date, Live TV categories) shows in Settings → My account, and you can ask for a renewal on a plan you choose.

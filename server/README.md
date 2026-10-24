@@ -78,6 +78,9 @@ Administrator accounts are never limited or disabled.
 | `GET /reports`, `DELETE /reports` | Emby administrators | The reported channels. |
 | `GET /status` | Anyone | Two plain-text lines: `Guard: online` and `Aurora: online/offline`. |
 | `GET /status/users` | Emby administrators | Live device counts per account (see above). |
+| `GET /plans`, `POST /plans`, `PUT /plans/{id}`, `DELETE /plans/{id}` | Emby administrators | The subscription plans, with this month's and last month's totals and the history. |
+| `POST /limits/{userId}/plan` | Emby administrators | Puts a plan on an account: `{planId, mode: "extend" or "today", price?}`. |
+| `GET /plans/public?userId=` | The signed-in user | The plans on offer (name, price, length, connections), for the renewal request. |
 | `GET /account?userId=` | The signed-in user, about themselves | Their plan: devices allowed and in use, the date access ends, and the state of an extension request. |
 | `POST /extension` | The signed-in customer | Asks for an extension (one waiting at a time, 4 a month). Sends an alert. |
 | `GET /extensions`, `PUT /extensions/{id}` | Emby administrators | The requests; `{action: "approve", days}` or `{action: "deny", message}`. |
@@ -85,6 +88,23 @@ Administrator accounts are never limited or disabled.
 | `GET /limits`, `GET /actions` | Emby administrators | Reads the store and the recent actions. |
 | `PUT /limits/{userId}` | Emby administrators | Sets `{limit, expires: "YYYY-MM-DD" or null}` and applies it at once. |
 | `DELETE /limits/{userId}`, `PUT /limits/{userId}/manual`, `PUT /migrated` | Emby administrators | Housekeeping. |
+
+## Subscription plans (guard 1.5.0)
+
+Admin → **Plans** holds the plans you sell. Each has a name, a price, a length (months or days), a number of **connections**
+(devices in use at once) and either all Live TV categories or only the ones you tick. Two starters are added the first time
+the guard 1.5.0 runs: **1 Month · 2 Connections ($35)** and **2 Months · 4 Connections ($55)**; add the rest yourself.
+
+Put a plan on a customer in Admin → Users → the customer → **Subscription**, when you create the user, or by approving their
+renewal request. One step sets their device limit, their end date (added after the time they have left, or from today, as you
+choose), their Live TV categories, and switches the account back on if it had expired. You can charge a different price for
+one person (say a discount); the price paid is what goes in the history. Admin → Plans shows what came in this month and last,
+and each subscription. Aurora **records** prices; it doesn't take payments.
+
+A customer's plan is a copy: changing or deleting a plan later doesn't change what someone already has. Changing a limit or date
+by hand keeps their plan and categories. On the customer's side, Settings → My account shows the plan, and the renewal request
+lets them say which plan they want (shown to you, with the price). The categories a plan includes limit what the customer's app
+lists; they don't hide the provider's own address from someone who has it.
 
 ## Plan details and extension requests (guard 1.4.0)
 
@@ -142,7 +162,7 @@ is recent), otherwise `offline`. For a few seconds after the guard starts it say
 load at all, the guard itself isn't running or can't be reached (for example a certificate problem).
 
 **Which version is running?** `https://your-address:8922/health`, the first line of `node aurora-guard.js --check`, and
-the "Aurora Guard 1.4.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
+the "Aurora Guard 1.5.0 listening…" line in `guard.log` all show it. All of this is backward compatible: a `config.json` with
 none of the new settings works exactly as before.
 
 ## Channel reports and the TV provider's API (guard 1.1.0)

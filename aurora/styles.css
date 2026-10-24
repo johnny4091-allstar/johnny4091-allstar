@@ -1022,3 +1022,10 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .fav-section { margin-bottom: 1.5rem; }
 .fav-sub { font-size: 1.15rem; margin: 1rem 0 .8rem; }
 .fav-sub.hidden, .fav-section.hidden { display: none; }
+
+/* Plans */
+.plan-actions { display: flex; gap: .5rem; flex: none; align-items: center; }
+.plan-form { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,.08); }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .8rem; }
+.account-plan-pick { display: flex; flex-direction: column; gap: .3rem; flex: 1 1 14rem; }
+.account-plan-pick select { padding: .7rem .9rem; border-radius: 8px; background: var(--bg-3); color: #fff; border: 1px solid rgba(255,255,255,.15); font: inherit; }
