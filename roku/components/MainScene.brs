@@ -430,6 +430,7 @@ function makeNode(it as object) as object
 end function
 
 sub onRowSelected()
+    if m.tourOn = true then return ' the tour moves the list focus to measure tiles; OK must not open them
     sel = m.rowList.rowItemSelected
     row = m.rowList.content.getChild(sel[0])
     node = row.getChild(sel[1])
