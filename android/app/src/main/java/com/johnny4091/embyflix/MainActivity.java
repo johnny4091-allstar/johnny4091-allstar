@@ -155,6 +155,9 @@ public class MainActivity extends Activity {
      * can't dodge it), and whether the lock is on. A player the viewer comes back to after a minute away closes itself
      * and the app lock asks for the PIN; before this, the players sat outside the lock.
      */
+    /** How many player screens exist right now (they add and remove themselves). */
+    static volatile int playersAlive;
+    private long playerLaunchedAt;
     static volatile boolean lockActive;
     static volatile long awayAt;
     static void noteLeft() { awayAt = SystemClock.elapsedRealtime(); }
@@ -224,6 +227,22 @@ public class MainActivity extends Activity {
         awayAt = 0;
         if (webView != null) webView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
         if (lockView != null && lockView.getParent() != null) root.removeView(lockView);
+    }
+
+    /** Is a player really open? A flag left set by mistake (no player screen exists any more) is cleared, so playing never goes dead. */
+    private boolean playerBusy() {
+        if (!inPlayer) return false;
+        if (playersAlive <= 0 && SystemClock.elapsedRealtime() - playerLaunchedAt > 4000) {
+            inPlayer = false;
+            pageLog("A stuck 'player is open' flag was cleared");
+            return false;
+        }
+        return true;
+    }
+
+    /** A line for the app log (Settings → Show app log), so what the native side did can be read afterwards. */
+    private void pageLog(String message) {
+        if (webView != null) webView.evaluateJavascript("window.auroraNativeLog && window.auroraNativeLog(" + JSONObject.quote(message) + ")", null);
     }
 
     /** Tells the page which channel was last watched when the native live player closes. */
@@ -905,9 +924,10 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 // A double tap (or a double OK press) must not open a second player: a second stream from the provider
                 // can push a one-connection account over its limit.
-                if (inPlayer) return;
+                if (playerBusy()) { pageLog("Live player request ignored: a player is already open"); return; }
                 LivePlayerActivity.pendingChannels = channelsJson;
                 inPlayer = true;
+                playerLaunchedAt = SystemClock.elapsedRealtime();
                 Intent intent = new Intent(MainActivity.this, LivePlayerActivity.class);
                 intent.putExtra(LivePlayerActivity.EXTRA_INDEX, index);
                 intent.putExtra(LivePlayerActivity.EXTRA_GROUP, group);
@@ -921,11 +941,17 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void playVod(String specJson) {
             runOnUiThread(() -> {
-                if (inPlayer) return;
+                if (playerBusy()) { pageLog("Player request ignored: a player is already open"); return; }
                 inPlayer = true;
+                playerLaunchedAt = SystemClock.elapsedRealtime();
                 Intent intent = new Intent(MainActivity.this, VodPlayerActivity.class);
                 intent.putExtra(VodPlayerActivity.EXTRA_SPEC, specJson);
-                startActivityForResult(intent, REQUEST_VOD);
+                try {
+                    startActivityForResult(intent, REQUEST_VOD);
+                } catch (RuntimeException e) {
+                    inPlayer = false;
+                    pageLog("The player screen could not be opened: " + e);
+                }
             });
         }
 

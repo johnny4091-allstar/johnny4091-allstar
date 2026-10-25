@@ -106,6 +106,7 @@ public class VodPlayerActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MainActivity.playersAlive++;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
         try {
@@ -766,6 +767,7 @@ public class VodPlayerActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        MainActivity.playersAlive--;
         handler.removeCallbacksAndMessages(null);
         if (!closing) reportStopped();
         releasePlayer();

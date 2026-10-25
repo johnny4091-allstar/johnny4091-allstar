@@ -6423,8 +6423,13 @@
     }
   }
 
+  // Lines the Android side writes to the app log (a request it ignored, a screen it couldn't open).
+  window.auroraNativeLog = (m) => appLog.add('info', String(m).slice(0, 300));
+
   window.auroraVodClosed = async (r) => {
     store.del('ef.liveReturn');
+    appLog.add('info', 'Aurora player closed: ' + (!r ? 'no answer from the player screen (it closed or crashed at once)'
+      : r.error ? `${r.error} (${r.ready ? 'played, then stopped' : 'never started'})` : r.ready ? `played ${Math.round((r.watchedMs || 0) / 1000)} s` : 'never started'));
     const s = vodSession;
     vodSession = null;
     r = r || {};

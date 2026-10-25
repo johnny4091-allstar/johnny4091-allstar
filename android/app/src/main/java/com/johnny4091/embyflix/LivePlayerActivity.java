@@ -131,6 +131,7 @@ public class LivePlayerActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MainActivity.playersAlive++;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
 
@@ -885,6 +886,7 @@ public class LivePlayerActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        MainActivity.playersAlive--;
         handler.removeCallbacksAndMessages(null);
         logoLoader.shutdownNow();
         if (reporter != null) reporter.close();

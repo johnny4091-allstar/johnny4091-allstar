@@ -1,1 +1,1 @@
-- Video that is slow to start now says what it is waiting for (and for how long) instead of a bare spinner, and gives up sooner on a server that doesn't answer.
+- If a video doesn't open, the app log (Settings → Show app log) now says what the player screen did, and a stuck 'player is open' state can no longer block playing.
