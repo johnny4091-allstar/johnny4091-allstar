@@ -1,1 +1,1 @@
-- New: subscription plans. Your plan (connections, end date, Live TV categories) shows in Settings → My account, and you can ask for a renewal on a plan you choose.
+- Video that is slow to start now says what it is waiting for (and for how long) instead of a bare spinner, and gives up sooner on a server that doesn't answer.

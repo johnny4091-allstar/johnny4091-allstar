@@ -6133,6 +6133,12 @@
     nativeApp?.setPlayerMode(true);
     status.innerHTML = '<div class="spinner"></div>';
     status.classList.remove('hidden');
+    // A bare spinner for a long time looks like a hang: after a while say what it is waiting for.
+    clearTimeout(player.slowTimer);
+    player.slowTimer = setTimeout(() => {
+      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.spinner')) return;
+      status.innerHTML = '<div class="spinner"></div><p>Still waiting for the server…<br><small>If this keeps going, check your connection, or tell the admin.</small></p>';
+    }, 10000);
     $('#player-next').classList.add('hidden');
     $('#skip-intro').classList.add('hidden');
     hideUpNext();
@@ -6357,7 +6363,10 @@
   // The page picks what to play; the native screen plays it, keeps Emby up to date, and reports back here.
   let vodSession = null;
   async function playNative(full, source, url, isHls, forceTranscode, stale) {
-    const next = full.Type === 'Episode' ? await nextEpisodeOf(full).catch(() => null) : null;
+    // The next episode (for the Next button and auto-play) is worth a moment, not a wait: a slow server must not hold the film up.
+    const next = full.Type === 'Episode'
+      ? await Promise.race([nextEpisodeOf(full).catch(() => null), new Promise((r) => setTimeout(() => r(null), 2500))])
+      : null;
     if (stale()) return;
     const subs = (source.MediaStreams || [])
       .filter((s) => s.Type === 'Subtitle' && s.DeliveryMethod === 'External' && s.DeliveryUrl)
