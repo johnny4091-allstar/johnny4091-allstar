@@ -1,1 +1,1 @@
-- If a video doesn't open, the app log (Settings → Show app log) now says what the player screen did, and a stuck 'player is open' state can no longer block playing.
+- TV shows now play exactly as they are stored, with no converting by the server (turn it off in Settings → Play shows as they are if a show buffers on a slow connection).

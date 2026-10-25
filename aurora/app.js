@@ -3500,7 +3500,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3645,6 +3645,7 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${nativeApp?.playVod ? settingRow('Play shows as they are', 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], getPref('showsAsIs'))) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
       <section class="settings-section feedback-section">
@@ -6176,8 +6177,13 @@
           : esc(full.Name);
 
       const native = useNativePlayer() && !isLive;
+      // TV shows play as they are (Aurora's own player, quality on Auto): no speed test and no limit, so Emby sends the file
+      // itself instead of converting it. Converting is the slow, failure-prone part (it needs the server's ffmpeg to start in
+      // time). A quality the viewer picked by hand, and an admin's limit, still apply. Setting: Settings -> Play shows as they are.
+      const asIs = native && full.Type === 'Episode' && getPref('showsAsIs') === 'on' && autoQuality();
+      player.asIs = asIs;
       // noCap: Emby's conversion failed at the measured limit, so this time let the file play as it is (an admin's limit still holds).
-      const bitrate = noCap ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
+      const bitrate = noCap || asIs ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
       if (stale()) return;
       player.bitrate = bitrate;
       const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: bitrate };
@@ -6397,7 +6403,7 @@
       // If Emby's conversion never starts, hand back at once (no "press OK" screen) so Aurora can try playing the file as it is.
       canFallback: player.playMethod === 'Transcode' && !player.noCap && !forceTranscode && autoQuality() && (player.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate),
     };
-    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap };
+    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap, asIs: !!player.asIs };
     // The native screen reports to Emby from here on.
     player.item = null;
     player.playSessionId = null;
@@ -6414,7 +6420,11 @@
     if (rough) playLog.add({ kind: 'stalling', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, stalls, stalledSec: Math.round(stalledMs / 1000), pct, watchedMin: Math.round(watched / 60000), bitrate: s.bitrate || 0 });
     appLog.add(rough ? 'warn' : 'info',
       `Watched ${s.item.Name} (${s.playMethod}${s.bitrate ? ', limit ' + (s.bitrate / 1e6).toFixed(0) + ' Mbps' : ''}): ${Math.round(watched / 60000)} min, ${stalls} ${stalls === 1 ? 'stall' : 'stalls'}, ${Math.round(stalledMs / 1000)} s buffering (${pct}%)`);
-    if (rough && autoQuality() && s.bitrate) {
+    if (rough && s.asIs && !store.get('ef.showsBufferTip')) {
+      // Shows play untouched, so a slow connection shows up as buffering. Say how to let Aurora lower the quality instead.
+      store.set('ef.showsBufferTip', '1');
+      toast('That show kept stopping to buffer. If it keeps happening, turn off "Play shows as they are" in Settings.', 9000);
+    } else if (rough && !s.asIs && autoQuality() && s.bitrate) {
       measuredBitrate = { bps: Math.max(700000, Math.round(s.bitrate * 0.6)), t: Date.now() };
       if (!store.get('ef.vodBufferTip')) {
         store.set('ef.vodBufferTip', '1');
