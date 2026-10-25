@@ -1,1 +1,1 @@
-- TV shows now play exactly as they are stored, with no converting by the server (turn it off in Settings → Play shows as they are if a show buffers on a slow connection).
+- If your server can't start converting a video, Aurora now remembers and plays videos as they are for a while. The admin can also choose to play movies as they are, in Admin → Playback.

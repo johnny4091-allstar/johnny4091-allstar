@@ -3645,7 +3645,7 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
-        ${nativeApp?.playVod ? settingRow('Play shows as they are', 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], getPref('showsAsIs'))) : ''}
+        ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
       <section class="settings-section feedback-section">
@@ -5602,6 +5602,8 @@
           [[0, 'Normal'], [10, '10 seconds'], [15, '15 seconds'], [20, '20 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '60 seconds']], Number(cfg.stallSeconds) || 0)}
         ${sel('appLock', 'Lock Aurora with the phone\'s PIN or fingerprint', "Phones only (never on TVs). With 'Required', Aurora asks for the phone's screen lock when it opens and after a minute away. Phones with no screen lock set are not affected.",
           [['', "Customer's choice"], ['on', 'Required']], cfg.appLock)}
+        ${sel('asIs', 'Play as they are', "Converting needs your server's ffmpeg to start in time; when it can't, a video never starts. 'Shows and movies' sends every file untouched (no converting, no limit; a customer on a slow line may buffer). 'Each device decides' plays shows as they are, and any device whose conversions fail twice stops asking for them for 6 hours. 'Let Aurora convert' is the old behaviour.",
+          [['', 'Each device decides (shows as they are)'], ['all', 'Shows and movies as they are'], ['off', 'Let Aurora convert when it helps']], cfg.asIs || '')}
         ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
           [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
         <div class="m-actions">
@@ -5624,7 +5626,7 @@
     };
     const pick = (id) => $(`[data-pb="${id}"]`, body).value;
     $('[data-save]', body).addEventListener('click', () => {
-      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), t: Date.now() };
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), t: Date.now() };
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
@@ -6180,7 +6182,7 @@
       // TV shows play as they are (Aurora's own player, quality on Auto): no speed test and no limit, so Emby sends the file
       // itself instead of converting it. Converting is the slow, failure-prone part (it needs the server's ffmpeg to start in
       // time). A quality the viewer picked by hand, and an admin's limit, still apply. Setting: Settings -> Play shows as they are.
-      const asIs = native && full.Type === 'Episode' && getPref('showsAsIs') === 'on' && autoQuality();
+      const asIs = native && !forceTranscode && autoQuality() && playAsIs(full);
       player.asIs = asIs;
       // noCap: Emby's conversion failed at the measured limit, so this time let the file play as it is (an admin's limit still holds).
       const bitrate = noCap || asIs ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
@@ -6365,6 +6367,22 @@
     return res?.Items?.find((i) => i.Id !== ep.Id) || null;
   }
 
+  // ----- Playing things as they are (no converting by the server) -----
+  // Converting needs the server's ffmpeg to start in time. When it doesn't ("never started: the server sent nothing"), the video
+  // can't play at all, so: shows always play as they are (a setting per device), the admin can say movies too (Admin -> Playback),
+  // and a device whose conversions keep failing stops asking for them for a while.
+  const asIsMode = () => (['all', 'off'].includes(playbackCfg.asIs) ? playbackCfg.asIs : '');
+  const CONVERT_FAILS = 'ef.convertFails';
+  const recentConvertFails = () => { try { return JSON.parse(store.get(CONVERT_FAILS) || '[]').filter((t) => Date.now() - t < 6 * 3600000); } catch { return []; } };
+  const serverConvertsBadly = () => recentConvertFails().length >= 2;
+  function noteConvertFailure() { store.set(CONVERT_FAILS, JSON.stringify([...recentConvertFails(), Date.now()].slice(-5))); }
+  function playAsIs(item) {
+    const mode = asIsMode();
+    if (mode === 'off') return false;
+    if (mode === 'all') return true;
+    return (item.Type === 'Episode' && getPref('showsAsIs') === 'on') || serverConvertsBadly();
+  }
+
   // ----- Aurora's native player (Android app) -----
   // The page picks what to play; the native screen plays it, keeps Emby up to date, and reports back here.
   let vodSession = null;
@@ -6462,6 +6480,11 @@
       const pos = r.ready ? r.positionMs : s.startMs;
       playItem(s.item, { startTicks: Math.round(pos * 10000), forceTranscode: true, auto: true });
       return;
+    }
+    // A conversion that never started: remember it. After two in a few hours this device stops asking for conversions.
+    if (!r.ready && s?.playMethod === 'Transcode' && /^failed/.test(r.error || '')) {
+      noteConvertFailure();
+      if (recentConvertFails().length === 2) appLog.add('warn', 'The server could not start converting videos twice: Aurora will now play videos as they are on this device for a while');
     }
     // Emby's own conversion failed before anything played (it refused, or its converter broke): try once more without
     // the measured quality limit, which lets a file the device can play as it is play directly instead of converting.
