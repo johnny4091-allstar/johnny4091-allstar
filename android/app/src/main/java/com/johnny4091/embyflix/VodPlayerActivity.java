@@ -174,10 +174,8 @@ public class VodPlayerActivity extends Activity {
                 .setTargetBufferBytes(bufferBytes())
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
-        DefaultRenderersFactory renderers = new DefaultRenderersFactory(this)
-                .setEnableDecoderFallback(true)
-                // Software decoders for audio the box can't decode itself, where available.
-                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON);
+        // The device's decoders first, then FFmpeg software decoders for anything it can't play (Settings can turn them off).
+        DefaultRenderersFactory renderers = Decoders.factory(this, spec.optBoolean("softwareDecoders", true));
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()

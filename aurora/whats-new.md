@@ -1,1 +1,1 @@
-- New: a quick guided tour shows you around the first time you open Aurora. You can replay it any time in Settings → Replay tour.
+- Aurora's Android and TV players can now use FFmpeg to play sound and video formats your device can't decode itself, in movies, shows and Live TV. There's a switch in Settings → Software decoders.

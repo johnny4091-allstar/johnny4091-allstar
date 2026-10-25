@@ -106,6 +106,7 @@ public class LivePlayerActivity extends Activity {
     private String userAgent;
     private LiveReporter reporter;
     private String bufferLevel = "medium";
+    private boolean softwareDecoders = true;
     private boolean wasReady;
     private int stalls;
     private final long openedAt = System.currentTimeMillis();
@@ -163,6 +164,7 @@ public class LivePlayerActivity extends Activity {
         try {
             JSONObject extra = new JSONObject(intent.getStringExtra(EXTRA_REPORT));
             String level = extra.optString("buffer", "medium");
+            softwareDecoders = !extra.optString("ffmpeg", "on").equals("off");
             if (level.equals("small") || level.equals("large")) bufferLevel = level;
             int stallSeconds = extra.optInt("stallSeconds", 25);
             if (stallSeconds >= 8 && stallSeconds <= 120) stallMs = stallSeconds * 1000L;
@@ -210,7 +212,7 @@ public class LivePlayerActivity extends Activity {
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
         // If a TV box's preferred video decoder can't handle a channel, try its others rather than failing.
-        DefaultRenderersFactory renderers = new DefaultRenderersFactory(this).setEnableDecoderFallback(true);
+        DefaultRenderersFactory renderers = Decoders.factory(this, softwareDecoders);
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()

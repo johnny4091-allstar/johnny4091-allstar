@@ -1765,7 +1765,7 @@
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
-        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), stallSeconds: stallSeconds() || undefined }));
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
   }
   // ----- Favorites -----
   // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
@@ -3502,7 +3502,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3647,6 +3647,7 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${nativeApp?.playVod ? settingRow('Software decoders (FFmpeg)', 'For sound and video your device can\'t decode itself (DTS, TrueHD and similar), in movies, shows and Live TV. Used only when the device\'s own decoder can\'t play it. Turn off if a video stutters.', selectHtml('ffmpeg', [['on', 'On (recommended)'], ['off', 'Off']], getPref('ffmpeg'))) : ''}
         ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
@@ -6422,6 +6423,7 @@
         audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
       },
       stallSeconds: stallSeconds() || undefined,
+      softwareDecoders: getPref('ffmpeg') !== 'off',
       // If Emby's conversion never starts, hand back at once (no "press OK" screen) so Aurora can try playing the file as it is.
       canFallback: player.playMethod === 'Transcode' && !player.noCap && !forceTranscode && autoQuality() && (player.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate),
     };
