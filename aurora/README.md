@@ -11,6 +11,9 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
   Recently Added for each library, Top Rated, Popular TV, and random genre rows
 - TV Shows and Movies pages with genre, sort, and watched filters and infinite scroll
 - Search
+- A first-run guided tour: the screen dims, the real button being explained is outlined and an arrow points at it
+  (tap, OK or Enter for the next step; Skip or Back ends it). It shows once per device and can be replayed in
+  Settings → About → Replay tour. The wording and steps are in `tour-config.js`, one block per platform (phone, TV, web)
 - Details pop-up with cast, genres, and rating; season picker and episode list for shows; "More Like This" for movies
 - Favorites: save movies, shows and Live TV channels to the Favorites tab (the + on a title, the star on a channel, or hold OK on a TV remote), and mark as watched/unwatched
 - Video player that plays files directly when the browser supports them and asks Emby to transcode (HLS) when it doesn't

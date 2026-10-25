@@ -11,6 +11,8 @@ sub Main()
         deviceName: info.GetModelDisplayName()
         token: ""
         userId: ""
+        tileRect: {}
+        tourWatching: false
     })
     screen.CreateScene("MainScene")
     screen.Show()

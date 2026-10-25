@@ -7,9 +7,9 @@
     <field id="height" type="float" />
     <field id="rowIndex" type="integer" />
     <field id="rowHasFocus" type="boolean" />
-    <field id="itemHasFocus" type="boolean" />
+    <field id="itemHasFocus" type="boolean" onChange="onFocusChange" />
     <field id="focusPercent" type="float" />
-    <field id="rowListHasFocus" type="boolean" />
+    <field id="rowListHasFocus" type="boolean" onChange="onFocusChange" />
   </interface>
   <children>
     <Rectangle id="bg" color="0x1B2550FF" width="170" height="255" />

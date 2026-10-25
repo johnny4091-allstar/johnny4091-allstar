@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <component name="MainScene" extends="Scene">
   <script type="text/brightscript" uri="MainScene.brs" />
+  <script type="text/brightscript" uri="Tour.brs" />
+  <script type="text/brightscript" uri="TourConfig.brs" />
   <children>
     <Rectangle id="bg" color="0x05081AFF" width="1280" height="720" />
     <Label id="brand" text="A U R O R A" translation="[50,34]" color="0x2AD4D0FF" font="font:MediumBoldSystemFont" />
@@ -45,5 +47,31 @@
     <Video id="video" visible="false" width="1280" height="720" translation="[0,0]" />
     <Label id="busy" text="Loading…" translation="[0,340]" width="1280" horizAlign="center" color="0xFFFFFFFF" font="font:MediumSystemFont" visible="false" />
     <Timer id="progressTimer" repeat="true" duration="10" />
+
+    <!-- First-run guided tour (Tour.brs). Drawn last so it sits on top of everything. -->
+    <Group id="tourView" visible="false">
+      <Rectangle id="tdimT" color="0x03061AD1" />
+      <Rectangle id="tdimB" color="0x03061AD1" />
+      <Rectangle id="tdimL" color="0x03061AD1" />
+      <Rectangle id="tdimR" color="0x03061AD1" />
+      <Poster id="tringT" uri="pkg:/images/tour_grad_h.png" loadDisplayMode="scaleToFill" />
+      <Poster id="tringB" uri="pkg:/images/tour_grad_h.png" loadDisplayMode="scaleToFill" />
+      <Poster id="tringL" uri="pkg:/images/tour_grad_v.png" loadDisplayMode="scaleToFill" />
+      <Poster id="tringR" uri="pkg:/images/tour_grad_v.png" loadDisplayMode="scaleToFill" />
+      <Poster id="tourArrow" visible="false" loadDisplayMode="scaleToFill" />
+      <Group id="tourTip">
+        <Rectangle id="tipEdge" color="0x2B3868FF" />
+        <Rectangle id="tipBg" color="0x0E1530FF" />
+        <Poster id="tipAccent" uri="pkg:/images/tour_grad_h.png" loadDisplayMode="scaleToFill" />
+        <Label id="tipTitle" color="0xFFFFFFFF" font="font:LargeBoldSystemFont" wrap="true" maxLines="2" />
+        <Label id="tipText" color="0xDDE2F2FF" font="font:MediumSystemFont" wrap="true" lineSpacing="4" />
+        <Group id="tipDots" />
+        <ButtonGroup id="tipButtons" layoutDirection="horiz" horizAlignment="left" itemSpacings="[16]" />
+      </Group>
+      <Animation id="tourBob" duration="1.1" repeat="true" easeFunction="inOutQuad">
+        <Vector2DFieldInterpolator id="tourBobI" fieldToInterp="tourArrow.translation" key="[0.0, 0.5, 1.0]" keyValue="[[0, 0], [0, 0], [0, 0]]" />
+      </Animation>
+      <Timer id="tourTimer" duration="0.9" repeat="false" />
+    </Group>
   </children>
 </component>

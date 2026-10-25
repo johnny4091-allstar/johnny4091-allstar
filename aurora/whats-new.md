@@ -1,1 +1,1 @@
-- If your server can't start converting a video, Aurora now remembers and plays videos as they are for a while. The admin can also choose to play movies as they are, in Admin → Playback.
+- New: a quick guided tour shows you around the first time you open Aurora. You can replay it any time in Settings → Replay tour.

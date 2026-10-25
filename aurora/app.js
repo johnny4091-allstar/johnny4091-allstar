@@ -536,6 +536,7 @@
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
+    maybeStartTour();
   }
 
   function connectionErrorMessage(e) {
@@ -684,6 +685,7 @@
   function addRow(container, title, loader, { isCurrent, showProgress, createItem } = {}) {
     const row = document.createElement('section');
     row.className = 'row';
+    row.dataset.row = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); // a stable hook for the guided tour
     row.innerHTML = `<h2 class="row-title">${esc(title)}</h2>
       <div class="row-skeleton">${'<div></div>'.repeat(6)}</div>`;
     container.appendChild(row);
@@ -3662,6 +3664,7 @@
       </section>
       <section class="settings-section">
         <h2>About</h2>
+        ${tourConfig() && tourSteps().length ? settingRow('Guided tour', 'A quick walk through the main screens of Aurora.', '<button class="btn btn-gray" data-replay-tour>Replay tour</button>') : ''}
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
         ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
         ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
@@ -3697,6 +3700,7 @@
       }
     });
     setupFeedback(page);
+    $('[data-replay-tour]', page)?.addEventListener('click', () => tourStart());
     $('[data-check-update]', page)?.addEventListener('click', async () => {
       const status = $('[data-update-status]', page);
       status.textContent = 'Checking…';
@@ -7177,6 +7181,7 @@
   // action: up/down/left/right/select/back or a media key. fromNative: sent by the Android app.
   let selHold = null;
   function handleKey(action, fromNative = false) {
+    if (tour) return tourKey(action); // the guided tour has the remote while it is up
     const el = document.activeElement;
     if (action !== 'back') enableNav();
     // OK held down on a TV remote (the Android app sends selectdown, selecthold, selectup). On something with an options
@@ -7245,7 +7250,7 @@
     document.addEventListener('mousedown', pointer, true);
     document.addEventListener('touchstart', pointer, { capture: true, passive: true });
     document.addEventListener('focusin', (e) => {
-      if (!e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
+      if (!tour && !e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
     });
     if (nativeApp?.isTv?.()) {
       // Lay out on a 1280x720 canvas that the WebView scales to fill the TV, so every box looks the same.
@@ -7259,6 +7264,7 @@
   // ---------- Android app bridge ----------
   // Called by the Android back button. Returns true when the app handled it.
   window.embyflixBack = () => {
+    if (tour) { tourEnd('skip'); return true; }
     // Leaving a text box that the remote can't otherwise get out of (Settings → Write a note on a TV).
     const typing = document.activeElement;
     if (typing?.__onBack && isTextInput(typing)) { typing.__onBack(); return true; }
@@ -7281,6 +7287,362 @@
 
   // Called by the Android app for the remote's OK button and media keys.
   window.embyflixKey = (action) => handleKey(action, true);
+
+  // ---------- Guided tour ----------
+  // A first-run walkthrough on the real screens: the screen dims, the thing being explained is lit up and an arrow,
+  // drawn in code, points at it from a tooltip. The steps and every word are in tour-config.js. Where the tooltip
+  // and arrow go is worked out from the target's real position, again each time it moves or the screen changes.
+  const TOUR_SEEN = 'ef.tourSeen';
+  const tourConfig = () => window.AURORA_TOUR || null;
+  const tourSeen = () => !tourConfig() || Number(store.get(TOUR_SEEN) || 0) >= (tourConfig().version || 1);
+  let tour = null; // the tour that is on screen, if any
+
+  // Pure geometry (no DOM, so it can be tested on its own). `r` is the lit-up box, tw x th the tooltip and
+  // W x H the screen. Picks the side of the target the tooltip sits on (below a target near the top, above one
+  // near the bottom, beside one near an edge), keeps the tooltip on screen and returns where the arrow starts
+  // (on the tooltip's edge) and ends (its tip, on the target's edge). A target too big to leave room is lit only
+  // as far as there is room, so the arrow always has an edge to touch.
+  function tourLayout(r, tw, th, W, H, { margin = 12, arrow = 56, minArrow = 26, prefer = 'auto' } = {}) {
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const horizontal = (s) => s === 'left' || s === 'right';
+    const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    const space = { top: r.top, bottom: H - r.bottom, left: r.left, right: W - r.right };
+    const size = (s) => (horizontal(s) ? tw : th);
+    const sides = space.left > space.right ? ['left', 'right'] : ['right', 'left'];
+    const verts = cy < H / 2 ? ['bottom', 'top'] : ['top', 'bottom'];
+    // Near the top or bottom: above or below it. Level with the middle of the screen: beside it.
+    let order = cy < H * 0.34 || cy > H * 0.66 ? [...verts, ...sides] : [...sides, ...verts];
+    if (['top', 'bottom', 'left', 'right'].includes(prefer)) order = [prefer, ...order.filter((s) => s !== prefer)];
+    let side = order.find((s) => space[s] >= size(s) + arrow + margin);
+    let len = arrow, lit = { ...r };
+    if (!side) {
+      side = order.find((s) => space[s] >= size(s) + minArrow + margin);
+      if (side) len = Math.max(minArrow, Math.min(arrow, space[side] - size(side) - margin));
+    }
+    if (!side) {
+      // No room around it: light up only the part that leaves room for the tooltip and arrow.
+      side = verts[0];
+      len = minArrow;
+      if (side === 'bottom') lit.bottom = Math.max(lit.top + 24, H - th - len - margin);
+      else lit.top = Math.min(lit.bottom - 24, th + len + margin);
+    }
+    const litCx = (lit.left + lit.right) / 2, litCy = (lit.top + lit.bottom) / 2;
+    let x, y, from, tip, axis;
+    if (!horizontal(side)) {
+      x = clamp(litCx - tw / 2, margin, Math.max(margin, W - tw - margin));
+      y = side === 'bottom' ? lit.bottom + len : lit.top - len - th;
+      const reach = Math.min(14, (lit.right - lit.left) / 2);
+      const px = clamp(clamp(litCx, x + 28, x + tw - 28), lit.left + reach, lit.right - reach);
+      tip = { x: px, y: side === 'bottom' ? lit.bottom : lit.top };
+      from = { x: clamp(px, x + 24, x + tw - 24), y: side === 'bottom' ? y : y + th };
+      axis = { x: 0, y: side === 'bottom' ? -1 : 1 }; // the way the arrow points
+    } else {
+      y = clamp(litCy - th / 2, margin, Math.max(margin, H - th - margin));
+      x = side === 'right' ? lit.right + len : lit.left - len - tw;
+      const reach = Math.min(14, (lit.bottom - lit.top) / 2);
+      const py = clamp(clamp(litCy, y + 24, y + th - 24), lit.top + reach, lit.bottom - reach);
+      tip = { x: side === 'right' ? lit.right : lit.left, y: py };
+      from = { x: side === 'right' ? x : x + tw, y: clamp(py, y + 20, y + th - 20) };
+      axis = { x: side === 'right' ? -1 : 1, y: 0 };
+    }
+    return { side, x, y, from, tip, axis, lit };
+  }
+
+  const tourPlatform = () => (nav.tv ? 'tv' : nativeApp ? 'phone' : 'web');
+  const tourPage = () => location.hash.replace(/^#\/?/, '').split('?')[0] || 'home';
+  const tourSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // The steps for this platform, with this platform's changes laid over the shared definitions.
+  function tourSteps() {
+    const cfg = tourConfig(), plat = cfg?.platforms?.[tourPlatform()];
+    if (!plat) return [];
+    return (plat.order || []).map((id) => cfg.steps?.[id] && { id, ...cfg.steps[id], ...(plat.overrides?.[id] || {}) }).filter(Boolean);
+  }
+
+  // Looks the step's targets up now (by selector, never by position). Null when one is missing or not showing.
+  function tourFind(step) {
+    const boxes = [];
+    for (const group of step.targets || []) {
+      const el = [].concat(group).map((sel) => $(sel)).find((e) => {
+        if (!e || e.closest('.hidden')) return false;
+        const b = e.getBoundingClientRect();
+        return b.width > 1 && b.height > 1 && getComputedStyle(e).visibility !== 'hidden';
+      });
+      if (el) boxes.push(el.getBoundingClientRect());
+      else if (!step.any) return null;
+    }
+    if (!boxes.length) return null;
+    return {
+      left: Math.min(...boxes.map((b) => b.left)), top: Math.min(...boxes.map((b) => b.top)),
+      right: Math.max(...boxes.map((b) => b.right)), bottom: Math.max(...boxes.map((b) => b.bottom)),
+    };
+  }
+
+  function tourBuild() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const root = document.createElement('div');
+    root.id = 'tour';
+    root.className = 'tour';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-labelledby', 'tour-title');
+    root.innerHTML = `
+      <svg class="tour-svg" xmlns="${NS}" aria-hidden="true">
+        <defs>
+          <mask id="tour-mask" maskUnits="userSpaceOnUse"><rect class="tour-mask-all" fill="#fff"/><rect class="tour-hole" fill="#000"/></mask>
+          <linearGradient id="tour-grad" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#18b6d6"/><stop offset=".55" stop-color="#4f7bff"/><stop offset="1" stop-color="#7a5cff"/>
+          </linearGradient>
+        </defs>
+        <rect class="tour-dim" mask="url(#tour-mask)"/>
+        <rect class="tour-ring" fill="none" stroke="url(#tour-grad)"/>
+        <g class="tour-arrow"><path class="tour-shaft" fill="none" stroke="url(#tour-grad)" stroke-linecap="round"/><path class="tour-head" fill="url(#tour-grad)"/></g>
+      </svg>
+      <div class="tour-tip">
+        <h2 id="tour-title" class="tour-title"></h2>
+        <p class="tour-text"></p>
+        <div class="tour-foot">
+          <div class="tour-dots" aria-hidden="true"></div>
+          <div class="tour-btns">
+            <button type="button" class="tour-skip" data-tour="skip">Skip</button>
+            <button type="button" class="btn btn-gray" data-tour="back">Back</button>
+            <button type="button" class="btn btn-red" data-tour="next">Next</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(root);
+    return root;
+  }
+
+  // Draws the spotlight, arrow and tooltip for the current step. Cheap to call often: it does nothing unless
+  // the target, the screen or the tooltip changed.
+  function tourPlace() {
+    const T = tour;
+    if (!T?.step) return;
+    const W = window.innerWidth, H = window.innerHeight, step = T.step;
+    const tip = T.tip, tw = tip.offsetWidth, th = tip.offsetHeight;
+    const box = step.centered ? null : tourFind(step);
+    if (!step.centered && !box) {
+      // The target went away (the page redrew, a row emptied). Give it a moment, then move on.
+      T.lostAt = T.lostAt || Date.now();
+      if (Date.now() - T.lostAt > 1500 && !T.busy) { step.skip = true; tourGo(T.index + 1, 1); }
+      return;
+    }
+    T.lostAt = 0;
+    const tv = nav.tv, pad = step.padding ?? 6;
+    let lit = null;
+    if (box) lit = { left: Math.max(4, box.left - pad), top: Math.max(4, box.top - pad), right: Math.min(W - 4, box.right + pad), bottom: Math.min(H - 4, box.bottom + pad) };
+    const sig = [W, H, tw, th, lit && [lit.left, lit.top, lit.right, lit.bottom].map(Math.round).join(',')].join('|');
+    if (sig === T.sig) return;
+    T.sig = sig;
+    const svg = T.svg;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    for (const el of $$('.tour-dim, .tour-mask-all', svg)) { el.setAttribute('width', W); el.setAttribute('height', H); }
+    const ring = $('.tour-ring', svg), hole = $('.tour-hole', svg), arrow = $('.tour-arrow', svg);
+    if (!lit) {
+      // The welcome card: dimmed screen, a card in the middle, no spotlight and no arrow.
+      ring.style.display = hole.style.display = arrow.style.display = 'none';
+      tip.style.transform = `translate(${Math.round((W - tw) / 2)}px, ${Math.round((H - th) / 2)}px)`;
+      tip.classList.add('on');
+      return;
+    }
+    const L = tourLayout(lit, Math.min(tw, W - 24), th, W, H, { arrow: tv ? 72 : 56, minArrow: tv ? 34 : 26, margin: tv ? 24 : 12, prefer: step.placement });
+    const g = L.lit, rad = Math.min(14, (g.right - g.left) / 2, (g.bottom - g.top) / 2);
+    for (const el of [ring, hole]) {
+      el.style.display = '';
+      el.setAttribute('x', g.left); el.setAttribute('y', g.top);
+      el.setAttribute('width', g.right - g.left); el.setAttribute('height', g.bottom - g.top);
+      el.setAttribute('rx', rad); el.setAttribute('ry', rad);
+    }
+    tip.style.transform = `translate(${Math.round(L.x)}px, ${Math.round(L.y)}px)`;
+    // The arrow: a curved shaft from the tooltip's edge, ending in a head whose tip touches the target's edge.
+    const { from, tip: end, axis: a } = L, p = { x: -a.y, y: a.x };
+    const head = tv ? 26 : 18, half = tv ? 15 : 11;
+    const base = { x: end.x - a.x * head, y: end.y - a.y * head };
+    const reach = Math.hypot(base.x - from.x, base.y - from.y), k = Math.max(8, reach * 0.4);
+    // The curve leaves the tooltip straight out of its edge and arrives straight into the target, so the head is square on.
+    $('.tour-shaft', svg).setAttribute('d',
+      `M${from.x - a.x * 3},${from.y - a.y * 3} C${from.x + a.x * k},${from.y + a.y * k} ${base.x - a.x * k},${base.y - a.y * k} ${base.x + a.x * 2},${base.y + a.y * 2}`);
+    $('.tour-head', svg).setAttribute('d',
+      `M${end.x},${end.y} L${base.x + p.x * half},${base.y + p.y * half} L${base.x - p.x * half},${base.y - p.y * half} Z`);
+    const grad = $('#tour-grad', svg);
+    grad.setAttribute('x1', from.x); grad.setAttribute('y1', from.y); grad.setAttribute('x2', end.x); grad.setAttribute('y2', end.y);
+    // The bounce moves the arrow back away from the target and returns, so its tip rests on the target's edge.
+    arrow.style.display = '';
+    arrow.style.setProperty('--bx', `${a.x * -9}px`);
+    arrow.style.setProperty('--by', `${a.y * -9}px`);
+    tip.classList.add('on');
+  }
+
+  function tourDots() {
+    const T = tour, live = T.steps.filter((s) => !s.skip);
+    const at = live.indexOf(T.step);
+    $('.tour-dots', T.root).innerHTML = live.map((s, i) => `<span class="tour-dot${i === at ? ' on' : ''}"></span>`).join('');
+    T.root.querySelector('.tour-dots').setAttribute('data-count', `${at + 1} of ${live.length}`);
+    const last = at === live.length - 1;
+    $('[data-tour="back"]', T.root).classList.toggle('hidden', at <= 0);
+    $('[data-tour="skip"]', T.root).classList.toggle('hidden', last);
+    $('[data-tour="next"]', T.root).textContent = last ? (T.step.nextLabel || 'Start watching') : 'Next';
+  }
+
+  function tourShow(step, index) {
+    const T = tour;
+    T.step = step; T.index = index; T.sig = ''; T.lostAt = 0;
+    T.root.classList.toggle('welcome', !!step.centered);
+    $('.tour-title', T.root).textContent = step.title || '';
+    $('.tour-text', T.root).textContent = step.text || '';
+    tourDots();
+    T.tip.classList.remove('on');
+    void T.tip.offsetWidth; // restart the fade-in
+    tourPlace();
+    // Remote and keyboard: Next is ready under the thumb.
+    if (nav.on || nav.tv) $('[data-tour="next"]', T.root).focus({ preventScroll: true });
+  }
+
+  // Gets the page ready for a step (goes to its page, opens the menu it lives in) and waits for its target.
+  // False when the target never shows up, so the step is skipped.
+  async function tourPrepare(step, token) {
+    if (step.route && tourPage() !== step.route) location.hash = '#/' + step.route;
+    if (step.centered) return true;
+    if (step.prepare === 'profileMenu') $('#profile-dropdown').classList.remove('hidden');
+    const until = Date.now() + (step.wait ?? 1500);
+    for (;;) {
+      if (!tour || tour.token !== token) return false;
+      const box = tourFind(step);
+      if (box) {
+        // Bring it into view (not for the fixed bars, which are always there).
+        const fixed = (step.targets || []).flat().some((sel) => /^(#nav|\.mobile-tabs|#profile-dropdown)/.test(sel));
+        const H = window.innerHeight;
+        if (!fixed && (box.top < 90 || box.bottom > H - 80)) {
+          const want = box.bottom - box.top > H * 0.6 ? 100 : Math.max(100, (H - (box.bottom - box.top)) / 2);
+          window.scrollTo({ top: window.scrollY + box.top - want, behavior: 'instant' });
+          await tourSleep(60);
+        }
+        return true;
+      }
+      // The page the step lives on has finished drawing and the target still isn't there (a section that
+      // doesn't apply to this account is left out): no point waiting longer.
+      if (step.loaded && $(step.loaded) && Date.now() > until - (step.wait ?? 1500) + 400) return false;
+      if (Date.now() > until) return false;
+      await tourSleep(100);
+    }
+  }
+
+  // Moves to the next (dir 1) or previous (dir -1) step that has a target, skipping the ones that don't.
+  async function tourGo(from, dir) {
+    const T = tour;
+    if (!T) return;
+    const token = ++T.token;
+    T.busy = true;
+    $('#profile-dropdown').classList.add('hidden');
+    for (let i = from; i >= 0 && i < T.steps.length; i += dir) {
+      const step = T.steps[i];
+      if (step.skip) continue;
+      const ok = await tourPrepare(step, token);
+      if (!tour || tour.token !== token) return;
+      if (ok) { T.busy = false; tourShow(step, i); return; }
+      step.skip = true;
+      appLog.add('info', `Tour: skipped "${step.id}" (nothing to point at)`);
+      if (T.step) tourDots();
+    }
+    T.busy = false;
+    if (dir > 0) tourEnd('done');
+    else if (T.step) tourShow(T.step, T.index);
+  }
+
+  function tourEnd(how) {
+    const T = tour;
+    if (!T) return;
+    tour = null;
+    T.token = -1;
+    clearInterval(T.timer);
+    document.removeEventListener('keydown', T.onTab, true);
+    window.removeEventListener('resize', T.onChange);
+    window.removeEventListener('orientationchange', T.onChange);
+    window.removeEventListener('scroll', T.onChange, true);
+    T.root.remove();
+    $('#profile-dropdown').classList.add('hidden');
+    // Finishing or skipping both mean "seen". Being interrupted (an update prompt, the player) means "ask again next time".
+    if (how !== 'abort') store.set(TOUR_SEEN, String(tourConfig()?.version || 1));
+    if (how !== 'abort' && tourPage() !== 'home') location.hash = '#/home';
+    if (nav.on && how !== 'abort') setTimeout(() => focusInitial(), 150);
+  }
+
+  // The remote and keyboard while the tour is up. Everything else is swallowed so it can't reach the screen behind.
+  function tourKey(action) {
+    const T = tour;
+    if (action === 'back') { tourEnd('skip'); return true; }
+    const btns = $$('.tour-skip, .tour-btns .btn', T.root).filter((b) => !b.classList.contains('hidden'));
+    const at = btns.indexOf(document.activeElement);
+    if (action === 'left' || action === 'up') btns[Math.max(0, at - 1)]?.focus({ preventScroll: true });
+    else if (action === 'right' || action === 'down') btns[Math.min(btns.length - 1, at + 1)]?.focus({ preventScroll: true });
+    else if (action === 'select' || action === 'selectdown') (at >= 0 ? btns[at] : $('[data-tour="next"]', T.root)).click();
+    return true;
+  }
+
+  function tourStart() {
+    const steps = tourSteps();
+    if (tour || !steps.length) return false;
+    const root = tourBuild();
+    const T = tour = { root, svg: $('.tour-svg', root), tip: $('.tour-tip', root), steps: steps.map((s) => ({ ...s })), token: 0, busy: false, step: null, index: 0, sig: '', lostAt: 0 };
+    T.onChange = () => tourPlace();
+    T.onTab = (e) => {
+      if (e.key !== 'Tab') return;
+      const btns = $$('.tour-skip, .tour-btns .btn', root).filter((b) => !b.classList.contains('hidden'));
+      const at = btns.indexOf(document.activeElement), next = btns[(at + (e.shiftKey ? -1 : 1) + btns.length) % btns.length];
+      e.preventDefault(); e.stopPropagation();
+      next?.focus({ preventScroll: true });
+    };
+    document.addEventListener('keydown', T.onTab, true);
+    window.addEventListener('resize', T.onChange);
+    window.addEventListener('orientationchange', T.onChange);
+    window.addEventListener('scroll', T.onChange, true);
+    // Follows the target when it moves, resizes or turns (rotating the phone swaps the top bar for the bottom bar).
+    T.timer = setInterval(() => {
+      if (!tour) return;
+      // Something else needs the screen (an update prompt, a video): step aside and ask again another time.
+      if (isPlayerOpen() || !$('#modal').classList.contains('hidden') || trailerOpen()) return tourEnd('abort');
+      if (tour.step?.prepare === 'profileMenu' && !T.busy) $('#profile-dropdown').classList.remove('hidden');
+      if (nav.on && !root.contains(document.activeElement) && !T.busy) $('[data-tour="next"]', root).focus({ preventScroll: true });
+      tourPlace();
+    }, 80);
+    root.addEventListener('click', (e) => {
+      e.stopPropagation(); // the screen behind never sees these taps (a tap there would close menus or open things)
+      const b = e.target.closest('[data-tour]');
+      if (!b) { if (!T.busy && !e.target.closest('.tour-tip') && T.step && !nav.tv) tourGo(T.index + 1, 1); return; }
+      if (b.dataset.tour === 'skip') tourEnd('skip');
+      else if (!T.busy && b.dataset.tour === 'next') tourGo(T.index + 1, 1);
+      else if (!T.busy && b.dataset.tour === 'back') tourGo(T.index - 1, -1);
+    });
+    root.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+    // The welcome card shows at once; the rest of the steps are checked in the background so the dots count only
+    // the steps that have something to point at (no "Continue watching" yet means no step for it).
+    tourGo(0, 1);
+    const probes = T.steps.map(async (s) => {
+      if (s.centered || s.prepare || (s.route && s.route !== 'home')) return;
+      const until = Date.now() + Math.min(s.wait ?? 1500, 1500);
+      while (tour === T && !tourFind(s) && Date.now() < until) await tourSleep(120);
+      if (tour === T && !tourFind(s) && s.id !== T.step?.id) s.skip = true;
+    });
+    Promise.all(probes).then(() => { if (tour === T && T.step) tourDots(); });
+    return true;
+  }
+
+  // Shows the tour by itself, once per device, as soon as Home is up after sign-in.
+  let tourWatching = false;
+  function maybeStartTour() {
+    if (tourSeen() || tourWatching || tour) return;
+    tourWatching = true;
+    const t0 = Date.now();
+    const check = () => {
+      if (tourSeen() || tour || Date.now() - t0 > 120000) { tourWatching = false; return; }
+      const ready = splashDone && state.userId && !$('#main').classList.contains('hidden') && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && !updateRequiredOpen() && !trailerOpen()
+        && $('.hero-content, .hero.empty, .row-track .card, #page .empty-msg');
+      if (ready) { tourWatching = false; tourStart(); } else setTimeout(check, 400);
+    };
+    setTimeout(check, 800);
+  }
 
   // ---------- Boot ----------
   async function boot() {
