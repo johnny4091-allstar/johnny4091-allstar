@@ -14,6 +14,15 @@
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+  // A request deadline. AbortSignal.timeout() is missing from older Android System WebViews (a function that doesn't exist
+  // made every update check and guard call fail on exactly the devices that most need them).
+  function timeoutSignal(ms) {
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return AbortSignal.timeout(ms);
+    const c = new AbortController();
+    setTimeout(() => c.abort(), ms);
+    return c.signal;
+  }
+
   // ---------- Storage ----------
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
@@ -121,8 +130,9 @@
     if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
     ['ef.authMode', 'ef.server'].forEach(store.del);
     state.apiKey = store.get('ef.apiKey') || '';
-    state.requestsServer = store.get('ef.requestsServer') || '';
-    state.requestsEnabled = store.get('ef.requestsEnabled') === '1';
+    if (store.get('ef.requestsServer') && !/^https:\/\//i.test(store.get('ef.requestsServer'))) store.del('ef.requestsServer'); // an older plain-http address
+    state.requestsServer = /^https:\/\//i.test(store.get('ef.requestsServer') || '') ? store.get('ef.requestsServer') : '';
+    state.requestsEnabled = !!state.requestsServer && store.get('ef.requestsEnabled') === '1';
     state.userId = store.get('ef.userId') || '';
     let deviceId = store.get('ef.deviceId');
     if (!deviceId) {
@@ -508,6 +518,7 @@
     refreshRequestsConfig();
     refreshAppConfig();
     syncFavorites({ force: true });
+    syncPlanCategories();
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
@@ -525,6 +536,7 @@
     showScreen('main');
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
+    maybeStartTour();
   }
 
   function connectionErrorMessage(e) {
@@ -673,6 +685,7 @@
   function addRow(container, title, loader, { isCurrent, showProgress, createItem } = {}) {
     const row = document.createElement('section');
     row.className = 'row';
+    row.dataset.row = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); // a stable hook for the guided tour
     row.innerHTML = `<h2 class="row-title">${esc(title)}</h2>
       <div class="row-skeleton">${'<div></div>'.repeat(6)}</div>`;
     container.appendChild(row);
@@ -1399,7 +1412,7 @@
       if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
       return r.body || '';
     }
-    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(url, { signal: timeoutSignal(timeoutMs) });
     if (!res.ok) throw new Error(`The TV provider answered ${res.status}.`);
     return res.text();
   }
@@ -1464,9 +1477,34 @@
   // Which categories customers see, as chosen in Admin → Live TV: catsShown lists the ones to show (new ones from
   // the provider stay hidden), catsHidden lists the ones to hide (new ones show). Neither: everything shows.
   function catFilter(cfg) {
-    if (Array.isArray(cfg?.catsShown)) { const set = new Set(cfg.catsShown.map(String)); return (id) => set.has(String(id)); }
-    if (Array.isArray(cfg?.catsHidden) && cfg.catsHidden.length) { const set = new Set(cfg.catsHidden.map(String)); return (id) => !set.has(String(id)); }
-    return null;
+    let base = null;
+    if (Array.isArray(cfg?.catsShown)) { const set = new Set(cfg.catsShown.map(String)); base = (id) => set.has(String(id)); }
+    else if (Array.isArray(cfg?.catsHidden) && cfg.catsHidden.length) { const set = new Set(cfg.catsHidden.map(String)); base = (id) => !set.has(String(id)); }
+    // On top of that, a customer's plan may include only some categories (Admin -> Plans). Applies to the account's own app
+    // view; admins always see everything. (It limits what the app lists; the provider's own address still works for anyone
+    // who has it.)
+    const mine = planCategories();
+    if (!mine || cfg !== iptv.config) return base;
+    return (id) => mine.has(String(id)) && (!base || base(id));
+  }
+  const planCatsKey = () => 'ef.planCats.' + state.userId;
+  function planCategories() {
+    try { const v = JSON.parse(store.get(planCatsKey()) || 'null'); return Array.isArray(v) ? new Set(v.map(String)) : null; } catch { return null; }
+  }
+  // Called with what the guard says about this account (null: every category).
+  function applyPlanCategories(list) {
+    const next = Array.isArray(list) ? JSON.stringify(list) : 'null';
+    if (store.get(planCatsKey()) === next) return;
+    store.set(planCatsKey(), next);
+    resetIptvCaches();
+    if (/^#\/(livetv|mylist)/.test(location.hash)) route();
+  }
+  async function syncPlanCategories() {
+    if (!guardEnabled || !state.userId || !state.apiKey) return;
+    try {
+      const a = await guard('/account', { params: { userId: state.userId }, quick: true });
+      applyPlanCategories(a.admin ? null : a.categories);
+    } catch { /* keep what is known */ }
   }
 
   async function iptvSource(cfg = iptv.config) {
@@ -1748,7 +1786,8 @@
   function iptvFavChannels() {
     const cfg = iptv.config;
     if (!cfg) return [];
-    return iptvFavList().map((f, i) => {
+    const ok = catFilter(cfg);
+    return iptvFavList().filter((f) => !ok || f.group === undefined || f.group === '' || ok(f.group)).map((f, i) => {
       if (cfg.type === 'xtream') return f.streamId ? xtChannel(cfg, { stream_id: f.streamId, name: f.name, stream_icon: f.logo, num: f.num || undefined, category_id: f.group, epg_channel_id: f.epgId }) : null;
       return f.url && !f.streamId ? { id: 'f' + i, name: f.name, logo: f.logo, num: f.num, group: f.group, url: f.url, epgId: f.epgId } : null;
     }).filter(Boolean);
@@ -3171,7 +3210,14 @@
     return { saved, failed, total: (users || []).length };
   }
 
+  // Customers' sign-in details are sent to the Requests server, so only a secure (https) address is used. An http one, or a
+  // typo in the settings file, is ignored instead of sending passwords in the clear.
+  const secureAddress = (u) => /^https:\/\/[^\s/]+/i.test(String(u || ''));
   function applyRequestsServer(value, enabled) {
+    if (value && !secureAddress(value)) {
+      appLog.add('warn', 'Ignored a Requests address that does not start with https://');
+      value = ''; enabled = false;
+    }
     if (value === state.requestsServer && enabled === state.requestsEnabled) return;
     state.requestsServer = value;
     state.requestsEnabled = enabled;
@@ -3241,7 +3287,7 @@
     let res;
     try {
       res = await fetch(url, {
-        method, cache: 'no-store', signal: AbortSignal.timeout(quick ? 3000 : 15000),
+        method, cache: 'no-store', signal: timeoutSignal(quick ? 3000 : 15000),
         headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -3384,7 +3430,7 @@
           applyRequiredUpdate();
         }
         const value = typeof cfg.requestsServer === 'string' ? cfg.requestsServer.trim().replace(/\/+$/, '') : '';
-        if (value && !/^https?:\/\//.test(value)) return;
+        if (value && !secureAddress(value)) return;
         if (requestsOverride) return;
         applyRequestsServer(value, cfg.requestsEnabled === true && !!value);
         return;
@@ -3456,7 +3502,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3495,13 +3541,13 @@
   async function serviceOnline() {
     if (guardEnabled) {
       try {
-        const res = await fetch(guardUrl.replace(/\/+$/, '') + '/status', { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+        const res = await fetch(guardUrl.replace(/\/+$/, '') + '/status', { cache: 'no-store', signal: timeoutSignal(6000) });
         const m = res.ok ? (await res.text()).match(/Aurora:\s*(online|offline)/i) : null;
         if (m) return m[1].toLowerCase() === 'online';
       } catch { /* ask the server instead */ }
     }
     try {
-      const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: timeoutSignal(8000) });
       return res.ok;
     } catch { return false; }
   }
@@ -3530,21 +3576,26 @@
         return;
       }
       if (!isCurrent() || !section.isConnected) return;
+      applyPlanCategories(a.admin ? null : a.categories);
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
       const soon = a.daysLeft != null && a.daysLeft <= 7;
       const endText = a.expires ? `${fmtDay(a.expires)}${a.expired ? '' : ` · ${a.daysLeft <= 0 ? 'ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left'}`}` : 'No end date';
       const r = a.request;
       let reqHtml = '';
-      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}. The admin will review it.</p>`;
+      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}${r.wantedPlan ? ` (${esc(r.wantedPlan)})` : ''}. The admin will review it.</p>`;
       else if (r?.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note good">Your extension was approved${r.newExpires ? `: access now runs until ${esc(fmtDay(r.newExpires))}` : ''}.${r.message ? ' ' + esc(r.message) : ''}</p>`;
       else if (r?.status === 'denied' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note bad">Your last request wasn't approved.${r.message ? ' ' + esc(r.message) : ' Please contact the admin.'}</p>`;
+      let offered = [];
+      if (a.canRequest) { try { offered = (await guard('/plans/public', { params: { userId: state.userId }, quick: true })).plans || []; } catch { /* an older guard: no plan choice */ } }
+      if (!isCurrent() || !section.isConnected) return;
       box.innerHTML = `
-        ${settingRow('Plan', 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
+        ${settingRow(a.plan ? 'Plan' : 'Plan', a.plan ? `${a.plan.name}. How many devices can be signed in and in use at the same time.` : 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
         ${settingRow('In use right now', null, `<span class="setting-value">${a.activeDevices} of ${n}</span>`)}
         ${settingRow('Access until', soon && !a.expired ? 'Your access ends soon. You can ask for more time below.' : null, `<span class="setting-value${soon ? ' account-soon' : ''}">${esc(endText)}</span>`)}
         ${reqHtml}
         ${a.canRequest ? `<div class="account-request">
+          ${offered.length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}</select></label>` : ''}
           ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-note maxlength="200" placeholder="Add a note for the admin (optional)" autocomplete="off">'}
           <button class="btn btn-white" data-ext-send>Request an extension</button></div>` : ''}`;
       // While a request waits, look again every 30 s so the answer appears without leaving the page.
@@ -3554,7 +3605,7 @@
         btn.disabled = true;
         btn.textContent = 'Sending…';
         try {
-          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '' } });
+          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: $('[data-ext-plan]', box)?.value || undefined } });
           toast('Request sent to the admin', 3000);
         } catch (err) { toast(err.message || "Couldn't send the request. Try again in a moment.", 5000); }
         draw();
@@ -3596,6 +3647,7 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
       <section class="settings-section feedback-section">
@@ -3612,6 +3664,7 @@
       </section>
       <section class="settings-section">
         <h2>About</h2>
+        ${tourConfig() && tourSteps().length ? settingRow('Guided tour', 'A quick walk through the main screens of Aurora.', '<button class="btn btn-gray" data-replay-tour>Replay tour</button>') : ''}
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
         ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
         ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
@@ -3647,6 +3700,7 @@
       }
     });
     setupFeedback(page);
+    $('[data-replay-tour]', page)?.addEventListener('click', () => tourStart());
     $('[data-check-update]', page)?.addEventListener('click', async () => {
       const status = $('[data-update-status]', page);
       status.textContent = 'Checking…';
@@ -3842,7 +3896,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -3884,7 +3938,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
     autoFocus($('.tab.active', page));
     // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
     const bar = $('.tab-bar', page), active = $('.tab.active', bar);
@@ -3897,7 +3951,7 @@
   async function latestAuroraRelease() {
     try {
       const res = await fetch('https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest',
-        { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+        { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000) });
       if (!res.ok) return null;
       const rel = await res.json();
       return { name: rel.name || rel.tag_name, code: Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0), date: rel.published_at, notes: releaseNotes(rel.body) };
@@ -4197,7 +4251,7 @@
       }),
       check('App settings file', async () => {
         for (const url of REMOTE_CONFIG_URLS) {
-          try { const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(8000) }); if (r.ok) { await r.json(); return ok('aurora-config.json loads'); } } catch { /* next */ }
+          try { const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store', signal: timeoutSignal(8000) }); if (r.ok) { await r.json(); return ok('aurora-config.json loads'); } } catch { /* next */ }
         }
         return bad("aurora-config.json couldn't be read, so apps keep their last settings (guard address, Requests).");
       }),
@@ -4381,6 +4435,7 @@
     let confirmUnreachable = false;
     $('[data-save]', body).addEventListener('click', async () => {
       const v = value();
+      if (v && !secureAddress(v)) return say('The address must start with https:// (customers\' sign-in details are sent to it, so a plain http:// address is not allowed).', 'bad');
       say('<div class="spinner"></div> Checking the address…');
       let note = '';
       try { note = await test(v); } catch (e) {
@@ -4847,20 +4902,148 @@
   const userStatus = (u, lim) => (isExpired(lim) ? 'expired' : u.Policy?.IsDisabled ? 'disabled' : 'active');
   const statusPill = (st) => `<span class="pill ${st === 'active' ? 'good' : st === 'expired' ? 'bad' : 'warn'}">${st === 'active' ? 'Active' : st === 'expired' ? 'Expired' : 'Disabled'}</span>`;
 
+  // ----- Subscription plans (Admin -> Plans) -----
+  // A plan: a price for a length of time, a number of connections (devices at once) and, optionally, only some of the Live
+  // TV categories. Kept in Aurora Guard. Put on a customer (Admin -> Users, or when approving a request) it sets their device
+  // limit, end date and categories in one go, and adds a line to the subscription history. Aurora records the price; it
+  // doesn't take payments.
+  const money = (n) => '$' + (Number.isInteger(Number(n)) ? Number(n) : Number(n).toFixed(2));
+  const planLength = (p) => `${p.length} ${p.unit}${p.length === 1 ? '' : 's'}`;
+  const planSummary = (p) => `${money(p.price)} · ${planLength(p)} · ${p.connections} ${p.connections === 1 ? 'connection' : 'connections'}`;
+  const planCatsText = (p) => (p.categories ? `${p.categories.length} Live TV ${p.categories.length === 1 ? 'category' : 'categories'}` : 'All Live TV categories');
+  const planOptions = (plans, selected = '') => plans.filter((p) => p.active || p.id === selected)
+    .map((p) => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name)} — ${esc(money(p.price))}${p.active ? '' : ' (hidden)'}</option>`).join('');
+  // The provider's full category list (not narrowed to what customers see).
+  async function allLiveCategories() {
+    const cfg = iptv.config;
+    if (!iptvOn(cfg)) return [];
+    const src = await iptvSource({ ...cfg, catsShown: undefined, catsHidden: undefined, v: 'plans-' + (cfg.v || 0) });
+    return src.categories.map((c) => ({ id: String(c.id), name: c.name, count: c.count }));
+  }
+
+  async function adminPlans(body, isCurrent) {
+    if (!guardEnabled) { body.innerHTML = '<section class="admin-card"><h2>Plans</h2><p class="muted">Plans need Aurora Guard (it is switched off). See server/README.md.</p></section>'; return; }
+    let data;
+    try { data = await guard('/plans'); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Plans</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.5.0 to use plans (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const t = data.totals || { thisMonth: { count: 0, revenue: 0 }, lastMonth: { count: 0, revenue: 0 } };
+    const row = (p) => `<div class="admin-row" data-plan="${esc(p.id)}"><div class="admin-row-main">
+        <strong>${esc(p.name)}</strong>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}
+        <div class="muted">${esc(planSummary(p))} · ${esc(planCatsText(p))}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit>Edit</button><button class="btn btn-gray" data-del>Delete</button></div></div>`;
+    const sub = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.name)}</strong> · ${esc(e.planName)} <span class="pill">${esc(money(e.price))}</span>
+        <div class="muted">Until ${esc(fmtDay(e.expires))} · ${e.mode === 'today' ? 'started that day' : 'added to the time left'}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(e.at))}</div></div>`;
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('This month', money(t.thisMonth.revenue), `${t.thisMonth.count} ${t.thisMonth.count === 1 ? 'subscription' : 'subscriptions'}`)}
+        ${statTile('Last month', money(t.lastMonth.revenue), `${t.lastMonth.count} ${t.lastMonth.count === 1 ? 'subscription' : 'subscriptions'}`)}
+        ${statTile('Plans', data.plans.length, `${data.plans.filter((p) => p.active).length} on offer`)}
+      </div>
+      <section class="admin-card">
+        <h2>Plans <small>Put them on customers in Admin → Users</small></h2>
+        <div class="admin-list" data-plans>${data.plans.map(row).join('') || '<p class="muted">No plans yet. Add one below.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add>Add a plan</button></div>
+        <div class="plan-form hidden" data-form></div>
+      </section>
+      <section class="admin-card">
+        <h2>Subscription history <small>Newest first</small></h2>
+        <div class="admin-list">${data.subscriptions.map(sub).join('') || '<p class="muted">Nothing yet. A line is added each time you put a plan on a customer.</p>'}</div>
+      </section>`;
+    const form = $('[data-form]', body);
+    let cats = null;
+    const openForm = (p) => {
+      const edit = !!p;
+      p = p || { name: '', price: '', length: 1, unit: 'month', connections: 2, categories: null, active: true };
+      form.classList.remove('hidden');
+      form.innerHTML = `
+        <h3 class="admin-sub">${edit ? 'Edit plan' : 'New plan'}</h3>
+        <label class="admin-field"><span>Name</span><input type="text" data-p="name" maxlength="60" value="${esc(p.name)}" placeholder="1 Month · 2 Connections"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Price ($)</span><input type="number" data-p="price" min="0" step="0.01" inputmode="decimal" value="${esc(p.price)}"></label>
+          <label class="admin-field"><span>Length</span><input type="number" data-p="length" min="1" step="1" inputmode="numeric" value="${esc(p.length)}"></label>
+          <label class="admin-field"><span>&nbsp;</span><select data-p="unit"><option value="month"${p.unit === 'month' ? ' selected' : ''}>month(s)</option><option value="day"${p.unit === 'day' ? ' selected' : ''}>day(s)</option></select></label>
+          <label class="admin-field"><span>Connections</span><input type="number" data-p="connections" min="1" max="50" step="1" inputmode="numeric" value="${esc(p.connections)}"></label>
+        </div>
+        <label class="admin-check"><input type="checkbox" data-p="active"${p.active ? ' checked' : ''}> On offer (customers can ask for it, and it shows when you pick a plan)</label>
+        <div class="cat-pick-wrap">
+          <div class="cat-pick-head"><div><strong>Live TV categories</strong><div class="muted" data-cat-summary></div></div>
+            <div><label class="admin-check"><input type="radio" name="plancats" data-p="catsAll"${p.categories ? '' : ' checked'}> All categories</label>
+              <label class="admin-check"><input type="radio" name="plancats" data-p="catsSome"${p.categories ? ' checked' : ''}> Only the ones I choose</label></div></div>
+          <div class="cat-pick hidden" data-cat-box>
+            <div class="cat-pick-tools"><input type="search" data-cat-filter placeholder="Find a category" autocomplete="off">
+              <button class="btn btn-gray" data-cat-all>All</button><button class="btn btn-gray" data-cat-none>None</button></div>
+            <div class="cat-list" data-cat-list></div></div>
+        </div>
+        <div class="m-actions"><button class="btn btn-red" data-save>${edit ? 'Save changes' : 'Add plan'}</button><button class="btn btn-gray" data-cancel>Cancel</button></div>
+        <div class="live-result" data-result></div>`;
+      const chosen = new Set((p.categories || []).map(String));
+      const summary = $('[data-cat-summary]', form), box = $('[data-cat-box]', form), list = $('[data-cat-list]', form);
+      const say = (html, cls = '') => { const r = $('[data-result]', form); r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; };
+      const showSummary = () => { summary.textContent = $('[data-p="catsAll"]', form).checked ? 'Every category your Live TV source has' : `${chosen.size} chosen`; };
+      const paint = () => {
+        const q = $('[data-cat-filter]', form).value.trim().toLowerCase();
+        list.innerHTML = (cats || []).filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => `<label class="cat-row"><input type="checkbox" data-id="${esc(c.id)}"${chosen.has(c.id) ? ' checked' : ''}><span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</label>`).join('') || '<p class="muted">No categories match.</p>';
+        $$('input[data-id]', list).forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) chosen.add(cb.dataset.id); else chosen.delete(cb.dataset.id); showSummary(); }));
+      };
+      const loadCats = async () => {
+        box.classList.remove('hidden');
+        if (cats) return paint();
+        if (!iptvOn()) { list.innerHTML = '<p class="muted">Categories come from an M3U playlist or Xtream account (Admin → Live TV). Emby\'s own Live TV has none to choose.</p>'; return; }
+        list.innerHTML = '<div class="spinner"></div>';
+        try { cats = await allLiveCategories(); paint(); } catch (e) { list.innerHTML = `<p class="muted">Couldn't load the categories: ${esc(e.message)}</p>`; }
+      };
+      const mode = () => { const some = $('[data-p="catsSome"]', form).checked; box.classList.toggle('hidden', !some); if (some) loadCats(); showSummary(); };
+      $('[data-p="catsAll"]', form).addEventListener('change', mode);
+      $('[data-p="catsSome"]', form).addEventListener('change', mode);
+      $('[data-cat-filter]', form).addEventListener('input', () => cats && paint());
+      $('[data-cat-all]', form).addEventListener('click', () => { (cats || []).forEach((c) => chosen.add(c.id)); paint(); showSummary(); });
+      $('[data-cat-none]', form).addEventListener('click', () => { chosen.clear(); paint(); showSummary(); });
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      mode();
+      $('[data-save]', form).addEventListener('click', async () => {
+        const v = (n) => $(`[data-p="${n}"]`, form).value;
+        const payload = { name: v('name').trim(), price: Number(v('price')), length: Number(v('length')), unit: v('unit'), connections: Number(v('connections')),
+          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null };
+        if (v('price') === '' || Number.isNaN(payload.price)) return say('Enter the price.', 'bad');
+        say('<div class="spinner"></div>');
+        try {
+          await guard(edit ? `/plans/${encodeURIComponent(p.id)}` : '/plans', { method: edit ? 'PUT' : 'POST', body: payload });
+          toast(edit ? 'Plan saved' : 'Plan added', 2000);
+          if (isCurrent()) adminPlans(body, isCurrent);
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl($('[data-p="name"]', form)); else $('[data-p="name"]', form).scrollIntoView({ block: 'center' });
+    };
+    $('[data-add]', body).addEventListener('click', () => openForm(null));
+    $$('[data-plan]', body).forEach((el) => {
+      const p = data.plans.find((x) => x.id === el.dataset.plan);
+      $('[data-edit]', el).addEventListener('click', () => openForm(p));
+      $('[data-del]', el).addEventListener('click', async () => {
+        if (!(await confirmAction(`Delete "${p.name}"?`, 'Customers who already have it keep what they were given (their connections, end date and categories). It just disappears from the list.', 'Delete plan'))) return;
+        try { await guard(`/plans/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast('Plan deleted', 2000); if (isCurrent()) adminPlans(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
   // ----- Extension requests (Admin -> Users) -----
   const EXT_DAYS = [[7, '7 days'], [14, '14 days'], [30, '30 days'], [60, '60 days'], [90, '90 days'], [180, '6 months'], [365, '1 year']];
-  function extensionsCardHtml(ext) {
+  function extensionsCardHtml(ext, plans) {
     if (!ext || (!ext.pending?.length && !ext.decided?.length)) return '';
     const row = (x) => `<div class="admin-row ext-row" data-ext="${esc(x.id)}"><div class="admin-row-main">
         <strong>${esc(x.name)}</strong> <span class="pill warn">Asked for more time</span>
         <div class="muted">${x.currentExpires ? `Ends ${esc(fmtDay(x.currentExpires))}${isExpired({ expires: x.currentExpires }) ? ' (expired)' : ''}` : 'No end date set'} · asked ${esc(timeAgo(x.at))}</div>
+        ${x.wantedPlanName ? `<div class="ext-note">Wants: ${esc(x.wantedPlanName)}</div>` : ''}
         ${x.note ? `<div class="ext-note">"${esc(x.note)}"</div>` : ''}
         <div class="ext-actions">
-          <select data-ext-days aria-label="Extend by">${EXT_DAYS.map(([d, l]) => `<option value="${d}"${d === 30 ? ' selected' : ''}>${l}</option>`).join('')}</select>
+          <select data-ext-days aria-label="Extend by">${(plans || []).length ? `<optgroup label="Renew with a plan">${planOptions(plans, x.wantedPlanId || '').replace(/value="([^"]+)"/g, 'value="plan:$1"')}</optgroup><optgroup label="Or just add time">` : ''}${EXT_DAYS.map(([d, l]) => `<option value="${d}"${d === 30 && !x.wantedPlanId ? ' selected' : ''}>${l}</option>`).join('')}${(plans || []).length ? '</optgroup>' : ''}</select>
           <button class="btn btn-white" data-ext-approve>Approve</button>
           <button class="btn btn-gray" data-ext-deny>Deny</button>
         </div></div></div>`;
-    const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.days} days, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
+    const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.planName ? esc(x.planName) : x.days + ' days'}, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
         <div class="admin-row-time">${esc(timeAgo(x.decidedAt))}</div></div>`;
     return `<section class="admin-card ext-card">
       <h2>Extension requests <small>${ext.pending.length ? `${ext.pending.length} waiting` : 'None waiting'}</small></h2>
@@ -4874,8 +5057,8 @@
       const decide = async (action, btn) => {
         $$('button', rowEl).forEach((b) => { b.disabled = true; });
         try {
-          const days = Number($('[data-ext-days]', rowEl).value);
-          const r = await guard(`/extensions/${encodeURIComponent(id)}`, { method: 'PUT', body: { action, days } });
+          const pick = $('[data-ext-days]', rowEl).value;
+          const r = await guard(`/extensions/${encodeURIComponent(id)}`, { method: 'PUT', body: pick.startsWith('plan:') ? { action, planId: pick.slice(5) } : { action, days: Number(pick) } });
           toast(action === 'approve' ? `Approved: now ends ${fmtDay(r.request.newExpires)}` : 'Denied', 3000);
         } catch (e) { toast(e.status === 404 ? 'Update Aurora Guard to 1.4.0 first.' : e.message, 5000); }
         if (isCurrent()) adminUsers(body, isCurrent);
@@ -4897,6 +5080,7 @@
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
     if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { guardError = e; } }
     const ext = g ? await guard('/extensions').catch(() => null) : null;
+    const planList = g ? (await guard('/plans').catch(() => null))?.plans || [] : [];
     if (!isCurrent()) return;
     // Once only (the guard remembers): any account can write its own display preferences, so values found
     // there later must not be trusted.
@@ -4945,7 +5129,7 @@
     let filter = store.get('ef.usersFilter') || 'all', query = '';
     if (!filters.includes(filter)) filter = 'all';
     body.innerHTML = `
-      ${extensionsCardHtml(ext)}
+      ${extensionsCardHtml(ext, planList)}
       <section class="admin-card">
         <div class="users-head">
           <h2>Users <small>${rows.length}</small></h2>
@@ -4980,7 +5164,7 @@
       list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
         <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
           <div class="muted"><span data-live="${esc(r.u.Id)}">${liveHtml(r)}</span>
-            ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}` : ''}</div></div>
+            ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}${r.lim?.plan ? ` · ${esc(r.lim.plan.name)}` : ''}` : ''}</div></div>
         <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
     };
     draw();
@@ -5013,7 +5197,7 @@
   }
 
   // Device limit choices: 1-10.
-  const limitOptions = (cur) => Array.from({ length: 10 }, (_, i) => i + 1)
+  const limitOptions = (cur) => Array.from({ length: Math.max(10, cur || 0) }, (_, i) => i + 1)
     .map((n) => `<option value="${n}"${n === cur ? ' selected' : ''}>${n} ${n === 1 ? 'device' : 'devices'}</option>`).join('');
   const expiryFields = (expires) => `
     <label class="admin-field"><span>Expiration date</span>
@@ -5054,7 +5238,8 @@
       user = await api(`/Users/${userId}`);
       devices = await activeDevices(userId).catch(() => []);
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))} <a href="#/admin?tab=users">Back to users</a></p>`; return; }
-    if (guardEnabled) { try { g = await guard('/limits'); lim = g.users?.[userId] || null; } catch (e) { guardError = e; } }
+    let planData = null;
+    if (guardEnabled) { try { g = await guard('/limits'); lim = g.users?.[userId] || null; planData = await guard('/plans').catch(() => null); } catch (e) { guardError = e; } }
     if (!isCurrent()) return;
     const self = userId === state.userId, exempt = exemptFromLimits(user);
     const st = userStatus(user, lim);
@@ -5070,6 +5255,17 @@
         <p class="muted">Saved in Aurora Guard and applied straight away: an account past its date is switched off in Emby, and extending the date switches it back on.</p>
         <div class="live-result" data-limits-result></div>`}
       </section>
+      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
+        <h2>Subscription ${lim?.plan ? '<span class="pill good">' + esc(lim.plan.name) + '</span>' : ''}</h2>
+        <p class="muted">${lim?.plan ? `${esc(money(lim.plan.price))} · ${esc(planLength(lim.plan))} · ${lim.plan.connections} ${lim.plan.connections === 1 ? 'connection' : 'connections'} · ${lim.plan.categories ? lim.plan.categories.length + ' Live TV categories' : 'all Live TV categories'}${lim.expires ? ` · ${isExpired(lim) ? 'ended' : 'ends'} ${esc(fmtDay(lim.expires))}` : ''}` : 'No plan: the device limit and end date above were set by hand.'}</p>
+        ${planData?.plans?.length ? `
+        <label class="admin-field"><span>Plan</span><select data-plan-pick>${planOptions(planData.plans, lim?.plan?.id || '')}</select></label>
+        <label class="admin-field"><span>Start</span><select data-plan-mode><option value="extend">Add it after the time they have left</option><option value="today">Start from today</option></select></label>
+        <label class="admin-field"><span>Price paid (leave empty for the plan's price)</span><input type="number" data-plan-price min="0" step="0.01" inputmode="decimal"></label>
+        <div class="m-actions"><button class="btn btn-red" data-apply-plan>Apply plan</button></div>
+        <p class="muted">Sets their device limit, end date and Live TV categories, switches the account back on if it had expired, and adds a line to the subscription history.</p>
+        <div class="live-result" data-plan-result></div>` : '<p class="muted">No plans to choose from yet. Add them in Admin → Plans.</p>'}
+      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -5108,6 +5304,19 @@
         say('[data-limits-result]', 'Saved.' + note, 'good');
         setTimeout(reload, 1200);
       } catch (e) { say('[data-limits-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+
+    $('[data-apply-plan]', body)?.addEventListener('click', async () => {
+      const plan = planData.plans.find((x) => x.id === $('[data-plan-pick]', body).value);
+      if (!plan) return;
+      const mode = $('[data-plan-mode]', body).value, price = $('[data-plan-price]', body).value;
+      if (!(await confirmAction(`Put "${plan.name}" on ${user.Name}?`, `${planSummary(plan)}. ${mode === 'extend' ? 'Added after the time they have left.' : 'Starts from today.'}${price !== '' ? ' Price paid: ' + money(price) + '.' : ''}`, 'Apply plan'))) return;
+      say('[data-plan-result]', '<div class="spinner"></div>');
+      try {
+        const r = await guard(`/limits/${userId}/plan`, { method: 'POST', body: { planId: plan.id, mode, price: price === '' ? undefined : Number(price) } });
+        say('[data-plan-result]', `Done: ${esc(plan.name)} until ${esc(fmtDay(r.record.expires))}.${r.applied ? '' : ' It will be applied at the next guard check.'}`, 'good');
+        setTimeout(reload, 1200);
+      } catch (e) { say('[data-plan-result]', "Couldn't apply it: " + esc(e.message), 'bad'); }
     });
 
     $$('[data-signout]', body).forEach((b) => b.addEventListener('click', async () => {
@@ -5162,12 +5371,21 @@
         <h2>Add user</h2>
         <label class="admin-field"><span>Name (used to sign in)</span><input type="text" data-f="name" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
         ${passwordFields()}
-        ${guardEnabled ? `<label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
-        ${expiryFields(null)}` : ''}
+        ${guardEnabled ? `<label class="admin-field"><span>Plan (sets the device limit, end date and Live TV categories)</span><select data-f="plan"><option value="">No plan: set the limit and date by hand below</option></select></label>
+        <div data-by-hand><label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(null)}</div>` : ''}
         <div class="m-actions"><button class="btn btn-red" data-create>Create user</button></div>
         <div class="live-result" data-result></div>
       </section>`;
     const getExpiry = guardEnabled ? wireExpiry(body) : null;
+    let plans = [];
+    if (guardEnabled) {
+      try {
+        plans = (await guard('/plans')).plans.filter((p) => p.active);
+        $('[data-f="plan"]', body).insertAdjacentHTML('beforeend', plans.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(money(p.price))}</option>`).join(''));
+        $('[data-f="plan"]', body).addEventListener('change', (e) => $('[data-by-hand]', body).classList.toggle('hidden', !!e.target.value));
+      } catch { /* an older guard has no plans */ }
+    }
     const result = $('[data-result]', body);
     const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
     $('[data-create]', body).addEventListener('click', async () => {
@@ -5184,7 +5402,12 @@
       const problems = [];
       try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
       if (guardEnabled) {
-        try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+        const planId = $('[data-f="plan"]', body).value;
+        if (planId) {
+          try { await guard(`/limits/${user.Id}/plan`, { method: 'POST', body: { planId, mode: 'today' } }); } catch (e) { problems.push(`the plan (Aurora Guard: ${e.message})`); }
+        } else {
+          try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+        }
       }
       // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
       try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }
@@ -5203,7 +5426,7 @@
 
   async function auroraReleaseCodes() {
     try {
-      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000) });
+      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000) });
       if (!res.ok) return null;
       return (await res.json()).filter((r) => !r.draft && !r.prerelease && /^aurora-v/.test(r.tag_name || ''))
         .map((r) => Number(r.tag_name.match(/(\d+)$/)?.[1] || 0)).filter(Boolean).sort((a, b) => b - a);
@@ -5383,6 +5606,8 @@
           [[0, 'Normal'], [10, '10 seconds'], [15, '15 seconds'], [20, '20 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '60 seconds']], Number(cfg.stallSeconds) || 0)}
         ${sel('appLock', 'Lock Aurora with the phone\'s PIN or fingerprint', "Phones only (never on TVs). With 'Required', Aurora asks for the phone's screen lock when it opens and after a minute away. Phones with no screen lock set are not affected.",
           [['', "Customer's choice"], ['on', 'Required']], cfg.appLock)}
+        ${sel('asIs', 'Play as they are', "Converting needs your server's ffmpeg to start in time; when it can't, a video never starts. 'Shows and movies' sends every file untouched (no converting, no limit; a customer on a slow line may buffer). 'Each device decides' plays shows as they are, and any device whose conversions fail twice stops asking for them for 6 hours. 'Let Aurora convert' is the old behaviour.",
+          [['', 'Each device decides (shows as they are)'], ['all', 'Shows and movies as they are'], ['off', 'Let Aurora convert when it helps']], cfg.asIs || '')}
         ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
           [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
         <div class="m-actions">
@@ -5405,7 +5630,7 @@
     };
     const pick = (id) => $(`[data-pb="${id}"]`, body).value;
     $('[data-save]', body).addEventListener('click', () => {
-      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), t: Date.now() };
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), t: Date.now() };
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
@@ -5555,7 +5780,7 @@
     try {
       // Always ask GitHub fresh, and give up after 8 seconds rather than hanging on a slow connection.
       const res = await fetch(RELEASES_URL, {
-        headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: AbortSignal.timeout(8000),
+        headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000),
       });
       if (!res.ok) throw new Error(res.status);
       const installed = nativeApp.getVersionCode();
@@ -5564,9 +5789,12 @@
         .map((rel) => ({ rel, code: Number(rel.tag_name.match(/(\d+)$/)?.[1] || 0) }))
         .filter((r) => r.code > installed)
         .sort((a, b) => b.code - a.code);
-      const latest = newer[0];
-      const apk = latest && (latest.rel.assets || []).find((a) => /\.apk$/i.test(a.name));
-      if (!apk) return { status: 'current' };
+      // The newest release that already has its APK. (A release can exist for a few seconds before its file is attached;
+      // saying "up to date" then would also release the update lock.) Newer releases with no APK yet: ask again later.
+      const withApk = newer.filter((r) => (r.rel.assets || []).some((a) => /\.apk$/i.test(a.name)));
+      if (!withApk.length) return { status: newer.length ? 'error' : 'current' };
+      const latest = withApk[0];
+      const apk = latest.rel.assets.find((a) => /\.apk$/i.test(a.name));
       // Newest first, without repeating a line that appears in more than one version.
       const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 12);
       return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes, behind: newer.length };
@@ -5912,6 +6140,12 @@
     nativeApp?.setPlayerMode(true);
     status.innerHTML = '<div class="spinner"></div>';
     status.classList.remove('hidden');
+    // A bare spinner for a long time looks like a hang: after a while say what it is waiting for.
+    clearTimeout(player.slowTimer);
+    player.slowTimer = setTimeout(() => {
+      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.spinner')) return;
+      status.innerHTML = '<div class="spinner"></div><p>Still waiting for the server…<br><small>If this keeps going, check your connection, or tell the admin.</small></p>';
+    }, 10000);
     $('#player-next').classList.add('hidden');
     $('#skip-intro').classList.add('hidden');
     hideUpNext();
@@ -5949,8 +6183,13 @@
           : esc(full.Name);
 
       const native = useNativePlayer() && !isLive;
+      // TV shows play as they are (Aurora's own player, quality on Auto): no speed test and no limit, so Emby sends the file
+      // itself instead of converting it. Converting is the slow, failure-prone part (it needs the server's ffmpeg to start in
+      // time). A quality the viewer picked by hand, and an admin's limit, still apply. Setting: Settings -> Play shows as they are.
+      const asIs = native && !forceTranscode && autoQuality() && playAsIs(full);
+      player.asIs = asIs;
       // noCap: Emby's conversion failed at the measured limit, so this time let the file play as it is (an admin's limit still holds).
-      const bitrate = noCap ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
+      const bitrate = noCap || asIs ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
       if (stale()) return;
       player.bitrate = bitrate;
       const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: bitrate };
@@ -6132,11 +6371,30 @@
     return res?.Items?.find((i) => i.Id !== ep.Id) || null;
   }
 
+  // ----- Playing things as they are (no converting by the server) -----
+  // Converting needs the server's ffmpeg to start in time. When it doesn't ("never started: the server sent nothing"), the video
+  // can't play at all, so: shows always play as they are (a setting per device), the admin can say movies too (Admin -> Playback),
+  // and a device whose conversions keep failing stops asking for them for a while.
+  const asIsMode = () => (['all', 'off'].includes(playbackCfg.asIs) ? playbackCfg.asIs : '');
+  const CONVERT_FAILS = 'ef.convertFails';
+  const recentConvertFails = () => { try { return JSON.parse(store.get(CONVERT_FAILS) || '[]').filter((t) => Date.now() - t < 6 * 3600000); } catch { return []; } };
+  const serverConvertsBadly = () => recentConvertFails().length >= 2;
+  function noteConvertFailure() { store.set(CONVERT_FAILS, JSON.stringify([...recentConvertFails(), Date.now()].slice(-5))); }
+  function playAsIs(item) {
+    const mode = asIsMode();
+    if (mode === 'off') return false;
+    if (mode === 'all') return true;
+    return (item.Type === 'Episode' && getPref('showsAsIs') === 'on') || serverConvertsBadly();
+  }
+
   // ----- Aurora's native player (Android app) -----
   // The page picks what to play; the native screen plays it, keeps Emby up to date, and reports back here.
   let vodSession = null;
   async function playNative(full, source, url, isHls, forceTranscode, stale) {
-    const next = full.Type === 'Episode' ? await nextEpisodeOf(full).catch(() => null) : null;
+    // The next episode (for the Next button and auto-play) is worth a moment, not a wait: a slow server must not hold the film up.
+    const next = full.Type === 'Episode'
+      ? await Promise.race([nextEpisodeOf(full).catch(() => null), new Promise((r) => setTimeout(() => r(null), 2500))])
+      : null;
     if (stale()) return;
     const subs = (source.MediaStreams || [])
       .filter((s) => s.Type === 'Subtitle' && s.DeliveryMethod === 'External' && s.DeliveryUrl)
@@ -6167,7 +6425,7 @@
       // If Emby's conversion never starts, hand back at once (no "press OK" screen) so Aurora can try playing the file as it is.
       canFallback: player.playMethod === 'Transcode' && !player.noCap && !forceTranscode && autoQuality() && (player.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate),
     };
-    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap };
+    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap, asIs: !!player.asIs };
     // The native screen reports to Emby from here on.
     player.item = null;
     player.playSessionId = null;
@@ -6184,7 +6442,11 @@
     if (rough) playLog.add({ kind: 'stalling', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, stalls, stalledSec: Math.round(stalledMs / 1000), pct, watchedMin: Math.round(watched / 60000), bitrate: s.bitrate || 0 });
     appLog.add(rough ? 'warn' : 'info',
       `Watched ${s.item.Name} (${s.playMethod}${s.bitrate ? ', limit ' + (s.bitrate / 1e6).toFixed(0) + ' Mbps' : ''}): ${Math.round(watched / 60000)} min, ${stalls} ${stalls === 1 ? 'stall' : 'stalls'}, ${Math.round(stalledMs / 1000)} s buffering (${pct}%)`);
-    if (rough && autoQuality() && s.bitrate) {
+    if (rough && s.asIs && !store.get('ef.showsBufferTip')) {
+      // Shows play untouched, so a slow connection shows up as buffering. Say how to let Aurora lower the quality instead.
+      store.set('ef.showsBufferTip', '1');
+      toast('That show kept stopping to buffer. If it keeps happening, turn off "Play shows as they are" in Settings.', 9000);
+    } else if (rough && !s.asIs && autoQuality() && s.bitrate) {
       measuredBitrate = { bps: Math.max(700000, Math.round(s.bitrate * 0.6)), t: Date.now() };
       if (!store.get('ef.vodBufferTip')) {
         store.set('ef.vodBufferTip', '1');
@@ -6193,8 +6455,13 @@
     }
   }
 
+  // Lines the Android side writes to the app log (a request it ignored, a screen it couldn't open).
+  window.auroraNativeLog = (m) => appLog.add('info', String(m).slice(0, 300));
+
   window.auroraVodClosed = async (r) => {
     store.del('ef.liveReturn');
+    appLog.add('info', 'Aurora player closed: ' + (!r ? 'no answer from the player screen (it closed or crashed at once)'
+      : r.error ? `${r.error} (${r.ready ? 'played, then stopped' : 'never started'})` : r.ready ? `played ${Math.round((r.watchedMs || 0) / 1000)} s` : 'never started'));
     const s = vodSession;
     vodSession = null;
     r = r || {};
@@ -6217,6 +6484,11 @@
       const pos = r.ready ? r.positionMs : s.startMs;
       playItem(s.item, { startTicks: Math.round(pos * 10000), forceTranscode: true, auto: true });
       return;
+    }
+    // A conversion that never started: remember it. After two in a few hours this device stops asking for conversions.
+    if (!r.ready && s?.playMethod === 'Transcode' && /^failed/.test(r.error || '')) {
+      noteConvertFailure();
+      if (recentConvertFails().length === 2) appLog.add('warn', 'The server could not start converting videos twice: Aurora will now play videos as they are on this device for a while');
     }
     // Emby's own conversion failed before anything played (it refused, or its converter broke): try once more without
     // the measured quality limit, which lets a file the device can play as it is play directly instead of converting.
@@ -6909,6 +7181,7 @@
   // action: up/down/left/right/select/back or a media key. fromNative: sent by the Android app.
   let selHold = null;
   function handleKey(action, fromNative = false) {
+    if (tour) return tourKey(action); // the guided tour has the remote while it is up
     const el = document.activeElement;
     if (action !== 'back') enableNav();
     // OK held down on a TV remote (the Android app sends selectdown, selecthold, selectup). On something with an options
@@ -6977,7 +7250,7 @@
     document.addEventListener('mousedown', pointer, true);
     document.addEventListener('touchstart', pointer, { capture: true, passive: true });
     document.addEventListener('focusin', (e) => {
-      if (!e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
+      if (!tour && !e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
     });
     if (nativeApp?.isTv?.()) {
       // Lay out on a 1280x720 canvas that the WebView scales to fill the TV, so every box looks the same.
@@ -6991,6 +7264,7 @@
   // ---------- Android app bridge ----------
   // Called by the Android back button. Returns true when the app handled it.
   window.embyflixBack = () => {
+    if (tour) { tourEnd('skip'); return true; }
     // Leaving a text box that the remote can't otherwise get out of (Settings → Write a note on a TV).
     const typing = document.activeElement;
     if (typing?.__onBack && isTextInput(typing)) { typing.__onBack(); return true; }
@@ -7013,6 +7287,362 @@
 
   // Called by the Android app for the remote's OK button and media keys.
   window.embyflixKey = (action) => handleKey(action, true);
+
+  // ---------- Guided tour ----------
+  // A first-run walkthrough on the real screens: the screen dims, the thing being explained is lit up and an arrow,
+  // drawn in code, points at it from a tooltip. The steps and every word are in tour-config.js. Where the tooltip
+  // and arrow go is worked out from the target's real position, again each time it moves or the screen changes.
+  const TOUR_SEEN = 'ef.tourSeen';
+  const tourConfig = () => window.AURORA_TOUR || null;
+  const tourSeen = () => !tourConfig() || Number(store.get(TOUR_SEEN) || 0) >= (tourConfig().version || 1);
+  let tour = null; // the tour that is on screen, if any
+
+  // Pure geometry (no DOM, so it can be tested on its own). `r` is the lit-up box, tw x th the tooltip and
+  // W x H the screen. Picks the side of the target the tooltip sits on (below a target near the top, above one
+  // near the bottom, beside one near an edge), keeps the tooltip on screen and returns where the arrow starts
+  // (on the tooltip's edge) and ends (its tip, on the target's edge). A target too big to leave room is lit only
+  // as far as there is room, so the arrow always has an edge to touch.
+  function tourLayout(r, tw, th, W, H, { margin = 12, arrow = 56, minArrow = 26, prefer = 'auto' } = {}) {
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const horizontal = (s) => s === 'left' || s === 'right';
+    const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    const space = { top: r.top, bottom: H - r.bottom, left: r.left, right: W - r.right };
+    const size = (s) => (horizontal(s) ? tw : th);
+    const sides = space.left > space.right ? ['left', 'right'] : ['right', 'left'];
+    const verts = cy < H / 2 ? ['bottom', 'top'] : ['top', 'bottom'];
+    // Near the top or bottom: above or below it. Level with the middle of the screen: beside it.
+    let order = cy < H * 0.34 || cy > H * 0.66 ? [...verts, ...sides] : [...sides, ...verts];
+    if (['top', 'bottom', 'left', 'right'].includes(prefer)) order = [prefer, ...order.filter((s) => s !== prefer)];
+    let side = order.find((s) => space[s] >= size(s) + arrow + margin);
+    let len = arrow, lit = { ...r };
+    if (!side) {
+      side = order.find((s) => space[s] >= size(s) + minArrow + margin);
+      if (side) len = Math.max(minArrow, Math.min(arrow, space[side] - size(side) - margin));
+    }
+    if (!side) {
+      // No room around it: light up only the part that leaves room for the tooltip and arrow.
+      side = verts[0];
+      len = minArrow;
+      if (side === 'bottom') lit.bottom = Math.max(lit.top + 24, H - th - len - margin);
+      else lit.top = Math.min(lit.bottom - 24, th + len + margin);
+    }
+    const litCx = (lit.left + lit.right) / 2, litCy = (lit.top + lit.bottom) / 2;
+    let x, y, from, tip, axis;
+    if (!horizontal(side)) {
+      x = clamp(litCx - tw / 2, margin, Math.max(margin, W - tw - margin));
+      y = side === 'bottom' ? lit.bottom + len : lit.top - len - th;
+      const reach = Math.min(14, (lit.right - lit.left) / 2);
+      const px = clamp(clamp(litCx, x + 28, x + tw - 28), lit.left + reach, lit.right - reach);
+      tip = { x: px, y: side === 'bottom' ? lit.bottom : lit.top };
+      from = { x: clamp(px, x + 24, x + tw - 24), y: side === 'bottom' ? y : y + th };
+      axis = { x: 0, y: side === 'bottom' ? -1 : 1 }; // the way the arrow points
+    } else {
+      y = clamp(litCy - th / 2, margin, Math.max(margin, H - th - margin));
+      x = side === 'right' ? lit.right + len : lit.left - len - tw;
+      const reach = Math.min(14, (lit.bottom - lit.top) / 2);
+      const py = clamp(clamp(litCy, y + 24, y + th - 24), lit.top + reach, lit.bottom - reach);
+      tip = { x: side === 'right' ? lit.right : lit.left, y: py };
+      from = { x: side === 'right' ? x : x + tw, y: clamp(py, y + 20, y + th - 20) };
+      axis = { x: side === 'right' ? -1 : 1, y: 0 };
+    }
+    return { side, x, y, from, tip, axis, lit };
+  }
+
+  const tourPlatform = () => (nav.tv ? 'tv' : nativeApp ? 'phone' : 'web');
+  const tourPage = () => location.hash.replace(/^#\/?/, '').split('?')[0] || 'home';
+  const tourSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // The steps for this platform, with this platform's changes laid over the shared definitions.
+  function tourSteps() {
+    const cfg = tourConfig(), plat = cfg?.platforms?.[tourPlatform()];
+    if (!plat) return [];
+    return (plat.order || []).map((id) => cfg.steps?.[id] && { id, ...cfg.steps[id], ...(plat.overrides?.[id] || {}) }).filter(Boolean);
+  }
+
+  // Looks the step's targets up now (by selector, never by position). Null when one is missing or not showing.
+  function tourFind(step) {
+    const boxes = [];
+    for (const group of step.targets || []) {
+      const el = [].concat(group).map((sel) => $(sel)).find((e) => {
+        if (!e || e.closest('.hidden')) return false;
+        const b = e.getBoundingClientRect();
+        return b.width > 1 && b.height > 1 && getComputedStyle(e).visibility !== 'hidden';
+      });
+      if (el) boxes.push(el.getBoundingClientRect());
+      else if (!step.any) return null;
+    }
+    if (!boxes.length) return null;
+    return {
+      left: Math.min(...boxes.map((b) => b.left)), top: Math.min(...boxes.map((b) => b.top)),
+      right: Math.max(...boxes.map((b) => b.right)), bottom: Math.max(...boxes.map((b) => b.bottom)),
+    };
+  }
+
+  function tourBuild() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const root = document.createElement('div');
+    root.id = 'tour';
+    root.className = 'tour';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-labelledby', 'tour-title');
+    root.innerHTML = `
+      <svg class="tour-svg" xmlns="${NS}" aria-hidden="true">
+        <defs>
+          <mask id="tour-mask" maskUnits="userSpaceOnUse"><rect class="tour-mask-all" fill="#fff"/><rect class="tour-hole" fill="#000"/></mask>
+          <linearGradient id="tour-grad" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#18b6d6"/><stop offset=".55" stop-color="#4f7bff"/><stop offset="1" stop-color="#7a5cff"/>
+          </linearGradient>
+        </defs>
+        <rect class="tour-dim" mask="url(#tour-mask)"/>
+        <rect class="tour-ring" fill="none" stroke="url(#tour-grad)"/>
+        <g class="tour-arrow"><path class="tour-shaft" fill="none" stroke="url(#tour-grad)" stroke-linecap="round"/><path class="tour-head" fill="url(#tour-grad)"/></g>
+      </svg>
+      <div class="tour-tip">
+        <h2 id="tour-title" class="tour-title"></h2>
+        <p class="tour-text"></p>
+        <div class="tour-foot">
+          <div class="tour-dots" aria-hidden="true"></div>
+          <div class="tour-btns">
+            <button type="button" class="tour-skip" data-tour="skip">Skip</button>
+            <button type="button" class="btn btn-gray" data-tour="back">Back</button>
+            <button type="button" class="btn btn-red" data-tour="next">Next</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(root);
+    return root;
+  }
+
+  // Draws the spotlight, arrow and tooltip for the current step. Cheap to call often: it does nothing unless
+  // the target, the screen or the tooltip changed.
+  function tourPlace() {
+    const T = tour;
+    if (!T?.step) return;
+    const W = window.innerWidth, H = window.innerHeight, step = T.step;
+    const tip = T.tip, tw = tip.offsetWidth, th = tip.offsetHeight;
+    const box = step.centered ? null : tourFind(step);
+    if (!step.centered && !box) {
+      // The target went away (the page redrew, a row emptied). Give it a moment, then move on.
+      T.lostAt = T.lostAt || Date.now();
+      if (Date.now() - T.lostAt > 1500 && !T.busy) { step.skip = true; tourGo(T.index + 1, 1); }
+      return;
+    }
+    T.lostAt = 0;
+    const tv = nav.tv, pad = step.padding ?? 6;
+    let lit = null;
+    if (box) lit = { left: Math.max(4, box.left - pad), top: Math.max(4, box.top - pad), right: Math.min(W - 4, box.right + pad), bottom: Math.min(H - 4, box.bottom + pad) };
+    const sig = [W, H, tw, th, lit && [lit.left, lit.top, lit.right, lit.bottom].map(Math.round).join(',')].join('|');
+    if (sig === T.sig) return;
+    T.sig = sig;
+    const svg = T.svg;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    for (const el of $$('.tour-dim, .tour-mask-all', svg)) { el.setAttribute('width', W); el.setAttribute('height', H); }
+    const ring = $('.tour-ring', svg), hole = $('.tour-hole', svg), arrow = $('.tour-arrow', svg);
+    if (!lit) {
+      // The welcome card: dimmed screen, a card in the middle, no spotlight and no arrow.
+      ring.style.display = hole.style.display = arrow.style.display = 'none';
+      tip.style.transform = `translate(${Math.round((W - tw) / 2)}px, ${Math.round((H - th) / 2)}px)`;
+      tip.classList.add('on');
+      return;
+    }
+    const L = tourLayout(lit, Math.min(tw, W - 24), th, W, H, { arrow: tv ? 72 : 56, minArrow: tv ? 34 : 26, margin: tv ? 24 : 12, prefer: step.placement });
+    const g = L.lit, rad = Math.min(14, (g.right - g.left) / 2, (g.bottom - g.top) / 2);
+    for (const el of [ring, hole]) {
+      el.style.display = '';
+      el.setAttribute('x', g.left); el.setAttribute('y', g.top);
+      el.setAttribute('width', g.right - g.left); el.setAttribute('height', g.bottom - g.top);
+      el.setAttribute('rx', rad); el.setAttribute('ry', rad);
+    }
+    tip.style.transform = `translate(${Math.round(L.x)}px, ${Math.round(L.y)}px)`;
+    // The arrow: a curved shaft from the tooltip's edge, ending in a head whose tip touches the target's edge.
+    const { from, tip: end, axis: a } = L, p = { x: -a.y, y: a.x };
+    const head = tv ? 26 : 18, half = tv ? 15 : 11;
+    const base = { x: end.x - a.x * head, y: end.y - a.y * head };
+    const reach = Math.hypot(base.x - from.x, base.y - from.y), k = Math.max(8, reach * 0.4);
+    // The curve leaves the tooltip straight out of its edge and arrives straight into the target, so the head is square on.
+    $('.tour-shaft', svg).setAttribute('d',
+      `M${from.x - a.x * 3},${from.y - a.y * 3} C${from.x + a.x * k},${from.y + a.y * k} ${base.x - a.x * k},${base.y - a.y * k} ${base.x + a.x * 2},${base.y + a.y * 2}`);
+    $('.tour-head', svg).setAttribute('d',
+      `M${end.x},${end.y} L${base.x + p.x * half},${base.y + p.y * half} L${base.x - p.x * half},${base.y - p.y * half} Z`);
+    const grad = $('#tour-grad', svg);
+    grad.setAttribute('x1', from.x); grad.setAttribute('y1', from.y); grad.setAttribute('x2', end.x); grad.setAttribute('y2', end.y);
+    // The bounce moves the arrow back away from the target and returns, so its tip rests on the target's edge.
+    arrow.style.display = '';
+    arrow.style.setProperty('--bx', `${a.x * -9}px`);
+    arrow.style.setProperty('--by', `${a.y * -9}px`);
+    tip.classList.add('on');
+  }
+
+  function tourDots() {
+    const T = tour, live = T.steps.filter((s) => !s.skip);
+    const at = live.indexOf(T.step);
+    $('.tour-dots', T.root).innerHTML = live.map((s, i) => `<span class="tour-dot${i === at ? ' on' : ''}"></span>`).join('');
+    T.root.querySelector('.tour-dots').setAttribute('data-count', `${at + 1} of ${live.length}`);
+    const last = at === live.length - 1;
+    $('[data-tour="back"]', T.root).classList.toggle('hidden', at <= 0);
+    $('[data-tour="skip"]', T.root).classList.toggle('hidden', last);
+    $('[data-tour="next"]', T.root).textContent = last ? (T.step.nextLabel || 'Start watching') : 'Next';
+  }
+
+  function tourShow(step, index) {
+    const T = tour;
+    T.step = step; T.index = index; T.sig = ''; T.lostAt = 0;
+    T.root.classList.toggle('welcome', !!step.centered);
+    $('.tour-title', T.root).textContent = step.title || '';
+    $('.tour-text', T.root).textContent = step.text || '';
+    tourDots();
+    T.tip.classList.remove('on');
+    void T.tip.offsetWidth; // restart the fade-in
+    tourPlace();
+    // Remote and keyboard: Next is ready under the thumb.
+    if (nav.on || nav.tv) $('[data-tour="next"]', T.root).focus({ preventScroll: true });
+  }
+
+  // Gets the page ready for a step (goes to its page, opens the menu it lives in) and waits for its target.
+  // False when the target never shows up, so the step is skipped.
+  async function tourPrepare(step, token) {
+    if (step.route && tourPage() !== step.route) location.hash = '#/' + step.route;
+    if (step.centered) return true;
+    if (step.prepare === 'profileMenu') $('#profile-dropdown').classList.remove('hidden');
+    const until = Date.now() + (step.wait ?? 1500);
+    for (;;) {
+      if (!tour || tour.token !== token) return false;
+      const box = tourFind(step);
+      if (box) {
+        // Bring it into view (not for the fixed bars, which are always there).
+        const fixed = (step.targets || []).flat().some((sel) => /^(#nav|\.mobile-tabs|#profile-dropdown)/.test(sel));
+        const H = window.innerHeight;
+        if (!fixed && (box.top < 90 || box.bottom > H - 80)) {
+          const want = box.bottom - box.top > H * 0.6 ? 100 : Math.max(100, (H - (box.bottom - box.top)) / 2);
+          window.scrollTo({ top: window.scrollY + box.top - want, behavior: 'instant' });
+          await tourSleep(60);
+        }
+        return true;
+      }
+      // The page the step lives on has finished drawing and the target still isn't there (a section that
+      // doesn't apply to this account is left out): no point waiting longer.
+      if (step.loaded && $(step.loaded) && Date.now() > until - (step.wait ?? 1500) + 400) return false;
+      if (Date.now() > until) return false;
+      await tourSleep(100);
+    }
+  }
+
+  // Moves to the next (dir 1) or previous (dir -1) step that has a target, skipping the ones that don't.
+  async function tourGo(from, dir) {
+    const T = tour;
+    if (!T) return;
+    const token = ++T.token;
+    T.busy = true;
+    $('#profile-dropdown').classList.add('hidden');
+    for (let i = from; i >= 0 && i < T.steps.length; i += dir) {
+      const step = T.steps[i];
+      if (step.skip) continue;
+      const ok = await tourPrepare(step, token);
+      if (!tour || tour.token !== token) return;
+      if (ok) { T.busy = false; tourShow(step, i); return; }
+      step.skip = true;
+      appLog.add('info', `Tour: skipped "${step.id}" (nothing to point at)`);
+      if (T.step) tourDots();
+    }
+    T.busy = false;
+    if (dir > 0) tourEnd('done');
+    else if (T.step) tourShow(T.step, T.index);
+  }
+
+  function tourEnd(how) {
+    const T = tour;
+    if (!T) return;
+    tour = null;
+    T.token = -1;
+    clearInterval(T.timer);
+    document.removeEventListener('keydown', T.onTab, true);
+    window.removeEventListener('resize', T.onChange);
+    window.removeEventListener('orientationchange', T.onChange);
+    window.removeEventListener('scroll', T.onChange, true);
+    T.root.remove();
+    $('#profile-dropdown').classList.add('hidden');
+    // Finishing or skipping both mean "seen". Being interrupted (an update prompt, the player) means "ask again next time".
+    if (how !== 'abort') store.set(TOUR_SEEN, String(tourConfig()?.version || 1));
+    if (how !== 'abort' && tourPage() !== 'home') location.hash = '#/home';
+    if (nav.on && how !== 'abort') setTimeout(() => focusInitial(), 150);
+  }
+
+  // The remote and keyboard while the tour is up. Everything else is swallowed so it can't reach the screen behind.
+  function tourKey(action) {
+    const T = tour;
+    if (action === 'back') { tourEnd('skip'); return true; }
+    const btns = $$('.tour-skip, .tour-btns .btn', T.root).filter((b) => !b.classList.contains('hidden'));
+    const at = btns.indexOf(document.activeElement);
+    if (action === 'left' || action === 'up') btns[Math.max(0, at - 1)]?.focus({ preventScroll: true });
+    else if (action === 'right' || action === 'down') btns[Math.min(btns.length - 1, at + 1)]?.focus({ preventScroll: true });
+    else if (action === 'select' || action === 'selectdown') (at >= 0 ? btns[at] : $('[data-tour="next"]', T.root)).click();
+    return true;
+  }
+
+  function tourStart() {
+    const steps = tourSteps();
+    if (tour || !steps.length) return false;
+    const root = tourBuild();
+    const T = tour = { root, svg: $('.tour-svg', root), tip: $('.tour-tip', root), steps: steps.map((s) => ({ ...s })), token: 0, busy: false, step: null, index: 0, sig: '', lostAt: 0 };
+    T.onChange = () => tourPlace();
+    T.onTab = (e) => {
+      if (e.key !== 'Tab') return;
+      const btns = $$('.tour-skip, .tour-btns .btn', root).filter((b) => !b.classList.contains('hidden'));
+      const at = btns.indexOf(document.activeElement), next = btns[(at + (e.shiftKey ? -1 : 1) + btns.length) % btns.length];
+      e.preventDefault(); e.stopPropagation();
+      next?.focus({ preventScroll: true });
+    };
+    document.addEventListener('keydown', T.onTab, true);
+    window.addEventListener('resize', T.onChange);
+    window.addEventListener('orientationchange', T.onChange);
+    window.addEventListener('scroll', T.onChange, true);
+    // Follows the target when it moves, resizes or turns (rotating the phone swaps the top bar for the bottom bar).
+    T.timer = setInterval(() => {
+      if (!tour) return;
+      // Something else needs the screen (an update prompt, a video): step aside and ask again another time.
+      if (isPlayerOpen() || !$('#modal').classList.contains('hidden') || trailerOpen()) return tourEnd('abort');
+      if (tour.step?.prepare === 'profileMenu' && !T.busy) $('#profile-dropdown').classList.remove('hidden');
+      if (nav.on && !root.contains(document.activeElement) && !T.busy) $('[data-tour="next"]', root).focus({ preventScroll: true });
+      tourPlace();
+    }, 80);
+    root.addEventListener('click', (e) => {
+      e.stopPropagation(); // the screen behind never sees these taps (a tap there would close menus or open things)
+      const b = e.target.closest('[data-tour]');
+      if (!b) { if (!T.busy && !e.target.closest('.tour-tip') && T.step && !nav.tv) tourGo(T.index + 1, 1); return; }
+      if (b.dataset.tour === 'skip') tourEnd('skip');
+      else if (!T.busy && b.dataset.tour === 'next') tourGo(T.index + 1, 1);
+      else if (!T.busy && b.dataset.tour === 'back') tourGo(T.index - 1, -1);
+    });
+    root.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+    // The welcome card shows at once; the rest of the steps are checked in the background so the dots count only
+    // the steps that have something to point at (no "Continue watching" yet means no step for it).
+    tourGo(0, 1);
+    const probes = T.steps.map(async (s) => {
+      if (s.centered || s.prepare || (s.route && s.route !== 'home')) return;
+      const until = Date.now() + Math.min(s.wait ?? 1500, 1500);
+      while (tour === T && !tourFind(s) && Date.now() < until) await tourSleep(120);
+      if (tour === T && !tourFind(s) && s.id !== T.step?.id) s.skip = true;
+    });
+    Promise.all(probes).then(() => { if (tour === T && T.step) tourDots(); });
+    return true;
+  }
+
+  // Shows the tour by itself, once per device, as soon as Home is up after sign-in.
+  let tourWatching = false;
+  function maybeStartTour() {
+    if (tourSeen() || tourWatching || tour) return;
+    tourWatching = true;
+    const t0 = Date.now();
+    const check = () => {
+      if (tourSeen() || tour || Date.now() - t0 > 120000) { tourWatching = false; return; }
+      const ready = splashDone && state.userId && !$('#main').classList.contains('hidden') && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && !updateRequiredOpen() && !trailerOpen()
+        && $('.hero-content, .hero.empty, .row-track .card, #page .empty-msg');
+      if (ready) { tourWatching = false; tourStart(); } else setTimeout(check, 400);
+    };
+    setTimeout(check, 800);
+  }
 
   // ---------- Boot ----------
   async function boot() {

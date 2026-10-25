@@ -1,1 +1,1 @@
-- Behind the scenes: the app now reads its settings only from the main copy of the settings file.
+- New: a quick guided tour shows you around the first time you open Aurora. You can replay it any time in Settings → Replay tour.

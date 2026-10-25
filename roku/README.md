@@ -8,6 +8,12 @@ seasons and episodes, Play / Resume, watched marks (including "mark a whole seas
 progress to the server like the other apps. Films play directly when the Roku can handle the file, and are
 converted by the server when it can't.
 
+**First-run tour:** the first time you sign in, Aurora walks you through the Browse tiles and Continue Watching
+with a dimmed screen, an outline around the real tile and an arrow (OK or Right for the next step, Back to skip).
+Choose **Replay tour** in the Browse row to see it again. The words and steps are in `components/TourConfig.brs`;
+the drawing is in `components/Tour.brs`. The arrow images are made by `tools/make-tour-images.py`.
+It needs Roku OS 9 or newer (older ones skip the tour).
+
 **Not in this first version:** Live TV, requests, subtitles and audio-track pickers, profiles and the admin pages.
 
 ## Install it on your Roku (sideloading)

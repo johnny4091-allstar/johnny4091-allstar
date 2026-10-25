@@ -1022,3 +1022,63 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 .fav-section { margin-bottom: 1.5rem; }
 .fav-sub { font-size: 1.15rem; margin: 1rem 0 .8rem; }
 .fav-sub.hidden, .fav-section.hidden { display: none; }
+
+/* Plans */
+.plan-actions { display: flex; gap: .5rem; flex: none; align-items: center; }
+.plan-form { margin-top: 1.2rem; padding-top: 1rem; border-top: 1px solid rgba(255,255,255,.08); }
+.plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: .8rem; }
+.account-plan-pick { display: flex; flex-direction: column; gap: .3rem; flex: 1 1 14rem; }
+.account-plan-pick select { padding: .7rem .9rem; border-radius: 8px; background: var(--bg-3); color: #fff; border: 1px solid rgba(255,255,255,.15); font: inherit; }
+
+/* ---------- Guided tour ---------- */
+.tour { position: fixed; inset: 0; z-index: 400; touch-action: none; overscroll-behavior: contain; }
+.tour-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; }
+.tour-dim { fill: rgba(3, 6, 18, .82); }
+.tour-ring { stroke-width: 3; filter: drop-shadow(0 0 8px rgba(79, 123, 255, .8)); }
+.tour-arrow { filter: drop-shadow(0 0 6px rgba(79, 123, 255, .75)); animation: tour-bob 1.1s ease-in-out infinite; }
+.tour-shaft { stroke-width: 4; }
+@keyframes tour-bob { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(var(--bx, 0px), var(--by, 0px)); } }
+.tour-tip {
+  position: absolute; left: 0; top: 0; width: min(22rem, calc(100vw - 24px)); padding: 1.15rem 1.2rem 1rem; border-radius: 12px;
+  background: linear-gradient(180deg, #131c3d, #0e1530); border: 1px solid #2b3868; color: #fff;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, .65), 0 0 0 1px rgba(79, 123, 255, .16); opacity: 0; overflow: hidden;
+}
+.tour-tip.on { opacity: 1; animation: tour-pop .22s ease-out; }
+@keyframes tour-pop { from { opacity: 0; } to { opacity: 1; } }
+.tour-tip::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 3px; background: var(--accent-grad); }
+.tour-title { margin: .2rem 0 .4rem; font-size: 1.2rem; line-height: 1.25; }
+.tour-text { margin: 0 0 1rem; color: #cdd5ee; font-size: .95rem; line-height: 1.45; }
+.tour-foot { display: flex; align-items: center; justify-content: space-between; gap: .8rem; flex-wrap: wrap; }
+.tour-dots { display: flex; gap: 6px; align-items: center; }
+.tour-dot { width: 7px; height: 7px; border-radius: 50%; background: #3a4777; }
+.tour-dot.on { width: 20px; border-radius: 4px; background: var(--accent-grad); }
+.tour-btns { display: flex; align-items: center; gap: .5rem; margin-left: auto; }
+.tour-btns .btn { padding: .5rem 1.1rem; font-size: .95rem; }
+.tour-skip { background: none; border: 0; color: #9aa6cc; font-size: .9rem; font-weight: 600; padding: .5rem .6rem; border-radius: 4px; }
+.tour-skip:hover { color: #fff; }
+.tour.welcome .tour-tip { width: min(26rem, calc(100vw - 32px)); text-align: center; padding: 1.8rem 1.6rem 1.3rem; }
+.tour.welcome .tour-title { font-size: 1.7rem; background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.tour.welcome .tour-foot { justify-content: center; flex-direction: column; gap: 1rem; }
+.tour.welcome .tour-btns { margin: 0; }
+.kbd-nav .tour :focus { outline: 3px solid #fff; outline-offset: 3px; }
+@media (max-height: 430px) {
+  .tour-tip { padding: .8rem 1rem .7rem; width: min(20rem, calc(100vw - 24px)); }
+  .tour-title { font-size: 1.05rem; margin-bottom: .25rem; }
+  .tour-text { font-size: .85rem; margin-bottom: .6rem; }
+}
+/* TV: readable from the sofa. */
+.tv .tour-tip { width: 31rem; padding: 1.5rem 1.7rem 1.3rem; }
+.tv .tour.welcome .tour-tip { width: 34rem; }
+.tv .tour-title { font-size: 1.7rem; }
+.tv .tour.welcome .tour-title { font-size: 2.2rem; }
+.tv .tour-text { font-size: 1.25rem; color: #e1e6f6; }
+.tv .tour-btns .btn { font-size: 1.2rem; padding: .65rem 1.5rem; }
+.tv .tour-skip { font-size: 1.15rem; padding: .65rem 1rem; }
+.tv .tour-ring { stroke-width: 4; }
+.tv .tour-shaft { stroke-width: 6; }
+.tv .tour-dot { width: 10px; height: 10px; }
+.tv .tour-dot.on { width: 28px; }
+.tv .kbd-nav .tour :focus, .tv.kbd-nav .tour :focus { outline-width: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  .tour-arrow, .tour-tip.on { animation: none !important; }
+}

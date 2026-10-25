@@ -37,6 +37,7 @@ import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory;
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy;
 import androidx.media3.ui.PlayerView;
 
 import org.json.JSONArray;
@@ -70,6 +71,7 @@ public class VodPlayerActivity extends Activity {
     private static final long SEEK_MS = 10000;
     private static final long PROGRESS_MS = 10000;
     private static final int MAX_RETRIES = 4;
+    private static final int START_RETRIES = 2; // tries before the first picture
     /** An error this close to the end counts as the end. */
     private static final long END_SLACK_MS = 30000;
 
@@ -104,6 +106,7 @@ public class VodPlayerActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        MainActivity.playersAlive++;
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
         try {
@@ -164,7 +167,7 @@ public class VodPlayerActivity extends Activity {
                 .setUserAgent("Aurora (Android)")
                 .setAllowCrossProtocolRedirects(true)
                 .setConnectTimeoutMs(15000)
-                .setReadTimeoutMs(30000);
+                .setReadTimeoutMs(20000);
         // Start quickly, then build up a deep buffer so a slow moment on the internet doesn't stop the film.
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
                 .setBufferDurationsMs(30000, 180000, 2500, 5000)
@@ -177,10 +180,16 @@ public class VodPlayerActivity extends Activity {
                 .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON);
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
+                .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
+                        .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MOVIE).build(), true) // pause for a call, play nicely with other apps
+                .setHandleAudioBecomingNoisy(true) // headphones unplugged or Bluetooth lost: pause, don't blast the speaker
                 .setWakeMode(C.WAKE_MODE_NETWORK)
                 .setSeekBackIncrementMs(SEEK_MS)
                 .setSeekForwardIncrementMs(SEEK_MS)
+                // ExoPlayer's own habit is to try a failing address 3 more times, each waiting out the full timeout, before it
+                // reports anything: minutes of spinning with no word. One try, then our own retry (with a message) takes over.
                 .setMediaSourceFactory(new DefaultMediaSourceFactory(this)
+                        .setLoadErrorHandlingPolicy(new DefaultLoadErrorHandlingPolicy(1))
                         .setDataSourceFactory(new DefaultDataSource.Factory(this, http)))
                 .build();
         player.addListener(new Player.Listener() {
@@ -218,8 +227,9 @@ public class VodPlayerActivity extends Activity {
             }
 
             @Override
-            public void onIsPlayingChanged(boolean isPlaying) {
-                if (reportedStart && !closing) sendReport("/Sessions/Playing/Progress", isPlaying ? "Unpause" : "Pause");
+            public void onPlayWhenReadyChanged(boolean playWhenReady, int reason) {
+                // Paused or playing by the viewer (not just buffering, which is not a pause).
+                if (reportedStart && !closing) sendReport("/Sessions/Playing/Progress", playWhenReady ? "Unpause" : "Pause");
             }
 
             @Override
@@ -292,7 +302,8 @@ public class VodPlayerActivity extends Activity {
         // Otherwise it's usually the connection: pick up where it stopped.
         retries++;
         resumeMs = Math.max(0, player.getCurrentPosition());
-        if (retries <= MAX_RETRIES) {
+        // Before anything has played, don't keep trying for long: two tries, then the next step (convert it, or tell the viewer).
+        if (retries <= (everReady ? MAX_RETRIES : START_RETRIES)) {
             status.setText("Reconnecting…");
             status.setVisibility(View.VISIBLE);
             handler.removeCallbacks(retry);
@@ -372,17 +383,28 @@ public class VodPlayerActivity extends Activity {
             boolean loading = !everReady && error == null && player.getPlayWhenReady() && player.getPlaybackState() != Player.STATE_READY;
             if (!loading) loadingSince = 0;
             else if (loadingSince == 0) loadingSince = System.currentTimeMillis();
-            else if (System.currentTimeMillis() - loadingSince > Math.max(45000L, stallMs)) {
-                loadingSince = 0;
-                if (!"Transcode".equals(playMethod)) { error = "unplayable:StartTimeout"; close(false); return; }
-                if (retries < MAX_RETRIES) {
-                    retries++;
-                    resumeMs = Math.max(0, player.getCurrentPosition());
-                    status.setText("Reconnecting…");
+            if (loading) {
+                long waitedMs = System.currentTimeMillis() - loadingSince;
+                if (waitedMs > 6000) {
+                    // Say what is happening instead of a bare spinner (a converted video can take a while to get going).
+                    long waited = waitedMs / 1000;
+                    boolean converting = "Transcode".equals(playMethod);
+                    status.setText((waited > 20 ? "Still waiting for the server…" : converting ? "The server is getting this video ready…" : "Starting…") + "\n" + waited + " s"
+                            + (retries > 0 ? "  ·  try " + (retries + 1) : ""));
                     status.setVisibility(View.VISIBLE);
-                    handler.removeCallbacks(retry);
-                    handler.post(retry);
-                } else { error = "failed:StartTimeout"; autoFallback = canFallback; close(false); return; }
+                }
+                if (waitedMs > Math.max(40000L, stallMs)) {
+                    loadingSince = 0;
+                    if (!"Transcode".equals(playMethod)) { error = "unplayable:StartTimeout"; close(false); return; }
+                    if (retries < START_RETRIES) {
+                        retries++;
+                        resumeMs = Math.max(0, player.getCurrentPosition());
+                        status.setText("Reconnecting…");
+                        status.setVisibility(View.VISIBLE);
+                        handler.removeCallbacks(retry);
+                        handler.post(retry);
+                    } else { error = "failed:StartTimeout"; autoFallback = canFallback; close(false); return; }
+                }
             }
             if (!stuckAtEnd) endStuckSince = 0;
             else if (endStuckSince == 0) endStuckSince = System.currentTimeMillis();
@@ -469,10 +491,13 @@ public class VodPlayerActivity extends Activity {
 
     /** Playback is over (for now): the final position, and let Emby stop converting the video. */
     private void reportStopped() {
-        if (!reportedStart) return;
-        reportedStart = false;
-        handler.removeCallbacks(progress);
-        sendReport("/Sessions/Playing/Stopped", null);
+        if (reportedStart) {
+            reportedStart = false;
+            handler.removeCallbacks(progress);
+            sendReport("/Sessions/Playing/Stopped", null);
+        }
+        // Even if it never got as far as playing, tell Emby to stop converting: it would otherwise keep going (and each
+        // retry would add another).
         if ("Transcode".equals(playMethod)) {
             post("/Videos/ActiveEncodings?DeviceId=" + Uri.encode(report.optString("deviceId"))
                     + "&PlaySessionId=" + Uri.encode(report.optString("playSessionId")), null, "DELETE");
@@ -713,6 +738,8 @@ public class VodPlayerActivity extends Activity {
     @Override
     protected void onStart() {
         super.onStart();
+        // Away for over a minute with the app lock on: close, and the app asks for the PIN.
+        if (stopped && !closing && MainActivity.lockDue()) { close(false); return; }
         if (stopped && !closing && playerView != null) {
             // Back in the app: carry on from where it was.
             stopped = false;
@@ -723,6 +750,7 @@ public class VodPlayerActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        MainActivity.noteLeft();
         if (closing) return;
         // Home button, screen off: save the position with Emby and let go of the stream.
         if (player != null) resumeMs = Math.max(0, player.getCurrentPosition());
@@ -739,6 +767,7 @@ public class VodPlayerActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        MainActivity.playersAlive--;
         handler.removeCallbacksAndMessages(null);
         if (!closing) reportStopped();
         releasePlayer();

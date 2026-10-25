@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -173,7 +173,12 @@ function flushAlerts() {
 // ---------- Store ----------
 // { users: { userId: { limit, expires: "YYYY-MM-DD" | null, name, updated, updatedBy } },
 //   disabledByGuard: { userId: true }, firstSeen: { userId: { deviceId: ms } }, actions: [...] }
-function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], reports: [], extensions: [] }; }
+// The two starter plans, added once on first run (a store that already has a "plans" list, even an empty one, is left alone).
+const STARTER_PLANS = [
+  { id: 'starter-1m-2c', name: '1 Month · 2 Connections', price: 35, length: 1, unit: 'month', connections: 2, categories: null, active: true },
+  { id: 'starter-2m-4c', name: '2 Months · 4 Connections', price: 55, length: 2, unit: 'month', connections: 4, categories: null, active: true },
+];
+function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], reports: [], extensions: [], plans: STARTER_PLANS.map((p) => ({ ...p })), subscriptions: [] }; }
 let store = emptyStore();
 try { store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) }; } catch (e) {
   if (e.code !== 'ENOENT') { log('Could not read', STORE_FILE, '-', e.message, '(starting with an empty store; the old file is kept as limits.json.bad)'); try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.bad'); } catch {} }
@@ -262,7 +267,67 @@ function addDays(day, n) { const d = new Date(day + 'T12:00:00'); d.setDate(d.ge
 const daysUntil = (day) => Math.ceil((new Date(day + 'T23:59:59').getTime() - Date.now()) / 86400000);
 const MAX_REQUESTS_PER_MONTH = 4;
 function publicRequest(r) {
-  return r && { id: r.id, status: r.status, at: r.at, note: r.note, decidedAt: r.decidedAt || null, days: r.days || null, message: r.message || '', newExpires: r.newExpires || null };
+  return r && { id: r.id, status: r.status, at: r.at, note: r.note, decidedAt: r.decidedAt || null, days: r.days || null, message: r.message || '', newExpires: r.newExpires || null,
+    wantedPlan: r.wantedPlanName || null };
+}
+
+// ---------- Subscription plans ----------
+// A plan is a price for a length of time with a number of connections (devices at once) and, optionally, only some of the
+// Live TV categories. Assigning one to a customer sets their device limit, extends their end date and sets their categories,
+// and writes a line in the subscription history. The customer's record keeps a copy of the plan as it was then, so changing
+// or deleting a plan later never changes what someone already has. (Aurora records the price; it doesn't take payments.)
+function addMonths(day, n) {
+  const d = new Date(day + 'T12:00:00'), dom = d.getDate();
+  d.setMonth(d.getMonth() + n);
+  if (d.getDate() !== dom) d.setDate(0); // 31 Jan + 1 month: the last day of February, not early March
+  return localDay(d);
+}
+const addPlanLength = (day, plan) => (plan.unit === 'day' ? addDays(day, plan.length) : addMonths(day, plan.length));
+const planLengthText = (p) => `${p.length} ${p.unit}${p.length === 1 ? '' : 's'}`;
+// Checks what the admin typed; returns { plan } or { error }.
+function cleanPlan(b, id) {
+  const name = String(b.name || '').trim().slice(0, 60);
+  if (!name) return { error: 'Give the plan a name.' };
+  const price = Math.round(Number(b.price) * 100) / 100;
+  if (!Number.isFinite(price) || price < 0 || price > 100000) return { error: 'The price must be a number from 0 up.' };
+  const unit = b.unit === 'day' ? 'day' : 'month', length = Number(b.length);
+  if (!Number.isInteger(length) || length < 1 || length > (unit === 'month' ? 60 : 1825)) return { error: `The length must be a whole number of ${unit}s (1 to ${unit === 'month' ? 60 : 1825}).` };
+  const connections = Number(b.connections);
+  if (!Number.isInteger(connections) || connections < 1 || connections > 50) return { error: 'Connections must be a whole number from 1 to 50.' };
+  let categories = null;
+  if (b.categories !== null && b.categories !== undefined) {
+    if (!Array.isArray(b.categories) || b.categories.length > 5000) return { error: 'The Live TV categories are not valid.' };
+    categories = [...new Set(b.categories.map((c) => String(c).slice(0, 160)))];
+    if (!categories.length) return { error: 'Choose at least one Live TV category, or allow all of them.' };
+  }
+  return { plan: { id, name, price, length, unit, connections, categories, active: b.active !== false } };
+}
+// Puts a plan on an account. mode "extend": time already left is kept and the plan's length added after it; "today": starts now.
+function applyPlan(userId, userName, plan, mode, priceOverride) {
+  const today = localDay(new Date());
+  const rec = store.users[userId] || (store.users[userId] = { limit: plan.connections, expires: null, name: userName, updated: Date.now() });
+  const from = mode === 'extend' && rec.expires && rec.expires > today ? rec.expires : today;
+  rec.limit = plan.connections;
+  rec.expires = addPlanLength(from, plan);
+  rec.categories = plan.categories ? [...plan.categories] : null;
+  rec.name = userName; rec.updated = Date.now();
+  const price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number.isFinite(Number(priceOverride)) ? Math.max(0, Math.round(Number(priceOverride) * 100) / 100) : plan.price;
+  rec.plan = { id: plan.id, name: plan.name, price, connections: plan.connections, length: plan.length, unit: plan.unit, categories: rec.categories, since: today };
+  const entry = { id: crypto.randomBytes(5).toString('hex'), at: Date.now(), userId, name: userName, planId: plan.id, planName: plan.name, price, length: plan.length, unit: plan.unit,
+    connections: plan.connections, mode, from, expires: rec.expires };
+  store.subscriptions = [entry, ...(store.subscriptions || [])].slice(0, 1000);
+  recordAction({ type: 'plan', userId, name: userName, why: `${plan.name}: ${plan.connections} connections until ${rec.expires}` });
+  return { rec, entry };
+}
+function subscriptionTotals() {
+  const now = new Date(), month = (d) => `${d.getFullYear()}-${d.getMonth()}`;
+  const thisKey = month(now), lastKey = month(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  const out = { thisMonth: { count: 0, revenue: 0 }, lastMonth: { count: 0, revenue: 0 } };
+  for (const e of store.subscriptions || []) {
+    const k = month(new Date(e.at)), t = k === thisKey ? out.thisMonth : k === lastKey ? out.lastMonth : null;
+    if (t) { t.count++; t.revenue = Math.round((t.revenue + e.price) * 100) / 100; }
+  }
+  return out;
 }
 
 const isDate = (s) => {
@@ -712,10 +777,18 @@ async function handle(req, res) {
     return send(res, 200, {
       name: me.Name, limit: limitOf(me.Id), activeDevices: devices ? devices.size : 0,
       expires, expired: isExpired(rec), daysLeft: expires ? daysUntil(expires) : null, disabled: !!me.Policy?.IsDisabled,
+      plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
+      categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
         && mine.filter((x) => Date.now() - x.at < 30 * 86400000).length < MAX_REQUESTS_PER_MONTH,
     });
+  }
+  // The plans a customer can ask for (active ones only; name, price, length, connections).
+  if (url.pathname === '/plans/public' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, { plans: (store.plans || []).filter((x) => x.active).map((x) => ({ id: x.id, name: x.name, price: x.price, length: x.length, unit: x.unit, connections: x.connections })) });
   }
   if (url.pathname === '/extension' && req.method === 'POST') {
     let body;
@@ -728,12 +801,14 @@ async function handle(req, res) {
     const mine = (store.extensions || []).filter((x) => x.userId === me.Id);
     if (mine[0]?.status === 'pending') return send(res, 409, { error: 'You already have a request waiting.' });
     if (mine.filter((x) => Date.now() - x.at < 30 * 86400000).length >= MAX_REQUESTS_PER_MONTH) return send(res, 429, { error: 'Too many requests this month. Please contact the admin.' });
-    const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires };
+    const wanted = body.planId ? (store.plans || []).find((x) => x.id === body.planId && x.active) : null;
+    const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires,
+      wantedPlanId: wanted ? wanted.id : null, wantedPlanName: wanted ? `${wanted.name} ($${wanted.price})` : null };
     store.extensions = [entry, ...(store.extensions || [])].slice(0, 500);
     recordAction({ type: 'extensionRequested', userId: me.Id, name: me.Name, why: `asked for an extension (expires ${rec.expires})` });
     saveStore();
     log('Extension requested by', me.Name, `(expires ${rec.expires})`);
-    sendAlert('Aurora: extension requested', `${me.Name} asked for more time (access ends ${rec.expires}).${entry.note ? '\n"' + entry.note + '"' : ''}`, false);
+    sendAlert('Aurora: extension requested', `${me.Name} asked for more time (access ends ${rec.expires}).${entry.wantedPlanName ? '\nWants: ' + entry.wantedPlanName : ''}${entry.note ? '\n"' + entry.note + '"' : ''}`, false);
     return send(res, 200, { ok: true, request: publicRequest(entry) });
   }
 
@@ -782,6 +857,58 @@ async function handle(req, res) {
     });
   }
 
+  // Subscription plans (admin): the list, the history and what came in this month and last.
+  if (url.pathname === '/plans' && req.method === 'GET') {
+    return send(res, 200, { plans: store.plans || [], subscriptions: (store.subscriptions || []).slice(0, 100), totals: subscriptionTotals() });
+  }
+  if (url.pathname === '/plans' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const c = cleanPlan(body, 'p' + crypto.randomBytes(4).toString('hex'));
+    if (c.error) return send(res, 400, { error: c.error });
+    store.plans = [...(store.plans || []), c.plan];
+    recordAction({ type: 'plans', why: `plan added: ${c.plan.name}, $${c.plan.price}` });
+    saveStore();
+    return send(res, 200, { plan: c.plan });
+  }
+  const pm = url.pathname.match(/^\/plans\/([\w-]{1,40})$/);
+  if (pm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const i = (store.plans || []).findIndex((x) => x.id === pm[1]);
+    if (i < 0) return send(res, 404, { error: 'No such plan' });
+    const c = cleanPlan(body, pm[1]);
+    if (c.error) return send(res, 400, { error: c.error });
+    store.plans[i] = c.plan;
+    recordAction({ type: 'plans', why: `plan changed: ${c.plan.name}` });
+    saveStore();
+    return send(res, 200, { plan: c.plan });
+  }
+  if (pm && req.method === 'DELETE') {
+    const had = (store.plans || []).find((x) => x.id === pm[1]);
+    store.plans = (store.plans || []).filter((x) => x.id !== pm[1]);
+    if (had) { recordAction({ type: 'plans', why: `plan deleted: ${had.name}` }); saveStore(); }
+    return send(res, 200, { ok: true });
+  }
+  // Put a plan on an account: { planId, mode: "extend" | "today", price? (a different price than the plan's, for this one) }.
+  const lp = url.pathname.match(/^\/limits\/([\w-]{1,64})\/plan$/);
+  if (lp && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const plan = (store.plans || []).find((x) => x.id === body.planId);
+    if (!plan) return send(res, 404, { error: 'No such plan' });
+    if (body.price !== undefined && body.price !== null && body.price !== '' && !(Number(body.price) >= 0 && Number(body.price) <= 100000)) return send(res, 400, { error: 'The price must be a number from 0 up.' });
+    let user;
+    try { user = await emby('GET', `/Users/${lp[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    if (user.Policy?.IsAdministrator) return send(res, 400, { error: 'Administrator accounts have no plan.' });
+    const { rec, entry } = applyPlan(lp[1], user.Name, plan, body.mode === 'today' ? 'today' : 'extend', body.price);
+    saveStore();
+    log('Plan', plan.name, 'for', user.Name, 'until', rec.expires);
+    let applied = true;
+    try { await enforce(lp[1]); } catch (e) { applied = false; log('Applying', user.Name, 'failed:', e.message); }
+    return send(res, 200, { ok: true, applied, record: rec, subscription: entry });
+  }
+
   // Extension requests, for Admin -> Users.
   if (url.pathname === '/extensions' && req.method === 'GET') {
     const list = (store.extensions || []).map((x) => ({ ...x, currentExpires: store.users[x.userId]?.expires || null }));
@@ -802,8 +929,11 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, request: r });
     }
     if (body.action !== 'approve') return send(res, 400, { error: 'action must be approve or deny' });
-    const days = Number(body.days);
-    if (!Number.isInteger(days) || days < 1 || days > 730) return send(res, 400, { error: 'days must be a whole number from 1 to 730' });
+    // Approving with a plan (what the customer asked for, or another): it sets their connections, end date and categories.
+    const planChosen = body.planId ? (store.plans || []).find((x) => x.id === body.planId) : null;
+    if (body.planId && !planChosen) return send(res, 404, { error: 'No such plan' });
+    const days = planChosen ? 0 : Number(body.days);
+    if (!planChosen && (!Number.isInteger(days) || days < 1 || days > 730)) return send(res, 400, { error: 'days must be a whole number from 1 to 730' });
     let user;
     try { user = await emby('GET', `/Users/${r.userId}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'That account no longer exists' : e.message }); }
     // The admin may have made the account permanent since it asked: approving would put an end date back on it.
@@ -814,12 +944,17 @@ async function handle(req, res) {
     }
     const rec = store.users[r.userId];
     const today = localDay(new Date());
-    const from = rec.expires && rec.expires > today ? rec.expires : today; // time already left is kept, never lost
-    rec.expires = addDays(from, days); rec.name = user.Name; rec.updated = Date.now();
-    r.status = 'approved'; r.decidedAt = Date.now(); r.days = days; r.message = message; r.newExpires = rec.expires;
-    recordAction({ type: 'extended', userId: r.userId, name: r.name, why: `extended ${days} days, now ends ${rec.expires}` });
+    if (planChosen) {
+      applyPlan(r.userId, user.Name, planChosen, 'extend', body.price);
+      r.status = 'approved'; r.decidedAt = Date.now(); r.days = null; r.message = message; r.newExpires = rec.expires; r.planName = planChosen.name;
+    } else {
+      const from = rec.expires && rec.expires > today ? rec.expires : today; // time already left is kept, never lost
+      rec.expires = addDays(from, days); rec.name = user.Name; rec.updated = Date.now();
+      r.status = 'approved'; r.decidedAt = Date.now(); r.days = days; r.message = message; r.newExpires = rec.expires;
+      recordAction({ type: 'extended', userId: r.userId, name: r.name, why: `extended ${days} days, now ends ${rec.expires}` });
+    }
     saveStore();
-    log('Extended', r.name, days, 'days, now ends', rec.expires);
+    log('Extended', r.name, planChosen ? planChosen.name : days + ' days', 'now ends', rec.expires);
     let applied = true;
     try { await enforce(r.userId); } catch (e) { applied = false; log('Applying', r.name, 'failed:', e.message); }
     return send(res, 200, { ok: true, applied, request: r });
@@ -908,7 +1043,8 @@ async function handle(req, res) {
     if (body.expires !== null && body.expires !== undefined && body.expires !== '' && !isDate(body.expires)) return send(res, 400, { error: 'expires must be YYYY-MM-DD or null' });
     let user;
     try { user = await emby('GET', `/Users/${m[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
-    store.users[m[1]] = { limit, expires: body.expires || null, name: user.Name, updated: Date.now() };
+    // Keep the plan and the Live TV categories it set: changing the limit or the date by hand doesn't remove them.
+    store.users[m[1]] = { ...(store.users[m[1]] || {}), limit, expires: body.expires || null, name: user.Name, updated: Date.now() };
     recordAction({ type: 'limits', userId: m[1], name: user.Name, why: `limit ${limit}, ${body.expires ? 'expires ' + body.expires : 'no expiration'}` });
     saveStore();
     log('Limits for', user.Name, 'set to', limit, body.expires ? `expiring ${body.expires}` : 'no expiration');

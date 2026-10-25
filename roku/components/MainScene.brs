@@ -28,6 +28,7 @@ sub init()
         "https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/main/aurora-config.json"
     ]
     m.configTry = 0
+    tourInit()
     checkForUpdate()
     start()
 end sub
@@ -365,7 +366,7 @@ sub homeStep()
     ' Browse tiles first.
     browse = CreateObject("roSGNode", "ContentNode")
     browse.title = "Browse"
-    for each t in [["Movies", "movies"], ["TV Shows", "shows"], ["Search", "search"], ["Sign out", "signout"]]
+    for each t in [["Movies", "movies"], ["TV Shows", "shows"], ["Search", "search"], ["Replay tour", "tour"], ["Sign out", "signout"]]
         n = CreateObject("roSGNode", "ContentNode")
         n.title = t[0]
         n.addFields({ action: t[1], embyId: "", embyType: "" })
@@ -378,6 +379,7 @@ sub homeStep()
     addRow(root, "New TV Shows", m.homeRows.shows)
     m.rowList.content = root
     m.rowList.setFocus(true)
+    maybeStartTour()
 end sub
 
 sub addRow(root as object, title as string, items as object)
@@ -438,6 +440,8 @@ sub onRowSelected()
         showGrid("TV Shows", "Series", "")
     else if act = "search"
         askSearch()
+    else if act = "tour"
+        tourStart()
     else if act = "signout"
         signOut()
     else
@@ -862,6 +866,7 @@ end sub
 
 function onKeyEvent(key as string, press as boolean) as boolean
     if not press then return false
+    if m.tourOn = true then return tourKey(key)
     if m.video.visible
         if key = "back"
             finishPlayback(false)
