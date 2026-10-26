@@ -6173,6 +6173,9 @@
       const start = isLive ? 0 : (startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0);
       player.startSeconds = start / TICKS_PER_SECOND;
       player.intro = isLive ? null : findIntro(full.Chapters);
+      // No intro marker from the server: for episodes, offer a rough "skip ahead" for the first minutes instead.
+      player.fallbackSkip = !isLive && !player.intro && full.Type === 'Episode';
+      player.fallbackDone = false;
       player.creditsAt = isLive ? null : findCreditsStart(full.Chapters);
       player.upNextShown = false;
       player.upNextDismissed = false;
@@ -6269,6 +6272,9 @@
     const ticks = (chapters || []).find((c) => c.MarkerType === 'CreditsStart')?.StartPositionTicks;
     return ticks ? ticks / TICKS_PER_SECOND : null;
   }
+
+  // Episodes the server has no intro markers for get a "Skip 90 seconds" button for the first few minutes.
+  const FALLBACK_SKIP_S = 90, FALLBACK_SKIP_FROM = 3, FALLBACK_SKIP_UNTIL = 360;
 
   function findIntro(chapters) {
     const ticks = (type) => (chapters || []).find((c) => c.MarkerType === type)?.StartPositionTicks;
@@ -6415,6 +6421,7 @@
       subtitle: full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''),
       subs,
       introStartMs: ms(player.intro?.start), introEndMs: ms(player.intro?.end), creditsMs: ms(player.creditsAt),
+      fallbackSkipMs: player.fallbackSkip ? FALLBACK_SKIP_S * 1000 : 0,
       nextTitle: next ? episodeLabel(next) : '',
       audioLang: cfg.AudioLanguagePreference || '', subLang: cfg.SubtitleLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default',
       report: {
@@ -6733,7 +6740,9 @@
     $('#osd-play').setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
     $('#osd-mute').innerHTML = video.muted ? ICONS.muted : ICONS.volume;
     const inIntro = player.intro && cur >= player.intro.start && cur < player.intro.end - 1;
-    $('#skip-intro').classList.toggle('hidden', !inIntro);
+    const guessIntro = !inIntro && player.fallbackSkip && !player.fallbackDone && cur >= FALLBACK_SKIP_FROM && cur < FALLBACK_SKIP_UNTIL;
+    $('#skip-intro').classList.toggle('hidden', !(inIntro || guessIntro));
+    $('#skip-intro').textContent = guessIntro ? `Skip ${FALLBACK_SKIP_S} seconds` : 'Skip Intro';
     checkUpNext(cur);
   }
 
@@ -6892,7 +6901,10 @@
     $('#osd-fwd10').addEventListener('click', () => seekBy(10));
     $('#osd-mute').addEventListener('click', () => { video.muted = !video.muted; updateOsd(); });
     $('#osd-tracks').addEventListener('click', openTracks);
-    $('#skip-intro').addEventListener('click', () => { if (player.intro) seekTo(player.intro.end); });
+    $('#skip-intro').addEventListener('click', () => {
+      if (player.intro) seekTo(player.intro.end);
+      else if (player.fallbackSkip) { player.fallbackDone = true; seekTo(Math.min($('#video').currentTime + FALLBACK_SKIP_S, ($('#video').duration || Infinity) - 5)); $('#skip-intro').classList.add('hidden'); }
+    });
     $('#osd-fullscreen').addEventListener('click', () => {
       if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
       else el.requestFullscreen?.().catch(() => {});

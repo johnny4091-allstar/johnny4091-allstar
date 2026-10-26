@@ -1,1 +1,1 @@
-- Aurora's Android and TV players can now use FFmpeg to play sound and video formats your device can't decode itself, in movies, shows and Live TV. There's a switch in Settings → Software decoders.
+- Episodes the server has no intro marks for now get a "Skip 90 seconds" button during the first few minutes. Episodes with marks still get Skip Intro.
