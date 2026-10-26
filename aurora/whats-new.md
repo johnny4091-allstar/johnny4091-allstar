@@ -1,1 +1,1 @@
-- Episodes the server has no intro marks for now get a "Skip 90 seconds" button during the first few minutes. Episodes with marks still get Skip Intro.
+- Admin → Overview now shows more of what the server is doing: for each person watching, the file, whether it plays directly or ffmpeg is converting it (and why), plus tasks and recent server activity.
