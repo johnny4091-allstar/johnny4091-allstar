@@ -1,1 +1,1 @@
-- The "Skip 90 seconds" button now only shows for a few seconds at the start of an episode with no intro marks, and you can turn it off in Settings → Skip-ahead button.
+- Fixed: on a TV, pressing OK in the first seconds of an episode could skip 90 seconds instead of pausing.

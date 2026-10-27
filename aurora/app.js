@@ -6947,7 +6947,8 @@
       if (action === 'left' || action === 'right') { wakeOsd(); focusEl($('#osd-play')); return true; }
     }
     if (!osdVisible()) {
-      const skipVisible = !$('#skip-intro').classList.contains('hidden');
+      // OK skips only a real intro. The rough "skip 90 seconds" prompt must not take over OK, or pausing in the first seconds would skip ahead.
+      const skipVisible = !$('#skip-intro').classList.contains('hidden') && !!player.intro;
       if (action === 'select') {
         if (skipVisible) $('#skip-intro').click();
         else togglePlay();
