@@ -1,1 +1,1 @@
-- Admin → Overview now shows more of what the server is doing: for each person watching, the file, whether it plays directly or ffmpeg is converting it (and why), plus tasks and recent server activity.
+- The "Skip 90 seconds" button now only shows for a few seconds at the start of an episode with no intro marks, and you can turn it off in Settings → Skip-ahead button.

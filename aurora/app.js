@@ -3502,7 +3502,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3647,6 +3647,7 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${settingRow('Skip-ahead button', 'For episodes the server has no intro marks for, show a "Skip 90 seconds" button for a few seconds at the start. Episodes with intro marks always get Skip Intro.', selectHtml('skipGuess', [['on', 'On'], ['off', 'Off']], getPref('skipGuess')))}
         ${nativeApp?.playVod ? settingRow('Software decoders (FFmpeg)', 'For sound and video your device can\'t decode itself (DTS, TrueHD and similar), in movies, shows and Live TV. Used only when the device\'s own decoder can\'t play it. Turn off if a video stutters.', selectHtml('ffmpeg', [['on', 'On (recommended)'], ['off', 'Off']], getPref('ffmpeg'))) : ''}
         ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
@@ -6253,7 +6254,7 @@
       player.startSeconds = start / TICKS_PER_SECOND;
       player.intro = isLive ? null : findIntro(full.Chapters);
       // No intro marker from the server: for episodes, offer a rough "skip ahead" for the first minutes instead.
-      player.fallbackSkip = !isLive && !player.intro && full.Type === 'Episode';
+      player.fallbackSkip = !isLive && !player.intro && full.Type === 'Episode' && getPref('skipGuess') !== 'off';
       player.fallbackDone = false;
       player.creditsAt = isLive ? null : findCreditsStart(full.Chapters);
       player.upNextShown = false;
@@ -6353,7 +6354,8 @@
   }
 
   // Episodes the server has no intro markers for get a "Skip 90 seconds" button for the first few minutes.
-  const FALLBACK_SKIP_S = 90, FALLBACK_SKIP_FROM = 3, FALLBACK_SKIP_UNTIL = 360;
+  // It can't know whether this episode has an intro, so it only shows as a short prompt at the very start.
+  const FALLBACK_SKIP_S = 90, FALLBACK_SKIP_FROM = 3, FALLBACK_SKIP_UNTIL = 33;
 
   function findIntro(chapters) {
     const ticks = (type) => (chapters || []).find((c) => c.MarkerType === type)?.StartPositionTicks;
@@ -6500,7 +6502,7 @@
       subtitle: full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''),
       subs,
       introStartMs: ms(player.intro?.start), introEndMs: ms(player.intro?.end), creditsMs: ms(player.creditsAt),
-      fallbackSkipMs: player.fallbackSkip ? FALLBACK_SKIP_S * 1000 : 0,
+      fallbackSkipMs: player.fallbackSkip ? FALLBACK_SKIP_S * 1000 : 0, fallbackFromMs: FALLBACK_SKIP_FROM * 1000, fallbackUntilMs: FALLBACK_SKIP_UNTIL * 1000,
       nextTitle: next ? episodeLabel(next) : '',
       audioLang: cfg.AudioLanguagePreference || '', subLang: cfg.SubtitleLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default',
       report: {

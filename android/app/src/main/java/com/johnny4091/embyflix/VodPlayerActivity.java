@@ -84,7 +84,7 @@ public class VodPlayerActivity extends Activity {
     private final List<MediaItem.SubtitleConfiguration> subs = new ArrayList<>();
     private long introStart = -1, introEnd = -1, credits = -1;
     // No intro marker from the server: a rough "skip ahead" for the first minutes of an episode (0 = off).
-    private long fallbackSkipMs = 0;
+    private long fallbackSkipMs = 0, fallbackFromMs = 3000, fallbackUntilMs = 33000;
     private boolean fallbackDone = false;
     private String nextTitle = "";
 
@@ -125,6 +125,8 @@ public class VodPlayerActivity extends Activity {
         introStart = spec.optLong("introStartMs", -1);
         introEnd = spec.optLong("introEndMs", -1);
         fallbackSkipMs = spec.optLong("fallbackSkipMs", 0);
+        fallbackFromMs = spec.optLong("fallbackFromMs", 3000);
+        fallbackUntilMs = spec.optLong("fallbackUntilMs", 33000);
         credits = spec.optLong("creditsMs", -1);
         nextTitle = spec.optString("nextTitle", "");
         report = spec.optJSONObject("report");
@@ -359,7 +361,7 @@ public class VodPlayerActivity extends Activity {
             if (player == null) return;
             long pos = player.getCurrentPosition(), dur = player.getDuration();
             boolean inIntro = introStart >= 0 && introEnd > introStart && pos >= introStart && pos < introEnd - 1000;
-            boolean guessIntro = !inIntro && introStart < 0 && fallbackSkipMs > 0 && !fallbackDone && pos >= 3000 && pos < 360000;
+            boolean guessIntro = !inIntro && introStart < 0 && fallbackSkipMs > 0 && !fallbackDone && pos >= fallbackFromMs && pos < fallbackUntilMs;
             if (guessIntro) skipIntro.setText("Skip " + (fallbackSkipMs / 1000) + " seconds");
             else skipIntro.setText("Skip Intro");
             setVisible(skipIntro, inIntro || guessIntro);
