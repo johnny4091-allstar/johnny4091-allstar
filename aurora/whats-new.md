@@ -1,1 +1,1 @@
-- New: a quick guided tour shows you around the first time you open Aurora. You can replay it any time in Settings → Replay tour.
+- The "Skip 90 seconds" button now only shows for a few seconds at the start of an episode with no intro marks, and you can turn it off in Settings → Skip-ahead button.

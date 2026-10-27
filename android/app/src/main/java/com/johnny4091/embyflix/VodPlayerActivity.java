@@ -83,6 +83,9 @@ public class VodPlayerActivity extends Activity {
     private boolean hls;
     private final List<MediaItem.SubtitleConfiguration> subs = new ArrayList<>();
     private long introStart = -1, introEnd = -1, credits = -1;
+    // No intro marker from the server: a rough "skip ahead" for the first minutes of an episode (0 = off).
+    private long fallbackSkipMs = 0, fallbackFromMs = 3000, fallbackUntilMs = 33000;
+    private boolean fallbackDone = false;
     private String nextTitle = "";
 
     private ExoPlayer player;
@@ -121,6 +124,9 @@ public class VodPlayerActivity extends Activity {
         resumeMs = Math.max(0, spec.optLong("startMs"));
         introStart = spec.optLong("introStartMs", -1);
         introEnd = spec.optLong("introEndMs", -1);
+        fallbackSkipMs = spec.optLong("fallbackSkipMs", 0);
+        fallbackFromMs = spec.optLong("fallbackFromMs", 3000);
+        fallbackUntilMs = spec.optLong("fallbackUntilMs", 33000);
         credits = spec.optLong("creditsMs", -1);
         nextTitle = spec.optString("nextTitle", "");
         report = spec.optJSONObject("report");
@@ -174,10 +180,8 @@ public class VodPlayerActivity extends Activity {
                 .setTargetBufferBytes(bufferBytes())
                 .setPrioritizeTimeOverSizeThresholds(false)
                 .build();
-        DefaultRenderersFactory renderers = new DefaultRenderersFactory(this)
-                .setEnableDecoderFallback(true)
-                // Software decoders for audio the box can't decode itself, where available.
-                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON);
+        // The device's decoders first, then FFmpeg software decoders for anything it can't play (Settings can turn them off).
+        DefaultRenderersFactory renderers = Decoders.factory(this, spec.optBoolean("softwareDecoders", true));
         player = new ExoPlayer.Builder(this, renderers)
                 .setLoadControl(loadControl)
                 .setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
@@ -357,7 +361,10 @@ public class VodPlayerActivity extends Activity {
             if (player == null) return;
             long pos = player.getCurrentPosition(), dur = player.getDuration();
             boolean inIntro = introStart >= 0 && introEnd > introStart && pos >= introStart && pos < introEnd - 1000;
-            setVisible(skipIntro, inIntro);
+            boolean guessIntro = !inIntro && introStart < 0 && fallbackSkipMs > 0 && !fallbackDone && pos >= fallbackFromMs && pos < fallbackUntilMs;
+            if (guessIntro) skipIntro.setText("Skip " + (fallbackSkipMs / 1000) + " seconds");
+            else skipIntro.setText("Skip Intro");
+            setVisible(skipIntro, inIntro || guessIntro);
             long nextAt = credits > 0 ? credits : (dur > 0 ? dur - 30000 : -1);
             setVisible(nextButton, !nextTitle.isEmpty() && nextAt > 0 && pos >= nextAt);
             // Stuck loading in the last seconds (the final piece never arrives): that's the end.
@@ -592,7 +599,12 @@ public class VodPlayerActivity extends Activity {
         actions.setOrientation(LinearLayout.HORIZONTAL);
         skipIntro = button("Skip Intro");
         skipIntro.setOnClickListener(v -> {
-            if (player != null && introEnd > 0) player.seekTo(introEnd);
+            if (player != null && introEnd > 0 && introStart >= 0) player.seekTo(introEnd);
+            else if (player != null && fallbackSkipMs > 0) {
+                fallbackDone = true;
+                long to = player.getCurrentPosition() + fallbackSkipMs, dur = player.getDuration();
+                player.seekTo(dur != C.TIME_UNSET && dur > 0 ? Math.min(to, Math.max(0, dur - 5000)) : to);
+            }
             skipIntro.setVisibility(View.GONE);
         });
         nextButton = button("Next Episode ▶");

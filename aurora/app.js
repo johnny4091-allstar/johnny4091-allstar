@@ -1765,7 +1765,7 @@
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
-        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), stallSeconds: stallSeconds() || undefined }));
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
   }
   // ----- Favorites -----
   // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
@@ -3502,7 +3502,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3647,6 +3647,8 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${settingRow('Skip-ahead button', 'For episodes the server has no intro marks for, show a "Skip 90 seconds" button for a few seconds at the start. Episodes with intro marks always get Skip Intro.', selectHtml('skipGuess', [['on', 'On'], ['off', 'Off']], getPref('skipGuess')))}
+        ${nativeApp?.playVod ? settingRow('Software decoders (FFmpeg)', 'For sound and video your device can\'t decode itself (DTS, TrueHD and similar), in movies, shows and Live TV. Used only when the device\'s own decoder can\'t play it. Turn off if a video stutters.', selectHtml('ffmpeg', [['on', 'On (recommended)'], ['off', 'Off']], getPref('ffmpeg'))) : ''}
         ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
         ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
       </section>
@@ -3959,19 +3961,37 @@
   }
 
   function watchingHtml(active, liveNow) {
-    return active.length || liveNow.length
-      ? `<div class="admin-list">${liveNow.map(liveRow).join('')}${active.map(sessionRow).join('')}</div>`
-      : '<p class="muted">Nobody is watching right now.</p>';
+    if (!active.length && !liveNow.length) return '<p class="muted">Nobody is watching right now.</p>';
+    const details = active.map(streamDetails);
+    const converting = details.filter((d) => d.tone === 'warn').length, out = details.reduce((n, d, i) => n + (active[i].PlayState?.IsPaused ? 0 : d.bps), 0); // a paused stream sends next to nothing
+    const summary = [`${active.length + liveNow.length} watching`, converting ? `${converting} being converted by ffmpeg` : 'no converting',
+      out ? `about ${mbps(out)} going out from the server${liveNow.length ? ' (Live TV comes from your provider, not the server)' : ''}` : ''].filter(Boolean).join(' · ');
+    return `<p class="muted session-summary">${esc(summary)}</p>
+      <div class="admin-list">${liveNow.map(liveRow).join('')}${active.map(sessionRow).join('')}</div>`;
   }
+  // What the server is busy with: tasks running now, then the latest entries in its activity log.
+  function activityHtml(entries, tasks) {
+    const running = (Array.isArray(tasks) ? tasks : []).filter((t) => t.State === 'Running');
+    const recent = (Array.isArray(entries) ? entries : entries?.Items || []).slice(0, 10);
+    const sev = (e) => (/error|fatal/i.test(e.Severity || '') ? 'bad' : /warn/i.test(e.Severity || '') ? 'warn' : '');
+    return `${running.length ? `<div class="admin-list">${running.map((t) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(t.Name)}</strong> <span class="pill warn">Running</span>
+        ${t.CurrentProgressPercentage != null ? `<div class="session-bar"><span style="width:${Math.min(100, Math.round(t.CurrentProgressPercentage))}%"></span></div>` : ''}</div></div>`).join('')}</div>` : '<p class="muted">No server tasks running.</p>'}
+      ${recent.length ? `<ul class="activity-feed">${recent.map((e) => `<li class="${sev(e)}"><span class="activity-when">${esc(timeAgo(e.Date))}</span> ${esc(e.Name || '')}${e.ShortOverview ? ` <span class="muted">· ${esc(e.ShortOverview)}</span>` : ''}</li>`).join('')}</ul>
+        <a href="#/admin?tab=activity">Open the full activity log</a>` : '<p class="muted">Nothing in the activity log yet.</p>'}`;
+  }
+
   // Keeps the "Watching now" list current while the Overview is open.
   function refreshWatching(body, isCurrent, users) {
     const timer = setInterval(async () => {
       const el = $('[data-watching]', body);
       if (!isCurrent() || !el) { clearInterval(timer); return; }
       try {
-        const [sessions, live] = await Promise.all([api('/Sessions'), liveWatching(users)]);
+        const [sessions, live, tasks, entries] = await Promise.all([api('/Sessions'), liveWatching(users), api('/ScheduledTasks').catch(() => null),
+          api('/System/ActivityLog/Entries', { params: { Limit: 10 } }).catch(() => null)]);
         if (!isCurrent() || !el.isConnected) return;
         el.innerHTML = watchingHtml((Array.isArray(sessions) ? sessions : []).filter((s) => s.NowPlayingItem), live.now);
+        const act = $('[data-server-activity]', body);
+        if (act && (tasks || entries)) act.innerHTML = activityHtml(entries, tasks);
       } catch { /* keep what's shown */ }
     }, 30000);
   }
@@ -4317,6 +4337,11 @@
       <section class="admin-card">
         <h2>Watching now <small data-watch-updated>Updates every 30 seconds</small></h2>
         <div data-watching>${watchingHtml(active, live.now)}</div>
+      </section>
+
+      <section class="admin-card">
+        <h2>Server activity <small>Updates every 30 seconds</small></h2>
+        <div data-server-activity>${activityHtml(list(activity).slice().sort((a, b) => new Date(b.Date) - new Date(a.Date)), list(tasks))}</div>
       </section>
 
       <section class="admin-card">
@@ -4765,14 +4790,70 @@
   // Aurora reports its version as 1.2.<build>; the build number orders versions.
   const auroraVersionCode = (v) => Number(String(v || '').match(/^\d+\.\d+\.(\d+)$/)?.[1] || 0);
 
+  // Why Emby had to convert (re-encode) a stream, in plain words.
+  const TRANSCODE_REASONS = {
+    ContainerNotSupported: 'the file type isn\'t supported by the device', VideoCodecNotSupported: 'the video format isn\'t supported',
+    AudioCodecNotSupported: 'the sound format isn\'t supported', SubtitleCodecNotSupported: 'the subtitle format isn\'t supported',
+    ContainerBitrateExceedsLimit: 'it\'s over the quality limit', VideoBitrateNotSupported: 'the video bitrate is too high',
+    AudioBitrateNotSupported: 'the sound bitrate is too high', VideoProfileNotSupported: 'the video profile isn\'t supported',
+    VideoLevelNotSupported: 'the video level isn\'t supported', VideoResolutionNotSupported: 'the resolution isn\'t supported',
+    VideoBitDepthNotSupported: 'the video bit depth isn\'t supported', AnamorphicVideoNotSupported: 'anamorphic video isn\'t supported',
+    InterlacedVideoNotSupported: 'interlaced video isn\'t supported', RefFramesNotSupported: 'too many reference frames',
+    AudioChannelsNotSupported: 'the sound channels aren\'t supported', AudioSampleRateNotSupported: 'the sound sample rate isn\'t supported',
+    SecondaryAudioNotSupported: 'the second audio track isn\'t supported', DirectPlayError: 'direct play failed',
+    VideoFramerateNotSupported: 'the frame rate isn\'t supported', UnknownVideoStreamInfo: 'the video details are unknown',
+    UnknownAudioStreamInfo: 'the sound details are unknown', SubtitleBurn: 'subtitles are being burned in',
+  };
+  const reasonText = (r) => TRANSCODE_REASONS[r] || String(r).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  const mbps = (bps) => (bps ? `${bps >= 1e7 ? Math.round(bps / 1e6) : (bps / 1e6).toFixed(1)} Mbps` : '');
+  const codecName = (c) => ({ h264: 'H.264', hevc: 'HEVC (H.265)', h265: 'HEVC (H.265)', av1: 'AV1', vp9: 'VP9', mpeg2video: 'MPEG-2', eac3: 'E-AC-3', ac3: 'AC-3', aac: 'AAC', dts: 'DTS', truehd: 'TrueHD', mp3: 'MP3', opus: 'Opus', flac: 'FLAC' })[String(c || '').toLowerCase()] || String(c || '').toUpperCase();
+  const channelsName = (n) => ({ 1: 'mono', 2: 'stereo', 6: '5.1', 8: '7.1' })[n] || (n ? n + ' ch' : '');
+
+  // What Emby is actually doing for one stream: the file it plays from, and (when it converts) what ffmpeg is doing.
+  function streamDetails(s) {
+    const it = s.NowPlayingItem, ps = s.PlayState || {}, ti = s.TranscodingInfo;
+    const streams = it.MediaStreams || it.MediaSources?.[0]?.MediaStreams || [];
+    const src = it.MediaSources?.[0];
+    const video = streams.find((x) => x.Type === 'Video');
+    const audio = (ps.AudioStreamIndex != null && streams.find((x) => x.Type === 'Audio' && x.Index === ps.AudioStreamIndex)) || streams.find((x) => x.Type === 'Audio' && x.IsDefault) || streams.find((x) => x.Type === 'Audio');
+    const res = video?.Height ? (video.Height >= 2000 ? '4K' : video.Height + 'p') : '';
+    const source = [String(it.Container || src?.Container || '').toUpperCase(), video ? [codecName(video.Codec), res].filter(Boolean).join(' ') : '',
+      mbps(src?.Bitrate || video?.BitRate), audio ? [codecName(audio.Codec), channelsName(audio.Channels)].filter(Boolean).join(' ') : ''].filter(Boolean).join(' · ');
+    const method = ps.PlayMethod || '';
+    let label = '', tone = '', server = '', why = '';
+    if (method === 'DirectPlay') { label = 'Direct play'; tone = 'good'; server = 'The device plays the file as it is. The server only sends it, with no converting.'; }
+    else if (method === 'DirectStream') { label = 'Direct stream'; tone = 'good'; server = 'ffmpeg repackages the file for the device without re-encoding, so the quality is untouched.'; }
+    else if (method === 'Transcode') {
+      const none = ti && ti.IsVideoDirect && ti.IsAudioDirect;
+      label = none ? 'Repackaging (ffmpeg)' : 'Converting (ffmpeg)'; tone = none ? 'good' : 'warn';
+      if (ti) {
+        const parts = [
+          ti.IsVideoDirect ? `video copied${video ? ' (' + codecName(video.Codec) + ')' : ''}` : `video converted${ti.VideoCodec ? ' to ' + codecName(ti.VideoCodec) : ''}${ti.Width && ti.Height ? ` at ${ti.Height}p` : ''}`,
+          ti.IsAudioDirect ? `sound copied${audio ? ' (' + codecName(audio.Codec) + ')' : ''}` : `sound converted${ti.AudioCodec ? ' to ' + codecName(ti.AudioCodec) : ''}`,
+        ];
+        const extra = [ti.Container ? 'into ' + String(ti.Container).toUpperCase() : '', mbps(ti.Bitrate), ti.Framerate ? Math.round(ti.Framerate) + ' fps' : '',
+          ti.CompletionPercentage ? Math.round(ti.CompletionPercentage) + '% prepared' : '', ti.HardwareAccelerationType ? 'hardware: ' + ti.HardwareAccelerationType : ''].filter(Boolean);
+        server = `ffmpeg is running: ${parts.join(', ')}${extra.length ? ' · ' + extra.join(' · ') : ''}`;
+        if (ti.TranscodeReasons?.length) why = 'Why: ' + [...new Set(ti.TranscodeReasons.map(reasonText))].join(', ');
+      } else server = 'ffmpeg is converting this for the device.';
+    }
+    // About how much of the connection this stream uses.
+    const bps = method === 'Transcode' && ti?.Bitrate ? ti.Bitrate : (src?.Bitrate || video?.BitRate || 0);
+    return { label, tone, server, why, source, bps };
+  }
+
   function sessionRow(s) {
     const it = s.NowPlayingItem, ps = s.PlayState || {};
     const title = it.SeriesName ? `${it.SeriesName} · ${episodeLabel(it)}` : it.Name;
     const pct = it.RunTimeTicks ? Math.min(100, (ps.PositionTicks || 0) / it.RunTimeTicks * 100) : 0;
-    const method = ps.PlayMethod === 'Transcode' ? 'Converting' : ps.PlayMethod ? 'Direct' : '';
+    const d = streamDetails(s);
+    const clock = it.RunTimeTicks ? `${formatClock((ps.PositionTicks || 0) / TICKS_PER_SECOND)} / ${formatClock(it.RunTimeTicks / TICKS_PER_SECOND)}` : '';
     return `<div class="admin-row session-row">
-      <div class="admin-row-main"><strong>${esc(s.UserName || 'Someone')}</strong> · ${esc(title || '')}${ps.IsPaused ? ' <span class="pill">Paused</span>' : ''}
-        <div class="muted">${esc(s.DeviceName || '')} · ${esc(s.Client || '')} ${esc(s.ApplicationVersion || '')}${method ? ' · ' + method : ''}${s.TranscodingInfo?.TranscodeReasons?.length ? ' (' + esc(s.TranscodingInfo.TranscodeReasons.join(', ')) + ')' : ''}</div>
+      <div class="admin-row-main"><strong>${esc(s.UserName || 'Someone')}</strong> · ${esc(title || '')}${ps.IsPaused ? ' <span class="pill">Paused</span>' : ''}${d.label ? ` <span class="pill ${d.tone}">${esc(d.label)}</span>` : ''}
+        <div class="muted">${esc(s.DeviceName || '')} · ${esc(s.Client || '')} ${esc(s.ApplicationVersion || '')}${s.RemoteEndPoint ? ' · ' + esc(String(s.RemoteEndPoint).replace(/^::ffff:/, '')) : ''}${clock ? ' · ' + clock : ''}</div>
+        ${d.source ? `<div class="session-detail"><span>File</span> ${esc(d.source)}</div>` : ''}
+        ${d.server ? `<div class="session-detail"><span>Server</span> ${esc(d.server)}</div>` : ''}
+        ${d.why ? `<div class="session-detail"><span></span> ${esc(d.why)}</div>` : ''}
         ${pct ? `<div class="session-bar"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
       </div></div>`;
   }
@@ -6172,6 +6253,9 @@
       const start = isLive ? 0 : (startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0);
       player.startSeconds = start / TICKS_PER_SECOND;
       player.intro = isLive ? null : findIntro(full.Chapters);
+      // No intro marker from the server: for episodes, offer a rough "skip ahead" for the first minutes instead.
+      player.fallbackSkip = !isLive && !player.intro && full.Type === 'Episode' && getPref('skipGuess') !== 'off';
+      player.fallbackDone = false;
       player.creditsAt = isLive ? null : findCreditsStart(full.Chapters);
       player.upNextShown = false;
       player.upNextDismissed = false;
@@ -6268,6 +6352,10 @@
     const ticks = (chapters || []).find((c) => c.MarkerType === 'CreditsStart')?.StartPositionTicks;
     return ticks ? ticks / TICKS_PER_SECOND : null;
   }
+
+  // Episodes the server has no intro markers for get a "Skip 90 seconds" button for the first few minutes.
+  // It can't know whether this episode has an intro, so it only shows as a short prompt at the very start.
+  const FALLBACK_SKIP_S = 90, FALLBACK_SKIP_FROM = 3, FALLBACK_SKIP_UNTIL = 33;
 
   function findIntro(chapters) {
     const ticks = (type) => (chapters || []).find((c) => c.MarkerType === type)?.StartPositionTicks;
@@ -6414,6 +6502,7 @@
       subtitle: full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''),
       subs,
       introStartMs: ms(player.intro?.start), introEndMs: ms(player.intro?.end), creditsMs: ms(player.creditsAt),
+      fallbackSkipMs: player.fallbackSkip ? FALLBACK_SKIP_S * 1000 : 0, fallbackFromMs: FALLBACK_SKIP_FROM * 1000, fallbackUntilMs: FALLBACK_SKIP_UNTIL * 1000,
       nextTitle: next ? episodeLabel(next) : '',
       audioLang: cfg.AudioLanguagePreference || '', subLang: cfg.SubtitleLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default',
       report: {
@@ -6422,6 +6511,7 @@
         audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
       },
       stallSeconds: stallSeconds() || undefined,
+      softwareDecoders: getPref('ffmpeg') !== 'off',
       // If Emby's conversion never starts, hand back at once (no "press OK" screen) so Aurora can try playing the file as it is.
       canFallback: player.playMethod === 'Transcode' && !player.noCap && !forceTranscode && autoQuality() && (player.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate),
     };
@@ -6731,7 +6821,9 @@
     $('#osd-play').setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
     $('#osd-mute').innerHTML = video.muted ? ICONS.muted : ICONS.volume;
     const inIntro = player.intro && cur >= player.intro.start && cur < player.intro.end - 1;
-    $('#skip-intro').classList.toggle('hidden', !inIntro);
+    const guessIntro = !inIntro && player.fallbackSkip && !player.fallbackDone && cur >= FALLBACK_SKIP_FROM && cur < FALLBACK_SKIP_UNTIL;
+    $('#skip-intro').classList.toggle('hidden', !(inIntro || guessIntro));
+    $('#skip-intro').textContent = guessIntro ? `Skip ${FALLBACK_SKIP_S} seconds` : 'Skip Intro';
     checkUpNext(cur);
   }
 
@@ -6890,7 +6982,10 @@
     $('#osd-fwd10').addEventListener('click', () => seekBy(10));
     $('#osd-mute').addEventListener('click', () => { video.muted = !video.muted; updateOsd(); });
     $('#osd-tracks').addEventListener('click', openTracks);
-    $('#skip-intro').addEventListener('click', () => { if (player.intro) seekTo(player.intro.end); });
+    $('#skip-intro').addEventListener('click', () => {
+      if (player.intro) seekTo(player.intro.end);
+      else if (player.fallbackSkip) { player.fallbackDone = true; seekTo(Math.min($('#video').currentTime + FALLBACK_SKIP_S, ($('#video').duration || Infinity) - 5)); $('#skip-intro').classList.add('hidden'); }
+    });
     $('#osd-fullscreen').addEventListener('click', () => {
       if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
       else el.requestFullscreen?.().catch(() => {});

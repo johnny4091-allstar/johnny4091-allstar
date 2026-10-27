@@ -1082,3 +1082,13 @@ a.user-row:hover, a.user-row:focus { background: rgba(255,255,255,.06); outline:
 @media (prefers-reduced-motion: reduce) {
   .tour-arrow, .tour-tip.on { animation: none !important; }
 }
+
+/* ---------- Admin: now playing details ---------- */
+.session-detail { font-size: .82rem; color: var(--muted); margin-top: .2rem; line-height: 1.35; }
+.session-detail span { display: inline-block; min-width: 3.4em; color: #8f9bc4; font-weight: 700; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; }
+.session-summary { margin: 0 0 .6rem; }
+.activity-feed { list-style: none; margin: .6rem 0; padding: 0; font-size: .88rem; }
+.activity-feed li { padding: .3rem 0; border-top: 1px solid rgba(255,255,255,.07); }
+.activity-feed li.warn { color: #ffe08a; }
+.activity-feed li.bad { color: #ffb3bb; }
+.activity-when { display: inline-block; min-width: 5.5em; color: #8f9bc4; font-size: .78rem; }
