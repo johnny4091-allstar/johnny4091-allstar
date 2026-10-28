@@ -1,1 +1,1 @@
-- The "Skip 90 seconds" button now only shows for a few seconds at the start of an episode with no intro marks, and you can turn it off in Settings → Skip-ahead button.
+- TV app: faster, smoother remote navigation. New Settings → Clear cache removes only temporary files (not your sign-in, settings or favorites), and the Android app also tidies its own cache automatically.

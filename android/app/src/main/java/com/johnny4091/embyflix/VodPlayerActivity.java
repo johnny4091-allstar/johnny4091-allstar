@@ -362,9 +362,10 @@ public class VodPlayerActivity extends Activity {
             long pos = player.getCurrentPosition(), dur = player.getDuration();
             boolean inIntro = introStart >= 0 && introEnd > introStart && pos >= introStart && pos < introEnd - 1000;
             boolean guessIntro = !inIntro && introStart < 0 && fallbackSkipMs > 0 && !fallbackDone && pos >= fallbackFromMs && pos < fallbackUntilMs;
-            if (guessIntro) skipIntro.setText("Skip " + (fallbackSkipMs / 1000) + " seconds");
-            else skipIntro.setText("Skip Intro");
-            setVisible(skipIntro, inIntro || guessIntro);
+            String skipLabel = guessIntro ? "Skip " + (fallbackSkipMs / 1000) + " seconds" : "Skip Intro";
+            if (!skipLabel.contentEquals(skipIntro.getText())) skipIntro.setText(skipLabel);
+            // A real intro takes the remote's focus (OK skips it). The rough guess doesn't, so OK still pauses.
+            setVisible(skipIntro, inIntro || guessIntro, !guessIntro);
             long nextAt = credits > 0 ? credits : (dur > 0 ? dur - 30000 : -1);
             setVisible(nextButton, !nextTitle.isEmpty() && nextAt > 0 && pos >= nextAt);
             // Stuck loading in the last seconds (the final piece never arrives): that's the end.
@@ -424,11 +425,13 @@ public class VodPlayerActivity extends Activity {
         }
     };
 
-    private void setVisible(TextView button, boolean show) {
+    private void setVisible(TextView button, boolean show) { setVisible(button, show, true); }
+
+    private void setVisible(TextView button, boolean show, boolean takeFocus) {
         boolean shown = button.getVisibility() == View.VISIBLE;
         if (show == shown) return;
         button.setVisibility(show ? View.VISIBLE : View.GONE);
-        if (show && !playerView.isControllerFullyVisible()) button.requestFocus();
+        if (show && takeFocus && !playerView.isControllerFullyVisible()) button.requestFocus();
     }
 
     private final Runnable progress = new Runnable() {

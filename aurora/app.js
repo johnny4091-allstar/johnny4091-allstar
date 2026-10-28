@@ -257,7 +257,7 @@
   // Big backgrounds no wider than the screen's real pixels (a phone doesn't need a 1920-wide picture).
   const SCREEN_W = Math.min(1920, Math.max(640, Math.ceil((Math.max(screen.width || 0, screen.height || 0) * (window.devicePixelRatio || 1)) / 320) * 320 || 1920));
 
-  function landscapeImage(item, w = 500) {
+  function landscapeImage(item, w = nav.tv ? 360 : 500) { // a TV card is small on screen: smaller pictures decode and draw faster
     const t = item.ImageTags || {};
     if (t.Thumb) return imageUrl(item.Id, 'Thumb', { tag: t.Thumb, maxWidth: w });
     if (item.Type === 'Episode' && t.Primary) return imageUrl(item.Id, 'Primary', { tag: t.Primary, maxWidth: w });
@@ -281,7 +281,7 @@
     return '';
   }
 
-  function posterImage(item, w = 360) {
+  function posterImage(item, w = nav.tv ? 260 : 360) {
     if (item.ImageTags?.Primary) return imageUrl(item.Id, 'Primary', { tag: item.ImageTags.Primary, maxWidth: w });
     if (item.SeriesId && item.SeriesPrimaryImageTag) return imageUrl(item.SeriesId, 'Primary', { tag: item.SeriesPrimaryImageTag, maxWidth: w });
     return '';
@@ -719,7 +719,7 @@
     const sub = isEpisode ? episodeLabel(item) : [item.ProductionYear, item.Type === 'Series' ? 'Series' : formatRuntime(item.RunTimeTicks)].filter(Boolean).join(' • ');
     const pct = item.UserData?.PlayedPercentage;
     card.innerHTML = `
-      ${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
+      ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
       <div class="card-play" aria-hidden="true">${ICONS.play}</div>
       ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
       <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
@@ -745,7 +745,7 @@
     const sub = isEpisode ? episodeLabel(item) : (item.ProductionYear || '');
     el.innerHTML = `
       <div class="poster-img">
-        ${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
         ${item.UserData?.Played ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
         <div class="badge-fav" title="Favorite">&#9733;</div>
       </div>
@@ -3666,6 +3666,7 @@
       </section>
       <section class="settings-section">
         <h2>About</h2>
+        ${settingRow('Clear cache', 'Removes temporary files (pictures, the TV guide, downloaded channel lists and update files). Your sign-in, settings, favorites and watch history stay.', '<div class="update-check"><span class="setting-value" data-cache-status></span><button class="btn btn-gray" data-clear-cache>Clear cache</button></div>')}
         ${tourConfig() && tourSteps().length ? settingRow('Guided tour', 'A quick walk through the main screens of Aurora.', '<button class="btn btn-gray" data-replay-tour>Replay tour</button>') : ''}
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
         ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
@@ -3703,6 +3704,12 @@
     });
     setupFeedback(page);
     $('[data-replay-tour]', page)?.addEventListener('click', () => tourStart());
+    $('[data-clear-cache]', page)?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      const freed = await clearAppCache();
+      $('[data-cache-status]', page).textContent = freed > 0 ? `Cleared ${(freed / 1048576).toFixed(freed >= 1e7 ? 0 : 1)} MB` : 'Cleared';
+      e.target.disabled = false;
+    });
     $('[data-check-update]', page)?.addEventListener('click', async () => {
       const status = $('[data-update-status]', page);
       status.textContent = 'Checking…';
@@ -6947,7 +6954,8 @@
       if (action === 'left' || action === 'right') { wakeOsd(); focusEl($('#osd-play')); return true; }
     }
     if (!osdVisible()) {
-      const skipVisible = !$('#skip-intro').classList.contains('hidden');
+      // OK skips only a real intro. The rough "skip 90 seconds" prompt must not take over OK, or pausing in the first seconds would skip ahead.
+      const skipVisible = !$('#skip-intro').classList.contains('hidden') && !!player.intro;
       if (action === 'select') {
         if (skipVisible) $('#skip-intro').click();
         else togglePlay();
@@ -7118,6 +7126,20 @@
     setupKeys();
   }
 
+  // Settings → Clear cache: only what can be fetched again. Sign-in, settings, favorites and watch history are not touched.
+  async function clearAppCache() {
+    rowCache.clear();
+    resetIptvCaches();
+    shortGuide.clear(); imgCache.clear(); seerrDetails.clear();
+    store.del('ef.iptv.sync'); store.del('ef.updateBehind');
+    let freed = 0;
+    try { freed = Number(JSON.parse(nativeApp?.clearCache?.() || '{}').freedBytes) || 0; } catch { /* the web app has none of the native files */ }
+    try { if (window.caches) for (const k of await caches.keys()) await caches.delete(k); } catch { /* not available here */ }
+    appLog.add('info', `Cache cleared${freed ? ` (${Math.round(freed / 1048576)} MB of files)` : ''}`);
+    toast('Cache cleared', 2000);
+    return freed;
+  }
+
   // ---------- Remote control & keyboard navigation ----------
   // Arrow keys move focus to the nearest item in that direction (TV remotes send arrow keys),
   // OK/Enter activates it and Back closes the top layer.
@@ -7175,10 +7197,45 @@
     if (el && document.contains(el) && activeLayer().contains(el)) focusEl(el);
   }
 
+  // Left/Right inside a row of cards goes to the next card; Up/Down goes to the card in the next row that is most
+  // in line with this one. Null when it isn't that simple (the end of a row, the top or bottom of the page, a grid),
+  // and then moveFocus works it out the long way.
+  function quickMove(cur, dir) {
+    const track = cur.parentElement;
+    if (!track || !track.classList.contains('row-track') || !cur.classList.contains('card')) return null;
+    const usable = (el) => el.classList.contains('card') && el.tabIndex >= 0;
+    if (dir === 'left' || dir === 'right') {
+      let n = dir === 'right' ? cur.nextElementSibling : cur.previousElementSibling;
+      while (n && !usable(n)) n = dir === 'right' ? n.nextElementSibling : n.previousElementSibling;
+      return n;
+    }
+    let row = track.closest('.row');
+    if (!row) return null;
+    for (;;) {
+      row = dir === 'down' ? row.nextElementSibling : row.previousElementSibling;
+      if (!row) return null;
+      if (!row.classList.contains('row')) return null;
+      if (!row.querySelector('.row-track')) continue; // still loading: nothing to land on yet
+      const cards = $$('.row-track > .card', row).filter(usable);
+      if (!cards.length) return null; // some other kind of tile: let the long way decide
+      const r = cur.getBoundingClientRect(), cx = r.left + r.width / 2;
+      let best = null, bestD = Infinity;
+      for (const c of cards) {
+        const b = c.getBoundingClientRect();
+        const d = Math.abs(b.left + b.width / 2 - cx);
+        if (d < bestD) { best = c; bestD = d; }
+      }
+      return best;
+    }
+  }
+
   function moveFocus(dir) {
     const layer = activeLayer();
     const cur = document.activeElement;
     if (!cur || cur === document.body || !layer.contains(cur)) { focusInitial(layer); return; }
+    // The usual case (a row of cards on Home): go straight to the neighbour without looking at the whole page.
+    const quick = quickMove(cur, dir);
+    if (quick) { focusEl(quick); if (document.activeElement === quick) return; }
     const r = cur.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     const vertical = dir === 'up' || dir === 'down';

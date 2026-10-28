@@ -547,6 +547,11 @@ html.tv { font-size: 18px; }
 .tv .row-arrow, .tv .card-play { display: none; }
 .tv .player-osd { padding: 3rem 5% 2rem; }
 .tv .player-top { padding: 1.5rem 5%; }
+/* TV boxes have slow graphics: no animated scrolling or blurred shadows, a quicker focus step, and each row's layout kept separate. */
+.tv .row-track { scroll-behavior: auto; }
+.tv .card { transition: transform .1s ease; }
+.tv .card:hover, .kbd-nav .card:focus { box-shadow: none; }
+.tv .row { contain: layout style; }
 /* Keep the bottom of the page clear of TV overscan. */
 .tv .rows, .tv .page-pad { padding-bottom: 3rem; }
 .tv .live-page { padding-bottom: 1.5rem; }
