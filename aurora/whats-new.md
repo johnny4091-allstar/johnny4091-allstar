@@ -1,1 +1,1 @@
-- TV app: faster, smoother remote navigation. New Settings → Clear cache removes only temporary files (not your sign-in, settings or favorites), and the Android app also tidies its own cache automatically.
+- Clear cache no longer touches an update that is still downloading.
