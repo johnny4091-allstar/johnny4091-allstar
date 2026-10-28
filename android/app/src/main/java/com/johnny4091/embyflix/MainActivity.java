@@ -329,6 +329,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashRecorder.install(this);
+        new Thread(() -> CacheCleaner.tidy(getApplicationContext()), "cache-tidy").start(); // keeps the app's own cache small
         tvDevice = detectTv();
         appLockOn = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("appLock", false);
         lockActive = appLockOn && !tvDevice;
@@ -825,6 +826,14 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public boolean isTv() {
             return tv;
+        }
+
+        /** Settings → Clear cache: empties the picture/page cache and the downloaded guides and channel lists. Returns {"freedBytes": n}. */
+        @JavascriptInterface
+        public String clearCache() {
+            long freed = CacheCleaner.clear(getApplicationContext());
+            runOnUiThread(() -> { if (webView != null) webView.clearCache(true); });
+            return "{\"freedBytes\":" + freed + "}";
         }
 
         @JavascriptInterface
