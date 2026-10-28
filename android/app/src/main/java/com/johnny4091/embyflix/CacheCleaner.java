@@ -23,7 +23,7 @@ final class CacheCleaner {
     static long clear(Context context) {
         long freed = 0;
         for (String name : FOLDERS) freed += deleteContents(new File(context.getCacheDir(), name));
-        freed += deleteStaleUpdates(context, 0);
+        freed += deleteStaleUpdates(context, 5 * 60_000L); // not one that is being downloaded right now
         return freed;
     }
 
