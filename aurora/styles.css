@@ -1183,3 +1183,73 @@ html:not(.tv) .nav-pill { -webkit-backdrop-filter: blur(14px); backdrop-filter: 
 .card.tile .is-fav .badge-watched, .card.tile.is-fav .badge-watched { right: 38px; }
 .card.tile .card-fallback { border-radius: 0; }
 .row-title { font-size: clamp(1rem, 1.3vw, 1.3rem); }
+
+/* ---------- Look, everywhere else: pills, rounded cards, one set of controls ---------- */
+:root { --radius: 16px; --radius-sm: 12px; --edge: 1px solid rgba(255, 255, 255, .08); }
+
+/* Buttons are pills; Play-type buttons carry the aurora gradient */
+.btn { border-radius: 999px; padding: .65rem 1.6rem; }
+.btn-white { background: #fff; color: #0a1126; }
+.btn-gray { background: rgba(255, 255, 255, .14); }
+.btn-gray:hover { background: rgba(255, 255, 255, .22); }
+.btn-block { border-radius: 999px; }
+.modal-box [data-act="play"], .m-actions [data-act="play"] { background: var(--accent-grad); color: #fff; }
+.circle-btn { border-radius: 50%; background: rgba(12, 19, 44, .62); }
+
+/* Form controls: soft navy, rounded */
+.page-head select, .m-section-head select, .setting-row select, .admin-field input, .admin-field select, .iptv-search input,
+.users-search, .req-search input, .req-connect input, .setup-card input, .account-note-input, .ext-actions select, .account-plan-pick select {
+  background: #14204a; border: 1px solid rgba(255, 255, 255, .14); color: #fff; border-radius: var(--radius-sm);
+}
+.page-head select, .m-section-head select { padding: .45rem .9rem; border-radius: 999px; }
+.setup-card input { border-radius: var(--radius-sm); }
+.setup-card input:focus, .users-search:focus { border-color: #8aa4ff; }
+
+/* Panels */
+.settings-section, .admin-card, .stat-tile { border-radius: var(--radius); border: var(--edge); }
+.settings-section, .admin-card { padding-left: 1.6rem; padding-right: 1.6rem; }
+.setup-card { border-radius: 22px; border: var(--edge); }
+.modal-box { border-radius: 22px; border: var(--edge); }
+.modal-box .m-hero { border-radius: 0; }
+.tracks-panel, .up-next, .still-box { border-radius: var(--radius); }
+.dropdown button:hover { background: rgba(255, 255, 255, .1); text-decoration: none; }
+.toast { border-radius: 999px; padding: .75rem 1.5rem; background: rgba(20, 32, 74, .96); border: var(--edge); }
+.subtitle-preview { border-radius: var(--radius-sm); }
+
+/* Posters and pictures */
+.poster-img { border-radius: 12px; }
+.poster-title { font-weight: 700; }
+.poster:hover { transform: scale(1.04); }
+.kbd-nav .poster:focus .poster-img { box-shadow: 0 0 0 3px #fff; }
+.sim-card { border-radius: 12px; }
+.episode { border-radius: var(--radius-sm); border-bottom-color: rgba(255, 255, 255, .06); }
+.ep-thumb { border-radius: 10px; overflow: hidden; }
+.up-next-img, .program-img { border-radius: 8px; }
+.skip-intro, .skip-intro.btn { border-radius: 999px; }
+
+/* Live TV: provider channel tiles, category list, guide */
+.iptv-tile { border-radius: 12px; border: var(--edge); }
+.iptv-tile .fav-btn { border-radius: 50%; }
+.iptv-cat { border-radius: 999px; padding-left: .9rem; padding-right: .9rem; }
+.iptv-cat.active, .iptv-cat[aria-current="true"] { background: rgba(255, 255, 255, .14); }
+.tm-guide .guide-prog, .tm-grid .guide-prog, .tm-grid .guide-empty { border-radius: 10px; }
+.guide, .tm-grid, .tm-groups, .tm-info { border-radius: var(--radius); }
+.tm-group { border-radius: 999px; }
+.live-badge, .pill { border-radius: 999px; }
+.tab { border-radius: 999px; }
+
+/* Admin lists */
+.admin-row, a.user-row { border-radius: 0; }
+a.user-row { border-radius: var(--radius-sm); }
+.chip { border-radius: 999px; }
+.cat-row, .cat-pick-wrap { border-radius: var(--radius-sm); }
+.log-file, .log-text { border-radius: var(--radius-sm); }
+
+/* Phone: the bottom tabs float as a rounded bar */
+@media (max-width: 560px) {
+  .mobile-tabs { left: 12px; right: 12px; bottom: 12px; padding: .35rem .4rem; border-radius: 999px; background: rgba(12, 19, 44, .92); border: var(--edge); border-top: var(--edge); box-shadow: 0 8px 28px rgba(0, 0, 0, .5); }
+  .mobile-tabs { justify-content: space-between; }
+  .mobile-tabs a { padding: .5rem .5rem; border-radius: 999px; color: #aeb9e6; font-size: .7rem; white-space: nowrap; }
+  .mobile-tabs a.active { background: #fff; color: #0a1126; font-weight: 700; }
+  .rows, .page-pad { padding-bottom: 6.5rem; }
+}

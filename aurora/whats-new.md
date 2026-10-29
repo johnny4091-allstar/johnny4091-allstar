@@ -1,1 +1,1 @@
-- A fresh look: a floating rounded menu bar, a featured banner with a rating line, round Favorite and Info buttons and dots to flip between titles, and rounded picture cards with the title underneath.
+- The new look now covers every screen: pill buttons, rounded panels and menus, rounded posters and channel tiles, and a floating bottom bar on phones.
