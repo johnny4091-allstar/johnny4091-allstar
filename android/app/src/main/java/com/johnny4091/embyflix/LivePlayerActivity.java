@@ -510,6 +510,8 @@ public class LivePlayerActivity extends Activity {
         chip.setColor(Color.parseColor("#1F2AD4D0"));
         chip.setCornerRadius(dp(20));
         header.setBackground(chip);
+        header.setSingleLine(true);
+        header.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams headerLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         headerLp.setMargins(dp(18), 0, dp(18), dp(12));
         listPanel.addView(header, headerLp);
@@ -529,7 +531,9 @@ public class LivePlayerActivity extends Activity {
         });
         listPanel.addView(listView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         listPanel.setVisibility(View.GONE);
-        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(dp(392), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START);
+        // 392 dp wide, but never wider than a narrow phone's screen (less the margin).
+        int panelWidth = Math.min(dp(392), getResources().getDisplayMetrics().widthPixels - dp(28));
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START);
         panelLp.setMargins(dp(14), dp(14), 0, dp(14));
         root.addView(listPanel, panelLp);
 

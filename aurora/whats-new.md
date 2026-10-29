@@ -1,1 +1,1 @@
-- Live TV: "Recently Watched Channels" now remembers every channel you settle on while flipping through, keeps its list when the admin changes settings, and updates on Home as soon as you leave the player.
+- Fixes for the new look: the menu bar now fits tablets and phones held sideways (the profile picture was pushed off the screen), search no longer covers the profile picture on small phones, messages sit above the phone's bottom bar, and the Live TV channel list fits narrow phones.

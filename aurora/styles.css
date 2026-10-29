@@ -1121,10 +1121,20 @@ html:not(.tv) .nav-pill { -webkit-backdrop-filter: blur(14px); backdrop-filter: 
 .nav-right { margin-left: 0; gap: .8rem; }
 .avatar-btn { width: 42px; height: 42px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, .25); }
 .dropdown { top: 52px; border-radius: 12px; overflow: hidden; background: rgba(12, 19, 44, .96); }
+/* Narrower than a desktop: the pill gives up the word "Search" and some padding so the profile picture always stays on screen. */
+@media (max-width: 1000px) {
+  #nav { gap: .6rem; }
+  .nav-pill { padding-left: .9rem; min-width: 0; }
+  .nav-pill .logo { margin-right: .4rem; }
+  .nav-pill .search-label { display: none; }
+  .nav-pill #search-toggle { padding: .5rem .6rem; }
+  .nav-links { font-size: .82rem; }
+  .nav-links a { padding: .45rem .65rem; }
+}
 @media (max-width: 800px) {
-  .nav-pill { padding-left: .8rem; }
-  .nav-links { gap: 0; font-size: .8rem; }
-  .nav-links a { padding: .45rem .6rem; }
+  .nav-links { gap: 0; font-size: .78rem; }
+  .nav-links a { padding: .45rem .5rem; }
+  .logo-svg { height: 15px; }
 }
 @media (max-width: 560px) {
   #nav { padding: 10px 16px; }
@@ -1133,6 +1143,7 @@ html:not(.tv) .nav-pill { -webkit-backdrop-filter: blur(14px); backdrop-filter: 
   .nav-pill #search-box { margin-left: auto; }
   .nav-pill .search-label { display: none; }
   .nav-pill #search-toggle { padding: .5rem; }
+  .nav-pill .search-box.open input { width: max(90px, calc(100vw - 250px)); } /* leave room for the logo and the profile picture */
   .avatar-btn { width: 36px; height: 36px; }
 }
 
@@ -1252,4 +1263,7 @@ a.user-row { border-radius: var(--radius-sm); }
   .mobile-tabs a { padding: .5rem .5rem; border-radius: 999px; color: #aeb9e6; font-size: .7rem; white-space: nowrap; }
   .mobile-tabs a.active { background: #fff; color: #0a1126; font-weight: 700; }
   .rows, .page-pad { padding-bottom: 6.5rem; }
+  .toast { bottom: 5.2rem; }
 }
+
+@media (prefers-reduced-motion: reduce) { .hero-bg, .hero-content, .card.tile { animation: none !important; transition: none !important; } .hero-dot { transition: none; } }

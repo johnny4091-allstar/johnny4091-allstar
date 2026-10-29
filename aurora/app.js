@@ -637,7 +637,7 @@
       // pointer or focus on the banner, has scrolled it away, or the page is hidden.
       const start = () => {
         clearInterval(timer);
-        if (items.length < 2 || nav.tv) return;
+        if (items.length < 2 || nav.tv || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return; // nothing moves by itself for people who turned motion off
         timer = setInterval(() => {
           if (!hero.isConnected) { clearInterval(timer); return; }
           if (document.hidden || nav.on || hero.matches(':hover') || hero.contains(document.activeElement) || window.scrollY > hero.offsetHeight * 0.5 || isPlayerOpen()) return;
