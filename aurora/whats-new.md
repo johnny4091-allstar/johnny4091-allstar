@@ -1,1 +1,1 @@
-- The new look now covers every screen: pill buttons, rounded panels and menus, rounded posters and channel tiles, and a floating bottom bar on phones.
+- The channel list inside Live TV now matches the new look: a floating rounded panel, pill-shaped selection and rounded logo tiles.

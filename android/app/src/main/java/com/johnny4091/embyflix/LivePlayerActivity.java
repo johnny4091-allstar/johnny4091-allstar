@@ -487,15 +487,27 @@ public class LivePlayerActivity extends Activity {
         // Channel list down the left side.
         listPanel = new LinearLayout(this);
         listPanel.setOrientation(LinearLayout.VERTICAL);
-        listPanel.setBackgroundColor(PANEL);
-        listPanel.setPadding(0, dp(PlayerUi.isTv(this) ? 20 : 76), 0, dp(12)); // phones: room for the Back button above the list
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(PANEL);
+        panelBg.setCornerRadius(dp(26));
+        panelBg.setStroke(dp(1), Color.parseColor("#26FFFFFF"));
+        listPanel.setBackground(panelBg);
+        listPanel.setPadding(0, dp(PlayerUi.isTv(this) ? 20 : 64), 0, dp(14)); // phones: room for the Back button above the list
         TextView header = text(13, ACCENT, true);
         header.setText(group.isEmpty() ? "CHANNELS" : group.toUpperCase());
-        header.setPadding(dp(20), 0, dp(20), dp(10));
-        listPanel.addView(header);
+        header.setPadding(dp(14), dp(5), dp(14), dp(5));
+        GradientDrawable chip = new GradientDrawable();
+        chip.setColor(Color.parseColor("#1F2AD4D0"));
+        chip.setCornerRadius(dp(20));
+        header.setBackground(chip);
+        LinearLayout.LayoutParams headerLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        headerLp.setMargins(dp(18), 0, dp(18), dp(12));
+        listPanel.addView(header, headerLp);
         listView = new ListView(this);
         listView.setDivider(new ColorDrawable(Color.TRANSPARENT));
-        listView.setDividerHeight(dp(2));
+        listView.setDividerHeight(dp(4));
+        listView.setPadding(dp(10), 0, dp(10), 0);
+        listView.setClipToPadding(false);
         listView.setSelector(rowSelector());
         listView.setDrawSelectorOnTop(false);
         listView.setItemsCanFocus(false);
@@ -507,7 +519,9 @@ public class LivePlayerActivity extends Activity {
         });
         listPanel.addView(listView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         listPanel.setVisibility(View.GONE);
-        root.addView(listPanel, new FrameLayout.LayoutParams(dp(380), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(dp(392), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START);
+        panelLp.setMargins(dp(14), dp(14), 0, dp(14));
+        root.addView(listPanel, panelLp);
 
         // Phones: a Back button that shows with the channel banner (tap the picture to bring it up).
         backButton = PlayerUi.backButton(this, this::finishWithResult);
@@ -529,7 +543,7 @@ public class LivePlayerActivity extends Activity {
         GradientDrawable on = new GradientDrawable();
         on.setColor(Color.parseColor("#33FFFFFF"));
         on.setStroke(dp(2), Color.WHITE);
-        on.setCornerRadius(dp(6));
+        on.setCornerRadius(dp(30)); // a pill, like the menu bar
         StateListDrawable s = new StateListDrawable();
         s.addState(new int[]{android.R.attr.state_focused}, on);
         s.addState(new int[]{android.R.attr.state_selected}, on);
@@ -692,11 +706,16 @@ public class LivePlayerActivity extends Activity {
                 row = new LinearLayout(LivePlayerActivity.this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setPadding(dp(16), dp(8), dp(16), dp(8));
+                row.setPadding(dp(16), dp(9), dp(16), dp(9));
                 TextView num = text(14, Color.parseColor("#9AA3BD"), true);
                 num.setMinWidth(dp(44));
                 ImageView logo = new ImageView(LivePlayerActivity.this);
                 logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                GradientDrawable tile = new GradientDrawable(); // logos sit on a soft rounded tile
+                tile.setColor(Color.parseColor("#1A2450"));
+                tile.setCornerRadius(dp(10));
+                logo.setBackground(tile);
+                logo.setPadding(dp(4), dp(3), dp(4), dp(3));
                 LinearLayout texts = new LinearLayout(LivePlayerActivity.this);
                 texts.setOrientation(LinearLayout.VERTICAL);
                 texts.setPadding(dp(12), 0, 0, 0);
@@ -705,7 +724,7 @@ public class LivePlayerActivity extends Activity {
                 texts.addView(name);
                 texts.addView(now);
                 row.addView(num);
-                row.addView(logo, new LinearLayout.LayoutParams(dp(48), dp(36)));
+                row.addView(logo, new LinearLayout.LayoutParams(dp(56), dp(40)));
                 row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             }
             Channel c = channels.get(position);
