@@ -1761,16 +1761,37 @@
 
   // Recently watched channels, newest first, for the Live TV page and Home.
   const RECENT_MAX = 30;
+  // The list belongs to the TV source it was made from (not to the settings version: the admin changing a category or
+  // a limit must not wipe everyone's recent channels). Older saves, which only knew the version, are still honoured.
+  const recentSource = () => { const c = iptv.config || {}; return [c.type || '', c.type === 'm3u' ? c.m3uUrl || '' : c.server || '', c.username || ''].join('|'); };
   function iptvRecent() {
     try {
       const r = JSON.parse(store.get('ef.iptv.recent.' + state.userId) || '{}');
-      return r.v === (iptv.config?.v || 0) ? r.list || [] : [];
+      const same = r.s ? r.s === recentSource() : r.v === (iptv.config?.v || 0);
+      return same ? r.list || [] : [];
     } catch { return []; }
   }
+  // Channels are told apart by their stream number or address, not by their position in the list (which changes).
+  const recentId = (c) => c.streamId ? 'x' + c.streamId : c.url || c.id;
   function rememberChannel(ch) {
-    const list = [ch, ...iptvRecent().filter((c) => c.id !== ch.id)].slice(0, RECENT_MAX)
+    const list = [ch, ...iptvRecent().filter((c) => recentId(c) !== recentId(ch))].slice(0, RECENT_MAX)
       .map(({ id, streamId, name, logo, num, url, group }) => ({ id, streamId, name, logo, num, url, group }));
-    store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ v: iptv.config?.v || 0, list }));
+    store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ s: recentSource(), v: iptv.config?.v || 0, list }));
+  }
+  // Puts the Home row of recently watched channels right (added, moved to the front, or refreshed) after watching.
+  function updateRecentRow() {
+    if (!iptvOn() || !/^#?\/?(home)?$/.test(location.hash)) return;
+    const rows = $('#page .rows');
+    if (!rows) return;
+    const recent = iptvRecent();
+    const old = $('[data-row="recently-watched-channels"]', rows);
+    if (!recent.length) { old?.remove(); return; }
+    const tmp = document.createElement('div');
+    addRow(tmp, 'Recently Watched Channels', async () => recent,
+      { isCurrent: () => true, createItem: (c) => createIptvTile(c, () => playIptv(recent, recent.indexOf(c), 'Recently watched')) });
+    const fresh = tmp.firstElementChild;
+    if (old) old.replaceWith(fresh);
+    else { const first = rows.firstElementChild; if (first) first.after(fresh); else rows.appendChild(fresh); }
   }
 
   // A loading error with a Try again button (the provider may just have had a hiccup).
@@ -1978,6 +1999,8 @@
     if (!p || index < 0) return;
     // Channels the viewer starred (or un-starred) from inside the player.
     for (const f of stats?.favs || []) { const c = p.list[f.index]; if (c) toggleIptvFav(c, { silent: true, set: f.fav }); }
+    // Every channel the viewer settled on while flipping through the list, oldest first, then the one they ended on.
+    for (const i of stats?.visited || []) { const c = p.list[i]; if (c) rememberChannel(c); }
     const ch = p.list[index];
     // Kept stopping to buffer: note it (it reaches the admins with the automatic reports) and suggest a bigger buffer.
     if (stats?.stalls >= 3) {
@@ -1995,8 +2018,9 @@
     }
     if (!ch) return;
     rememberChannel(ch);
-    const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`);
-    if (tile) focusEl(tile);
+    updateRecentRow();
+    // The row (if it was just redrawn) is in place on the next turn; put the focus back on the channel's tile.
+    setTimeout(() => { const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`); if (tile) focusEl(tile); }, 0);
   };
 
   function createIptvTile(ch, onPlay) {

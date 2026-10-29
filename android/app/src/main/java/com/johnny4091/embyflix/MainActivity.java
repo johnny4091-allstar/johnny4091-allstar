@@ -277,6 +277,7 @@ public class MainActivity extends Activity {
                         .put("minutes", data.getIntExtra(LivePlayerActivity.RESULT_MINUTES, 0))
                         .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER)))
                         .put("favs", new org.json.JSONArray(data.getStringExtra(LivePlayerActivity.RESULT_FAVS) == null ? "[]" : data.getStringExtra(LivePlayerActivity.RESULT_FAVS)))
+                        .put("visited", new org.json.JSONArray(data.getStringExtra(LivePlayerActivity.RESULT_VISITED) == null ? "[]" : data.getStringExtra(LivePlayerActivity.RESULT_VISITED)))
                         .put("failed", data.getIntExtra(LivePlayerActivity.RESULT_FAILED, 0))
                         .put("failedName", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_FAILED_NAME)))
                         .put("failedCode", data.getIntExtra(LivePlayerActivity.RESULT_FAILED_CODE, 0)).toString();

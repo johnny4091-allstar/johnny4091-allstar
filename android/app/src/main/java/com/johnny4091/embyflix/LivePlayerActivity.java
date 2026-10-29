@@ -79,6 +79,7 @@ public class LivePlayerActivity extends Activity {
     static final String RESULT_STALLS = "stalls", RESULT_MINUTES = "minutes", RESULT_BUFFER = "buffer";
     /** Channels that stopped working while open (for Admin → Playback problems): how many, the last one, and why. */
     static final String RESULT_FAVS = "favs"; // JSON [{index, fav}] for channels the viewer starred or un-starred
+    static final String RESULT_VISITED = "visited"; // JSON [index, ...]: channels the viewer settled on for a few seconds, oldest first
     static final String RESULT_FAILED = "failed", RESULT_FAILED_NAME = "failedName", RESULT_FAILED_CODE = "failedCode";
 
     private static final int ACCENT = Color.parseColor("#2AD4D0");
@@ -94,6 +95,7 @@ public class LivePlayerActivity extends Activity {
 
     private final List<Channel> channels = new ArrayList<>();
     private int index;
+    private final java.util.LinkedHashSet<Integer> visited = new java.util.LinkedHashSet<>(); // for "Recently watched"
     private int retries;
     /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
     private boolean failed;
@@ -282,6 +284,9 @@ public class LivePlayerActivity extends Activity {
         // Report the channel once the viewer settles on it (not every channel while flicking through).
         handler.removeCallbacks(reportChannel);
         handler.postDelayed(reportChannel, 4000);
+        // A channel counts as watched once the viewer stays on it a few seconds (not while flicking past).
+        handler.removeCallbacks(markWatched);
+        handler.postDelayed(markWatched, 4000);
         showBanner();
         if (adapter != null) adapter.notifyDataSetChanged();
     }
@@ -315,6 +320,11 @@ public class LivePlayerActivity extends Activity {
             if (reporter != null) reporter.heartbeat();
             handler.postDelayed(this, HEARTBEAT_MS);
         }
+    };
+    private final Runnable markWatched = () -> {
+        if (channels.isEmpty()) return;
+        visited.remove(index); // newest last
+        visited.add(index);
     };
     private final Runnable reportChannel = () -> {
         if (reporter == null || channels.isEmpty()) return;
@@ -849,6 +859,13 @@ public class LivePlayerActivity extends Activity {
         result.putExtra(RESULT_STALLS, stalls);
         result.putExtra(RESULT_MINUTES, (int) ((System.currentTimeMillis() - openedAt) / 60000));
         result.putExtra(RESULT_BUFFER, bufferLevel);
+        try {
+            org.json.JSONArray seen = new org.json.JSONArray();
+            for (int i : visited) seen.put(i);
+            result.putExtra(RESULT_VISITED, seen.toString());
+        } catch (Exception ignored) {
+            // Just the last channel is remembered then.
+        }
         try {
             JSONArray favs = new JSONArray();
             for (int i = 0; i < channels.size(); i++) {

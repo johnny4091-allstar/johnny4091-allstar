@@ -1,1 +1,1 @@
-- The channel list inside Live TV now matches the new look: a floating rounded panel, pill-shaped selection and rounded logo tiles.
+- Live TV: "Recently Watched Channels" now remembers every channel you settle on while flipping through, keeps its list when the admin changes settings, and updates on Home as soon as you leave the player.
