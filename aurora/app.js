@@ -583,29 +583,69 @@
   }
 
   // ---------- Hero ----------
+  // The featured banner at the top of Home, Movies and TV Shows: a few random titles shown one at a time, with
+  // dots to jump between them. (On a TV it stays on one title: nothing moves by itself, so the remote isn't disturbed.)
   async function renderHero(container, params) {
     const hero = document.createElement('section');
     hero.className = 'hero';
     container.appendChild(hero);
     try {
-      const res = await getItems({ SortBy: 'Random', Limit: 1, ImageTypes: 'Backdrop', ...params });
-      const item = res?.Items?.[0];
-      if (!item) { hero.className = 'hero empty'; return; }
-      const logo = logoImage(item);
-      hero.innerHTML = `
-        <div class="hero-bg" style="background-image:url('${esc(backdropImage(item))}')"></div>
-        <div class="hero-content">
-          ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h1 class="hero-title">${esc(item.Name)}</h1>`}
-          <p class="hero-overview">${esc(item.Overview || '')}</p>
-          <div class="hero-actions">
-            <button class="btn btn-white" data-act="play" data-autofocus>${ICONS.play} Play</button>
-            <button class="btn btn-gray" data-act="info">${ICONS.info} More Info</button>
-          </div>
-        </div>`;
-      $('[data-act="play"]', hero).addEventListener('click', () => playItem(item));
-      $('[data-act="info"]', hero).addEventListener('click', () => openDetails(item.Id));
-      const focused = document.activeElement;
-      if (!focused || focused === document.body || !document.contains(focused)) autoFocus($('[data-act="play"]', hero));
+      const res = await getItems({ SortBy: 'Random', Limit: nav.tv ? 1 : 5, ImageTypes: 'Backdrop', ...params });
+      const items = (res?.Items || []).filter(Boolean);
+      if (!items.length) { hero.className = 'hero empty'; return; }
+      let at = 0, timer = null;
+      const paintFav = (item) => {
+        const btn = $('[data-act="fav"]', hero);
+        if (!btn) return;
+        const on = !!item.UserData?.IsFavorite;
+        btn.innerHTML = on ? '&#10003;' : '+';
+        btn.title = on ? 'Remove from Favorites' : 'Add to Favorites';
+        btn.setAttribute('aria-label', btn.title);
+        btn.classList.toggle('active', on);
+      };
+      const show = (i, first) => {
+        at = (i + items.length) % items.length;
+        const item = items[at];
+        const logo = logoImage(item);
+        const meta = [item.ProductionYear, (item.Genres || []).slice(0, 2).join(' · '),
+          item.CommunityRating ? '★ ' + Number(item.CommunityRating).toFixed(1) : ''].filter(Boolean);
+        hero.innerHTML = `
+          <div class="hero-bg" style="background-image:url('${esc(backdropImage(item))}')"></div>
+          <div class="hero-content">
+            <div class="hero-kicker">FEATURED · ${item.Type === 'Series' ? 'TV SHOW' : 'MOVIE'}</div>
+            ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h1 class="hero-title">${esc(item.Name)}</h1>`}
+            ${meta.length || item.OfficialRating ? `<div class="hero-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join('<i></i>')}${item.OfficialRating ? `<span class="rating">${esc(item.OfficialRating)}</span>` : ''}</div>` : ''}
+            <p class="hero-overview">${esc(item.Overview || '')}</p>
+            <div class="hero-actions">
+              <button class="btn hero-play" data-act="play" data-autofocus>${ICONS.play} Play</button>
+              <button class="hero-circle" data-act="fav" aria-label="Add to Favorites"></button>
+              <button class="hero-circle" data-act="info" aria-label="More info" title="More info">${ICONS.info}</button>
+            </div>
+            ${items.length > 1 ? `<div class="hero-dots">${items.map((_, k) => `<button class="hero-dot${k === at ? ' on' : ''}" data-dot="${k}" tabindex="-1" aria-label="Show title ${k + 1}"></button>`).join('')}</div>` : ''}
+          </div>`;
+        $('[data-act="play"]', hero).addEventListener('click', () => playItem(item));
+        $('[data-act="info"]', hero).addEventListener('click', () => openDetails(item.Id));
+        $('[data-act="fav"]', hero).addEventListener('click', () => toggleItemFav(item, () => paintFav(item)));
+        $$('[data-dot]', hero).forEach((d) => d.addEventListener('click', () => { show(Number(d.dataset.dot)); start(); }));
+        paintFav(item);
+        if (first) {
+          const focused = document.activeElement;
+          if (!focused || focused === document.body || !document.contains(focused)) autoFocus($('[data-act="play"]', hero));
+        }
+      };
+      // Moves on by itself every 9 seconds, but never while someone is using the remote or keyboard, has the
+      // pointer or focus on the banner, has scrolled it away, or the page is hidden.
+      const start = () => {
+        clearInterval(timer);
+        if (items.length < 2 || nav.tv) return;
+        timer = setInterval(() => {
+          if (!hero.isConnected) { clearInterval(timer); return; }
+          if (document.hidden || nav.on || hero.matches(':hover') || hero.contains(document.activeElement) || window.scrollY > hero.offsetHeight * 0.5 || isPlayerOpen()) return;
+          show(at + 1);
+        }, 9000);
+      };
+      show(0, true);
+      start();
     } catch (e) {
       hero.className = 'hero empty';
       console.error(e);
@@ -711,7 +751,7 @@
 
   function createCard(item, { showProgress } = {}) {
     const card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card tile';
     card.tabIndex = 0;
     const img = landscapeImage(item);
     const isEpisode = item.Type === 'Episode';
@@ -719,16 +759,18 @@
     const sub = isEpisode ? episodeLabel(item) : [item.ProductionYear, item.Type === 'Series' ? 'Series' : formatRuntime(item.RunTimeTicks)].filter(Boolean).join(' • ');
     const pct = item.UserData?.PlayedPercentage;
     card.innerHTML = `
-      ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
-      <div class="card-play" aria-hidden="true">${ICONS.play}</div>
-      ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
-      <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
-      ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}`;
+      <div class="card-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
+        <div class="card-play" aria-hidden="true">${ICONS.play}</div>
+        ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
+        ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}
+      </div>
+      <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
     $('.card-play', card).tabIndex = -1;
     $('.card-play', card).addEventListener('click', (e) => { e.stopPropagation(); playItem(item); });
     card.addEventListener('click', () => openItem(item));
     card.__item = item;
-    card.insertAdjacentHTML('beforeend', '<div class="badge-fav" title="Favorite">&#9733;</div>');
+    $('.card-img', card).insertAdjacentHTML('beforeend', '<div class="badge-fav" title="Favorite">&#9733;</div>');
     card.classList.toggle('is-fav', !!item.UserData?.IsFavorite);
     card.addEventListener('contextmenu', (e) => { e.preventDefault(); openItemMenu(item, card); });
     card.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openItemMenu(item, card); } });
@@ -2495,18 +2537,21 @@
 
   function createChannelCard(ch) {
     const card = document.createElement('div');
-    card.className = 'card channel-card';
+    card.className = 'card channel-card tile';
     card.tabIndex = 0;
     const logo = ch.ImageTags?.Primary ? imageUrl(ch.Id, 'Primary', { tag: ch.ImageTags.Primary, maxWidth: 300 }) : '';
     const prog = ch.CurrentProgram;
     card.innerHTML = `
-      <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
-      <div class="badge-fav" title="Favorite">&#9733;</div>
+      <div class="card-img">
+        <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
+        <div class="badge-fav" title="Favorite">&#9733;</div>
+        <span class="live-tag">LIVE</span>
+        ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}
+      </div>
       <div class="card-info">
         <div>${esc(prog?.Name || ch.Name)}</div>
         <div class="sub">${esc(channelLabel(ch))}${prog ? ' · ' + esc(timeRange(prog)) : ''}</div>
-      </div>
-      ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}`;
+      </div>`;
     card.addEventListener('click', () => playItem(ch));
     card.__embyCh = ch;
     card.classList.toggle('is-fav', !!ch.UserData?.IsFavorite);

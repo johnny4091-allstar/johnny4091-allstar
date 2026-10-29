@@ -1,1 +1,1 @@
-- Clear cache no longer touches an update that is still downloading.
+- A fresh look: a floating rounded menu bar, a featured banner with a rating line, round Favorite and Info buttons and dots to flip between titles, and rounded picture cards with the title underneath.
