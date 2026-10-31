@@ -1,1 +1,1 @@
-- Fixes for the new look: the menu bar now fits tablets and phones held sideways (the profile picture was pushed off the screen), search no longer covers the profile picture on small phones, messages sit above the phone's bottom bar, and the Live TV channel list fits narrow phones.
+- Requests looks like Jellyseerr: poster cards tagged MOVIE or SERIES, and a full title page with poster, runtime and genres, Watch Trailer and Request buttons, crew, tags, details, cast, recommendations and the rest of the collection.

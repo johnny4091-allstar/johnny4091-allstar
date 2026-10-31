@@ -2914,19 +2914,22 @@
 
   function createSeerrCard(m) {
     const card = document.createElement('div');
-    card.className = 'card seerr-card';
+    card.className = 'card seerr-card tile poster-tile';
     card.tabIndex = 0;
     card.dataset.seerr = `${m.mediaType}:${m.id}`;
-    const img = tmdbImage(m.backdropPath, 'w500') || tmdbImage(m.posterPath, 'w342');
+    const img = tmdbImage(m.posterPath, 'w342') || tmdbImage(m.backdropPath, 'w500');
     const status = seerrStatus(m);
-    const kind = m.mediaType === 'tv' ? 'Series' : 'Movie';
+    const isTv = m.mediaType === 'tv';
     const req = m.request;
     const who = req ? (req.requestedBy?.id === seerrMeId ? 'you' : req.requestedBy?.displayName || req.requestedBy?.username || '') : '';
-    const sub = req ? [who && `Requested by ${who}`, timeAgo(req.createdAt)].filter(Boolean).join(' · ') : [seerrYear(m), kind].filter(Boolean).join(' • ');
+    const sub = req ? [who && `Requested by ${who}`, timeAgo(req.createdAt)].filter(Boolean).join(' · ') : seerrYear(m);
     card.innerHTML = `
-      ${img ? `<img loading="lazy" src="${esc(img)}" alt=""${m.backdropPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
-      ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
-      <div class="card-info"><div>${esc(seerrTitle(m))}</div><div class="sub">${esc(sub)}</div></div>`;
+      <div class="card-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt=""${m.posterPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
+        <span class="seerr-type ${isTv ? 'tv' : 'movie'}">${isTv ? 'SERIES' : 'MOVIE'}</span>
+        ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
+      </div>
+      <div class="card-info"><div>${esc(seerrTitle(m))}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
     card.addEventListener('click', () => openSeerrItem(m.mediaType, m.id));
     return card;
   }
@@ -2967,7 +2970,7 @@
     let next = 0;
     const slots = entries.map(() => {
       const ph = document.createElement('div');
-      ph.className = 'card seerr-card placeholder';
+      ph.className = 'card seerr-card placeholder poster-tile';
       grid.appendChild(ph);
       return ph;
     });
@@ -3012,7 +3015,7 @@
           <div class="tab-bar req-tabs hidden">
             ${REQUEST_TABS.map(([id, label]) => `<a href="#/requests?tab=${id}" class="tab${id === tab ? ' active' : ''}" data-tab="${id}">${label}<span class="tab-count"></span></a>`).join('')}
           </div>
-          <div class="req-search hidden"><input type="search" placeholder="Search for a movie or show to request" autocomplete="off"></div>
+          <div class="req-search hidden"><input type="search" placeholder="Search Movies &amp; Series" autocomplete="off"></div>
         </div>
         <div data-req-body><div class="spinner"></div></div>
       </div>`;
@@ -3159,26 +3162,73 @@
     (m.mediaInfo?.requests || []).forEach((r) => {
       if (r.status !== 3) (r.seasons || []).forEach((s) => { if (!taken.has(s.seasonNumber)) taken.set(s.seasonNumber, REQUEST_STATUS[r.status] || 'Requested'); });
     });
-    const meta = [seerrYear(m), isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? formatRuntime(m.runtime * 60 * TICKS_PER_SECOND) : ''),
-      (m.genres || []).slice(0, 3).map((g) => g.name).join(', ')].filter(Boolean);
+    const year = seerrYear(m);
+    const runtimeText = isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? `${m.runtime} minutes` : '');
+    const genresText = (m.genres || []).slice(0, 4).map((g) => g.name).join(', ');
     const backdrop = tmdbImage(m.backdropPath, 'w1280');
+    const poster = tmdbImage(m.posterPath, 'w500');
     const video = (m.relatedVideos || []).find((v) => v.site === 'YouTube' && v.type === 'Trailer')
       || (m.relatedVideos || []).find((v) => v.site === 'YouTube');
     const trailerUrl = video?.url || (video?.key ? `https://www.youtube.com/watch?v=${video.key}` : '');
+    // The people behind it: the director and writers first, then producers, as Jellyseerr lists them.
+    const CREW_ORDER = ['Director', 'Screenplay', 'Writer', 'Story', 'Novel', 'Creator', 'Executive Producer', 'Producer'];
+    const seen = new Set();
+    const crew = (m.credits?.crew || []).filter((c) => CREW_ORDER.includes(c.job)).sort((x, y) => CREW_ORDER.indexOf(x.job) - CREW_ORDER.indexOf(y.job))
+      .filter((c) => { const k = c.job + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6);
+    const created = (m.createdBy || []).slice(0, 2).map((c) => ({ job: 'Creator', name: c.name }));
+    const crewList = isTv && created.length ? [...created, ...crew.filter((c) => c.job !== 'Creator')].slice(0, 6) : crew;
+    const keywords = (m.keywords || []).slice(0, 14);
+    const cast = (m.credits?.cast || []).slice(0, 24);
+    const day = (d) => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' }) : '');
+    let language = '';
+    try { language = m.originalLanguage ? new Intl.DisplayNames(['en'], { type: 'language' }).of(m.originalLanguage) : ''; } catch { language = m.originalLanguage || ''; }
+    const original = m.originalTitle || m.originalName || '';
+    const facts = [
+      ['Original Title', original && original !== seerrTitle(m) ? original : ''],
+      ['Status', m.status || ''],
+      [isTv ? 'First Air Date' : 'Release Date', day(m.releaseDate || m.firstAirDate)],
+      [isTv ? 'Last Air Date' : '', isTv ? day(m.lastAirDate) : ''],
+      ['Original Language', language],
+      ['Production Country', (m.productionCountries || []).map((c) => c.name || c.iso_3166_1).filter(Boolean).join(', ')],
+      [isTv ? 'Network' : 'Studio', (isTv ? m.networks : m.productionCompanies || []).slice?.(0, 3).map((c) => c.name).join(', ') || ''],
+    ].filter(([k, v]) => k && v);
+    const score = m.voteAverage ? Math.round(m.voteAverage * 10) : 0;
+    const initials = (n) => String(n || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
     content.innerHTML = `
-      <div class="m-hero" style="background-image:url('${esc(backdrop)}')">
-        <div class="m-hero-content"><h2>${esc(seerrTitle(m))}</h2></div>
-      </div>
-      <div class="m-body">
-        <div class="meta">${meta.map((t) => `<span>${esc(t)}</span>`).join('')}${MEDIA_STATUS[status] ? `<span class="seerr-badge inline s-${MEDIA_STATUS[status].split(' ')[0].toLowerCase()}">${MEDIA_STATUS[status]}</span>` : ''}</div>
-        <p class="overview">${esc(m.overview || '')}</p>
-        ${isTv && seasons.length ? `<div class="m-section-head"><h3>Seasons</h3></div><div class="season-picks">${seasons.map((s) => {
-          const t = taken.get(s.seasonNumber);
-          return `<button class="season-pick${t ? ' taken' : ' on'}" data-season="${s.seasonNumber}"${t ? ' disabled' : ''}>
-            <strong>Season ${s.seasonNumber}</strong><span>${t ? esc(t) : `${s.episodeCount || '?'} episodes`}</span></button>`;
-        }).join('')}</div>` : ''}
-        <p class="error hidden" data-err></p>
-        <div class="m-actions seerr-actions"></div>
+      <div class="sd">
+        <div class="sd-bg"${backdrop ? ` style="background-image:url('${esc(backdrop)}')"` : ''}></div>
+        <div class="sd-top">
+          ${poster ? `<img class="sd-poster" src="${esc(poster)}" alt="">` : ''}
+          <div class="sd-head">
+            ${MEDIA_STATUS[status] ? `<span class="seerr-badge inline s-${MEDIA_STATUS[status].split(' ')[0].toLowerCase()}">${esc(MEDIA_STATUS[status])}</span>` : ''}
+            <h2 class="sd-title">${esc(seerrTitle(m))}${year ? ` <span>(${esc(year)})</span>` : ''}</h2>
+            <div class="sd-meta">${[runtimeText, genresText].filter(Boolean).map((t) => `<span>${esc(t)}</span>`).join('<i></i>')}</div>
+            <div class="sd-actions seerr-actions"></div>
+          </div>
+        </div>
+        <div class="sd-body">
+          ${m.tagline ? `<p class="sd-tagline">${esc(m.tagline)}</p>` : ''}
+          <h3>Overview</h3>
+          <p class="sd-overview">${esc(m.overview || 'No overview available.')}</p>
+          ${isTv && seasons.length ? `<h3>Seasons</h3><div class="season-picks">${seasons.map((s) => {
+            const t = taken.get(s.seasonNumber);
+            return `<button class="season-pick${t ? ' taken' : ' on'}" data-season="${s.seasonNumber}"${t ? ' disabled' : ''}>
+              <strong>Season ${s.seasonNumber}</strong><span>${t ? esc(t) : `${s.episodeCount || '?'} episodes`}</span></button>`;
+          }).join('')}</div>` : ''}
+          <p class="error hidden" data-err></p>
+          ${crewList.length ? `<div class="sd-crew">${crewList.map((c) => `<div><b>${esc(c.job)}</b><span>${esc(c.name)}</span></div>`).join('')}</div>` : ''}
+          ${keywords.length ? `<div class="sd-tags">${keywords.map((k) => `<span class="sd-tag"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 12.5V4h8.5L21 13.5 13.5 21 3 12.5Z"/><circle cx="7.5" cy="8.5" r="1.4" fill="currentColor"/></svg>${esc(k.name)}</span>`).join('')}</div>` : ''}
+          ${m.collection ? `<div class="sd-collection"${m.collection.backdropPath ? ` style="background-image:url('${esc(tmdbImage(m.collection.backdropPath, 'w780'))}')"` : ''}><span>${esc(m.collection.name)}</span><button class="btn sd-outline" data-collection>View</button></div><div data-collection-rows></div>` : ''}
+          <div class="sd-facts">
+            ${score ? `<div class="sd-score"><span class="sd-tmdb">TMDB</span> <b>${score}%</b></div>` : ''}
+            ${facts.map(([k, v]) => `<div class="sd-fact"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}
+          </div>
+          ${cast.length ? `<h3>Cast</h3><div class="cast-track">${cast.map((c) => {
+            const pic = tmdbImage(c.profilePath, 'w185');
+            return `<div class="cast-card"><div class="cast-pic">${pic ? `<img loading="lazy" src="${esc(pic)}" alt="">` : `<span>${esc(initials(c.name))}</span>`}</div><b>${esc(c.name)}</b>${c.character ? `<span>${esc(c.character)}</span>` : ''}</div>`;
+          }).join('')}</div>` : ''}
+          <div data-more></div>
+        </div>
       </div>`;
     const actions = $('.seerr-actions', content), err = $('[data-err]', content);
     const picks = () => $$('.season-pick.on', content).map((b) => Number(b.dataset.season));
@@ -3188,12 +3238,12 @@
       const canRequest = isTv ? seasons.some((s) => !taken.has(s.seasonNumber)) : status < 2;
       const n = picks().length;
       actions.innerHTML = '';
-      if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
-      if (trailerUrl) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>`);
+      if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn sd-primary" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
+      if (trailerUrl) actions.insertAdjacentHTML('beforeend', `<button class="btn sd-outline" data-act="trailer">${ICONS.film} Watch Trailer</button>`);
       if (canRequest) {
         actions.insertAdjacentHTML('beforeend', isTv
-          ? `<button class="btn btn-red" data-act="request"${n ? '' : ' disabled'}>Request ${n} season${n === 1 ? '' : 's'}</button>`
-          : '<button class="btn btn-red" data-act="request">Request</button>');
+          ? `<button class="btn sd-primary" data-act="request"${n ? '' : ' disabled'}>${ICONS.download || ''} Request ${n} season${n === 1 ? '' : 's'}</button>`
+          : `<button class="btn sd-primary" data-act="request">${ICONS.download || ''} Request</button>`);
       } else if (status < 4) {
         actions.insertAdjacentHTML('beforeend', `<span class="seerr-done">${esc(MEDIA_STATUS[status] || 'Requested')}</span>`);
       }
@@ -3224,6 +3274,31 @@
 
     paint();
     autoFocus($('.seerr-actions button', content) || $('.season-pick:not(.taken)', content));
+
+    // Recommendations, similar titles and the rest of the collection arrive a moment later.
+    const stillHere = () => token === modalToken;
+    const more = $('[data-more]', content);
+    Promise.allSettled([['Recommendations', 'recommendations'], ['Similar Titles', 'similar']].map(([title, path]) =>
+      seerr(`/${type}/${tmdbId}/${path}?page=1`).then(({ data }) => [title, (data?.results || []).map((r) => ({ ...r, mediaType: r.mediaType || type })).filter((r) => r.mediaType === 'movie' || r.mediaType === 'tv')])))
+      .then((all) => {
+        if (!stillHere()) return;
+        for (const r of all) {
+          if (r.status !== 'fulfilled' || !r.value[1].length) continue;
+          addRow(more, r.value[0], async () => r.value[1], { isCurrent: stillHere, createItem: createSeerrCard });
+        }
+      });
+    const colBtn = $('[data-collection]', content);
+    colBtn?.addEventListener('click', async () => {
+      const holder = $('[data-collection-rows]', content);
+      if (holder.childElementCount) { holder.innerHTML = ''; colBtn.textContent = 'View'; return; }
+      colBtn.disabled = true;
+      try {
+        const { data } = await seerr(`/collection/${m.collection.id}`);
+        const parts = (data?.parts || []).map((p) => ({ ...p, mediaType: 'movie' }));
+        if (stillHere()) { addRow(holder, m.collection.name, async () => parts, { isCurrent: stillHere, createItem: createSeerrCard }); colBtn.textContent = 'Hide'; }
+      } catch (e) { toast("Couldn't load the collection: " + e.message); }
+      colBtn.disabled = false;
+    });
   }
 
   // Finds the requested title in the Emby library and opens it.
@@ -7115,6 +7190,7 @@
 
   // ---------- Icons ----------
   const ICONS = {
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>',
     play: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4v16a1 1 0 0 0 1.52.85l13-8a1 1 0 0 0 0-1.7l-13-8A1 1 0 0 0 6 4Z"/></svg>',
     info: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 6v8h-2v-8h2Zm0-4v2h-2V6h2Z"/></svg>',
     film: '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm1 2v2h2V6H5Zm12 0v2h2V6h-2ZM5 10v4h2v-4H5Zm12 0v4h2v-4h-2ZM5 16v2h2v-2H5Zm12 0v2h2v-2h-2ZM9 6v12h6V6H9Z"/></svg>',
