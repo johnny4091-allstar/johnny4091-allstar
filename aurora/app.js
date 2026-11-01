@@ -3190,7 +3190,7 @@
       [isTv ? 'Last Air Date' : '', isTv ? day(m.lastAirDate) : ''],
       ['Original Language', language],
       ['Production Country', (m.productionCountries || []).map((c) => c.name || c.iso_3166_1).filter(Boolean).join(', ')],
-      [isTv ? 'Network' : 'Studio', (isTv ? m.networks : m.productionCompanies || []).slice?.(0, 3).map((c) => c.name).join(', ') || ''],
+      [isTv ? 'Network' : 'Studio', ((isTv ? m.networks : m.productionCompanies) || []).slice(0, 3).map((c) => c.name).filter(Boolean).join(', ')],
     ].filter(([k, v]) => k && v);
     const score = m.voteAverage ? Math.round(m.voteAverage * 10) : 0;
     const initials = (n) => String(n || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
