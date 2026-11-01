@@ -583,29 +583,69 @@
   }
 
   // ---------- Hero ----------
+  // The featured banner at the top of Home, Movies and TV Shows: a few random titles shown one at a time, with
+  // dots to jump between them. (On a TV it stays on one title: nothing moves by itself, so the remote isn't disturbed.)
   async function renderHero(container, params) {
     const hero = document.createElement('section');
     hero.className = 'hero';
     container.appendChild(hero);
     try {
-      const res = await getItems({ SortBy: 'Random', Limit: 1, ImageTypes: 'Backdrop', ...params });
-      const item = res?.Items?.[0];
-      if (!item) { hero.className = 'hero empty'; return; }
-      const logo = logoImage(item);
-      hero.innerHTML = `
-        <div class="hero-bg" style="background-image:url('${esc(backdropImage(item))}')"></div>
-        <div class="hero-content">
-          ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h1 class="hero-title">${esc(item.Name)}</h1>`}
-          <p class="hero-overview">${esc(item.Overview || '')}</p>
-          <div class="hero-actions">
-            <button class="btn btn-white" data-act="play" data-autofocus>${ICONS.play} Play</button>
-            <button class="btn btn-gray" data-act="info">${ICONS.info} More Info</button>
-          </div>
-        </div>`;
-      $('[data-act="play"]', hero).addEventListener('click', () => playItem(item));
-      $('[data-act="info"]', hero).addEventListener('click', () => openDetails(item.Id));
-      const focused = document.activeElement;
-      if (!focused || focused === document.body || !document.contains(focused)) autoFocus($('[data-act="play"]', hero));
+      const res = await getItems({ SortBy: 'Random', Limit: nav.tv ? 1 : 5, ImageTypes: 'Backdrop', ...params });
+      const items = (res?.Items || []).filter(Boolean);
+      if (!items.length) { hero.className = 'hero empty'; return; }
+      let at = 0, timer = null;
+      const paintFav = (item) => {
+        const btn = $('[data-act="fav"]', hero);
+        if (!btn) return;
+        const on = !!item.UserData?.IsFavorite;
+        btn.innerHTML = on ? '&#10003;' : '+';
+        btn.title = on ? 'Remove from Favorites' : 'Add to Favorites';
+        btn.setAttribute('aria-label', btn.title);
+        btn.classList.toggle('active', on);
+      };
+      const show = (i, first) => {
+        at = (i + items.length) % items.length;
+        const item = items[at];
+        const logo = logoImage(item);
+        const meta = [item.ProductionYear, (item.Genres || []).slice(0, 2).join(' · '),
+          item.CommunityRating ? '★ ' + Number(item.CommunityRating).toFixed(1) : ''].filter(Boolean);
+        hero.innerHTML = `
+          <div class="hero-bg" style="background-image:url('${esc(backdropImage(item))}')"></div>
+          <div class="hero-content">
+            <div class="hero-kicker">FEATURED · ${item.Type === 'Series' ? 'TV SHOW' : 'MOVIE'}</div>
+            ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h1 class="hero-title">${esc(item.Name)}</h1>`}
+            ${meta.length || item.OfficialRating ? `<div class="hero-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join('<i></i>')}${item.OfficialRating ? `<span class="rating">${esc(item.OfficialRating)}</span>` : ''}</div>` : ''}
+            <p class="hero-overview">${esc(item.Overview || '')}</p>
+            <div class="hero-actions">
+              <button class="btn hero-play" data-act="play" data-autofocus>${ICONS.play} Play</button>
+              <button class="hero-circle" data-act="fav" aria-label="Add to Favorites"></button>
+              <button class="hero-circle" data-act="info" aria-label="More info" title="More info">${ICONS.info}</button>
+            </div>
+            ${items.length > 1 ? `<div class="hero-dots">${items.map((_, k) => `<button class="hero-dot${k === at ? ' on' : ''}" data-dot="${k}" tabindex="-1" aria-label="Show title ${k + 1}"></button>`).join('')}</div>` : ''}
+          </div>`;
+        $('[data-act="play"]', hero).addEventListener('click', () => playItem(item));
+        $('[data-act="info"]', hero).addEventListener('click', () => openDetails(item.Id));
+        $('[data-act="fav"]', hero).addEventListener('click', () => toggleItemFav(item, () => paintFav(item)));
+        $$('[data-dot]', hero).forEach((d) => d.addEventListener('click', () => { show(Number(d.dataset.dot)); start(); }));
+        paintFav(item);
+        if (first) {
+          const focused = document.activeElement;
+          if (!focused || focused === document.body || !document.contains(focused)) autoFocus($('[data-act="play"]', hero));
+        }
+      };
+      // Moves on by itself every 9 seconds, but never while someone is using the remote or keyboard, has the
+      // pointer or focus on the banner, has scrolled it away, or the page is hidden.
+      const start = () => {
+        clearInterval(timer);
+        if (items.length < 2 || nav.tv || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return; // nothing moves by itself for people who turned motion off
+        timer = setInterval(() => {
+          if (!hero.isConnected) { clearInterval(timer); return; }
+          if (document.hidden || nav.on || hero.matches(':hover') || hero.contains(document.activeElement) || window.scrollY > hero.offsetHeight * 0.5 || isPlayerOpen()) return;
+          show(at + 1);
+        }, 9000);
+      };
+      show(0, true);
+      start();
     } catch (e) {
       hero.className = 'hero empty';
       console.error(e);
@@ -711,7 +751,7 @@
 
   function createCard(item, { showProgress } = {}) {
     const card = document.createElement('div');
-    card.className = 'card';
+    card.className = 'card tile';
     card.tabIndex = 0;
     const img = landscapeImage(item);
     const isEpisode = item.Type === 'Episode';
@@ -719,16 +759,18 @@
     const sub = isEpisode ? episodeLabel(item) : [item.ProductionYear, item.Type === 'Series' ? 'Series' : formatRuntime(item.RunTimeTicks)].filter(Boolean).join(' • ');
     const pct = item.UserData?.PlayedPercentage;
     card.innerHTML = `
-      ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
-      <div class="card-play" aria-hidden="true">${ICONS.play}</div>
-      ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
-      <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>
-      ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}`;
+      <div class="card-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
+        <div class="card-play" aria-hidden="true">${ICONS.play}</div>
+        ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
+        ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}
+      </div>
+      <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
     $('.card-play', card).tabIndex = -1;
     $('.card-play', card).addEventListener('click', (e) => { e.stopPropagation(); playItem(item); });
     card.addEventListener('click', () => openItem(item));
     card.__item = item;
-    card.insertAdjacentHTML('beforeend', '<div class="badge-fav" title="Favorite">&#9733;</div>');
+    $('.card-img', card).insertAdjacentHTML('beforeend', '<div class="badge-fav" title="Favorite">&#9733;</div>');
     card.classList.toggle('is-fav', !!item.UserData?.IsFavorite);
     card.addEventListener('contextmenu', (e) => { e.preventDefault(); openItemMenu(item, card); });
     card.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openItemMenu(item, card); } });
@@ -1719,16 +1761,37 @@
 
   // Recently watched channels, newest first, for the Live TV page and Home.
   const RECENT_MAX = 30;
+  // The list belongs to the TV source it was made from (not to the settings version: the admin changing a category or
+  // a limit must not wipe everyone's recent channels). Older saves, which only knew the version, are still honoured.
+  const recentSource = () => { const c = iptv.config || {}; return [c.type || '', c.type === 'm3u' ? c.m3uUrl || '' : c.server || '', c.username || ''].join('|'); };
   function iptvRecent() {
     try {
       const r = JSON.parse(store.get('ef.iptv.recent.' + state.userId) || '{}');
-      return r.v === (iptv.config?.v || 0) ? r.list || [] : [];
+      const same = r.s ? r.s === recentSource() : r.v === (iptv.config?.v || 0);
+      return same ? r.list || [] : [];
     } catch { return []; }
   }
+  // Channels are told apart by their stream number or address, not by their position in the list (which changes).
+  const recentId = (c) => c.streamId ? 'x' + c.streamId : c.url || c.id;
   function rememberChannel(ch) {
-    const list = [ch, ...iptvRecent().filter((c) => c.id !== ch.id)].slice(0, RECENT_MAX)
+    const list = [ch, ...iptvRecent().filter((c) => recentId(c) !== recentId(ch))].slice(0, RECENT_MAX)
       .map(({ id, streamId, name, logo, num, url, group }) => ({ id, streamId, name, logo, num, url, group }));
-    store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ v: iptv.config?.v || 0, list }));
+    store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ s: recentSource(), v: iptv.config?.v || 0, list }));
+  }
+  // Puts the Home row of recently watched channels right (added, moved to the front, or refreshed) after watching.
+  function updateRecentRow() {
+    if (!iptvOn() || !/^#?\/?(home)?$/.test(location.hash)) return;
+    const rows = $('#page .rows');
+    if (!rows) return;
+    const recent = iptvRecent();
+    const old = $('[data-row="recently-watched-channels"]', rows);
+    if (!recent.length) { old?.remove(); return; }
+    const tmp = document.createElement('div');
+    addRow(tmp, 'Recently Watched Channels', async () => recent,
+      { isCurrent: () => true, createItem: (c) => createIptvTile(c, () => playIptv(recent, recent.indexOf(c), 'Recently watched')) });
+    const fresh = tmp.firstElementChild;
+    if (old) old.replaceWith(fresh);
+    else { const first = rows.firstElementChild; if (first) first.after(fresh); else rows.appendChild(fresh); }
   }
 
   // A loading error with a Try again button (the provider may just have had a hiccup).
@@ -1936,6 +1999,8 @@
     if (!p || index < 0) return;
     // Channels the viewer starred (or un-starred) from inside the player.
     for (const f of stats?.favs || []) { const c = p.list[f.index]; if (c) toggleIptvFav(c, { silent: true, set: f.fav }); }
+    // Every channel the viewer settled on while flipping through the list, oldest first, then the one they ended on.
+    for (const i of stats?.visited || []) { const c = p.list[i]; if (c) rememberChannel(c); }
     const ch = p.list[index];
     // Kept stopping to buffer: note it (it reaches the admins with the automatic reports) and suggest a bigger buffer.
     if (stats?.stalls >= 3) {
@@ -1953,8 +2018,9 @@
     }
     if (!ch) return;
     rememberChannel(ch);
-    const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`);
-    if (tile) focusEl(tile);
+    updateRecentRow();
+    // The row (if it was just redrawn) is in place on the next turn; put the focus back on the channel's tile.
+    setTimeout(() => { const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`); if (tile) focusEl(tile); }, 0);
   };
 
   function createIptvTile(ch, onPlay) {
@@ -2495,18 +2561,21 @@
 
   function createChannelCard(ch) {
     const card = document.createElement('div');
-    card.className = 'card channel-card';
+    card.className = 'card channel-card tile';
     card.tabIndex = 0;
     const logo = ch.ImageTags?.Primary ? imageUrl(ch.Id, 'Primary', { tag: ch.ImageTags.Primary, maxWidth: 300 }) : '';
     const prog = ch.CurrentProgram;
     card.innerHTML = `
-      <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
-      <div class="badge-fav" title="Favorite">&#9733;</div>
+      <div class="card-img">
+        <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
+        <div class="badge-fav" title="Favorite">&#9733;</div>
+        <span class="live-tag">LIVE</span>
+        ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}
+      </div>
       <div class="card-info">
         <div>${esc(prog?.Name || ch.Name)}</div>
         <div class="sub">${esc(channelLabel(ch))}${prog ? ' · ' + esc(timeRange(prog)) : ''}</div>
-      </div>
-      ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}`;
+      </div>`;
     card.addEventListener('click', () => playItem(ch));
     card.__embyCh = ch;
     card.classList.toggle('is-fav', !!ch.UserData?.IsFavorite);
@@ -2845,19 +2914,22 @@
 
   function createSeerrCard(m) {
     const card = document.createElement('div');
-    card.className = 'card seerr-card';
+    card.className = 'card seerr-card tile poster-tile';
     card.tabIndex = 0;
     card.dataset.seerr = `${m.mediaType}:${m.id}`;
-    const img = tmdbImage(m.backdropPath, 'w500') || tmdbImage(m.posterPath, 'w342');
+    const img = tmdbImage(m.posterPath, 'w342') || tmdbImage(m.backdropPath, 'w500');
     const status = seerrStatus(m);
-    const kind = m.mediaType === 'tv' ? 'Series' : 'Movie';
+    const isTv = m.mediaType === 'tv';
     const req = m.request;
     const who = req ? (req.requestedBy?.id === seerrMeId ? 'you' : req.requestedBy?.displayName || req.requestedBy?.username || '') : '';
-    const sub = req ? [who && `Requested by ${who}`, timeAgo(req.createdAt)].filter(Boolean).join(' · ') : [seerrYear(m), kind].filter(Boolean).join(' • ');
+    const sub = req ? [who && `Requested by ${who}`, timeAgo(req.createdAt)].filter(Boolean).join(' · ') : seerrYear(m);
     card.innerHTML = `
-      ${img ? `<img loading="lazy" src="${esc(img)}" alt=""${m.backdropPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
-      ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
-      <div class="card-info"><div>${esc(seerrTitle(m))}</div><div class="sub">${esc(sub)}</div></div>`;
+      <div class="card-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt=""${m.posterPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
+        <span class="seerr-type ${isTv ? 'tv' : 'movie'}">${isTv ? 'SERIES' : 'MOVIE'}</span>
+        ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
+      </div>
+      <div class="card-info"><div>${esc(seerrTitle(m))}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
     card.addEventListener('click', () => openSeerrItem(m.mediaType, m.id));
     return card;
   }
@@ -2898,7 +2970,7 @@
     let next = 0;
     const slots = entries.map(() => {
       const ph = document.createElement('div');
-      ph.className = 'card seerr-card placeholder';
+      ph.className = 'card seerr-card placeholder poster-tile';
       grid.appendChild(ph);
       return ph;
     });
@@ -2943,7 +3015,7 @@
           <div class="tab-bar req-tabs hidden">
             ${REQUEST_TABS.map(([id, label]) => `<a href="#/requests?tab=${id}" class="tab${id === tab ? ' active' : ''}" data-tab="${id}">${label}<span class="tab-count"></span></a>`).join('')}
           </div>
-          <div class="req-search hidden"><input type="search" placeholder="Search for a movie or show to request" autocomplete="off"></div>
+          <div class="req-search hidden"><input type="search" placeholder="Search Movies &amp; Series" autocomplete="off"></div>
         </div>
         <div data-req-body><div class="spinner"></div></div>
       </div>`;
@@ -3090,26 +3162,73 @@
     (m.mediaInfo?.requests || []).forEach((r) => {
       if (r.status !== 3) (r.seasons || []).forEach((s) => { if (!taken.has(s.seasonNumber)) taken.set(s.seasonNumber, REQUEST_STATUS[r.status] || 'Requested'); });
     });
-    const meta = [seerrYear(m), isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? formatRuntime(m.runtime * 60 * TICKS_PER_SECOND) : ''),
-      (m.genres || []).slice(0, 3).map((g) => g.name).join(', ')].filter(Boolean);
+    const year = seerrYear(m);
+    const runtimeText = isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? `${m.runtime} minutes` : '');
+    const genresText = (m.genres || []).slice(0, 4).map((g) => g.name).join(', ');
     const backdrop = tmdbImage(m.backdropPath, 'w1280');
+    const poster = tmdbImage(m.posterPath, 'w500');
     const video = (m.relatedVideos || []).find((v) => v.site === 'YouTube' && v.type === 'Trailer')
       || (m.relatedVideos || []).find((v) => v.site === 'YouTube');
     const trailerUrl = video?.url || (video?.key ? `https://www.youtube.com/watch?v=${video.key}` : '');
+    // The people behind it: the director and writers first, then producers, as Jellyseerr lists them.
+    const CREW_ORDER = ['Director', 'Screenplay', 'Writer', 'Story', 'Novel', 'Creator', 'Executive Producer', 'Producer'];
+    const seen = new Set();
+    const crew = (m.credits?.crew || []).filter((c) => CREW_ORDER.includes(c.job)).sort((x, y) => CREW_ORDER.indexOf(x.job) - CREW_ORDER.indexOf(y.job))
+      .filter((c) => { const k = c.job + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6);
+    const created = (m.createdBy || []).slice(0, 2).map((c) => ({ job: 'Creator', name: c.name }));
+    const crewList = isTv && created.length ? [...created, ...crew.filter((c) => c.job !== 'Creator')].slice(0, 6) : crew;
+    const keywords = (m.keywords || []).slice(0, 14);
+    const cast = (m.credits?.cast || []).slice(0, 24);
+    const day = (d) => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' }) : '');
+    let language = '';
+    try { language = m.originalLanguage ? new Intl.DisplayNames(['en'], { type: 'language' }).of(m.originalLanguage) : ''; } catch { language = m.originalLanguage || ''; }
+    const original = m.originalTitle || m.originalName || '';
+    const facts = [
+      ['Original Title', original && original !== seerrTitle(m) ? original : ''],
+      ['Status', m.status || ''],
+      [isTv ? 'First Air Date' : 'Release Date', day(m.releaseDate || m.firstAirDate)],
+      [isTv ? 'Last Air Date' : '', isTv ? day(m.lastAirDate) : ''],
+      ['Original Language', language],
+      ['Production Country', (m.productionCountries || []).map((c) => c.name || c.iso_3166_1).filter(Boolean).join(', ')],
+      [isTv ? 'Network' : 'Studio', ((isTv ? m.networks : m.productionCompanies) || []).slice(0, 3).map((c) => c.name).filter(Boolean).join(', ')],
+    ].filter(([k, v]) => k && v);
+    const score = m.voteAverage ? Math.round(m.voteAverage * 10) : 0;
+    const initials = (n) => String(n || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
     content.innerHTML = `
-      <div class="m-hero" style="background-image:url('${esc(backdrop)}')">
-        <div class="m-hero-content"><h2>${esc(seerrTitle(m))}</h2></div>
-      </div>
-      <div class="m-body">
-        <div class="meta">${meta.map((t) => `<span>${esc(t)}</span>`).join('')}${MEDIA_STATUS[status] ? `<span class="seerr-badge inline s-${MEDIA_STATUS[status].split(' ')[0].toLowerCase()}">${MEDIA_STATUS[status]}</span>` : ''}</div>
-        <p class="overview">${esc(m.overview || '')}</p>
-        ${isTv && seasons.length ? `<div class="m-section-head"><h3>Seasons</h3></div><div class="season-picks">${seasons.map((s) => {
-          const t = taken.get(s.seasonNumber);
-          return `<button class="season-pick${t ? ' taken' : ' on'}" data-season="${s.seasonNumber}"${t ? ' disabled' : ''}>
-            <strong>Season ${s.seasonNumber}</strong><span>${t ? esc(t) : `${s.episodeCount || '?'} episodes`}</span></button>`;
-        }).join('')}</div>` : ''}
-        <p class="error hidden" data-err></p>
-        <div class="m-actions seerr-actions"></div>
+      <div class="sd">
+        <div class="sd-bg"${backdrop ? ` style="background-image:url('${esc(backdrop)}')"` : ''}></div>
+        <div class="sd-top">
+          ${poster ? `<img class="sd-poster" src="${esc(poster)}" alt="">` : ''}
+          <div class="sd-head">
+            ${MEDIA_STATUS[status] ? `<span class="seerr-badge inline s-${MEDIA_STATUS[status].split(' ')[0].toLowerCase()}">${esc(MEDIA_STATUS[status])}</span>` : ''}
+            <h2 class="sd-title">${esc(seerrTitle(m))}${year ? ` <span>(${esc(year)})</span>` : ''}</h2>
+            <div class="sd-meta">${[runtimeText, genresText].filter(Boolean).map((t) => `<span>${esc(t)}</span>`).join('<i></i>')}</div>
+            <div class="sd-actions seerr-actions"></div>
+          </div>
+        </div>
+        <div class="sd-body">
+          ${m.tagline ? `<p class="sd-tagline">${esc(m.tagline)}</p>` : ''}
+          <h3>Overview</h3>
+          <p class="sd-overview">${esc(m.overview || 'No overview available.')}</p>
+          ${isTv && seasons.length ? `<h3>Seasons</h3><div class="season-picks">${seasons.map((s) => {
+            const t = taken.get(s.seasonNumber);
+            return `<button class="season-pick${t ? ' taken' : ' on'}" data-season="${s.seasonNumber}"${t ? ' disabled' : ''}>
+              <strong>Season ${s.seasonNumber}</strong><span>${t ? esc(t) : `${s.episodeCount || '?'} episodes`}</span></button>`;
+          }).join('')}</div>` : ''}
+          <p class="error hidden" data-err></p>
+          ${crewList.length ? `<div class="sd-crew">${crewList.map((c) => `<div><b>${esc(c.job)}</b><span>${esc(c.name)}</span></div>`).join('')}</div>` : ''}
+          ${keywords.length ? `<div class="sd-tags">${keywords.map((k) => `<span class="sd-tag"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 12.5V4h8.5L21 13.5 13.5 21 3 12.5Z"/><circle cx="7.5" cy="8.5" r="1.4" fill="currentColor"/></svg>${esc(k.name)}</span>`).join('')}</div>` : ''}
+          ${m.collection ? `<div class="sd-collection"${m.collection.backdropPath ? ` style="background-image:url('${esc(tmdbImage(m.collection.backdropPath, 'w780'))}')"` : ''}><span>${esc(m.collection.name)}</span><button class="btn sd-outline" data-collection>View</button></div><div data-collection-rows></div>` : ''}
+          <div class="sd-facts">
+            ${score ? `<div class="sd-score"><span class="sd-tmdb">TMDB</span> <b>${score}%</b></div>` : ''}
+            ${facts.map(([k, v]) => `<div class="sd-fact"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}
+          </div>
+          ${cast.length ? `<h3>Cast</h3><div class="cast-track">${cast.map((c) => {
+            const pic = tmdbImage(c.profilePath, 'w185');
+            return `<div class="cast-card"><div class="cast-pic">${pic ? `<img loading="lazy" src="${esc(pic)}" alt="">` : `<span>${esc(initials(c.name))}</span>`}</div><b>${esc(c.name)}</b>${c.character ? `<span>${esc(c.character)}</span>` : ''}</div>`;
+          }).join('')}</div>` : ''}
+          <div data-more></div>
+        </div>
       </div>`;
     const actions = $('.seerr-actions', content), err = $('[data-err]', content);
     const picks = () => $$('.season-pick.on', content).map((b) => Number(b.dataset.season));
@@ -3119,12 +3238,12 @@
       const canRequest = isTv ? seasons.some((s) => !taken.has(s.seasonNumber)) : status < 2;
       const n = picks().length;
       actions.innerHTML = '';
-      if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
-      if (trailerUrl) actions.insertAdjacentHTML('beforeend', `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>`);
+      if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn sd-primary" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
+      if (trailerUrl) actions.insertAdjacentHTML('beforeend', `<button class="btn sd-outline" data-act="trailer">${ICONS.film} Watch Trailer</button>`);
       if (canRequest) {
         actions.insertAdjacentHTML('beforeend', isTv
-          ? `<button class="btn btn-red" data-act="request"${n ? '' : ' disabled'}>Request ${n} season${n === 1 ? '' : 's'}</button>`
-          : '<button class="btn btn-red" data-act="request">Request</button>');
+          ? `<button class="btn sd-primary" data-act="request"${n ? '' : ' disabled'}>${ICONS.download || ''} Request ${n} season${n === 1 ? '' : 's'}</button>`
+          : `<button class="btn sd-primary" data-act="request">${ICONS.download || ''} Request</button>`);
       } else if (status < 4) {
         actions.insertAdjacentHTML('beforeend', `<span class="seerr-done">${esc(MEDIA_STATUS[status] || 'Requested')}</span>`);
       }
@@ -3155,6 +3274,31 @@
 
     paint();
     autoFocus($('.seerr-actions button', content) || $('.season-pick:not(.taken)', content));
+
+    // Recommendations, similar titles and the rest of the collection arrive a moment later.
+    const stillHere = () => token === modalToken;
+    const more = $('[data-more]', content);
+    Promise.allSettled([['Recommendations', 'recommendations'], ['Similar Titles', 'similar']].map(([title, path]) =>
+      seerr(`/${type}/${tmdbId}/${path}?page=1`).then(({ data }) => [title, (data?.results || []).map((r) => ({ ...r, mediaType: r.mediaType || type })).filter((r) => r.mediaType === 'movie' || r.mediaType === 'tv')])))
+      .then((all) => {
+        if (!stillHere()) return;
+        for (const r of all) {
+          if (r.status !== 'fulfilled' || !r.value[1].length) continue;
+          addRow(more, r.value[0], async () => r.value[1], { isCurrent: stillHere, createItem: createSeerrCard });
+        }
+      });
+    const colBtn = $('[data-collection]', content);
+    colBtn?.addEventListener('click', async () => {
+      const holder = $('[data-collection-rows]', content);
+      if (holder.childElementCount) { holder.innerHTML = ''; colBtn.textContent = 'View'; return; }
+      colBtn.disabled = true;
+      try {
+        const { data } = await seerr(`/collection/${m.collection.id}`);
+        const parts = (data?.parts || []).map((p) => ({ ...p, mediaType: 'movie' }));
+        if (stillHere()) { addRow(holder, m.collection.name, async () => parts, { isCurrent: stillHere, createItem: createSeerrCard }); colBtn.textContent = 'Hide'; }
+      } catch (e) { toast("Couldn't load the collection: " + e.message); }
+      colBtn.disabled = false;
+    });
   }
 
   // Finds the requested title in the Emby library and opens it.
@@ -3938,9 +4082,7 @@
       <div class="page-pad admin-page">
         <div class="page-head">
           <h1>Admin</h1>
-          <div class="tab-bar">
-            ${ADMIN_TABS.map(([id, label]) => `<a href="#/admin?tab=${id}" class="tab${id === tab ? ' active' : ''}">${label}</a>`).join('')}
-          </div>
+          ${adminMenuHtml(tab)}
           <button class="btn btn-gray admin-refresh" data-admin-refresh>Refresh</button>
         </div>
         <div data-admin-body><div class="spinner"></div></div>
@@ -3948,10 +4090,43 @@
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
     ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
-    autoFocus($('.tab.active', page));
-    // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
-    const bar = $('.tab-bar', page), active = $('.tab.active', bar);
-    if (bar && active) bar.scrollLeft = Math.max(0, active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
+    bindAdminMenu(page);
+    autoFocus($('[data-admin-menu]', page));
+  }
+
+  // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
+  const ADMIN_GROUPS = [
+    ['Dashboard', ['overview', 'problems', 'feedback']],
+    ['Customers', ['users', 'plans', 'devices']],
+    ['Live TV & Requests', ['livetv', 'requests', 'reports']],
+    ['Server', ['playback', 'updates', 'activity', 'logs', 'applog']],
+  ];
+  function adminMenuHtml(tab) {
+    const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
+    const known = new Set(ADMIN_GROUPS.flatMap(([, ids]) => ids));
+    const groups = [...ADMIN_GROUPS, ['More', ADMIN_TABS.map(([id]) => id).filter((id) => !known.has(id))]];
+    const item = (id) => { const t = ADMIN_TABS.find(([x]) => x === id); return t ? `<a href="#/admin?tab=${id}" role="menuitem" class="admin-menu-item${id === tab ? ' active' : ''}">${esc(t[1])}</a>` : ''; };
+    return `<div class="admin-menu">
+      <button class="admin-menu-btn" data-admin-menu aria-haspopup="menu" aria-expanded="false"><span>${esc(label)}</span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg></button>
+      <div class="admin-menu-list hidden" role="menu">${groups.filter(([, ids]) => ids.length).map(([name, ids]) => `<div class="admin-menu-col"><div class="admin-menu-group">${esc(name)}</div>${ids.map(item).join('')}</div>`).join('')}</div>
+    </div>`;
+  }
+  const adminMenuOpen = () => !!$('.admin-menu-list:not(.hidden)');
+  function setAdminMenu(open) {
+    const list = $('.admin-menu-list'), btn = $('[data-admin-menu]');
+    if (!list || !btn) return;
+    list.classList.toggle('hidden', !open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) focusEl($('.admin-menu-item.active', list) || $('.admin-menu-item', list));
+  }
+  function bindAdminMenu(page) {
+    const btn = $('[data-admin-menu]', page);
+    btn.addEventListener('click', (e) => { e.stopPropagation(); setAdminMenu(!adminMenuOpen()); });
+    // Tapping anywhere else closes it; choosing a section changes the page, which closes it too.
+    document.addEventListener('click', function close(e) {
+      if (!btn.isConnected) { document.removeEventListener('click', close); return; }
+      if (adminMenuOpen() && !e.target.closest('.admin-menu')) setAdminMenu(false);
+    });
   }
 
   const statTile = (label, value, note = '', cls = '') =>
@@ -7046,6 +7221,7 @@
 
   // ---------- Icons ----------
   const ICONS = {
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>',
     play: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4v16a1 1 0 0 0 1.52.85l13-8a1 1 0 0 0 0-1.7l-13-8A1 1 0 0 0 6 4Z"/></svg>',
     info: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 6v8h-2v-8h2Zm0-4v2h-2V6h2Z"/></svg>',
     film: '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm1 2v2h2V6H5Zm12 0v2h2V6h-2ZM5 10v4h2v-4H5Zm12 0v4h2v-4h-2ZM5 16v2h2v-2H5Zm12 0v2h2v-2h-2ZM9 6v12h6V6H9Z"/></svg>',
@@ -7427,6 +7603,7 @@
     }
     if (trailerOpen()) { closeTrailerWindow(); return true; }
     if ($('#page .tm-guide')?.__closeGroups?.()) return true;
+    if (adminMenuOpen()) { setAdminMenu(false); focusEl($('[data-admin-menu]')); return true; }
     if (updateRequiredOpen()) return false; // Back leaves the app instead
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }

@@ -79,6 +79,7 @@ public class LivePlayerActivity extends Activity {
     static final String RESULT_STALLS = "stalls", RESULT_MINUTES = "minutes", RESULT_BUFFER = "buffer";
     /** Channels that stopped working while open (for Admin → Playback problems): how many, the last one, and why. */
     static final String RESULT_FAVS = "favs"; // JSON [{index, fav}] for channels the viewer starred or un-starred
+    static final String RESULT_VISITED = "visited"; // JSON [index, ...]: channels the viewer settled on for a few seconds, oldest first
     static final String RESULT_FAILED = "failed", RESULT_FAILED_NAME = "failedName", RESULT_FAILED_CODE = "failedCode";
 
     private static final int ACCENT = Color.parseColor("#2AD4D0");
@@ -94,6 +95,7 @@ public class LivePlayerActivity extends Activity {
 
     private final List<Channel> channels = new ArrayList<>();
     private int index;
+    private final java.util.LinkedHashSet<Integer> visited = new java.util.LinkedHashSet<>(); // for "Recently watched"
     private int retries;
     /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
     private boolean failed;
@@ -282,6 +284,9 @@ public class LivePlayerActivity extends Activity {
         // Report the channel once the viewer settles on it (not every channel while flicking through).
         handler.removeCallbacks(reportChannel);
         handler.postDelayed(reportChannel, 4000);
+        // A channel counts as watched once the viewer stays on it a few seconds (not while flicking past).
+        handler.removeCallbacks(markWatched);
+        handler.postDelayed(markWatched, 4000);
         showBanner();
         if (adapter != null) adapter.notifyDataSetChanged();
     }
@@ -315,6 +320,11 @@ public class LivePlayerActivity extends Activity {
             if (reporter != null) reporter.heartbeat();
             handler.postDelayed(this, HEARTBEAT_MS);
         }
+    };
+    private final Runnable markWatched = () -> {
+        if (channels.isEmpty()) return;
+        visited.remove(index); // newest last
+        visited.add(index);
     };
     private final Runnable reportChannel = () -> {
         if (reporter == null || channels.isEmpty()) return;
@@ -487,15 +497,29 @@ public class LivePlayerActivity extends Activity {
         // Channel list down the left side.
         listPanel = new LinearLayout(this);
         listPanel.setOrientation(LinearLayout.VERTICAL);
-        listPanel.setBackgroundColor(PANEL);
-        listPanel.setPadding(0, dp(PlayerUi.isTv(this) ? 20 : 76), 0, dp(12)); // phones: room for the Back button above the list
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setColor(PANEL);
+        panelBg.setCornerRadius(dp(26));
+        panelBg.setStroke(dp(1), Color.parseColor("#26FFFFFF"));
+        listPanel.setBackground(panelBg);
+        listPanel.setPadding(0, dp(PlayerUi.isTv(this) ? 20 : 64), 0, dp(14)); // phones: room for the Back button above the list
         TextView header = text(13, ACCENT, true);
         header.setText(group.isEmpty() ? "CHANNELS" : group.toUpperCase());
-        header.setPadding(dp(20), 0, dp(20), dp(10));
-        listPanel.addView(header);
+        header.setPadding(dp(14), dp(5), dp(14), dp(5));
+        GradientDrawable chip = new GradientDrawable();
+        chip.setColor(Color.parseColor("#1F2AD4D0"));
+        chip.setCornerRadius(dp(20));
+        header.setBackground(chip);
+        header.setSingleLine(true);
+        header.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams headerLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        headerLp.setMargins(dp(18), 0, dp(18), dp(12));
+        listPanel.addView(header, headerLp);
         listView = new ListView(this);
         listView.setDivider(new ColorDrawable(Color.TRANSPARENT));
-        listView.setDividerHeight(dp(2));
+        listView.setDividerHeight(dp(4));
+        listView.setPadding(dp(10), 0, dp(10), 0);
+        listView.setClipToPadding(false);
         listView.setSelector(rowSelector());
         listView.setDrawSelectorOnTop(false);
         listView.setItemsCanFocus(false);
@@ -507,7 +531,11 @@ public class LivePlayerActivity extends Activity {
         });
         listPanel.addView(listView, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         listPanel.setVisibility(View.GONE);
-        root.addView(listPanel, new FrameLayout.LayoutParams(dp(380), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START));
+        // 392 dp wide, but never wider than a narrow phone's screen (less the margin).
+        int panelWidth = Math.min(dp(392), getResources().getDisplayMetrics().widthPixels - dp(28));
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(panelWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START);
+        panelLp.setMargins(dp(14), dp(14), 0, dp(14));
+        root.addView(listPanel, panelLp);
 
         // Phones: a Back button that shows with the channel banner (tap the picture to bring it up).
         backButton = PlayerUi.backButton(this, this::finishWithResult);
@@ -529,7 +557,7 @@ public class LivePlayerActivity extends Activity {
         GradientDrawable on = new GradientDrawable();
         on.setColor(Color.parseColor("#33FFFFFF"));
         on.setStroke(dp(2), Color.WHITE);
-        on.setCornerRadius(dp(6));
+        on.setCornerRadius(dp(30)); // a pill, like the menu bar
         StateListDrawable s = new StateListDrawable();
         s.addState(new int[]{android.R.attr.state_focused}, on);
         s.addState(new int[]{android.R.attr.state_selected}, on);
@@ -692,11 +720,16 @@ public class LivePlayerActivity extends Activity {
                 row = new LinearLayout(LivePlayerActivity.this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
                 row.setGravity(Gravity.CENTER_VERTICAL);
-                row.setPadding(dp(16), dp(8), dp(16), dp(8));
+                row.setPadding(dp(16), dp(9), dp(16), dp(9));
                 TextView num = text(14, Color.parseColor("#9AA3BD"), true);
                 num.setMinWidth(dp(44));
                 ImageView logo = new ImageView(LivePlayerActivity.this);
                 logo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                GradientDrawable tile = new GradientDrawable(); // logos sit on a soft rounded tile
+                tile.setColor(Color.parseColor("#1A2450"));
+                tile.setCornerRadius(dp(10));
+                logo.setBackground(tile);
+                logo.setPadding(dp(4), dp(3), dp(4), dp(3));
                 LinearLayout texts = new LinearLayout(LivePlayerActivity.this);
                 texts.setOrientation(LinearLayout.VERTICAL);
                 texts.setPadding(dp(12), 0, 0, 0);
@@ -705,7 +738,7 @@ public class LivePlayerActivity extends Activity {
                 texts.addView(name);
                 texts.addView(now);
                 row.addView(num);
-                row.addView(logo, new LinearLayout.LayoutParams(dp(48), dp(36)));
+                row.addView(logo, new LinearLayout.LayoutParams(dp(56), dp(40)));
                 row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             }
             Channel c = channels.get(position);
@@ -830,6 +863,13 @@ public class LivePlayerActivity extends Activity {
         result.putExtra(RESULT_STALLS, stalls);
         result.putExtra(RESULT_MINUTES, (int) ((System.currentTimeMillis() - openedAt) / 60000));
         result.putExtra(RESULT_BUFFER, bufferLevel);
+        try {
+            org.json.JSONArray seen = new org.json.JSONArray();
+            for (int i : visited) seen.put(i);
+            result.putExtra(RESULT_VISITED, seen.toString());
+        } catch (Exception ignored) {
+            // Just the last channel is remembered then.
+        }
         try {
             JSONArray favs = new JSONArray();
             for (int i = 0; i < channels.size(); i++) {

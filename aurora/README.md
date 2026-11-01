@@ -7,7 +7,7 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - Sign in with your Emby username and password; everyone who signs in on a device gets a "Who's watching?" tile
   so they can switch back without retyping their password
 - Works with a TV remote or keyboard: arrow keys move around, OK/Enter selects, Back closes
-- Home page with a rotating hero banner and rows: Continue Watching, Next Up, Favorites,
+- Home page with a featured banner that flips between a few titles (dots to jump), a floating pill menu bar, and rows: Continue Watching, Next Up, Favorites,
   Recently Added for each library, Top Rated, Popular TV, and random genre rows
 - TV Shows and Movies pages with genre, sort, and watched filters and infinite scroll
 - Search

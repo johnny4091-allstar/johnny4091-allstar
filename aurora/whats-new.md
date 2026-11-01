@@ -1,1 +1,16 @@
-- Clear cache no longer touches an update that is still downloading.
+- New: a whole new look. A floating rounded menu bar, a featured banner that flips between titles (with year, genres, rating and round Favorite and Info buttons), rounded picture cards with the title underneath, pill-shaped buttons, and a floating tab bar on phones.
+- New: the Requests tab now looks like Jellyseerr. Poster cards tagged MOVIE or SERIES, and a full page for each title with its poster, runtime and genres, Watch Trailer and Request buttons, crew, keywords, details, cast, recommendations, similar titles and the rest of the collection.
+- New: the channel list inside Live TV has a new look, with a floating panel, pill-shaped selection and rounded logos.
+- New: Recently Watched Channels now remembers every channel you stay on for a few seconds, not just the first and last. It no longer gets wiped when settings change, and Home updates the moment you leave the player.
+- New: a "Skip 90 seconds" button for episodes that have no intro marks. It shows for a few seconds at the start, and Settings → Skip-ahead button turns it off.
+- New: FFmpeg software decoders play sound and video your device can't handle itself, such as DTS and TrueHD, in movies, shows and Live TV. Settings → Software decoders turns them off.
+- New: Settings → Clear cache removes only temporary files and never your sign-in, settings or favorites. The Android app also tidies its own cache automatically.
+- Faster: the TV app responds sooner to the remote, with quicker moves along rows and smoother, lighter drawing.
+- Fixed: on a TV, pressing OK in the first seconds of an episode could skip 90 seconds instead of pausing.
+- Fixed: on tablets and phones held sideways, the menu bar pushed your profile picture off the screen.
+- Fixed: on small phones, opening search covered the profile picture, and pop-up messages hid behind the bottom bar.
+- Fixed: a long title, like "Maze Runner: The Scorch Trials", stretched its card much wider than the others.
+- Fixed: the Requests page for a show with missing details failed to open.
+- Fixed: Clear cache could break an app update that was still downloading.
+- Fixed: the Live TV channel list could be wider than a narrow phone's screen.
+- Fixed: the featured banner no longer flips by itself, and animations stay off, when your device's reduce-motion setting is on.
