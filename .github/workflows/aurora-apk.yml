@@ -81,11 +81,45 @@ jobs:
 
       # The app shows the lines between the notes markers in its update prompt.
       - name: Write release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
         run: |
+          # aurora/whats-new.md describes THIS update. If it is the same as the previous release's notes (someone forgot to
+          # change it), the commit messages of this push are used instead, so one update never repeats the last one's notes.
+          python3 - <<'PY'
+          import json, os, re, urllib.request
+          repo, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_SHA']
+          def get(url):
+              req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              return json.load(urllib.request.urlopen(req, timeout=20))
+          def lines(text):
+              return [l.strip() for l in text.split('\n') if l.strip().startswith('- ')]
+          mine = lines(open('aurora/whats-new.md').read())
+          try:
+              prev = get(f'https://api.github.com/repos/{repo}/releases/latest').get('body') or ''
+              m = re.search(r'<!-- notes -->(.*?)<!-- /notes -->', prev, re.S)
+              prev_lines = lines(m.group(1)) if m else []
+          except Exception:
+              prev_lines = []
+          if not mine or mine == prev_lines:
+              subjects = []
+              before = os.environ.get('BEFORE', '')
+              try:
+                  commits = get(f'https://api.github.com/repos/{repo}/compare/{before}...{sha}')['commits'] if re.fullmatch(r'[0-9a-f]{40}', before) and set(before) != {'0'} else [get(f'https://api.github.com/repos/{repo}/commits/{sha}')]
+                  for c in commits:
+                      first = c['commit']['message'].split('\n')[0].strip()
+                      if first and not first.startswith('Merge ') and first not in subjects: subjects.append(first)
+              except Exception:
+                  pass
+              mine = ['- ' + t for t in subjects[:8]] or ['- Small behind-the-scenes improvements.']
+              print('whats-new.md matched the previous release; using this push\'s commit messages instead')
+          open('aurora/whats-new.release.md', 'w').write('\n'.join(mine) + '\n')
+          PY
           {
             echo "## What's new"
             echo '<!-- notes -->'
-            cat aurora/whats-new.md
+            cat aurora/whats-new.release.md
             echo '<!-- /notes -->'
             echo
             echo 'Download **Aurora.apk** below on your Android phone, tablet or Android TV and open it to install.'
