@@ -4082,9 +4082,7 @@
       <div class="page-pad admin-page">
         <div class="page-head">
           <h1>Admin</h1>
-          <div class="tab-bar">
-            ${ADMIN_TABS.map(([id, label]) => `<a href="#/admin?tab=${id}" class="tab${id === tab ? ' active' : ''}">${label}</a>`).join('')}
-          </div>
+          ${adminMenuHtml(tab)}
           <button class="btn btn-gray admin-refresh" data-admin-refresh>Refresh</button>
         </div>
         <div data-admin-body><div class="spinner"></div></div>
@@ -4092,10 +4090,43 @@
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
     ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
-    autoFocus($('.tab.active', page));
-    // The page is drawn again for each tab, which put the tab bar back at its start: scroll to the chosen tab.
-    const bar = $('.tab-bar', page), active = $('.tab.active', bar);
-    if (bar && active) bar.scrollLeft = Math.max(0, active.offsetLeft - (bar.clientWidth - active.offsetWidth) / 2);
+    bindAdminMenu(page);
+    autoFocus($('[data-admin-menu]', page));
+  }
+
+  // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
+  const ADMIN_GROUPS = [
+    ['Dashboard', ['overview', 'problems', 'feedback']],
+    ['Customers', ['users', 'plans', 'devices']],
+    ['Live TV & Requests', ['livetv', 'requests', 'reports']],
+    ['Server', ['playback', 'updates', 'activity', 'logs', 'applog']],
+  ];
+  function adminMenuHtml(tab) {
+    const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
+    const known = new Set(ADMIN_GROUPS.flatMap(([, ids]) => ids));
+    const groups = [...ADMIN_GROUPS, ['More', ADMIN_TABS.map(([id]) => id).filter((id) => !known.has(id))]];
+    const item = (id) => { const t = ADMIN_TABS.find(([x]) => x === id); return t ? `<a href="#/admin?tab=${id}" role="menuitem" class="admin-menu-item${id === tab ? ' active' : ''}">${esc(t[1])}</a>` : ''; };
+    return `<div class="admin-menu">
+      <button class="admin-menu-btn" data-admin-menu aria-haspopup="menu" aria-expanded="false"><span>${esc(label)}</span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg></button>
+      <div class="admin-menu-list hidden" role="menu">${groups.filter(([, ids]) => ids.length).map(([name, ids]) => `<div class="admin-menu-col"><div class="admin-menu-group">${esc(name)}</div>${ids.map(item).join('')}</div>`).join('')}</div>
+    </div>`;
+  }
+  const adminMenuOpen = () => !!$('.admin-menu-list:not(.hidden)');
+  function setAdminMenu(open) {
+    const list = $('.admin-menu-list'), btn = $('[data-admin-menu]');
+    if (!list || !btn) return;
+    list.classList.toggle('hidden', !open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) focusEl($('.admin-menu-item.active', list) || $('.admin-menu-item', list));
+  }
+  function bindAdminMenu(page) {
+    const btn = $('[data-admin-menu]', page);
+    btn.addEventListener('click', (e) => { e.stopPropagation(); setAdminMenu(!adminMenuOpen()); });
+    // Tapping anywhere else closes it; choosing a section changes the page, which closes it too.
+    document.addEventListener('click', function close(e) {
+      if (!btn.isConnected) { document.removeEventListener('click', close); return; }
+      if (adminMenuOpen() && !e.target.closest('.admin-menu')) setAdminMenu(false);
+    });
   }
 
   const statTile = (label, value, note = '', cls = '') =>
@@ -7572,6 +7603,7 @@
     }
     if (trailerOpen()) { closeTrailerWindow(); return true; }
     if ($('#page .tm-guide')?.__closeGroups?.()) return true;
+    if (adminMenuOpen()) { setAdminMenu(false); focusEl($('[data-admin-menu]')); return true; }
     if (updateRequiredOpen()) return false; // Back leaves the app instead
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
