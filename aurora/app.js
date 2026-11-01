@@ -6059,7 +6059,7 @@
       const latest = withApk[0];
       const apk = latest.rel.assets.find((a) => /\.apk$/i.test(a.name));
       // Newest first, without repeating a line that appears in more than one version.
-      const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 12);
+      const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 30);
       return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes, behind: newer.length };
     } catch {
       return { status: 'error' };
