@@ -1359,3 +1359,30 @@ a.user-row { border-radius: var(--radius-sm); }
   .admin-menu-list { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: .2rem 1rem; width: 520px; max-height: none; overflow: visible; padding: .7rem; }
   .admin-menu-group { padding-top: .5rem; }
 }
+
+/* ---- Admin: usage, sharing, server health, audit log, bulk edit ---- */
+.stat-tile.bad .stat-value { color: #ff9aa5; }
+.bar-chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: .4rem 0; }
+.bar-col { flex: 1 1 0; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+.bar-fill { width: 100%; background: var(--accent, #e50914); border-radius: 3px 3px 0 0; opacity: .85; }
+.bar-axis { display: flex; justify-content: space-between; color: var(--dim); font-size: .78rem; }
+.usage-bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,.1); margin: .4rem 0; overflow: hidden; }
+.usage-bar span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #e50914); }
+.usage-bar.bad span { background: #ff5d6c; }
+.usage-row { color: inherit; text-decoration: none; }
+.spark-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem 1.4rem; }
+.spark-label { color: var(--muted); font-size: .85rem; margin-bottom: .2rem; }
+.spark { width: 100%; height: 60px; display: block; color: var(--accent, #e50914); background: rgba(255,255,255,.04); border-radius: 8px; }
+.spark-empty { margin: .6rem 0; }
+.share-places { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+.share-place { font-size: .78rem; color: var(--muted); background: rgba(255,255,255,.07); padding: .15rem .5rem; border-radius: 999px; }
+.share-row a { color: inherit; }
+.pill.good { background: #0f4d2c; color: #9af0c0; }
+.admin-card details > summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
+.bulk-bar { background: rgba(255,255,255,.05); border-radius: 12px; padding: .8rem 1rem; margin: .6rem 0 1rem; }
+.bulk-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .6rem; }
+.bulk-head strong { margin-right: auto; }
+.user-row .sel-box { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(255,255,255,.4); align-self: center; margin-right: .2rem; }
+.user-row .sel-box.on { background: var(--accent, #e50914); border-color: var(--accent, #e50914); box-shadow: inset 0 0 0 4px var(--bg-2, #181818); }
+.user-row .sel-box.off { opacity: .25; }
+.user-row.picked { background: rgba(255,255,255,.07); }

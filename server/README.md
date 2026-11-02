@@ -64,6 +64,8 @@ Administrator accounts are never limited or disabled.
 | `intervalSeconds` | How often it checks (default 60, minimum 20) |
 | `activeWindowMinutes` | A device counts as in use if it talked to Emby this recently (default 5) |
 | `defaultLimit` | Device limit for accounts without their own (default 2) |
+| `diskPaths`, `diskAlertPercent` | Drives to show free space for (default: the guard's own drive) and the free-space level that sends an alert (default 10) |
+| `sharingNetworks`, `sharingSimultaneousMinutes` | When Admin → Sharing flags an account (defaults 4 and 10) |
 | `dryRun` | `true`: only log what it would do |
 | `exitOnCertError` | `false` (default): if the certificate can't be loaded, keep running the every-minute check without the https endpoint. `true`: stop instead |
 
@@ -85,9 +87,30 @@ Administrator accounts are never limited or disabled.
 | `POST /extension` | The signed-in customer | Asks for an extension (one waiting at a time, 4 a month). Sends an alert. |
 | `GET /extensions`, `PUT /extensions/{id}` | Emby administrators | The requests; `{action: "approve", days}` or `{action: "deny", message}`. |
 | `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
+| `GET /usage?days=` | Emby administrators | Minutes watched per day, per account and per title (guard 1.6.0). |
+| `GET /sharing`, `DELETE /sharing/{userId}` | Emby administrators | Accounts seen on many networks or playing from two at once; clear one's history (guard 1.6.0). |
+| `GET /server` | Emby administrators | Processor, memory, free disk space, streams now, and the last 24 hours (guard 1.6.0). |
+| `GET /audit`, `POST /audit` | Emby administrators | Who changed what; the app also writes the account changes it makes straight in Emby (guard 1.6.0). |
 | `GET /limits`, `GET /actions` | Emby administrators | Reads the store and the recent actions. |
 | `PUT /limits/{userId}` | Emby administrators | Sets `{limit, expires: "YYYY-MM-DD" or null}` and applies it at once. |
 | `DELETE /limits/{userId}`, `PUT /limits/{userId}/manual`, `PUT /migrated` | Emby administrators | Housekeeping. |
+
+## Usage, sharing, server health and the audit log (guard 1.6.0)
+
+All four are worked out from the sessions list the guard already reads every minute, so they add no load on Emby, and only
+Emby administrators can read them. They appear in Aurora's Admin menu as **Usage**, **Sharing**, **Server health** and **Audit log**.
+
+- **Usage:** every minute something is playing (not paused) adds a minute to that account and that show (series are counted
+  by show, channels in Aurora's own live player as "Live: name"). 62 days are kept in `limits.json`.
+- **Sharing:** the guard remembers the *network* (first three parts of an address) each account plays from, for 14 days.
+  "Likely shared" = playing from two networks outside the home at the same moment for `sharingSimultaneousMinutes` minutes
+  in a week (default 10); "Worth a look" = `sharingNetworks` or more networks in a week (default 4). Addresses inside the house count as one.
+  It never signs anyone out by itself; the device limit does that.
+- **Server health:** processor, memory, free disk space and streams (converting vs direct), one point a minute for 24 hours
+  (kept in memory). List the drives to watch in `diskPaths`, for example `["D:\\", "E:\\"]`; an alert goes to `alertWebhookUrl`
+  when one has less than `diskAlertPercent` free (default 10). Free space needs Node 18.15 or newer.
+- **Audit log:** each change made through the admin endpoints is written with the admin's name (sent by the app) and the time;
+  the last 500 are kept.
 
 ## Subscription plans (guard 1.5.0)
 

@@ -3432,7 +3432,7 @@
     try {
       res = await fetch(url, {
         method, cache: 'no-store', signal: timeoutSignal(quick ? 3000 : 15000),
-        headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { 'X-Emby-Token': state.apiKey, 'X-Aurora-User': String(state.user?.Name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40), ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
     } catch (e) {
@@ -3444,6 +3444,8 @@
     if (!res.ok) { const e = new Error(data.error || `Aurora Guard answered ${res.status}`); e.status = res.status; throw e; }
     return data;
   }
+  // Things done straight in Emby (switching an account off, deleting it...) never pass through the guard, so the app writes them into its audit log.
+  const auditNote = (text) => { if (guardEnabled) guard('/audit', { method: 'POST', body: { text } }).catch(() => {}); };
   const DEFAULT_DEVICE_LIMIT = 2;
   const ACTIVE_WINDOW = 5 * 60000; // a device counts as in use if it talked to Emby this recently
   const expiryEnd = (d) => new Date(`${d}T23:59:59`).getTime(); // the account works until the end of that day
@@ -4049,7 +4051,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -4089,7 +4091,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
@@ -4097,9 +4099,9 @@
   // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
   const ADMIN_GROUPS = [
     ['Dashboard', ['overview', 'problems', 'feedback']],
-    ['Customers', ['users', 'plans', 'devices']],
+    ['Customers', ['users', 'plans', 'devices', 'usage', 'sharing']],
     ['Live TV & Requests', ['livetv', 'requests', 'reports']],
-    ['Server', ['playback', 'updates', 'activity', 'logs', 'applog']],
+    ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
   function adminMenuHtml(tab) {
     const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
@@ -5397,6 +5399,7 @@
         <div class="users-head">
           <h2>Users <small>${rows.length}</small></h2>
           <span class="osd-spacer"></span>
+          ${guardEnabled && !guardError ? '<button class="btn btn-gray" data-select-mode>Select</button>' : ''}
           <a class="btn btn-red" href="#/admin?tab=users&user=new">Add user</a>
         </div>
         ${moved.length ? `<p class="live-result good">Moved the limits saved by the older version into Aurora Guard (once only) for: ${esc(moved.join(', '))}. Check they look right: any account could edit its own old copy.</p>` : ''}
@@ -5406,6 +5409,7 @@
           <div class="chip-row">${filters.map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
         </div>
         <p class="muted users-live" data-live-summary>${esc(summaryText(live))}</p>
+        <div class="bulk-bar hidden" data-bulk></div>
         <div class="admin-list users-list"></div>
         <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes)${guardEnabled ? " out of the account's limit. Admin accounts have no limits." : '.'}</p>
       </section>
@@ -5422,9 +5426,13 @@
       </section>`}`;
     bindExtensions(body, isCurrent);
     const list = $('.users-list', body);
+    // Select mode (bulk edit): tapping a row ticks it instead of opening it.
+    let selecting = false;
+    const picked = new Set();
     const draw = () => {
       const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
-      list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}">
+      list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}${selecting && picked.has(r.u.Id) ? ' picked' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}" data-uid="${esc(r.u.Id)}"${selecting && r.exempt ? ' data-exempt' : ''}>
+        ${selecting ? `<span class="sel-box${picked.has(r.u.Id) ? ' on' : ''}${r.exempt ? ' off' : ''}" aria-hidden="true"></span>` : ''}
         <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
           <div class="muted"><span data-live="${esc(r.u.Id)}">${liveHtml(r)}</span>
             ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}${r.lim?.plan ? ` · ${esc(r.lim.plan.name)}` : ''}` : ''}</div></div>
@@ -5450,6 +5458,104 @@
         }
       }, 10000);
     }
+    const bulkBox = $('[data-bulk]', body), selectBtn = $('[data-select-mode]', body);
+    const drawBulk = () => {
+      if (!selecting) { bulkBox.classList.add('hidden'); return; }
+      bulkBox.classList.remove('hidden');
+      const n = picked.size;
+      bulkBox.innerHTML = `<div class="bulk-head"><strong>${n ? `${n} selected` : 'Tap accounts to select them'}</strong>
+          <button class="btn btn-gray" data-bulk-all>Select all shown</button><button class="btn btn-gray" data-bulk-none>None</button></div>
+        ${n ? `<label class="admin-field"><span>Do this to them</span><select data-bulk-op>
+          <option value="limit">Set the device limit</option>
+          <option value="addDays">Add days to the end date</option>
+          <option value="setDate">Set one end date</option>
+          <option value="noExpiry">Remove the end date</option>
+          ${planList.length ? '<option value="plan">Put a plan on them</option>' : ''}
+          <option value="disable">Disable the accounts</option>
+          <option value="enable">Enable the accounts</option></select></label>
+        <div data-bulk-arg></div>
+        <div class="m-actions"><button class="btn btn-red" data-bulk-go>Apply to ${n} ${n === 1 ? 'account' : 'accounts'}</button></div>
+        <div class="live-result" data-bulk-result></div>` : ''}`;
+      if (!n) return;
+      const opSel = $('[data-bulk-op]', bulkBox), arg = $('[data-bulk-arg]', bulkBox);
+      const argFor = () => {
+        const op = opSel.value;
+        arg.innerHTML = op === 'limit' ? `<label class="admin-field"><span>Device limit</span><select data-a="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>`
+          : op === 'addDays' ? '<label class="admin-field"><span>Days to add (counted from the end date, or from today if it has passed)</span><input type="number" data-a="days" min="1" max="730" value="30" inputmode="numeric"></label>'
+          : op === 'setDate' ? '<label class="admin-field"><span>End date</span><input type="date" data-a="date"></label>'
+          : op === 'plan' ? `<label class="admin-field"><span>Plan</span><select data-a="plan">${planOptions(planList)}</select></label>
+              <label class="admin-field"><span>Start</span><select data-a="mode"><option value="extend">Add it after the time they have left</option><option value="today">Start from today</option></select></label>` : '';
+      };
+      opSel.addEventListener('change', argFor);
+      argFor();
+      $('[data-bulk-go]', bulkBox).addEventListener('click', () => runBulk());
+    };
+    const runBulk = async () => {
+      const op = $('[data-bulk-op]', bulkBox).value, a = (k) => $(`[data-a="${k}"]`, bulkBox)?.value;
+      const targets = rows.filter((r) => picked.has(r.u.Id) && !r.exempt);
+      const out = $('[data-bulk-result]', bulkBox), go = $('[data-bulk-go]', bulkBox);
+      const say = (html, cls = '') => { out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+      if (!targets.length) return say('Admin accounts have no limits, so there is nothing to change on them.', 'bad');
+      const today = new Date(), todayDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const plus = (day, n) => { const d = new Date(`${day}T12:00:00`); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+      let days = 0, date = '';
+      if (op === 'addDays') { days = Number(a('days')); if (!Number.isInteger(days) || days < 1 || days > 730) return say('Days must be a whole number from 1 to 730.', 'bad'); }
+      if (op === 'setDate') { date = a('date'); if (!date) return say('Pick the end date.', 'bad'); }
+      const what = { limit: `Set the device limit to ${a('limit')}`, addDays: `Add ${days} days`, setDate: `Set the end date to ${date}`, noExpiry: 'Remove the end date', plan: 'Put the plan on', disable: 'Disable', enable: 'Enable' }[op];
+      const names = targets.map((r) => r.u.Name);
+      if (!(await confirmAction(`${what}: ${targets.length} ${targets.length === 1 ? 'account' : 'accounts'}?`, names.slice(0, 12).join(', ') + (names.length > 12 ? ` and ${names.length - 12} more` : ''), 'Apply'))) return;
+      go.disabled = true;
+      const failed = [], queue = targets.slice();
+      let done = 0;
+      const one = async (r) => {
+        const id = r.u.Id, cur = r.lim || {}, limit = Number(cur.limit) || g?.defaultLimit || DEFAULT_DEVICE_LIMIT;
+        if (op === 'limit') await guard(`/limits/${id}`, { method: 'PUT', body: { limit: Number(a('limit')), expires: cur.expires || null } });
+        else if (op === 'addDays') await guard(`/limits/${id}`, { method: 'PUT', body: { limit, expires: plus(cur.expires && cur.expires > todayDay ? cur.expires : todayDay, days) } });
+        else if (op === 'setDate') await guard(`/limits/${id}`, { method: 'PUT', body: { limit, expires: date } });
+        else if (op === 'noExpiry') await guard(`/limits/${id}`, { method: 'PUT', body: { limit, expires: null } });
+        else if (op === 'plan') await guard(`/limits/${id}/plan`, { method: 'POST', body: { planId: a('plan'), mode: a('mode') } });
+        else { await setDisabled(id, op === 'disable'); await guard(`/limits/${id}/manual`, { method: 'PUT' }).catch(() => {}); }
+      };
+      const worker = async () => {
+        while (queue.length) {
+          const r = queue.shift();
+          say(`<div class="spinner"></div> ${done} of ${targets.length} done…`);
+          try { await one(r); done++; } catch (e) { failed.push(`${r.u.Name} (${e.message})`); }
+        }
+      };
+      await Promise.all([0, 1, 2].map(worker));
+      if (op === 'disable' || op === 'enable') auditNote(`${op === 'disable' ? 'Disabled' : 'Enabled'} ${done} ${done === 1 ? 'account' : 'accounts'} at once: ${names.slice(0, 8).join(', ')}${names.length > 8 ? '…' : ''}`);
+      else auditNote(`Bulk change (${what.toLowerCase()}) on ${done} ${done === 1 ? 'account' : 'accounts'}`);
+      if (!isCurrent()) return;
+      if (failed.length) { go.disabled = false; say(`${done} done. Couldn't change: ${esc(failed.join('; '))}`, 'bad'); toast(`${done} changed, ${failed.length} failed`, 3500); }
+      else { toast(`${done} ${done === 1 ? 'account' : 'accounts'} changed`, 2500); adminUsers(body, isCurrent); }
+    };
+    selectBtn?.addEventListener('click', () => {
+      selecting = !selecting;
+      picked.clear();
+      selectBtn.textContent = selecting ? 'Done' : 'Select';
+      selectBtn.classList.toggle('btn-red', selecting); selectBtn.classList.toggle('btn-gray', !selecting);
+      draw(); drawBulk();
+    });
+    list.addEventListener('click', (e) => {
+      if (!selecting) return;
+      const row = e.target.closest('[data-uid]');
+      if (!row) return;
+      e.preventDefault();
+      if (row.hasAttribute('data-exempt')) { toast('Admin accounts have no limits to change', 2000); return; }
+      const id = row.dataset.uid;
+      if (picked.has(id)) picked.delete(id); else picked.add(id);
+      row.classList.toggle('picked', picked.has(id));
+      $('.sel-box', row)?.classList.toggle('on', picked.has(id));
+      drawBulk();
+    });
+    bulkBox.addEventListener('click', (e) => {
+      if (e.target.closest('[data-bulk-all]')) {
+        const q = query;
+        rows.filter((r) => !r.exempt && (filter === 'all' || r.st === filter) && (!q || r.search.includes(q))).forEach((r) => picked.add(r.u.Id));
+        draw(); drawBulk();
+      } else if (e.target.closest('[data-bulk-none]')) { picked.clear(); draw(); drawBulk(); }
+    });
     $('.users-search', body).addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); draw(); });
     $$('[data-filter]', body).forEach((b) => b.addEventListener('click', () => {
       filter = b.dataset.filter;
@@ -5587,6 +5693,7 @@
       try {
         api(`/Sessions/${encodeURIComponent(b.dataset.session)}/Playing/Stop`, { method: 'POST' }).catch(() => {});
         await api('/Devices', { method: 'DELETE', params: { Id: b.dataset.signout } });
+        auditNote(`Signed out ${b.dataset.name} from ${user.Name}`);
         toast(`${b.dataset.name} signed out`, 2500);
         reload();
       } catch (e) { toast("Couldn't sign it out: " + adminError(e)); }
@@ -5600,6 +5707,7 @@
         await setDisabled(userId, disabling);
         // A hand-made choice: the guard no longer switches this account back on by itself.
         await guard(`/limits/${userId}/manual`, { method: 'PUT' }).catch(() => {});
+        auditNote(`${disabling ? 'Disabled' : 'Enabled'} the account ${user.Name}`);
         toast(disabling ? 'Account disabled' : 'Account enabled', 2000);
         reload();
       } catch (e) { say('[data-account-result]', "Couldn't change it: " + esc(adminError(e)), 'bad'); }
@@ -5610,6 +5718,7 @@
       try {
         await api(`/Users/${userId}`, { method: 'DELETE' });
         await guard(`/limits/${userId}`, { method: 'DELETE' }).catch(() => {});
+        auditNote(`Deleted the account ${user.Name}`);
         toast(`${user.Name} deleted`, 2500);
         location.hash = '#/admin?tab=users';
       } catch (e) { say('[data-account-result]', "Couldn't delete it: " + esc(adminError(e)), 'bad'); }
@@ -5621,6 +5730,7 @@
       if (!(await confirmAction('Set a new password?', `${user.Name}'s current password stops working straight away.`, 'Set password'))) return;
       try {
         await setUserPassword(userId, pw);
+        auditNote(`Set a new password for ${user.Name}`);
         say('[data-account-result]', 'New password set.', 'good');
       } catch (e) { say('[data-account-result]', "Couldn't set it: " + esc(adminError(e)), 'bad'); }
     });
@@ -5662,6 +5772,7 @@
         user = await api('/Users/New', { method: 'POST', body: { Name: name } });
         if (!user?.Id) throw new Error('Emby did not return the new account');
       } catch (e) { return say("Couldn't create it: " + esc(adminError(e)) + (e.status === 400 ? ' (is the name already taken?)' : ''), 'bad'); }
+      auditNote(`Created the account ${name}`);
       const problems = [];
       try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
       if (guardEnabled) {
@@ -5897,6 +6008,154 @@
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
+  }
+
+  // ----- Usage, sharing, server health and the audit log (Aurora Guard 1.6.0) -----
+  const guardOldNote = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.6.0 to use ${what}: copy the new aurora-guard.js to the PC and restart the "Aurora Guard" task.` : esc(e.message));
+  const needGuard = (body, title) => {
+    body.innerHTML = `<section class="admin-card"><h2>${esc(title)}</h2><p class="muted">This needs Aurora Guard, which is switched off. See server/README.md.</p></section>`;
+  };
+  const fmtMinutes = (m) => {
+    m = Math.round(m || 0);
+    if (m < 1) return '0 min';
+    if (m < 60) return `${m} min`;
+    const h = Math.floor(m / 60), r = m % 60;
+    return r ? `${h} h ${r} min` : `${h} h`;
+  };
+  const fmtBytes = (b) => (b >= 1099511627776 ? `${(b / 1099511627776).toFixed(1)} TB` : b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
+  const fmtUptime = (sec) => { const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+
+  async function adminUsage(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Usage');
+    const days = [7, 30, 60].includes(Number(new URLSearchParams(location.hash.split('?')[1] || '').get('days'))) ? Number(new URLSearchParams(location.hash.split('?')[1]).get('days')) : 30;
+    let data;
+    try { data = await guard('/usage', { params: { days } }); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Usage</h2><p class="live-result bad">${guardOldNote(e, 'the usage report')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const maxDay = Math.max(1, ...data.perDay.map((d) => d.min)), maxUser = Math.max(1, ...data.users.map((u) => u.min));
+    const bars = data.perDay.map((d) => `<div class="bar-col" title="${esc(fmtDay(d.day))}: ${esc(fmtMinutes(d.min))}"><div class="bar-fill" style="height:${Math.max(3, Math.round(100 * d.min / maxDay))}%"></div></div>`).join('');
+    body.innerHTML = `
+      <div class="chip-row">${[7, 30, 60].map((n) => `<a class="chip${n === days ? ' active' : ''}" href="#/admin?tab=usage&days=${n}">Last ${n} days</a>`).join('')}</div>
+      <div class="stat-grid">
+        ${statTile('Watch time', fmtMinutes(data.totalMin), `Last ${days} days`)}
+        ${statTile('Viewers', data.users.length, data.users.length ? `${esc(data.users[0].name)} watched the most` : 'Nobody yet')}
+        ${statTile('Most watched', data.titles[0] ? esc(data.titles[0].title) : '—', data.titles[0] ? `${fmtMinutes(data.titles[0].min)} · ${data.titles[0].viewers} ${data.titles[0].viewers === 1 ? 'viewer' : 'viewers'}` : '')}
+      </div>
+      <section class="admin-card"><h2>Watch time per day</h2>
+        ${data.perDay.length ? `<div class="bar-chart" role="img" aria-label="Watch time per day">${bars}</div>
+        <div class="bar-axis"><span>${esc(fmtDay(data.perDay[0].day))}</span><span>${esc(fmtDay(data.perDay[data.perDay.length - 1].day))}</span></div>` : '<p class="muted">Nothing counted yet. The guard counts every minute something is playing, starting when guard 1.6.0 first ran.</p>'}
+      </section>
+      <section class="admin-card"><h2>Who watches <small>${data.users.length}</small></h2>
+        <div class="admin-list">${data.users.map((u) => `<a class="admin-row usage-row" href="#/admin?tab=users&user=${esc(u.userId)}">
+          <div class="admin-row-main"><strong>${esc(u.name)}</strong> <span class="muted">${esc(fmtMinutes(u.min))} · ${u.days} ${u.days === 1 ? 'day' : 'days'}</span>
+            <div class="usage-bar"><span style="width:${Math.max(2, Math.round(100 * u.min / maxUser))}%"></span></div>
+            <div class="muted">${u.top.map((t) => esc(t.title)).join(' · ')}</div></div></a>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
+      </section>
+      <section class="admin-card"><h2>Most watched</h2>
+        <div class="admin-list">${data.titles.map((t, i) => `<div class="admin-row"><div class="admin-row-main"><strong>${i + 1}. ${esc(t.title)}</strong></div>
+          <div class="admin-row-time">${esc(fmtMinutes(t.min))} · ${t.viewers} ${t.viewers === 1 ? 'viewer' : 'viewers'}</div></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+        <p class="muted">Counted each minute from what Emby reports as playing (paused time isn't counted), plus channels in Aurora's own live player. Series are counted by show. Only admins see this.</p>
+      </section>`;
+  }
+
+  async function adminSharing(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Sharing');
+    let data;
+    try { data = await guard('/sharing'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Sharing</h2><p class="live-result bad">${guardOldNote(e, 'the sharing detector')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const flagged = data.list.filter((x) => x.level !== 'ok'), rest = data.list.filter((x) => x.level === 'ok');
+    const pill = (x) => (x.level === 'likely' ? '<span class="pill bad">Likely shared</span>' : x.level === 'watch' ? '<span class="pill warn">Worth a look</span>' : '<span class="pill good">Looks normal</span>');
+    const why = (x) => [x.together ? `watched from 2 different networks at the same time (${x.together} ${x.together === 1 ? 'minute' : 'minutes'} this week)` : '', `${x.networks} ${x.networks === 1 ? 'network' : 'networks'} outside the home this week`].filter(Boolean).join(' · ');
+    const card = (x) => `<div class="admin-row share-row" data-share="${esc(x.userId)}"><div class="admin-row-main">
+        <a href="#/admin?tab=users&user=${esc(x.userId)}"><strong>${esc(x.name)}</strong></a> ${pill(x)}
+        <div class="muted">${esc(why(x))} · limit ${x.limit} ${x.limit === 1 ? 'device' : 'devices'}</div>
+        <div class="share-places">${x.places.slice(0, 8).map((p) => `<span class="share-place">${p.local ? 'Home network' : esc(p.ip)}${p.device ? ' · ' + esc(p.device) : ''} · ${esc(timeAgo(p.last))}</span>`).join('')}</div></div>
+        <button class="btn btn-gray" data-clear-share="${esc(x.userId)}" data-name="${esc(x.name)}">Clear</button></div>`;
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('Likely shared', flagged.filter((x) => x.level === 'likely').length, 'Playing from 2 networks at once', flagged.some((x) => x.level === 'likely') ? 'bad' : 'good')}
+        ${statTile('Worth a look', flagged.filter((x) => x.level === 'watch').length, `${data.networksAt}+ networks in a week`)}
+        ${statTile('Looks normal', rest.length, 'Seen this week')}
+      </div>
+      <section class="admin-card"><h2>Accounts to check <small>${flagged.length}</small></h2>
+        <div class="admin-list">${flagged.map(card).join('') || '<p class="muted">Nothing suspicious. Nobody has been playing from two networks at once.</p>'}</div>
+        <p class="muted">A network is the first three parts of an address, so a phone moving between 4G towers counts once. "Likely shared" means the account was playing from two networks outside the home at the same moment. Clearing an account forgets its history. The guard's device limit still applies to every account.</p>
+      </section>
+      ${rest.length ? `<section class="admin-card"><details><summary>Everyone else (${rest.length})</summary>
+        <div class="admin-list">${rest.map(card).join('')}</div></details></section>` : ''}`;
+    $$('[data-clear-share]', body).forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmAction(`Clear ${b.dataset.name}?`, 'Forget the places this account was seen. It starts counting again from now.', 'Clear'))) return;
+      try { await guard(`/sharing/${b.dataset.clearShare}`, { method: 'DELETE' }); toast('Cleared', 2000); if (isCurrent()) adminSharing(body, isCurrent); } catch (e) { toast("Couldn't clear it: " + e.message); }
+    }));
+  }
+
+  function sparkline(points, key, max = 100, cls = '') {
+    const w = 300, h = 60;
+    const vals = points.map((p) => (p[key] == null ? null : p[key]));
+    if (vals.filter((v) => v != null).length < 2) return '<p class="muted spark-empty">Collecting… (one point a minute)</p>';
+    const step = w / (vals.length - 1);
+    const d = vals.map((v, i) => (v == null ? '' : `${i ? 'L' : 'M'}${(i * step).toFixed(1)},${(h - Math.min(1, v / max) * (h - 4) - 2).toFixed(1)}`)).filter(Boolean).join(' ').replace(/^L/, 'M');
+    return `<svg class="spark ${cls}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+  }
+
+  async function adminServer(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Server health');
+    const draw = (s) => {
+      const hot = (v, at) => (v != null && v >= at ? 'bad' : '');
+      const disks = (s.disks || []).map((d) => d.error ? `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong><div class="muted">${esc(d.error)}</div></div></div>`
+        : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> <span class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</span>
+          <div class="usage-bar${d.freePct < 10 ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
+      body.innerHTML = `
+        <div class="stat-grid">
+          ${statTile('Processor', s.cpu == null ? '…' : s.cpu + '%', `${s.cores} cores`, hot(s.cpu, 85))}
+          ${statTile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, hot(s.mem.pct, 90))}
+          ${statTile('Streams now', s.streams.playing + s.streams.live, `${s.streams.transcoding} converting · ${s.streams.direct} direct${s.streams.live ? ` · ${s.streams.live} live TV` : ''}`)}
+          ${statTile('Emby', s.emby.online ? 'Online' : 'Offline', s.emby.online ? 'Guard can reach it' : esc(s.emby.error || ''), s.emby.online ? 'good' : 'bad')}
+        </div>
+        <section class="admin-card"><h2>Last 24 hours</h2>
+          <div class="spark-grid">
+            <div><div class="spark-label">Processor</div>${sparkline(s.history, 'cpu')}</div>
+            <div><div class="spark-label">Memory</div>${sparkline(s.history, 'mem')}</div>
+            <div><div class="spark-label">Streams playing</div>${sparkline(s.history, 'playing', Math.max(4, ...s.history.map((p) => p.playing || 0)))}</div>
+            <div><div class="spark-label">Converting (transcode)</div>${sparkline(s.history, 'transcoding', Math.max(4, ...s.history.map((p) => p.transcoding || 0)))}</div>
+          </div>
+          <p class="muted">One point a minute, kept while the guard is running (a restart starts the chart again).</p>
+        </section>
+        <section class="admin-card"><h2>Disk space</h2><div class="admin-list">${disks || '<p class="muted">No drives to show.</p>'}</div>
+          <p class="muted">To watch your media drives too, list them in the guard's config.json, for example <code>"diskPaths": ["D:\\\\", "E:\\\\"]</code>. An alert is sent when one drops under 10% free.</p></section>
+        <section class="admin-card"><h2>The PC</h2>
+          <div class="admin-row"><div class="admin-row-main">${esc(s.hostname)} · ${esc(s.platform)}</div></div>
+          <div class="admin-row"><div class="admin-row-main">PC on for ${esc(fmtUptime(s.pcUptime))} · Aurora Guard ${esc(s.version)} running for ${esc(fmtUptime(s.guardUptime))}</div></div>
+        </section>`;
+    };
+    let s;
+    try { s = await guard('/server'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Server health</h2><p class="live-result bad">${guardOldNote(e, 'server health')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    draw(s);
+    // Refresh every 15 s while the page is open.
+    const timer = setInterval(async () => {
+      if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
+      if (document.hidden) return;
+      try { const fresh = await guard('/server'); if (isCurrent()) draw(fresh); } catch { /* keep the last numbers */ }
+    }, 15000);
+  }
+
+  async function adminAudit(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Audit log');
+    let data;
+    try { data = await guard('/audit'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Audit log</h2><p class="live-result bad">${guardOldNote(e, 'the audit log')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    body.innerHTML = `<section class="admin-card"><h2>Audit log <small>${data.audit.length}</small></h2>
+      <input type="search" class="users-search" placeholder="Search the log" autocomplete="off" spellcheck="false">
+      <div class="admin-list" data-audit></div>
+      <p class="muted">Every change made in Admin (limits, end dates, plans, approvals, account changes) with who made it. The names come from the app, and only Emby administrators can reach this. The last 500 changes are kept.</p></section>`;
+    const list = $('[data-audit]', body);
+    const draw = (q = '') => {
+      const shown = data.audit.filter((a) => !q || `${a.by} ${a.text}`.toLowerCase().includes(q));
+      list.innerHTML = shown.map((a) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(a.by)}</strong> · ${esc(a.text)}</div>
+        <div class="admin-row-time" title="${esc(new Date(a.at).toLocaleString())}">${esc(fmtDateTime(a.at))}</div></div>`).join('') || '<p class="muted">Nothing here.</p>';
+    };
+    draw();
+    $('.users-search', body).addEventListener('input', (e) => draw(e.target.value.trim().toLowerCase()));
   }
 
   async function adminDevices(body, isCurrent) {

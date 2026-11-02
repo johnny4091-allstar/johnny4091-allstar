@@ -1,1 +1,5 @@
-- Fixed: the "What's new" list in the update window showed the same notes for several updates in a row, and cut off its last lines. Each update now lists only what changed in it, and the window shows up to 30 lines from all the versions you skipped.
+- New for admins: Usage page. Hours watched per day, per person and per show or channel, for the last 7, 30 or 60 days.
+- New for admins: Sharing page. Flags accounts that were playing from two different networks at the same time, or were seen on four or more networks in a week.
+- New for admins: Server health page. Processor, memory, free disk space, streams playing and converting, with 24-hour charts and an alert when a drive is nearly full.
+- New for admins: Audit log. Every change made in Admin is written down with who made it and when.
+- New for admins: select several accounts on the Users page and change their device limit, end date, plan, or switch them on or off in one go.

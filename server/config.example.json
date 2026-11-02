@@ -7,6 +7,10 @@
   "intervalSeconds": 60,
   "activeWindowMinutes": 5,
   "defaultLimit": 2,
+  "diskPaths": [],
+  "diskAlertPercent": 10,
+  "sharingNetworks": 4,
+  "sharingSimultaneousMinutes": 10,
   "dryRun": true,
   "alertWebhookUrl": ""
 }
