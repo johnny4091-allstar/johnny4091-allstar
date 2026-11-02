@@ -1,2 +1,2 @@
-- Fixed: Kids mode now also hides favorite Live TV channels on the Favorites page, and the first-run tour no longer starts while Kids mode is on.
-- Fixed: the new admin tools can't interfere with older copies of Aurora Guard; admin names in the audit log now travel with each change.
+- Fixed: on phones, some pages (the admin Overview with long file names, for one) were wider than the screen, so the whole app, top bar and tabs included, slid sideways when you touched it. Long names now wrap and the page never scrolls sideways.
+- Fixed: the bottom tab bar ran off the right edge on narrow phones when the Requests tab was showing. The six tabs now shrink to fit.
