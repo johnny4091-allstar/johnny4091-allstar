@@ -189,6 +189,8 @@
   // keepalive lets a request finish even if the app is being closed or sent to the background.
   const API_TIMEOUT_MS = 30000;
   async function api(path, { params, method = 'GET', body, keepalive = false } = {}) {
+    // Kids mode needs each title's rating to filter on, whatever fields the caller asked for.
+    if (method === 'GET' && kidsOn() && !/^\/(Sessions|System|Auth|DisplayPreferences)/.test(path)) params = { ...(params || {}), Fields: ((params && params.Fields) ? params.Fields + ',' : '') + 'OfficialRating' };
     const opts = { method, keepalive, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
     if (body !== undefined) {
       opts.headers['Content-Type'] = 'application/json';
@@ -210,7 +212,92 @@
       throw err;
     }
     const text = await res.text();
-    return text ? JSON.parse(text) : null;
+    return kidsFilter(text ? JSON.parse(text) : null, method, path);
+  }
+
+  // ---------- Kids mode ----------
+  // Per device. Only titles whose rating is on the allowed list are shown (a title with no rating counts as not allowed);
+  // Live TV, Requests, Admin and Settings are closed, and leaving needs the PIN. It keeps young children to their own shelf:
+  // it is not a security lock.
+  const KIDS_LEVELS = {
+    little: ['Little kids (G, TV-Y, TV-G)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G']],
+    kids: ['Kids (up to PG)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G', 'PG', 'TV-PG']],
+    teens: ['Teens (up to PG-13)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G', 'PG', 'TV-PG', 'PG-13', 'TV-14']],
+  };
+  const kidsOn = () => store.get('ef.kids.on') === '1' && !!store.get('ef.kids.pin');
+  const kidsLevel = () => (KIDS_LEVELS[store.get('ef.kids.level')] ? store.get('ef.kids.level') : 'kids');
+  const kidsPinHash = (pin) => { let h = 2166136261; for (const c of 'aurora-kids:' + pin + ':' + pin.length) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
+  const kidsPinOk = (pin) => kidsPinHash(pin) === store.get('ef.kids.pin');
+  const ratingOf = (it) => String(it.OfficialRating || '').toUpperCase().replace(/^(US|CA|GB|UK)[-:]/, '').trim();
+  function kidsAllows(it) {
+    if (!it || typeof it !== 'object' || !it.Type) return true;
+    const r = ratingOf(it), list = KIDS_LEVELS[kidsLevel()][1];
+    if (['Movie', 'Series', 'BoxSet', 'Trailer', 'Video', 'MusicVideo'].includes(it.Type)) return list.includes(r);
+    if (['Episode', 'Season'].includes(it.Type) && r) return list.includes(r); // episodes usually carry no rating of their own
+    return true;
+  }
+  function kidsFilter(data, method, path) {
+    if (!data || method !== 'GET' || !kidsOn()) return data;
+    if (Array.isArray(data.Items)) { const items = data.Items.filter(kidsAllows); return { ...data, Items: items, TotalRecordCount: Math.max(items.length, (data.TotalRecordCount || 0) - (data.Items.length - items.length)) }; }
+    if (Array.isArray(data)) return data[0]?.Type ? data.filter(kidsAllows) : data;
+    if (/\/Items\/[\w-]+$/.test(path) && data.Id && !kidsAllows(data)) throw Object.assign(new Error('Not available in Kids mode'), { status: 403, path });
+    return data;
+  }
+  function applyKidsUi() {
+    const on = kidsOn();
+    document.documentElement.classList.toggle('kids', on);
+    rowCache.clear(); // rows kept from before were not filtered
+    const st = $('#profile-dropdown [data-action="settings"]');
+    if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
+    $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isAdmin());
+  }
+  // A number pad (works with a remote). Resolves with the digits, or null when cancelled.
+  function pinPad(title, text, length = 4) {
+    return new Promise((resolve) => {
+      const modal = $('#modal'), content = $('#modal-content');
+      if (confirmResolve) confirmResolve(false);
+      confirmResolve = (v) => resolve(v === false ? null : v); // closing the box any other way counts as cancel
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      let pin = '';
+      content.innerHTML = `<div class="m-body notice-body pinpad"><h2>${esc(title)}</h2><p class="overview">${esc(text || '')}</p>
+        <div class="pin-dots" aria-live="polite">${'<span></span>'.repeat(length)}</div>
+        <div class="pin-keys">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button class="btn btn-gray" data-k="${n}">${n}</button>`).join('')}
+          <button class="btn btn-gray" data-back aria-label="Delete">&#9003;</button><button class="btn btn-gray" data-k="0">0</button><button class="btn btn-gray" data-cancel>Cancel</button></div></div>`;
+      modal.classList.remove('hidden');
+      const done = (v) => { const r = confirmResolve; confirmResolve = null; closeModal(); r?.(v); };
+      const paint = () => $$('.pin-dots span', content).forEach((d, i) => d.classList.toggle('on', i < pin.length));
+      $$('button', content).forEach((b) => b.addEventListener('click', () => {
+        if (b.dataset.k != null) { if (pin.length < length) pin += b.dataset.k; paint(); if (pin.length === length) setTimeout(() => done(pin), 120); }
+        else if (b.hasAttribute('data-back')) { pin = pin.slice(0, -1); paint(); }
+        else done(null);
+      }));
+      autoFocus($('[data-k="5"]', content));
+    });
+  }
+  async function kidsAskNewPin() {
+    const a = await pinPad('Choose a PIN', 'You will need it to leave Kids mode. Pick 4 digits.');
+    if (!a) return null;
+    const b = await pinPad('Type it again', 'Enter the same 4 digits to confirm.');
+    if (!b) return null;
+    if (a !== b) { toast("The two PINs didn't match. Try again.", 3000); return null; }
+    return a;
+  }
+  async function kidsLeave() {
+    const pin = await pinPad('Leave Kids mode', 'Enter the PIN.');
+    if (pin == null) return false;
+    if (!kidsPinOk(pin)) { toast('Wrong PIN', 2500); return false; }
+    store.set('ef.kids.on', '0');
+    applyKidsUi();
+    toast('Kids mode is off', 2000);
+    return true;
+  }
+  function renderKidsGate(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad"><section class="settings-section kids-gate"><h2>Kids mode is on</h2>
+      <p class="muted">Only titles rated up to ${esc(KIDS_LEVELS[kidsLevel()][0])} are shown. Live TV, Requests and Settings are closed. Ask a grown-up to leave Kids mode.</p>
+      <div class="m-actions"><button class="btn btn-red" data-kids-leave>Enter PIN to leave</button><a class="btn btn-gray" href="#/home">Back to Home</a></div></section></div>`;
+    $('[data-kids-leave]', page).addEventListener('click', async () => { if (await kidsLeave() && isCurrent()) route(); });
+    autoFocus($('[data-kids-leave]', page));
   }
 
   let signingOut = false;
@@ -529,11 +616,12 @@
       if (/^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
     });
     updateRequestsLink();
-    $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin());
+    $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
     setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
     showScreen('main');
+    applyKidsUi();
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
     maybeStartTour();
@@ -569,6 +657,10 @@
     }
 
     const isCurrent = () => token === routeToken;
+    if (kidsOn()) {
+      if (['livetv', 'requests', 'admin'].includes(name)) { location.hash = '#/home'; return; }
+      if (name === 'settings') return renderKidsGate(page, isCurrent);
+    }
     switch (name) {
       case 'movies': return renderBrowse(page, { type: 'Movie', title: 'Movies', isCurrent });
       case 'tv': return renderBrowse(page, { type: 'Series', title: 'TV Shows', isCurrent });
@@ -653,18 +745,47 @@
   }
 
   // ---------- Home ----------
+  // A short note at the top of Home about the customer's own plan: it ends soon, or their request was answered.
+  // Aurora Guard decides; no guard (or an old one) means no note. Closing it hides that note for the day.
+  async function homeNotice(rows, isCurrent) {
+    if (!guardEnabled || kidsOn()) return;
+    let a;
+    try { a = await guard('/account', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    if (!isCurrent() || a.admin) return;
+    const r = a.request, recent = r?.decidedAt && Date.now() - r.decidedAt < 3 * 86400000;
+    let id, cls = '', html;
+    if (a.expires && !a.expired && a.daysLeft != null && a.daysLeft <= 7) {
+      id = 'ends:' + a.expires; cls = 'warn';
+      html = `<strong>${a.daysLeft <= 0 ? 'Your plan ends today' : a.daysLeft === 1 ? 'Your plan ends tomorrow' : `Your plan ends in ${a.daysLeft} days`}</strong> <span>${esc(fmtDay(a.expires))}.${a.canRequest ? ' Tap to ask for more time.' : ''}</span>`;
+    } else if (r?.status === 'approved' && recent) {
+      id = 'ok:' + r.id; cls = 'good';
+      html = `<strong>Your extension was approved</strong> <span>${r.newExpires ? `Access now runs until ${esc(fmtDay(r.newExpires))}.` : ''}</span>`;
+    } else if (r?.status === 'denied' && recent) {
+      id = 'no:' + r.id; cls = 'bad';
+      html = `<strong>Your request wasn't approved</strong> <span>${esc(r.message || 'Please contact the admin.')}</span>`;
+    } else return;
+    const key = `ef.notice.${id}`, today = new Date().toDateString();
+    if (store.get(key) === today) return;
+    const box = document.createElement('div');
+    box.className = `notice-banner ${cls}`;
+    box.innerHTML = `<a href="#/settings" class="notice-text">${html}</a><button class="notice-x" aria-label="Dismiss">&times;</button>`;
+    $('.notice-x', box).addEventListener('click', (e) => { e.stopPropagation(); store.set(key, today); box.remove(); });
+    rows.prepend(box);
+  }
+
   function renderHome(page, isCurrent) {
     renderHero(page, { IncludeItemTypes: 'Movie,Series' });
     const rows = document.createElement('div');
     rows.className = 'rows';
     page.appendChild(rows);
+    homeNotice(rows, isCurrent);
 
     const add = (title, loader, opts) => addRow(rows, title, loader, { isCurrent, ...opts });
 
     add('Continue Watching', async () =>
       (await api(userPath('/Items/Resume'), { params: { Limit: 20, MediaTypes: 'Video', Recursive: true, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items,
       { showProgress: true });
-    if (iptvOn()) {
+    if (kidsOn()) { /* no Live TV rows in Kids mode */ } else if (iptvOn()) {
       const recent = iptvRecent();
       if (recent.length) {
         addRow(rows, 'Recently Watched Channels', async () => recent,
@@ -676,6 +797,12 @@
     }
     add('Next Up', async () =>
       (await api('/Shows/NextUp', { params: { UserId: state.userId, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items);
+    // Everything added to the library in the last 7 days, in one row.
+    add('New This Week', () => cachedRow(`${state.userId}:week`, async () => {
+      const res = await getItems({ IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 60 });
+      const since = Date.now() - 7 * 86400000;
+      return (res?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > since).slice(0, 20);
+    }));
     add('Favorites', async () =>
       (await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 20 }))?.Items);
 
@@ -3377,7 +3504,7 @@
   // picks up a change by itself.
   const APP_PREFS = 'aurora-app';
   // The Android app asks for the phone's lock when it opens; it needs to know this before the page loads.
-  const syncAppLock = () => { try { nativeApp?.setAppLock?.(getPref('appLock') === 'on'); } catch { /* not the Android app */ } };
+  const syncAppLock = () => { try { nativeApp?.setAllowScreenshots?.(getPref('allowShots') === 'on'); nativeApp?.setAppLock?.(getPref('appLock') === 'on'); } catch { /* not the Android app */ } };
   async function refreshAppConfig() {
     if (!state.userId || !state.apiKey) return;
     try {
@@ -3648,7 +3775,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
+  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', subColor: 'white', subEdge: 'shadow', allowShots: 'off', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -3659,6 +3786,8 @@
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
 
   const SUB_SIZES = { s: ['Small', '1.2rem'], m: ['Medium', '1.6rem'], l: ['Large', '2.2rem'], xl: ['Extra large', '2.8rem'] };
+  const SUB_COLORS = { white: ['White', '#fff'], yellow: ['Yellow', '#ffe066'], cyan: ['Cyan', '#7ee8ff'], green: ['Green', '#9dff9a'] };
+  const SUB_EDGES = { shadow: ['Soft shadow', '0 0 4px #000, 0 0 2px #000'], outline: ['Outline', '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000'], none: ['None', 'none'] };
   const SUB_BACKGROUNDS = { none: ['None', 'transparent'], semi: ['See-through', 'rgba(0,0,0,.6)'], solid: ['Solid', '#000'] };
   const SUBTITLE_MODES = [
     ['Smart', 'Only when the audio is in another language'], ['Always', 'Always on'],
@@ -3675,6 +3804,8 @@
     const root = document.documentElement.style;
     root.setProperty('--cue-size', (SUB_SIZES[getPref('subSize')] || SUB_SIZES.m)[1]);
     root.setProperty('--cue-bg', (SUB_BACKGROUNDS[getPref('subBg')] || SUB_BACKGROUNDS.semi)[1]);
+    root.setProperty('--cue-color', (SUB_COLORS[getPref('subColor')] || SUB_COLORS.white)[1]);
+    root.setProperty('--cue-edge', (SUB_EDGES[getPref('subEdge')] || SUB_EDGES.shadow)[1]);
   }
 
   const selectHtml = (name, options, value, disabled = false) =>
@@ -3782,8 +3913,16 @@
       <section class="settings-section">
         <h2>Subtitle appearance <small>This device</small></h2>
         ${settingRow('Size', null, selectHtml('subSize', Object.entries(SUB_SIZES).map(([k, v]) => [k, v[0]]), getPref('subSize')))}
+        ${settingRow('Color', null, selectHtml('subColor', Object.entries(SUB_COLORS).map(([k, v]) => [k, v[0]]), getPref('subColor')))}
+        ${settingRow('Edge', null, selectHtml('subEdge', Object.entries(SUB_EDGES).map(([k, v]) => [k, v[0]]), getPref('subEdge')))}
         ${settingRow('Background', null, selectHtml('subBg', Object.entries(SUB_BACKGROUNDS).map(([k, v]) => [k, v[0]]), getPref('subBg')))}
         <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>
+      </section>
+      <section class="settings-section">
+        <h2>Kids mode <small>This device</small></h2>
+        ${settingRow('Kids mode', 'Shows only titles rated for children and closes Live TV, Requests and Settings. You need a PIN to leave it.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
+        ${settingRow('Allowed ratings', 'Titles with no rating are hidden.', selectHtml('kidsLevel', Object.entries(KIDS_LEVELS).map(([k, v]) => [k, v[0]]), kidsLevel()))}
+        ${settingRow('PIN', store.get('ef.kids.pin') ? 'Needed to leave Kids mode.' : 'Not set yet. You choose one when you turn Kids mode on.', '<button class="btn btn-gray" data-kids-pin>' + (store.get('ef.kids.pin') ? 'Change PIN' : 'Set PIN') + '</button>')}
       </section>
       <section class="settings-section">
         <h2>Playback <small>This device</small></h2>
@@ -3793,6 +3932,7 @@
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${nativeApp?.setAllowScreenshots && !nativeApp.isTv?.() ? settingRow('Allow screenshots', 'Lock Aurora hides the app from screenshots and screen recordings. Turn this on to allow them while the lock is on.', selectHtml('allowShots', [['off', 'Off'], ['on', 'On']], getPref('allowShots'))) : ''}
         ${settingRow('Skip-ahead button', 'For episodes the server has no intro marks for, show a "Skip 90 seconds" button for a few seconds at the start. Episodes with intro marks always get Skip Intro.', selectHtml('skipGuess', [['on', 'On'], ['off', 'Off']], getPref('skipGuess')))}
         ${nativeApp?.playVod ? settingRow('Software decoders (FFmpeg)', 'For sound and video your device can\'t decode itself (DTS, TrueHD and similar), in movies, shows and Live TV. Used only when the device\'s own decoder can\'t play it. Turn off if a video stutters.', selectHtml('ffmpeg', [['on', 'On (recommended)'], ['off', 'Off']], getPref('ffmpeg'))) : ''}
         ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
@@ -3845,10 +3985,26 @@
         case 'subMode': saveAccount({ SubtitleMode: v }); break;
         case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
         case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
+        case 'kidsLevel': store.set('ef.kids.level', v); toast('Saved', 1500); break;
+        case 'kidsMode': (async () => {
+          if (v === 'on') {
+            if (!store.get('ef.kids.pin')) { const pin = await kidsAskNewPin(); if (!pin) { sel.value = 'off'; return; } store.set('ef.kids.pin', kidsPinHash(pin)); }
+            store.set('ef.kids.on', '1'); applyKidsUi(); toast('Kids mode is on', 2500); location.hash = '#/home';
+          } else { sel.value = 'on'; if (await kidsLeave()) sel.value = 'off'; }
+        })(); break;
+        case 'allowShots': setPref('allowShots', v); syncAppLock(); toast('Saved', 1500); break;
         default: setPref(sel.dataset.setting, v); applySubtitleStyle(); if (sel.dataset.setting === 'appLock') syncAppLock(); toast('Saved', 1500);
       }
     });
     setupFeedback(page);
+    $('[data-kids-pin]', page)?.addEventListener('click', async () => {
+      if (store.get('ef.kids.pin')) { const old = await pinPad('Current PIN', 'Enter your PIN first.'); if (old == null) return; if (!kidsPinOk(old)) return toast('Wrong PIN', 2500); }
+      const pin = await kidsAskNewPin();
+      if (!pin) return;
+      store.set('ef.kids.pin', kidsPinHash(pin));
+      toast('PIN saved', 2000);
+      if (isCurrent()) renderSettings(page, isCurrent);
+    });
     $('[data-replay-tour]', page)?.addEventListener('click', () => tourStart());
     $('[data-clear-cache]', page)?.addEventListener('click', async (e) => {
       e.target.disabled = true;

@@ -1,5 +1,5 @@
-- New for admins: Usage page. Hours watched per day, per person and per show or channel, for the last 7, 30 or 60 days.
-- New for admins: Sharing page. Flags accounts that were playing from two different networks at the same time, or were seen on four or more networks in a week.
-- New for admins: Server health page. Processor, memory, free disk space, streams playing and converting, with 24-hour charts and an alert when a drive is nearly full.
-- New for admins: Audit log. Every change made in Admin is written down with who made it and when.
-- New for admins: select several accounts on the Users page and change their device limit, end date, plan, or switch them on or off in one go.
+- New: Kids mode (Settings). Shows only titles rated for children (you choose Little kids, Kids or Teens), closes Live TV, Requests and Settings, and needs a 4-digit PIN to leave. Works with a TV remote.
+- New: a "New This Week" row on Home with everything added in the last 7 days.
+- New: a note at the top of Home when your plan ends within a week, or when your request for more time is approved or declined.
+- New: subtitle color (white, yellow, cyan, green) and edge (soft shadow, outline, none) in Settings.
+- New on phones: "Allow screenshots" in Settings, so you can take screenshots and screen recordings even with Lock Aurora turned on.
