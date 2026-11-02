@@ -1,1 +1,2 @@
-- Fixed: the "What's new" list in the update window showed the same notes for several updates in a row, and cut off its last lines. Each update now lists only what changed in it, and the window shows up to 30 lines from all the versions you skipped.
+- Fixed: on phones, some pages (the admin Overview with long file names, for one) were wider than the screen, so the whole app, top bar and tabs included, slid sideways when you touched it. Long names now wrap and the page never scrolls sideways.
+- Fixed: the bottom tab bar ran off the right edge on narrow phones when the Requests tab was showing. The six tabs now shrink to fit.

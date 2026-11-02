@@ -261,7 +261,7 @@ img { display: block; }
 .player-title { font-size: 1.2rem; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-title .sub { color: var(--muted); font-weight: 400; margin-left: .6rem; }
 .player-status { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); text-align: center; max-width: 80%; color: #ddd; }
-.player video::cue { font-size: var(--cue-size, 1.6rem); background: var(--cue-bg, rgba(0,0,0,.6)); text-shadow: 0 0 4px #000, 0 0 2px #000; }
+.player video::cue { font-size: var(--cue-size, 1.6rem); background: var(--cue-bg, rgba(0,0,0,.6)); color: var(--cue-color, #fff); text-shadow: var(--cue-edge, 0 0 4px #000, 0 0 2px #000); }
 
 /* Next-episode countdown and "Are you still watching?" */
 .up-next {
@@ -514,7 +514,7 @@ img { display: block; }
 .update-check { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; justify-content: flex-end; }
 .subtitle-preview { margin-top: .8rem; height: 110px; border-radius: 6px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: .8rem;
   background: linear-gradient(to bottom, rgba(4,8,22,.2), rgba(4,8,22,.5)), url('img/aurora-bg.jpg') center 90% / cover; }
-.subtitle-preview span { font-size: var(--cue-size, 1.6rem); background: var(--cue-bg, rgba(0,0,0,.6)); padding: 0 .3rem; text-shadow: 0 0 4px #000, 0 0 2px #000; }
+.subtitle-preview span { font-size: var(--cue-size, 1.6rem); background: var(--cue-bg, rgba(0,0,0,.6)); color: var(--cue-color, #fff); padding: 0 .3rem; text-shadow: var(--cue-edge, 0 0 4px #000, 0 0 2px #000); }
 @media (max-width: 600px) {
   .setting-row { flex-direction: column; align-items: stretch; gap: .6rem; }
   .setting-row select { max-width: none; }
@@ -1358,4 +1358,60 @@ a.user-row { border-radius: var(--radius-sm); }
   /* Wide screens: the groups sit side by side in two columns, so everything shows at once and nothing scrolls. */
   .admin-menu-list { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: .2rem 1rem; width: 520px; max-height: none; overflow: visible; padding: .7rem; }
   .admin-menu-group { padding-top: .5rem; }
+}
+
+/* ---- Admin: usage, sharing, server health, audit log, bulk edit ---- */
+.stat-tile.bad .stat-value { color: #ff9aa5; }
+.bar-chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; padding: .4rem 0; }
+.bar-col { flex: 1 1 0; min-width: 2px; height: 100%; display: flex; align-items: flex-end; }
+.bar-fill { width: 100%; background: var(--accent, #e50914); border-radius: 3px 3px 0 0; opacity: .85; }
+.bar-axis { display: flex; justify-content: space-between; color: var(--dim); font-size: .78rem; }
+.usage-bar { height: 6px; border-radius: 999px; background: rgba(255,255,255,.1); margin: .4rem 0; overflow: hidden; }
+.usage-bar span { display: block; height: 100%; border-radius: 999px; background: var(--accent, #e50914); }
+.usage-bar.bad span { background: #ff5d6c; }
+.usage-row { color: inherit; text-decoration: none; }
+.spark-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem 1.4rem; }
+.spark-label { color: var(--muted); font-size: .85rem; margin-bottom: .2rem; }
+.spark { width: 100%; height: 60px; display: block; color: var(--accent, #e50914); background: rgba(255,255,255,.04); border-radius: 8px; }
+.spark-empty { margin: .6rem 0; }
+.share-places { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+.share-place { font-size: .78rem; color: var(--muted); background: rgba(255,255,255,.07); padding: .15rem .5rem; border-radius: 999px; }
+.share-row a { color: inherit; }
+.pill.good { background: #0f4d2c; color: #9af0c0; }
+.admin-card details > summary { cursor: pointer; font-weight: 600; padding: .3rem 0; }
+.bulk-bar { background: rgba(255,255,255,.05); border-radius: 12px; padding: .8rem 1rem; margin: .6rem 0 1rem; }
+.bulk-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .6rem; }
+.bulk-head strong { margin-right: auto; }
+.user-row .sel-box { flex: 0 0 22px; width: 22px; height: 22px; border-radius: 50%; border: 2px solid rgba(255,255,255,.4); align-self: center; margin-right: .2rem; }
+.user-row .sel-box.on { background: var(--accent, #e50914); border-color: var(--accent, #e50914); box-shadow: inset 0 0 0 4px var(--bg-2, #181818); }
+.user-row .sel-box.off { opacity: .25; }
+.user-row.picked { background: rgba(255,255,255,.07); }
+
+/* ---- Kids mode, notices, PIN pad ---- */
+.kids [data-route="livetv"], .kids [data-route="requests"],
+.kids #profile-dropdown [data-action="admin"], .kids #profile-dropdown [data-action="switch"], .kids #profile-dropdown [data-action="signout"] { display: none !important; }
+.notice-banner { display: flex; align-items: center; gap: .6rem; margin: 0 var(--pad, 1rem) 1rem; padding: .7rem 1rem; border-radius: 14px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); }
+.notice-banner .notice-text { flex: 1; min-width: 0; color: #fff; text-decoration: none; line-height: 1.4; }
+.notice-banner .notice-text span { color: var(--muted); }
+.notice-banner.warn { border-color: rgba(255,209,102,.55); }
+.notice-banner.good { border-color: rgba(126,226,168,.55); }
+.notice-banner.bad { border-color: rgba(255,120,135,.55); }
+.notice-x { background: none; border: 0; color: var(--muted); font-size: 1.5rem; line-height: 1; padding: .2rem .5rem; cursor: pointer; border-radius: 8px; }
+.pin-dots { display: flex; justify-content: center; gap: .8rem; margin: .4rem 0 1rem; }
+.pin-dots span { width: 16px; height: 16px; border-radius: 50%; border: 2px solid rgba(255,255,255,.5); }
+.pin-dots span.on { background: #fff; border-color: #fff; }
+.pin-keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; max-width: 280px; margin: 0 auto; }
+.pin-keys .btn { justify-content: center; padding: .8rem 0; font-size: 1.2rem; }
+.kids-gate { max-width: 560px; margin: 2rem auto; }
+
+/* ---- Nothing may make the page wider than the screen ----
+   One long unbroken word (a file name in the activity list, a device name) used to stretch a page past the phone's width,
+   and the whole app, bar and tabs included, then slid sideways. Long words now wrap, and the page itself never scrolls sideways. */
+html { overflow-x: hidden; }
+@supports (overflow: clip) { html { overflow-x: clip; } }
+.activity-feed li, .admin-card, .admin-row-main, .session-info, .settings-section, .setting-label, .notice-banner { overflow-wrap: anywhere; min-width: 0; }
+/* Six tabs (with Requests) on a narrow phone: shrink to fit instead of running off the end of the bar. */
+@media (max-width: 800px) {
+  .mobile-tabs { gap: 0; }
+  .mobile-tabs a { flex: 1 1 auto; min-width: 0; text-align: center; padding: .5rem clamp(.15rem, 1.4vw, .5rem); font-size: clamp(.58rem, 2.9vw, .7rem); overflow: hidden; text-overflow: ellipsis; }
 }

@@ -149,7 +149,7 @@ public class MainActivity extends Activity {
 
     // ---- App lock (phones only): the phone's own PIN, pattern or fingerprint to open Aurora ----
     private static final long LOCK_AFTER_MS = 60_000;
-    private boolean appLockOn, locked, unlocking, inPlayer, tvDevice, resumed;
+    private boolean appLockOn, locked, unlocking, inPlayer, tvDevice, resumed, allowShots;
     /**
      * Shared with the player screens: when any Aurora screen was last left (elapsed time, so changing the phone's clock
      * can't dodge it), and whether the lock is on. A player the viewer comes back to after a minute away closes itself
@@ -325,6 +325,14 @@ public class MainActivity extends Activity {
     private static final String ACTION_INSTALL_STATUS = "com.johnny4091.embyflix.INSTALL_STATUS";
     private BroadcastReceiver installReceiver;
 
+    /** Screenshots and recordings are blocked only while the app lock is on and the customer hasn't allowed them. */
+    private void applySecureFlag() {
+        runOnUiThread(() -> {
+            if (lockActive && !allowShots) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+        });
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -334,7 +342,8 @@ public class MainActivity extends Activity {
         tvDevice = detectTv();
         appLockOn = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("appLock", false);
         lockActive = appLockOn && !tvDevice;
-        if (lockActive) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); // no picture of the app in the recents list
+        allowShots = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("allowShots", false);
+        if (lockActive && !allowShots) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE); // no picture of the app in the recents list
 
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.parseColor("#070C1C"));
@@ -1079,11 +1088,17 @@ public class MainActivity extends Activity {
             if (tv) return;
             appLockOn = on;
             lockActive = on;
-            runOnUiThread(() -> {
-                if (on) getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-                else getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
-            });
+            applySecureFlag();
             getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("appLock", on).apply();
+        }
+
+        /** While the lock is on the window is hidden from screenshots and recordings; this lets the customer allow them. Ignored on a TV. */
+        @JavascriptInterface
+        public void setAllowScreenshots(boolean on) {
+            if (tv) return;
+            allowShots = on;
+            applySecureFlag();
+            getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("allowShots", on).apply();
         }
 
         /** Opens the on-screen keyboard for the focused text field (needed with a TV remote). */

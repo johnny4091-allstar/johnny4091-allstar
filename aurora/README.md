@@ -23,8 +23,13 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
   and live playback with channel up/down. Channels from an M3U playlist or Xtream account work too
 - Next-episode countdown when the credits start (Play Now or Watch Credits), and "Are you still watching?" after
   3 episodes in a row, or 4 hours of Live TV, with no button pressed (the stream stops so it doesn't use bandwidth or a tuner)
-- Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size and
-  background, auto-play, "Are you still watching?" and streaming quality (saved on the device)
+- Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size,
+  color, edge and background, auto-play, "Are you still watching?" and streaming quality (saved on the device)
+- Kids mode (Settings, per device): only titles with an allowed rating (Little kids / Kids / Teens; unrated titles are hidden), Live TV,
+  Requests, Admin and Settings closed, and a 4-digit PIN (on-screen number pad, works with a remote) to leave. The rating filter is
+  applied to every Emby answer in `api()` (`kidsFilter`); episodes with no rating of their own follow their show. It keeps young
+  children to their own shelf; it is not a security lock.
+- Home: a "New This Week" row, and a note about the customer's own plan (ends within 7 days, or their extension request was answered) from Aurora Guard.
 - The Android app checks this repository's Releases for a newer version, offers to update, and installs it itself
 - Requests tab (Android app) for Jellyseerr: browse Trending, Popular and Coming Soon, search, request movies or
   chosen TV seasons, and follow your requests. People sign in to Jellyseerr with their Emby details automatically.

@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -49,6 +49,12 @@ function loadConfig() {
     exitOnCertError: false,
     intervalSeconds: 60,
     activeWindowMinutes: 5,
+    // Admin -> Sharing: flag an account seen on this many different networks in a week, or watching from two networks at once.
+    sharingNetworks: 4,
+    sharingSimultaneousMinutes: 10,
+    // Admin -> Server: drives to show free space for (blank = the drive the guard is on), and the free-space level that sends an alert.
+    diskPaths: [],
+    diskAlertPercent: 10,
     defaultLimit: 2,
     dryRun: false,
     // Where to send alerts (Discord webhook, ntfy.sh topic, or any web address that takes JSON). Blank = no alerts.
@@ -178,7 +184,7 @@ const STARTER_PLANS = [
   { id: 'starter-1m-2c', name: '1 Month · 2 Connections', price: 35, length: 1, unit: 'month', connections: 2, categories: null, active: true },
   { id: 'starter-2m-4c', name: '2 Months · 4 Connections', price: 55, length: 2, unit: 'month', connections: 4, categories: null, active: true },
 ];
-function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], reports: [], extensions: [], plans: STARTER_PLANS.map((p) => ({ ...p })), subscriptions: [] }; }
+function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], audit: [], usage: {}, sharing: {}, reports: [], extensions: [], plans: STARTER_PLANS.map((p) => ({ ...p })), subscriptions: [] }; }
 let store = emptyStore();
 try { store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) }; } catch (e) {
   if (e.code !== 'ENOENT') { log('Could not read', STORE_FILE, '-', e.message, '(starting with an empty store; the old file is kept as limits.json.bad)'); try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.bad'); } catch {} }
@@ -496,7 +502,10 @@ async function enforce(onlyUserId) {
   try {
     users = await emby('GET', '/Users');
     sessions = await emby('GET', '/Sessions');
-    if (!onlyUserId) { embyReach = { at: Date.now(), ok: true, error: '' }; lastSnapshot = { users, sessions }; }
+    if (!onlyUserId) {
+      embyReach = { at: Date.now(), ok: true, error: '' }; lastSnapshot = { users, sessions };
+      try { samplePass(users, sessions); } catch (e) { log('Usage sampling failed:', e.message); }
+    }
   } catch (e) {
     if (!onlyUserId) embyReach = { at: Date.now(), ok: false, error: e.message };
     throw e;
@@ -568,6 +577,198 @@ async function enforce(onlyUserId) {
   return actions;
 }
 
+// ---------- Usage, sharing, server health and the audit log (1.6.0) ----------
+// All of it is worked out from what the every-minute check already reads from Emby (the sessions list), so it adds no
+// extra load. Only Emby administrators can read any of it.
+const dayKey = (t = Date.now()) => localDay(new Date(t));
+const round2 = (n) => Math.round(n * 100) / 100;
+let lastSampleAt = 0, usageDirtyAt = 0, lastUsageSave = 0;
+
+// Who changed what (the admin's name comes from the app, which only an Emby administrator can reach).
+function recordAudit(by, text) {
+  if (!Array.isArray(store.audit)) store.audit = [];
+  store.audit.unshift({ at: Date.now(), by: String(by || 'an admin').slice(0, 40), text: String(text || '').slice(0, 240) });
+  store.audit = store.audit.slice(0, 500);
+}
+function describeChange(req, url, subject) {
+  const p = url.pathname, m = req.method, b = req.parsedBody || {};
+  const plural = (n, w) => `${n} ${w}${Number(n) === 1 ? '' : 's'}`;
+  let r;
+  if ((r = p.match(/^\/limits\/([\w-]{1,64})$/))) {
+    const who = store.users[r[1]]?.name || subject || 'an account';
+    if (m === 'PUT') return `Set ${who}: ${plural(b.limit, 'device')}, ${b.expires ? 'ends ' + b.expires : 'no expiration'}`;
+    if (m === 'DELETE') return `Removed the limits and end date from ${who}`;
+  }
+  if ((r = p.match(/^\/limits\/([\w-]{1,64})\/plan$/)) && m === 'POST') {
+    const plan = (store.plans || []).find((x) => x.id === b.planId);
+    return `Put plan ${plan ? plan.name : 'a plan'} on ${store.users[r[1]]?.name || subject || 'an account'}${b.price !== undefined && b.price !== null && b.price !== '' ? ` (paid $${b.price})` : ''}`;
+  }
+  if ((r = p.match(/^\/extensions\/([\w-]{1,32})$/)) && m === 'PUT') {
+    const x = (store.extensions || []).find((e) => e.id === r[1]);
+    return `${b.action === 'deny' ? 'Denied' : 'Approved'} an extension request from ${x ? x.name : 'a customer'}${b.action !== 'deny' && b.days ? ` (${plural(b.days, 'day')})` : ''}`;
+  }
+  if (p === '/plans' && m === 'POST') return `Added plan ${b.name || ''}`.trim();
+  if ((r = p.match(/^\/plans\/([\w-]{1,40})$/))) {
+    if (m === 'PUT') return `Changed plan ${b.name || ''}`.trim();
+    if (m === 'DELETE') return 'Deleted a plan';
+  }
+  if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
+  if (p === '/provider' && m === 'PUT') return 'Changed the TV provider reporting settings';
+  if (p === '/provider/key' && m === 'DELETE') return 'Removed the TV provider key';
+  if (p === '/reports' && m === 'DELETE') return 'Cleared the channel reports';
+  if ((r = p.match(/^\/sharing\/([\w-]{1,64})$/)) && m === 'DELETE') return `Cleared the sharing history for ${subject || 'an account'}`;
+  if (p === '/migrated' || /\/manual$/.test(p) || p === '/provider/test') return '';
+  return `${m} ${p}`;
+}
+
+function itemTitle(it) {
+  if (!it) return 'Unknown';
+  if (it.Type === 'TvChannel' || it.Type === 'LiveTvChannel') return 'Live: ' + (it.Name || 'channel');
+  return String(it.SeriesName || it.Name || 'Unknown').slice(0, 80);
+}
+function addUsage(userId, name, title, minutes) {
+  if (!(minutes > 0)) return;
+  if (!store.usage) store.usage = {};
+  const day = store.usage[dayKey()] || (store.usage[dayKey()] = {});
+  const u = day[userId] || (day[userId] = { name, min: 0, titles: {} });
+  u.name = name;
+  u.min = round2(u.min + minutes);
+  u.titles[title] = round2((u.titles[title] || 0) + minutes);
+  const keys = Object.keys(u.titles);
+  if (keys.length > 15) { keys.sort((a, b) => u.titles[a] - u.titles[b]); for (const k of keys.slice(0, keys.length - 15)) delete u.titles[k]; }
+  usageDirtyAt = Date.now();
+}
+
+// A network, not an address: the first three parts of an IPv4 address (a phone's address changes all the time, its
+// network mostly doesn't); the first three groups of an IPv6 one. Addresses inside the house count as one "home" network.
+function networkOf(raw) {
+  let ip = String(raw || '').trim().replace(/^::ffff:/i, '').replace(/%.*$/, '');
+  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(ip)) ip = ip.replace(/:\d+$/, '');
+  if (!ip) return null;
+  if (/^(10\.|127\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip) || /^(::1$|fe80:|f[cd][0-9a-f]{2}:)/i.test(ip)) return { key: 'local', ip, local: true };
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return { key: ip.split('.').slice(0, 3).join('.') + '.x', ip, local: false };
+  return { key: ip.split(':').slice(0, 3).join(':') + '::/48', ip, local: false };
+}
+
+const healthHistory = []; // one point a minute, kept for 24 hours (in memory: a restart starts it again)
+let prevCpu = null, health = { cpu: null, memPct: null, playing: 0, transcoding: 0, direct: 0 };
+function cpuPercent() {
+  const cpus = os.cpus() || [];
+  let idle = 0, total = 0;
+  for (const c of cpus) { for (const k of Object.keys(c.times)) total += c.times[k]; idle += c.times.idle; }
+  const prev = prevCpu;
+  prevCpu = { idle, total };
+  if (!prev || total <= prev.total) return null;
+  return Math.max(0, Math.min(100, Math.round(100 * (1 - (idle - prev.idle) / (total - prev.total)))));
+}
+const diskWarned = new Map();
+function diskInfo() {
+  const paths = (Array.isArray(cfg.diskPaths) && cfg.diskPaths.length ? cfg.diskPaths : [DIR]).map(String).slice(0, 8);
+  const out = [];
+  for (const p of paths) {
+    try {
+      if (typeof fs.statfsSync !== 'function') { out.push({ path: p, error: 'needs Node 18.15 or newer' }); continue; }
+      const s = fs.statfsSync(p), total = Number(s.blocks) * Number(s.bsize), free = Number(s.bavail) * Number(s.bsize);
+      out.push({ path: p, total, free, freePct: total ? Math.round(1000 * free / total) / 10 : 0 });
+    } catch (e) { out.push({ path: p, error: e.code === 'ENOENT' ? 'not found' : e.message }); }
+  }
+  return out;
+}
+
+// Called by the every-minute check with the users and sessions it just read.
+function samplePass(users, sessions) {
+  const now = Date.now();
+  const interval = cfg.intervalSeconds * 1000;
+  const elapsed = lastSampleAt ? Math.min(now - lastSampleAt, interval * 2) : interval;
+  lastSampleAt = now;
+  const byId = new Map((Array.isArray(users) ? users : []).map((u) => [u.Id, u]));
+  let playing = 0, transcoding = 0, direct = 0;
+  const watchingNets = new Map(); // userId -> Set of networks with something playing right now
+  const store_ = store.sharing || (store.sharing = {});
+  for (const s of Array.isArray(sessions) ? sessions : []) {
+    const u = byId.get(s.UserId);
+    if (!u || s.DeviceId === 'aurora-guard') continue;
+    const at = Date.parse(s.LastActivityDate || 0) || 0;
+    if (now - at > windowMs()) continue;
+    const isPlaying = !!s.NowPlayingItem && !s.PlayState?.IsPaused;
+    if (isPlaying) {
+      playing++;
+      if (s.PlayState?.PlayMethod === 'Transcode' || s.TranscodingInfo) transcoding++; else direct++;
+      addUsage(u.Id, u.Name, itemTitle(s.NowPlayingItem), elapsed / 60000);
+    }
+    if (u.Policy?.IsAdministrator) continue;
+    const net = networkOf(s.RemoteEndPoint);
+    if (!net) continue;
+    const rec = store_[u.Id] || (store_[u.Id] = { name: u.Name, nets: {}, together: [] });
+    rec.name = u.Name;
+    const n = rec.nets[net.key] || (rec.nets[net.key] = { first: now, n: 0 });
+    n.at = now; n.ip = net.ip; n.local = net.local; n.n++;
+    n.device = s.DeviceName || n.device || '';
+    if (isPlaying && !net.local) { if (!watchingNets.has(u.Id)) watchingNets.set(u.Id, new Set()); watchingNets.get(u.Id).add(net.key); }
+    usageDirtyAt = now;
+  }
+  // Watching from two different networks at the same moment is the strongest sign of a shared login.
+  for (const [uid, nets] of watchingNets) if (nets.size >= 2) store_[uid].together.push(now);
+  // Forget old data: networks after 14 days, "at the same time" after 7, usage after 62 days.
+  for (const [uid, rec] of Object.entries(store_)) {
+    for (const [k, v] of Object.entries(rec.nets)) if (now - (v.at || 0) > 14 * 86400000) delete rec.nets[k];
+    rec.together = (rec.together || []).filter((t) => now - t < 7 * 86400000).slice(-2000);
+    if (!Object.keys(rec.nets).length && !rec.together.length) delete store_[uid];
+  }
+  const keep = dayKey(now - 62 * 86400000);
+  for (const d of Object.keys(store.usage || {})) if (d < keep) delete store.usage[d];
+  // Server health.
+  const cpu = cpuPercent(), total = os.totalmem(), memPct = total ? Math.round(100 * (1 - os.freemem() / total)) : null;
+  health = { cpu, memPct, playing, transcoding, direct };
+  healthHistory.push({ t: now, cpu, mem: memPct, playing, transcoding });
+  while (healthHistory.length > 1440) healthHistory.shift();
+  for (const d of diskInfo()) {
+    if (d.error || !(cfg.diskAlertPercent > 0)) continue;
+    if (d.freePct < cfg.diskAlertPercent && !diskWarned.get(d.path)) {
+      diskWarned.set(d.path, true);
+      sendAlert('Aurora: low disk space', `${d.path} has only ${d.freePct}% free (${(d.free / 1073741824).toFixed(1)} GB).`, true);
+    } else if (d.freePct >= cfg.diskAlertPercent + 2) diskWarned.delete(d.path);
+  }
+  // Written at most every 5 minutes (the file grows with the usage history).
+  if (usageDirtyAt && now - lastUsageSave > 5 * 60000) { lastUsageSave = now; usageDirtyAt = 0; try { saveStore(); } catch (e) { log('Could not save usage:', e.message); } }
+}
+
+function sharingLevel(rec) {
+  const now = Date.now(), week = now - 7 * 86400000;
+  const nets = Object.entries(rec.nets || {}).filter(([, v]) => !v.local && (v.at || 0) > week);
+  const together = (rec.together || []).filter((t) => t > week).length;
+  const level = together >= cfg.sharingSimultaneousMinutes ? 'likely' : (nets.length >= cfg.sharingNetworks || together >= 3) ? 'watch' : 'ok';
+  return { level, networks: nets.length, together };
+}
+function usageReport(days) {
+  const cutoff = dayKey(Date.now() - (days - 1) * 86400000);
+  const perDay = [], users = new Map(), titles = new Map();
+  for (const day of Object.keys(store.usage || {}).sort()) {
+    if (day < cutoff) continue;
+    let sum = 0;
+    for (const [uid, u] of Object.entries(store.usage[day])) {
+      sum += u.min;
+      const r = users.get(uid) || { userId: uid, name: u.name, min: 0, days: 0, titles: {} };
+      r.name = u.name; r.min += u.min; r.days++;
+      users.set(uid, r);
+      for (const [t, m] of Object.entries(u.titles || {})) {
+        r.titles[t] = (r.titles[t] || 0) + m;
+        const tt = titles.get(t) || { title: t, min: 0, viewers: new Set() };
+        tt.min += m; tt.viewers.add(uid); titles.set(t, tt);
+      }
+    }
+    perDay.push({ day, min: round2(sum) });
+  }
+  return {
+    days, since: cutoff,
+    totalMin: round2(perDay.reduce((n, d) => n + d.min, 0)),
+    perDay,
+    users: [...users.values()].map((r) => ({ userId: r.userId, name: r.name, min: round2(r.min), days: r.days,
+      top: Object.entries(r.titles).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([title, min]) => ({ title, min: round2(min) })) })).sort((a, b) => b.min - a.min),
+    titles: [...titles.values()].sort((a, b) => b.min - a.min).slice(0, 25).map((t) => ({ title: t.title, min: round2(t.min), viewers: t.viewers.size })),
+  };
+}
+
 // ---------- TV provider connections ----------
 // The TV provider (restream) account allows a set number of streams at once; past that every channel fails, which
 // looks just like buffering. Counted every minute: Aurora's own live player (it notes the channel in the viewer's
@@ -600,7 +801,7 @@ async function countConnections({ users, sessions }) {
         data = raw ? JSON.parse(raw) : null;
       } catch { continue; }
       for (const e of Object.values((data && data.devices) || {})) {
-        if (Date.now() - (e.at || 0) < LIVE_FRESH_MS) streams.push({ source: 'aurora', user: names.get(id), device: e.device || '', channel: [e.num, e.name].filter(Boolean).join(' '), since: e.started || 0 });
+        if (Date.now() - (e.at || 0) < LIVE_FRESH_MS) streams.push({ source: 'aurora', userId: id, user: names.get(id), device: e.device || '', channel: [e.num, e.name].filter(Boolean).join(' '), since: e.started || 0 });
       }
     }
   };
@@ -611,6 +812,7 @@ async function checkConnections() {
   if (!lastSnapshot) return;
   let streams;
   try { streams = await countConnections(lastSnapshot); } catch (e) { connections.error = e.message; return; }
+  for (const x of streams) if (x.source === 'aurora' && x.userId) addUsage(x.userId, x.user || '', 'Live: ' + (x.channel || 'channel'), cfg.intervalSeconds / 60);
   const n = streams.length;
   connections = { at: Date.now(), inUse: n, aurora: streams.filter((x) => x.source === 'aurora').length, emby: streams.filter((x) => x.source === 'emby').length, streams, error: '' };
   const c = connCfg(), today = new Date().toDateString();
@@ -657,7 +859,7 @@ function send(res, status, body) {
     // Aurora runs from the app (and from a browser), so it calls from another origin. Every request still
     // needs an Emby administrator's token; nothing is shared through cookies.
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Headers': 'X-Emby-Token, Content-Type',
+    'Access-Control-Allow-Headers': 'X-Emby-Token, X-Aurora-User, Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Max-Age': '7200', // the browser remembers the permission check, so /check is one round trip
   });
@@ -668,7 +870,7 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => { size += c.length; if (size > 64 * 1024) { reject(new Error('too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}); } catch { reject(new Error('bad JSON')); } });
+    req.on('end', () => { try { req.parsedBody = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; resolve(req.parsedBody); } catch { reject(new Error('bad JSON')); } });
     req.on('error', reject);
   });
 }
@@ -817,6 +1019,56 @@ async function handle(req, res) {
   let admin = false;
   try { admin = await isAdminToken(token); } catch (e) { return send(res, 502, { error: `Can't reach Emby to check who you are: ${e.message}` }); }
   if (!admin) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }
+
+  // Who changed what: every change made through the admin endpoints is written down with the admin's name (the app sends it).
+  const auditBy = String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
+  if (url.pathname === '/audit' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const text = String(body.text || '').replace(/\s+/g, ' ').trim().slice(0, 240);
+    if (!text) return send(res, 400, { error: 'text is required' });
+    recordAudit(auditBy, text); saveStore();
+    return send(res, 200, { ok: true });
+  }
+  if (req.method !== 'GET') {
+    const subjectId = (url.pathname.match(/^\/(?:limits|sharing)\/([\w-]{1,64})/) || [])[1];
+    const subject = subjectId ? (store.users[subjectId]?.name || store.sharing?.[subjectId]?.name || '') : '';
+    res.on('finish', () => {
+      if (res.statusCode >= 400) return;
+      const text = describeChange(req, url, subject);
+      if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
+    });
+  }
+  if (url.pathname === '/audit' && req.method === 'GET') return send(res, 200, { audit: (store.audit || []).slice(0, 300) });
+
+  // Hours watched per account and per title (from Emby's sessions, counted each minute; Aurora's own live player included).
+  if (url.pathname === '/usage' && req.method === 'GET') {
+    const days = Math.max(1, Math.min(60, parseInt(url.searchParams.get('days'), 10) || 30));
+    return send(res, 200, usageReport(days));
+  }
+  // Possible shared logins: an account seen on many different networks, or playing from two at once.
+  if (url.pathname === '/sharing' && req.method === 'GET') {
+    const list = Object.entries(store.sharing || {}).map(([userId, rec]) => {
+      const lv = sharingLevel(rec), week = Date.now() - 7 * 86400000;
+      return { userId, name: rec.name, ...lv, limit: limitOf(userId), places: Object.values(rec.nets || {}).filter((v) => (v.at || 0) > week)
+        .sort((a, b) => b.at - a.at).map((v) => ({ ip: v.ip, local: !!v.local, device: v.device || '', last: new Date(v.at).toISOString(), seen: v.n })) };
+    }).sort((a, b) => ({ likely: 0, watch: 1, ok: 2 }[a.level] - { likely: 0, watch: 1, ok: 2 }[b.level]) || (b.together - a.together) || (b.networks - a.networks));
+    return send(res, 200, { list, networksAt: cfg.sharingNetworks, togetherAt: cfg.sharingSimultaneousMinutes });
+  }
+  const sh = url.pathname.match(/^\/sharing\/([\w-]{1,64})$/);
+  if (sh && req.method === 'DELETE') { if (store.sharing) delete store.sharing[sh[1]]; saveStore(); return send(res, 200, { ok: true }); }
+  // The PC the guard runs on (and so Emby): processor, memory, free disk space, streams now, and the last 24 hours.
+  if (url.pathname === '/server' && req.method === 'GET') {
+    const total = os.totalmem(), step = 5;
+    const history = healthHistory.filter((_, i) => (healthHistory.length - 1 - i) % step === 0);
+    return send(res, 200, {
+      version: VERSION, now: new Date().toISOString(), hostname: os.hostname(), platform: `${os.type()} ${os.release()}`, cores: (os.cpus() || []).length,
+      pcUptime: os.uptime(), guardUptime: Math.round(process.uptime()), node: process.version,
+      cpu: health.cpu, mem: { pct: health.memPct, used: total - os.freemem(), total },
+      streams: { playing: health.playing, transcoding: health.transcoding, direct: health.direct, live: connections.inUse || 0 },
+      disks: diskInfo(), emby: { online: embyReach.ok, error: embyReach.error }, history,
+    });
+  }
 
   if (url.pathname === '/limits' && req.method === 'GET') {
     return send(res, 200, {
@@ -1177,6 +1429,9 @@ async function testAlert() {
   console.log(r.ok ? `OK: the webhook accepted it (${r.status}).` : `FAILED: ${r.status ? 'the webhook answered ' + r.status : r.error}`);
   process.exit(r.ok ? 0 : 1);
 }
+
+// Usage and sharing are saved every 5 minutes; save once more when the service is stopped.
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { saveStore(); } catch {} process.exit(0); });
 
 if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else start(); }
 module.exports = { enforce, isExpired, activeByUser };
