@@ -1059,10 +1059,10 @@
     (async () => {
       await syncFavorites().catch(() => {});
       if (!isCurrent()) return;
-      const list = iptvOn() ? iptvFavChannels() : [];
+      const list = iptvOn() && !kidsOn() ? iptvFavChannels() : [];
       list.forEach((ch, idx) => { const t = createIptvTile(ch, () => playIptv(list, idx, 'Favorites')); liveGrid.appendChild(t); watchNow(t, ch); });
       channels = list.length;
-      if (hasLiveTv() && !iptvOn()) {
+      if (hasLiveTv() && !iptvOn() && !kidsOn()) {
         try {
           const res = await getChannels({ IsFavorite: true, Limit: 200 });
           (res?.Items || []).forEach((c) => { liveGrid.appendChild(createChannelCard(c)); channels++; });
@@ -3554,12 +3554,14 @@
     if (!guardEnabled) throw new Error('Aurora Guard is switched off');
     if (quick && Date.now() < guardDownUntil) throw new Error('Aurora Guard is not answering');
     const url = new URL(guardUrl.replace(/\/+$/, '') + path);
+    // Who is making a change, for the guard's audit log. A query value, not a header: an older guard's CORS check would refuse an unknown header and break every guard call.
+    if (method !== 'GET') params = { ...(params || {}), by: String(state.user?.Name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40) };
     for (const [k, v] of Object.entries(params || {})) if (v != null) url.searchParams.set(k, v);
     let res;
     try {
       res = await fetch(url, {
         method, cache: 'no-store', signal: timeoutSignal(quick ? 3000 : 15000),
-        headers: { 'X-Emby-Token': state.apiKey, 'X-Aurora-User': String(state.user?.Name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40), ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
     } catch (e) {
@@ -5597,9 +5599,10 @@
     draw();
     // Keep the counts live while this page is open: ask the guard every 10 s and change just the device text
     // in place (so a row the remote is on keeps its focus). Stops when the page is left.
+    clearInterval(body.__usersTimer); // a redraw (after a bulk change) must not leave the old refresh running
     if (live) {
       let failures = 0;
-      const timer = setInterval(async () => {
+      const timer = body.__usersTimer = setInterval(async () => {
         if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
         if (document.hidden) return;
         try {
@@ -8375,7 +8378,7 @@
   // Shows the tour by itself, once per device, as soon as Home is up after sign-in.
   let tourWatching = false;
   function maybeStartTour() {
-    if (tourSeen() || tourWatching || tour) return;
+    if (tourSeen() || tourWatching || tour || kidsOn()) return;
     tourWatching = true;
     const t0 = Date.now();
     const check = () => {

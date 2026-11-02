@@ -737,7 +737,7 @@ function sharingLevel(rec) {
   const now = Date.now(), week = now - 7 * 86400000;
   const nets = Object.entries(rec.nets || {}).filter(([, v]) => !v.local && (v.at || 0) > week);
   const together = (rec.together || []).filter((t) => t > week).length;
-  const level = together >= cfg.sharingSimultaneousMinutes ? 'likely' : (nets.length >= cfg.sharingNetworks || together > 0) ? 'watch' : 'ok';
+  const level = together >= cfg.sharingSimultaneousMinutes ? 'likely' : (nets.length >= cfg.sharingNetworks || together >= 3) ? 'watch' : 'ok';
   return { level, networks: nets.length, together };
 }
 function usageReport(days) {
@@ -1021,7 +1021,7 @@ async function handle(req, res) {
   if (!admin) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }
 
   // Who changed what: every change made through the admin endpoints is written down with the admin's name (the app sends it).
-  const auditBy = String(req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
+  const auditBy = String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
   if (url.pathname === '/audit' && req.method === 'POST') {
     let body;
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
@@ -1429,6 +1429,9 @@ async function testAlert() {
   console.log(r.ok ? `OK: the webhook accepted it (${r.status}).` : `FAILED: ${r.status ? 'the webhook answered ' + r.status : r.error}`);
   process.exit(r.ok ? 0 : 1);
 }
+
+// Usage and sharing are saved every 5 minutes; save once more when the service is stopped.
+for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { saveStore(); } catch {} process.exit(0); });
 
 if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else start(); }
 module.exports = { enforce, isExpired, activeByUser };

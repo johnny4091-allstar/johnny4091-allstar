@@ -1,5 +1,2 @@
-- New: Kids mode (Settings). Shows only titles rated for children (you choose Little kids, Kids or Teens), closes Live TV, Requests and Settings, and needs a 4-digit PIN to leave. Works with a TV remote.
-- New: a "New This Week" row on Home with everything added in the last 7 days.
-- New: a note at the top of Home when your plan ends within a week, or when your request for more time is approved or declined.
-- New: subtitle color (white, yellow, cyan, green) and edge (soft shadow, outline, none) in Settings.
-- New on phones: "Allow screenshots" in Settings, so you can take screenshots and screen recordings even with Lock Aurora turned on.
+- Fixed: Kids mode now also hides favorite Live TV channels on the Favorites page, and the first-run tour no longer starts while Kids mode is on.
+- Fixed: the new admin tools can't interfere with older copies of Aurora Guard; admin names in the audit log now travel with each change.
