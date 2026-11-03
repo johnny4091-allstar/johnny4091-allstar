@@ -1,3 +1,1 @@
-- Aurora 2.0: a bigger release with a new look, first-time setup (avatar, name, genres, favorites, language, Live TV), Kids mode with a PIN, "New This Week", Live TV last-channel key, programme progress bars and "is it just me?" channel checks, and a new update window.
-- Fixed: the first-time setup can no longer overwrite a profile saved earlier if the server can't be reached, its posters follow the genres you pick, and a subtitle size you only previewed is put back if you skip it.
-- Fixed: an update arriving during the first-time setup now takes over the window instead of leaving it stuck.
+- New in Live TV: a Sports tab. See which games are on right now (with a progress bar) and what starts in the next 12 hours, with the channels carrying each one. Tap a game to watch it, pick another channel from "Also on", and filter by NFL, NBA, MLB, Soccer, UFC and more. It's found from your channel guide, so it needs a TV guide to list upcoming games.

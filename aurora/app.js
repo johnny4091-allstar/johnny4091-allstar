@@ -2893,7 +2893,7 @@
 
   function renderIptvLive(page, tab, isCurrent) {
     store.set('ef.iptv.used', String(Date.now()));
-    const tabs = [['channels', 'Channels'], ['guide', 'Guide']];
+    const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ['sports', 'Sports']];
     if (!tabs.some(([id]) => id === tab)) tab = 'channels';
     page.innerHTML = `
       <div class="page-pad live-page iptv-page${tab === 'guide' ? ' guide-tab' : ''}">
@@ -2906,9 +2906,157 @@
       </div>`;
     const body = $('[data-live-body]', page);
     if (tab === 'guide') { renderIptvGuide(body, isCurrent); return; }
+    if (tab === 'sports') { renderIptvSports(body, isCurrent); return; }
     renderIptvChannels(page, body, isCurrent);
     // Logos and what's on fill in when the guide arrives.
     loadIptvGuide().then(() => { if (isCurrent()) repaintTiles(); }).catch(() => {});
+  }
+
+  // ----- Sports (Live TV → Sports) -----
+  // What's on now and what starts soon, found in the channel guide on the provider's sports channels: games are listed with the
+  // channels that carry them and a Watch button. (No scores: those would need a separate feed.) It looks at channels in categories
+  // whose names sound like sport, reads their programme listings and keeps the ones that look like games or events.
+  const SPORT_CATS = /sport|nfl|nba|mlb|nhl|nascar|soccer|football|futbol|ufc|mma|fight|wwe|boxing|golf|tennis|racing|f1\b|formula|espn|dazn|bein|premier|liga|olympic|ppv|rugby|cricket|hockey|baseball|basketball/i;
+  const SPORT_LEAGUES = [
+    ['NFL', /\bnfl\b|redzone|sunday night football|monday night football|thursday night football/i],
+    ['NBA', /\bnba\b|\bwnba\b/i],
+    ['MLB', /\bmlb\b|baseball/i],
+    ['NHL', /\bnhl\b|hockey/i],
+    ['Soccer', /soccer|premier league|la ?liga|serie a|bundesliga|ligue 1|\bmls\b|champions league|europa league|fifa|uefa|copa |futbol|liga mx/i],
+    ['College', /ncaa|college|\bcfb\b|march madness|big ten|big 12|\bsec\b|\bacc\b/i],
+    ['UFC & Fights', /ufc|\bmma\b|boxing|wwe|bellator|fight night|\bpfl\b/i],
+    ['Racing', /formula|\bf1\b|nascar|indycar|grand prix|motogp|racing/i],
+    ['Golf', /golf|\bpga\b|masters|lpga/i],
+    ['Tennis', /tennis|\batp\b|\bwta\b|wimbledon|roland garros|us open/i],
+  ];
+  // Games with only team names in the title ("Warriors vs Lakers"): the common nicknames of the big US leagues.
+  const SPORT_TEAMS = [
+    ['NFL', /\b(eagles|commanders|cowboys|giants|jets|patriots|bills|dolphins|ravens|steelers|browns|bengals|texans|colts|jaguars|titans|chiefs|raiders|chargers|broncos|packers|bears|lions|vikings|falcons|panthers|saints|buccaneers|cardinals|rams|49ers|seahawks)\b/i],
+    ['NBA', /\b(lakers|warriors|celtics|knicks|nets|bulls|heat|bucks|suns|mavericks|spurs|rockets|clippers|nuggets|thunder|76ers|sixers|raptors|hawks|hornets|cavaliers|cavs|pistons|pacers|magic|wizards|jazz|kings|grizzlies|pelicans|timberwolves|trail blazers|blazers)\b/i],
+    ['MLB', /\b(yankees|red sox|dodgers|cubs|mets|braves|astros|phillies|padres|blue jays|orioles|rays|guardians|tigers|royals|twins|white sox|angels|athletics|mariners|rangers|diamondbacks|rockies|brewers|reds|pirates|marlins|nationals)\b/i],
+    ['NHL', /\b(bruins|canadiens|maple leafs|penguins|capitals|flyers|blackhawks|red wings|lightning|oilers|flames|canucks|avalanche|golden knights|kraken|predators|islanders|devils|sabres|senators|hurricanes|blue jackets|wild|blues|ducks|sharks|coyotes)\b/i],
+  ];
+  const sportLeague = (title, cat) => (SPORT_LEAGUES.find(([, re]) => re.test(title)) || SPORT_LEAGUES.find(([, re]) => re.test(cat))
+    || SPORT_TEAMS.find(([, re]) => re.test(title)) || ['Other'])[0];
+  const SPORT_NOT_GAME = /\b(replay|rerun|re-air|classic|highlights?|recap|encore|best of|top \d+|talk|analysis|preview|postgame|pre-?game|countdown|sportscenter|first take|pardon the|around the horn|show)\b/i;
+  const SPORT_GAME = /(\bvs\.?\s|\bv\.?\s|\bat\s|@|\bversus\b)|\b(live|game|match|fight|grand prix|final|playoffs?|semi-?final|quarter-?final|round of|week \d+|race|open|cup|bowl|series|tournament|derby)\b/i;
+  const looksLikeGame = (title) => !!title && (/\blive\b/i.test(title) || (!SPORT_NOT_GAME.test(title) && SPORT_GAME.test(title)));
+  const sportTeams = (title) => {
+    const t = title.replace(/^[^:]{2,28}:\s*/, '').replace(/\s*\(.*?\)\s*$/, ''), m = t.split(/\s+(?:vs\.?|v\.?|at|@|versus)\s+/i);
+    return m.length === 2 && m[0].length < 40 && m[1].length < 40 ? m : null;
+  };
+  const clockTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const untilText = (ms) => { const m = Math.max(0, Math.round((ms - Date.now()) / 60000)); return m < 1 ? 'starting now' : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + ' min' : ''}`; };
+  const sports = { data: null, loading: null, at: 0 };
+
+  // Finds the games: the sports channels, their listings, grouped so a game on three channels is one card.
+  async function sportsLoad() {
+    const src = await iptvSource();
+    const cats = src.categories.filter((c) => SPORT_CATS.test(c.name)).slice(0, 24);
+    const seen = new Set(), channels = [];
+    const queue = cats.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const c = queue.shift();
+        let list = [];
+        try { list = await iptvChannels(c.id); } catch { continue; }
+        for (const ch of list) { const k = ch.id || ch.name; if (!seen.has(k) && channels.length < 800) { seen.add(k); channels.push({ ch, cat: c.name }); } }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    const guide = await loadIptvGuide().catch(() => null);
+    const events = []; // {ch, cat, title, start, end}
+    if (guide) {
+      guidePrefetch(channels.map((x) => x.ch), guide);
+      const to = Date.now() + 12 * 3600000;
+      for (const { ch, cat } of channels) {
+        for (const pr of guideFor(ch, guide)?.progs || []) {
+          if (pr.end > Date.now() && pr.start < to) events.push({ ch, cat, title: pr.title || '', start: pr.start, end: pr.end });
+        }
+      }
+    } else if (iptv.config?.type === 'xtream') {
+      // No full guide (a browser, or the provider has none): the provider's short listing says what's on now, for the first few channels.
+      const queue2 = channels.slice(0, 150);
+      const w2 = async () => { while (queue2.length) { const { ch, cat } = queue2.shift(); const n = await iptvNow(ch).catch(() => null); if (n?.title) events.push({ ch, cat, title: n.title, start: n.start || Date.now() - 600000, end: n.end || Date.now() + 1800000 }); } };
+      await Promise.all([0, 1, 2, 3, 4, 5].map(w2));
+    }
+    const hd = (ch) => (/\b(hd|fhd|4k|uhd)\b/i.test(ch.name) ? 0 : 1);
+    const games = new Map();
+    for (const e of events) {
+      if (!looksLikeGame(e.title)) continue;
+      const key = e.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + '|' + Math.round(e.start / 600000);
+      const g = games.get(key) || { title: e.title, league: sportLeague(e.title, e.cat), start: e.start, end: e.end, chans: [] };
+      if (!g.chans.some((c) => c.id === e.ch.id && c.name === e.ch.name)) g.chans.push(e.ch);
+      games.set(key, g);
+    }
+    for (const g of games.values()) g.chans.sort((a, b) => hd(a) - hd(b));
+    return { games: [...games.values()].sort((a, b) => a.start - b.start), channels: channels.map((x) => x.ch), cats: cats.length, guide: !!guide };
+  }
+
+  async function renderIptvSports(body, isCurrent) {
+    body.innerHTML = '<div class="spinner"></div>';
+    let S;
+    try {
+      if (!sports.loading || Date.now() - sports.at > 10 * 60000) { sports.at = Date.now(); sports.loading = sportsLoad(); sports.loading.catch(() => { sports.loading = null; }); }
+      S = await sports.loading;
+    } catch (e) { if (isCurrent()) liveError(body, `Couldn't load the sports schedule: ${esc(e.message)}`, () => { sports.loading = null; route(); }); return; }
+    if (!isCurrent()) return;
+    if (!S.cats) { body.innerHTML = '<p class="empty-msg">No sports channels found. Aurora looks for categories named like Sports, NFL, NBA, Soccer or UFC.</p>'; return; }
+    let league = store.get('ef.sports.league') || 'All';
+    const draw = () => {
+      if (!body.isConnected || !isCurrent()) return false;
+      const now = Date.now();
+      const games = S.games.filter((g) => g.end > now);
+      const favOf = (g) => g.chans.some((c) => isIptvFav(c));
+      const counts = new Map();
+      for (const g of games) counts.set(g.league, (counts.get(g.league) || 0) + 1);
+      const favN = games.filter(favOf).length;
+      const names = SPORT_LEAGUES.map(([n]) => n).concat('Other').filter((n) => counts.has(n));
+      if (league !== 'All' && league !== '__fav' && !counts.has(league)) league = 'All';
+      if (league === '__fav' && !favN) league = 'All';
+      const shown = games.filter((g) => league === 'All' || (league === '__fav' ? favOf(g) : g.league === league));
+      const live = shown.filter((g) => g.start <= now), soon = shown.filter((g) => g.start > now);
+      const chip = (id, label) => `<button class="chip${league === id ? ' active' : ''}" data-league="${esc(id)}">${esc(label)}</button>`;
+      const card = (g) => {
+        const gi = S.games.indexOf(g), t = sportTeams(g.title), pct = Math.max(0, Math.min(100, Math.round(100 * (now - g.start) / Math.max(1, g.end - g.start))));
+        const alt = g.chans.slice(1, 4);
+        return `<div class="sp-card${g.start <= now ? ' is-live' : ''}" role="button" tabindex="0" data-game="${gi}">
+          <div class="sp-top"><span class="sp-lg">${esc(g.league)}</span>${g.start <= now ? '<span class="sp-live">LIVE</span>' : `<span class="sp-when">${esc(clockTime(g.start))} · ${esc(untilText(g.start))}</span>`}</div>
+          ${t ? `<div class="sp-team">${esc(t[0])}</div><div class="sp-team">${esc(t[1])}</div>` : `<div class="sp-title">${esc(g.title)}</div>`}
+          ${g.start <= now ? `<div class="sp-prog"><span style="width:${pct}%"></span></div><div class="sp-meta">Until ${esc(clockTime(g.end))}</div>` : `<div class="sp-meta">${esc(clockTime(g.start))} – ${esc(clockTime(g.end))}</div>`}
+          <div class="sp-foot"><span class="sp-ch">${g.chans[0].num ? `<b>${esc(g.chans[0].num)}</b> ` : ''}${esc(g.chans[0].name)}</span><span class="sp-watch">▶ Watch</span></div>
+          ${alt.length ? `<div class="sp-alt"><span>Also on</span>${alt.map((c, i) => `<button class="sp-altb" data-game="${gi}" data-alt="${i + 1}">${esc(c.name)}</button>`).join('')}</div>` : ''}
+        </div>`;
+      };
+      body.innerHTML = `<div class="sp">
+        <div class="chip-row sp-chips">${chip('All', 'All')}${favN ? chip('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => chip(n, `${n} · ${counts.get(n)}`)).join('')}</div>
+        ${live.length ? `<h2 class="sp-h"><span class="sp-dot"></span>Live now <small>${live.length} ${live.length === 1 ? 'game' : 'games'}</small></h2><div class="sp-grid">${live.map(card).join('')}</div>` : ''}
+        ${soon.length ? `<h2 class="sp-h">Starting soon <small>next 12 hours</small></h2><div class="sp-grid">${soon.map(card).join('')}</div>` : ''}
+        ${!live.length && !soon.length ? `<p class="empty-msg">${S.guide || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : "Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link."}</p>` : ''}
+        <p class="muted sp-note">${S.guide ? 'Found in your channel guide, so names and times are only as good as the guide.' : "Showing what's on now. The full schedule needs the Aurora app and a TV guide."}</p>
+      </div>`;
+      const first = $('.sp-card', body);
+      if (nav.on && first && !body.contains(document.activeElement)) focusEl(first);
+      return true;
+    };
+    const watch = (gi, altIdx = 0) => {
+      const g = S.games[gi];
+      const ch = g?.chans[altIdx] || g?.chans[0];
+      if (!ch) return;
+      const list = S.channels, at = list.findIndex((c) => c.id === ch.id && c.name === ch.name);
+      playIptv(list, at < 0 ? 0 : at, 'Sports');
+    };
+    body.addEventListener('click', (e) => {
+      const lg = e.target.closest('[data-league]');
+      if (lg) { league = lg.dataset.league; store.set('ef.sports.league', league); draw(); const b = $(`[data-league="${CSS.escape(league)}"]`, body); if (nav.on && b) focusEl(b); return; }
+      const alt = e.target.closest('[data-alt]');
+      if (alt) { watch(Number(alt.dataset.game), Number(alt.dataset.alt)); return; }
+      const card = e.target.closest('[data-game]');
+      if (card) watch(Number(card.dataset.game));
+    });
+    draw();
+    // Keep "live now / starting soon" and the progress bars true while the page is open.
+    const timer = setInterval(() => { if (document.hidden || isPlayerOpen()) return; const focused = document.activeElement?.closest?.('[data-game]')?.dataset.game; if (!draw()) clearInterval(timer); else if (focused != null) { const el = $(`.sp-card[data-game="${focused}"]`, body); if (el) focusEl(el); } }, 60000);
   }
 
   async function renderIptvChannels(page, body, isCurrent) {

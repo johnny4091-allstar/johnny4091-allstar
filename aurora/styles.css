@@ -1496,3 +1496,29 @@ html { overflow-x: hidden; }
 .su-box .modal-close { display: none; }
 .su-posters { max-width: 500px; }
 .tv .su-posters { max-width: 560px; }
+
+/* ---- Live TV → Sports ---- */
+.sp { padding-bottom: 2rem; }
+.sp-chips { margin-top: .2rem; }
+.sp-h { display: flex; align-items: baseline; gap: .6rem; margin: 1.2rem 0 .7rem; font-size: 1.15rem; color: #fff; }
+.sp-h small { font-weight: 500; font-size: .8rem; color: var(--dim); }
+.sp-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--live); box-shadow: 0 0 10px var(--live); align-self: center; }
+.sp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .9rem; }
+.sp-card { position: relative; background: var(--bg-2); border: 1px solid rgba(255,255,255,.1); border-radius: 16px; padding: .85rem 1rem; cursor: pointer; display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.sp-card.is-live { border-color: rgba(229,56,79,.45); }
+.sp-top { display: flex; justify-content: space-between; align-items: center; gap: .6rem; font-size: .78rem; color: #9aa3c8; }
+.sp-lg { font-weight: 700; letter-spacing: .03em; }
+.sp-live { background: var(--live); color: #fff; font-weight: 800; font-size: .66rem; padding: .1rem .45rem; border-radius: 5px; }
+.sp-when { color: #cfd6f5; white-space: nowrap; }
+.sp-team, .sp-title { color: #fff; font-weight: 700; font-size: 1.02rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-title { white-space: normal; line-height: 1.3; }
+.sp-prog { height: 4px; border-radius: 3px; background: rgba(255,255,255,.14); margin-top: .2rem; overflow: hidden; } .sp-prog span { display: block; height: 100%; background: var(--accent-grad); }
+.sp-meta { color: #8e92b0; font-size: .8rem; }
+.sp-foot { display: flex; justify-content: space-between; align-items: center; gap: .6rem; margin-top: .3rem; }
+.sp-ch { color: #aeb9e6; font-size: .85rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .sp-ch b { color: var(--accent); }
+.sp-watch { background: var(--accent-grad); color: #fff; font-weight: 700; font-size: .85rem; padding: .35rem .95rem; border-radius: 999px; white-space: nowrap; }
+.sp-alt { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; font-size: .75rem; color: #8e92b0; }
+.sp-altb { background: var(--bg-3); color: #cfd6f5; border: 0; border-radius: 999px; padding: .2rem .65rem; font-size: .75rem; }
+.sp-note { margin-top: 1.4rem; }
+.tv .sp-grid { grid-template-columns: repeat(3, 1fr); } .tv .sp-card { padding: 1rem 1.2rem; } .tv .sp-team, .tv .sp-title { font-size: 1.25rem; } .tv .sp-meta, .tv .sp-ch, .tv .sp-watch, .tv .sp-top, .tv .sp-altb { font-size: 1rem; }
+@media (max-width: 560px) { .sp-grid { grid-template-columns: 1fr; } }
