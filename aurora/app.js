@@ -300,6 +300,305 @@
     autoFocus($('[data-kids-leave]', page));
   }
 
+  // ---------- Profile and first-time setup ----------
+  // A short set-up on a new customer's first sign-in: an avatar, a name, what they like, language and subtitles, Live TV
+  // categories and a look at their plan, then the app tour. Everything is skippable. What they choose is kept on their Emby
+  // account ("aurora-profile"), so it follows them to every device; the tour still runs once on each new device.
+  const PROFILE_PREFS = 'aurora-profile';
+  const AVATAR_BGS = ['#7a5cff', '#2ad4d0', '#ff7a45', '#ff4d8d', '#f5c451', '#46d369'];
+  const AVATAR_KINDS = ['bear', 'panda', 'cat', 'fox', 'robot', 'alien', 'ghost', 'person'];
+  let profile = null;
+  let firstRun = null; // the setup that is on screen, if any
+  const profileKey = () => 'ef.profile.' + state.userId;
+  function loadProfileLocal() { try { profile = JSON.parse(store.get(profileKey()) || 'null'); } catch { profile = null; } }
+
+  // Avatars are drawn in code from a tiny recipe {k: character, bg: colour}: no image files, sharp at any size.
+  function avatarSvg(av, size = 40) {
+    const k = AVATAR_KINDS.includes(av?.k) ? av.k : 'bear', bg = av?.bg || AVATAR_BGS[0], ink = '#1b1230';
+    const fur = { bear: '#c98b5a', panda: '#f4f4f8', cat: '#f2a65a', fox: '#f08a3c', robot: '#9fb4d6', alien: '#7fd48a', ghost: '#eef0ff', person: '#e7b48a' }[k];
+    let g = `<circle cx="50" cy="50" r="50" fill="${bg}"/>`;
+    const eyes = `<circle cx="40" cy="52" r="3.4" fill="${ink}"/><circle cx="60" cy="52" r="3.4" fill="${ink}"/>`;
+    const smile = `<path d="M42 66 q8 7 16 0" stroke="${ink}" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+    if (k === 'bear') g += `<circle cx="26" cy="30" r="11" fill="${fur}"/><circle cx="74" cy="30" r="11" fill="${fur}"/><circle cx="26" cy="30" r="5" fill="rgba(0,0,0,.18)"/><circle cx="74" cy="30" r="5" fill="rgba(0,0,0,.18)"/><circle cx="50" cy="56" r="31" fill="${fur}"/><ellipse cx="50" cy="66" rx="13" ry="10" fill="rgba(255,255,255,.35)"/><ellipse cx="50" cy="61" rx="4.5" ry="3" fill="${ink}"/>${eyes}<path d="M46 66 q4 4 8 0" stroke="${ink}" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'panda') g += `<circle cx="26" cy="30" r="11" fill="#2b2b3a"/><circle cx="74" cy="30" r="11" fill="#2b2b3a"/><circle cx="50" cy="56" r="31" fill="${fur}"/><ellipse cx="38" cy="52" rx="8" ry="10" fill="#2b2b3a" transform="rotate(-20 38 52)"/><ellipse cx="62" cy="52" rx="8" ry="10" fill="#2b2b3a" transform="rotate(20 62 52)"/><circle cx="38" cy="52" r="2.6" fill="#fff"/><circle cx="62" cy="52" r="2.6" fill="#fff"/><ellipse cx="50" cy="63" rx="4.5" ry="3" fill="#2b2b3a"/><path d="M45 69 q5 4 10 0" stroke="#2b2b3a" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'cat') g += `<polygon points="22,18 40,30 20,46" fill="${fur}"/><polygon points="78,18 60,30 80,46" fill="${fur}"/><ellipse cx="50" cy="56" rx="31" ry="28" fill="${fur}"/>${eyes}<polygon points="49,60 53,60 51,63" fill="${ink}"/>${smile}<path d="M34 62 L20 60 M34 66 L20 68 M66 62 L80 60 M66 66 L80 68" stroke="rgba(255,255,255,.6)" stroke-width="1.3"/>`;
+    else if (k === 'fox') g += `<polygon points="20,16 42,32 20,50" fill="${fur}"/><polygon points="80,16 58,32 80,50" fill="${fur}"/><path d="M20 48 Q50 24 80 48 Q74 80 50 84 Q26 80 20 48z" fill="${fur}"/><path d="M34 70 Q50 92 66 70 Q50 62 34 70z" fill="#fff"/>${eyes}<circle cx="50" cy="71" r="3.2" fill="${ink}"/>`;
+    else if (k === 'robot') g += `<line x1="50" y1="14" x2="50" y2="26" stroke="${fur}" stroke-width="3"/><circle cx="50" cy="13" r="4" fill="#ff5d6c"/><rect x="22" y="26" width="56" height="52" rx="14" fill="${fur}"/><rect x="28" y="40" width="44" height="16" rx="8" fill="#0b1020"/><circle cx="40" cy="48" r="4" fill="#2ad4d0"/><circle cx="60" cy="48" r="4" fill="#2ad4d0"/><rect x="38" y="64" width="24" height="5" rx="2.5" fill="#0b1020"/>`;
+    else if (k === 'alien') g += `<ellipse cx="50" cy="52" rx="28" ry="34" fill="${fur}"/><ellipse cx="38" cy="50" rx="9" ry="13" fill="#0b1020" transform="rotate(-15 38 50)"/><ellipse cx="62" cy="50" rx="9" ry="13" fill="#0b1020" transform="rotate(15 62 50)"/><path d="M44 76 q6 4 12 0" stroke="#0b1020" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'ghost') g += `<path d="M24 80 V44 a26 26 0 0 1 52 0 V80 l-9 -7 -9 7 -8 -7 -8 7 -9 -7 z" fill="${fur}"/>${eyes}${smile}`;
+    else g += `<path d="M22 44 a28 28 0 0 1 56 0 V50 H22z" fill="#2b1d3a"/><circle cx="50" cy="56" r="26" fill="${fur}"/><path d="M24 48 a26 22 0 0 1 52 0 q-14 -10 -26 -6 q-14 -4 -26 6z" fill="#2b1d3a"/>${eyes}${smile}`;
+    return `<svg viewBox="0 0 100 100" width="${size}" height="${size}" style="display:block;border-radius:50%" aria-hidden="true">${g}</svg>`;
+  }
+  const greeting = () => { const h = new Date().getHours(); return h < 5 ? 'Good evening' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
+  const firstName = () => (profile?.name || '').trim();
+
+  // The top-bar picture: the avatar they made (or their Emby photo, or their initial).
+  function applyProfileUi() {
+    const btn = $('#profile-btn');
+    if (!btn || !state.user) return;
+    if (profile?.avatar) {
+      btn.style.backgroundImage = ''; btn.style.backgroundColor = 'transparent';
+      btn.innerHTML = avatarSvg(profile.avatar, 40);
+      btn.classList.add('has-avatar');
+    } else btn.classList.remove('has-avatar');
+    if (profile?.name) btn.title = profile.name;
+  }
+  async function refreshProfile() {
+    try {
+      const p = await readAuroraPref(PROFILE_PREFS);
+      if (p || !profile) { profile = p || null; store.set(profileKey(), JSON.stringify(profile)); }
+    } catch { /* keep what this device has */ }
+    applyProfileUi();
+  }
+  async function saveProfile(patch) {
+    profile = { ...(profile || {}), ...patch, v: 1 };
+    store.set(profileKey(), JSON.stringify(profile));
+    applyProfileUi();
+    try { await writeAuroraPref(PROFILE_PREFS, state.userId, profile); } catch (e) { appLog.add('warn', 'Profile not saved to the server: ' + e.message); }
+  }
+  const sortByProfileCats = (list) => {
+    const pref = new Set(profile?.cats || []);
+    return pref.size ? [...list.filter((c) => pref.has(c.name)), ...list.filter((c) => !pref.has(c.name))] : list;
+  };
+  // New customers get the setup (once per account); people who already did the tour before this existed, and admins, don't (Settings has "Set up again").
+  const needsSetup = () => !!state.userId && !kidsOn() && !isAdmin() && !(profile && profile.done) && !tourSeen();
+  const setupOpen = () => !!firstRun;
+
+  function maybeStartSetup() {
+    if (firstRun) return;
+    const t0 = Date.now();
+    const check = () => {
+      if (firstRun || !needsSetup() || Date.now() - t0 > 120000) return;
+      const ready = splashDone && state.userId && !$('#main').classList.contains('hidden') && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && !updateRequiredOpen() && !trailerOpen()
+        && $('.hero-content, .hero.empty, .row-track .card, #page .empty-msg');
+      if (ready) showFirstRun(); else setTimeout(check, 400);
+    };
+    setTimeout(check, 600);
+  }
+
+  async function doSaveAccountConfig(changes) {
+    try {
+      const fresh = await api(`/Users/${state.userId}`);
+      const config = { ...(fresh.Configuration || {}), ...changes };
+      await api(`/Users/${state.userId}/Configuration`, { method: 'POST', body: config });
+      state.user = { ...fresh, Configuration: config };
+    } catch (e) { appLog.add('warn', 'Setup: could not save language settings: ' + e.message); }
+  }
+
+  async function showFirstRun({ redo = false } = {}) {
+    const modal = $('#modal'), content = $('#modal-content');
+    if (firstRun) return;
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    const cfg = state.user?.Configuration || {};
+    const hasLive = iptvOn() && !kidsOn();
+    const U = firstRun = {
+      i: 0, closing: false, redo,
+      avatar: { ...(profile?.avatar || { k: 'bear', bg: AVATAR_BGS[0] }) },
+      name: profile?.name || '',
+      genres: new Set(profile?.genres || []), favs: new Set(), cats: new Set(profile?.cats || []),
+      audio: cfg.AudioLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default', subSize: getPref('subSize'),
+      genreList: null, posters: null, catList: null, account: undefined,
+    };
+    const steps = ['welcome', 'avatar', 'name', 'genres', 'favorites', 'language', ...(hasLive ? ['live'] : []), 'plan'];
+    U.steps = steps;
+    modal.classList.remove('hidden');
+    $('#modal .modal-box')?.classList.add('su-box');
+    document.body.style.overflow = 'hidden';
+    const who = state.user?.Name || 'there';
+
+    const close = (then) => {
+      U.closing = true; firstRun = null;
+      closeModal();
+      if (then === 'tour') setTimeout(() => tourStart(), 350);
+      else if (!redo) maybeStartTour();
+      if (profile?.cats?.length && /^#\/livetv/.test(location.hash)) route();
+      else if (/^#\/(home)?$/.test(location.hash || '#/home')) { rowCache.clear(); route(); }
+    };
+    const finish = async (then) => {
+      await saveProfile({ done: true });
+      close(then);
+    };
+    const chip = (label, on, attrs) => `<button class="su-chip${on ? ' on' : ''}" aria-pressed="${on ? 'true' : 'false'}" ${attrs}>${esc(label)}</button>`;
+
+    const views = {
+      welcome: () => ({ title: `Hi ${esc(who)} \u{1F44B}`, bare: true, skip: 'Skip setup', next: 'Start', back: false,
+        html: `<div class="su-center"><div class="su-hello">${avatarSvg(U.avatar, 84)}</div><h2 class="su-h su-big">Hi ${esc(who)} \u{1F44B}</h2><p class="su-p">Let's set up your Aurora. It takes about a minute, and you can skip anything.</p></div>` }),
+      avatar: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Pick your look</h2><div class="su-avatar"><div class="su-prev">${avatarSvg(U.avatar, 120)}</div>
+          <div><div class="su-grid">${AVATAR_KINDS.map((k) => `<button class="su-av${U.avatar.k === k ? ' on' : ''}" data-kind="${k}" aria-label="${k}">${avatarSvg({ k, bg: U.avatar.bg }, 52)}</button>`).join('')}</div>
+          <div class="su-cols">${AVATAR_BGS.map((c) => `<button class="su-col${U.avatar.bg === c ? ' on' : ''}" data-bg="${c}" style="background:${c}" aria-label="colour"></button>`).join('')}</div></div></div>` }),
+      name: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">What should we call you?</h2>
+          ${nav.tv ? `<div class="su-name-row"><button class="btn btn-gray" data-su="typename">${U.name ? esc(U.name) : 'Type a name'}</button></div><input class="su-input su-tv-input" type="text" maxlength="24" value="${esc(U.name)}" tabindex="-1" autocomplete="off">`
+            : `<input class="su-input" type="text" maxlength="24" placeholder="Your name" value="${esc(U.name)}" autocomplete="off">`}
+          <p class="su-p su-s">Optional. It's shown as a greeting on Home. Your sign-in name stays the same.</p>
+          <div class="su-example">${greeting()}, <b data-ex>${esc(U.name || who)}</b></div>` }),
+      genres: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Pick a few genres</h2>${U.genreList == null ? '<div class="spinner"></div>' : `<div class="su-chips">${U.genreList.map((g) => chip(g, U.genres.has(g), `data-genre="${esc(g)}"`)).join('')}</div>`}
+          <p class="su-p su-s" data-count>${U.genres.size ? U.genres.size + ' picked' : 'Choose as many as you like'}</p>` }),
+      favorites: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Tap titles you love</h2>${U.posters == null ? '<div class="spinner"></div>' : U.posters.length ? `<div class="su-posters">${U.posters.map((it) => `<button class="su-po${U.favs.has(it.Id) ? ' on' : ''}" data-fav="${esc(it.Id)}" aria-pressed="${U.favs.has(it.Id)}">${posterImage(it) ? `<img src="${esc(posterImage(it))}" alt="" loading="lazy">` : ''}<span class="su-pt">${esc(it.Name)}</span><span class="su-ck">✓</span></button>`).join('')}</div>` : '<p class="su-p">Nothing to show yet.</p>'}
+          <p class="su-p su-s">${U.favs.size ? U.favs.size + ' picked. ' : ''}They go to your Favorites, and Home gets a "Because you like…" row.</p>` }),
+      language: () => {
+        const langs = LANGUAGES.map(([v, l]) => [v, l]);
+        return { skip: 'Skip', next: 'Next',
+          html: `<h2 class="su-h">Language &amp; subtitles</h2>
+            <div class="su-opt"><span>Audio language</span>${selectHtml('su-audio', langs, U.audio)}</div>
+            <div class="su-opt"><span>Subtitles</span>${selectHtml('su-submode', SUBTITLE_MODES.map(([v, l]) => [v, l]), U.subMode)}</div>
+            <div class="su-opt"><span>Subtitle size</span>${selectHtml('su-subsize', Object.entries(SUB_SIZES).map(([k, v]) => [k, v[0]]), U.subSize)}</div>
+            <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>` };
+      },
+      live: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">What do you watch live?</h2>${U.catList == null ? '<div class="spinner"></div>' : U.catList.length ? `<div class="su-chips">${U.catList.map((c) => chip(c, U.cats.has(c), `data-cat="${esc(c)}"`)).join('')}</div>` : '<p class="su-p">No categories to show.</p>'}
+          <p class="su-p su-s">Those categories show first in Live TV.</p>` }),
+      plan: () => {
+        const a = U.account;
+        let card = '';
+        if (a && !a.admin && a.plan !== undefined) {
+          const n = a.limit;
+          card = `<div class="su-plan">
+            <div><span>Plan</span><b>${esc(a.plan?.name || 'Your plan')}</b></div>
+            <div><span>Devices</span><b>Up to ${n} ${n === 1 ? 'device' : 'devices'}</b></div>
+            <div><span>Access until</span><b>${a.expires ? esc(fmtDay(a.expires)) : 'No end date'}</b></div></div>
+            <p class="su-p su-s">Need more time? You can ask for an extension anytime in Settings.</p>`;
+        } else if (U.account === undefined) card = '<div class="spinner"></div>';
+        return { skip: '', next: 'Take the tour', html: `<h2 class="su-h">You're all set${firstName() || U.name ? ', ' + esc(U.name) : ''}</h2>${card || '<p class="su-p">Everything is saved. Change any of it later in Settings.</p>'}` };
+      },
+    };
+
+    const loadFor = {
+      genres: async () => {
+        if (U.genreList) return;
+        try {
+          const res = await api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: 'Movie,Series', Recursive: true, SortBy: 'SortName' } });
+          U.genreList = (res?.Items || []).map((g) => g.Name).filter(Boolean).slice(0, 24);
+        } catch { U.genreList = []; }
+      },
+      favorites: async () => {
+        if (U.posters) return;
+        try {
+          const params = { IncludeItemTypes: 'Movie,Series', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 8, ImageTypes: 'Primary', Fields: ITEM_FIELDS };
+          if (U.genres.size) params.Genres = [...U.genres].join('|');
+          let items = (await getItems(params))?.Items || [];
+          if (items.length < 4 && U.genres.size) items = (await getItems({ ...params, Genres: undefined }))?.Items || items;
+          U.posters = items.filter((it) => posterImage(it)).slice(0, 8);
+        } catch { U.posters = []; }
+      },
+      live: async () => {
+        if (U.catList) return;
+        try { const src = await iptvSource(); U.catList = [...src.categories].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 18).map((c) => c.name); }
+        catch { U.catList = []; }
+      },
+      plan: async () => {
+        if (U.account !== undefined) return;
+        if (!guardEnabled) { U.account = null; return; }
+        try { U.account = await guard('/account', { params: { userId: state.userId }, quick: true }); } catch { U.account = null; }
+      },
+    };
+
+    const dotsHtml = () => `<div class="su-dots">${steps.map((_, i) => `<i class="${i === U.i ? 'on' : ''}"></i>`).join('')}</div>`;
+    const draw = async (focusSel) => {
+      if (firstRun !== U) return;
+      const id = steps[U.i];
+      const need = loadFor[id];
+      const v0 = views[id]();
+      const paint = (v) => {
+        if (firstRun !== U) return;
+        const last = U.i === steps.length - 1;
+        content.innerHTML = `<div class="su" data-step="${id}">
+          <div class="su-top"><span class="su-logo">AURORA</span>${v.skip && !last ? `<button class="su-skip" data-su="skip">${esc(v.skip)}</button>` : '<span></span>'}</div>
+          <div class="su-body">${v.html}</div>
+          <div class="su-foot">${dotsHtml()}<div class="su-btns">${v.back === false || U.i === 0 ? '' : '<button class="btn btn-gray" data-su="back">Back</button>'}<button class="btn btn-red" data-su="next">${esc(v.next)}</button></div></div></div>`;
+        wire(id);
+        autoFocus($(focusSel || '[data-su="next"]', content));
+      };
+      paint(v0);
+      if (need && (id === 'genres' ? U.genreList == null : id === 'favorites' ? U.posters == null : id === 'live' ? U.catList == null : U.account === undefined)) {
+        await need();
+        if (firstRun === U && steps[U.i] === id) paint(views[id]());
+      }
+    };
+
+    // Saves what this step asked, then moves on.
+    const commit = async (id) => {
+      if (id === 'avatar') await saveProfile({ avatar: U.avatar });
+      else if (id === 'name') await saveProfile({ name: U.name.trim() });
+      else if (id === 'genres') await saveProfile({ genres: [...U.genres] });
+      else if (id === 'favorites') {
+        for (const itemId of U.favs) { try { await api(userPath(`/FavoriteItems/${itemId}`), { method: 'POST' }); } catch { /* skip */ } }
+        U.favs = new Set();
+      } else if (id === 'language') {
+        setPref('subSize', U.subSize); applySubtitleStyle();
+        await doSaveAccountConfig({ AudioLanguagePreference: U.audio, SubtitleMode: U.subMode });
+      } else if (id === 'live') await saveProfile({ cats: [...U.cats] });
+    };
+    const go = async (delta, { skipping = false } = {}) => {
+      const id = steps[U.i];
+      if (delta > 0 && !skipping) await commit(id);
+      if (delta > 0 && U.i === steps.length - 1) return finish('tour');
+      U.i = Math.max(0, Math.min(steps.length - 1, U.i + delta));
+      draw();
+    };
+    U.back = () => { if (U.i === 0) { saveProfile({ done: true }).then(() => close()); } else go(-1); };
+
+    function wire(id) {
+      const root = $('.su', content);
+      $('[data-su="next"]', root).addEventListener('click', (e) => { e.target.disabled = true; go(1); });
+      $('[data-su="back"]', root)?.addEventListener('click', () => go(-1));
+      $('[data-su="skip"]', root)?.addEventListener('click', async () => {
+        if (id === 'welcome') { await saveProfile({ done: true }); close(); } else go(1, { skipping: true });
+      });
+      if (id === 'avatar') {
+        const repaint = () => {
+          $('.su-prev', root).innerHTML = avatarSvg(U.avatar, 120);
+          $$('.su-av', root).forEach((b) => { b.classList.toggle('on', b.dataset.kind === U.avatar.k); b.innerHTML = avatarSvg({ k: b.dataset.kind, bg: U.avatar.bg }, 52); });
+          $$('.su-col', root).forEach((b) => b.classList.toggle('on', b.dataset.bg === U.avatar.bg));
+        };
+        $$('.su-av', root).forEach((b) => b.addEventListener('click', () => { U.avatar.k = b.dataset.kind; repaint(); }));
+        $$('.su-col', root).forEach((b) => b.addEventListener('click', () => { U.avatar.bg = b.dataset.bg; repaint(); }));
+      } else if (id === 'name') {
+        const input = $('.su-input', root), ex = $('[data-ex]', root);
+        input.addEventListener('input', () => { U.name = input.value; ex.textContent = input.value.trim() || who; });
+        const typeBtn = $('[data-su="typename"]', root);
+        typeBtn?.addEventListener('click', () => { input.tabIndex = 0; focusEl(input); nativeApp?.showKeyboard(); });
+        if (typeBtn) {
+          input.addEventListener('blur', () => { input.tabIndex = -1; typeBtn.textContent = input.value.trim() || 'Type a name'; });
+          input.__onBack = () => focusEl($('[data-su="next"]', root));
+        }
+      } else if (id === 'genres') {
+        $$('[data-genre]', root).forEach((b) => b.addEventListener('click', () => {
+          const g = b.dataset.genre;
+          if (U.genres.has(g)) U.genres.delete(g); else U.genres.add(g);
+          b.classList.toggle('on', U.genres.has(g)); b.setAttribute('aria-pressed', U.genres.has(g));
+          $('[data-count]', root).textContent = U.genres.size ? U.genres.size + ' picked' : 'Choose as many as you like';
+        }));
+      } else if (id === 'favorites') {
+        $$('[data-fav]', root).forEach((b) => b.addEventListener('click', () => {
+          const f = b.dataset.fav;
+          if (U.favs.has(f)) U.favs.delete(f); else U.favs.add(f);
+          b.classList.toggle('on', U.favs.has(f)); b.setAttribute('aria-pressed', U.favs.has(f));
+        }));
+      } else if (id === 'language') {
+        root.addEventListener('change', (e) => {
+          const sel = e.target.closest('[data-setting]');
+          if (!sel) return;
+          if (sel.dataset.setting === 'su-audio') U.audio = sel.value;
+          else if (sel.dataset.setting === 'su-submode') U.subMode = sel.value;
+          else if (sel.dataset.setting === 'su-subsize') { U.subSize = sel.value; document.documentElement.style.setProperty('--cue-size', (SUB_SIZES[U.subSize] || SUB_SIZES.m)[1]); }
+        });
+      } else if (id === 'live') {
+        $$('[data-cat]', root).forEach((b) => b.addEventListener('click', () => {
+          const c = b.dataset.cat;
+          if (U.cats.has(c)) U.cats.delete(c); else U.cats.add(c);
+          b.classList.toggle('on', U.cats.has(c)); b.setAttribute('aria-pressed', U.cats.has(c));
+        }));
+      }
+    }
+    draw();
+  }
+
   let signingOut = false;
   function signedOutElsewhere() {
     if (signingOut) return;
@@ -585,11 +884,13 @@
       checkAccess(user, 'signin').then((blocked) => { if (blocked && state.userId === user.Id) blockAccount(user, blocked); }).catch(() => {});
     }
     store.set('ef.userId', user.Id);
+    loadProfileLocal();
     const a = avatarInfo(user), btn = $('#profile-btn');
     btn.style.backgroundImage = a.image ? `url("${a.image}")` : '';
     btn.style.backgroundColor = a.image ? '' : a.color;
     btn.textContent = a.image ? '' : a.initial;
     btn.title = user.Name || '';
+    applyProfileUi();
     // Tell Emby what this device is (it shows in the dashboard like Emby's own apps).
     api('/Sessions/Capabilities/Full', {
       method: 'POST',
@@ -624,7 +925,8 @@
     applyKidsUi();
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
-    maybeStartTour();
+    // New customers: first-time setup, then the tour. Everyone else: just the tour (if they haven't seen it on this device).
+    refreshProfile().finally(() => { if (needsSetup()) maybeStartSetup(); else maybeStartTour(); });
   }
 
   function connectionErrorMessage(e) {
@@ -779,6 +1081,7 @@
     rows.className = 'rows';
     page.appendChild(rows);
     homeNotice(rows, isCurrent);
+    if (profile?.name && !kidsOn()) rows.insertAdjacentHTML('afterbegin', `<div class="home-greet">${esc(greeting())}, <b>${esc(profile.name)}</b></div>`);
 
     const add = (title, loader, opts) => addRow(rows, title, loader, { isCurrent, ...opts });
 
@@ -803,6 +1106,11 @@
       const since = Date.now() - 7 * 86400000;
       return (res?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > since).slice(0, 20);
     }));
+    if (profile?.genres?.length && !kidsOn()) {
+      const gs = profile.genres.slice(0, 6), label = gs.length > 2 ? gs.slice(0, 2).join(' & ') + ' and more' : gs.join(' & ');
+      add(`Because you like ${label}`, () => cachedRow(`${state.userId}:like:${gs.join('|')}`, async () =>
+        (await getItems({ IncludeItemTypes: 'Movie,Series', Genres: gs.join('|'), SortBy: 'Random', IsPlayed: false, Limit: 20 }))?.Items));
+    }
     add('Favorites', async () =>
       (await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 20 }))?.Items);
 
@@ -1200,13 +1508,13 @@
   const updateRequiredOpen = () => !!$('#modal-content .update-body.required') && !$('#modal').classList.contains('hidden');
   function closeModal() {
     // A required update can't be closed; the app stays locked until it's installed.
-    if (updateRequiredOpen()) return;
+    if (updateRequiredOpen() || (firstRun && !firstRun.closing)) return; // the first-time setup closes itself
     modalToken++;
     if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(false); }
     if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
     document.body.style.overflow = '';
-    $('#modal .modal-box')?.classList.remove('upd-box'); // the narrower, modern look of the update window
+    $('#modal .modal-box')?.classList.remove('upd-box', 'su-box'); // the narrower, modern look of the update window and the setup
     restoreFocus('modal');
   }
 
@@ -2266,7 +2574,7 @@
       ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
-      ...src.categories,
+      ...sortByProfileCats(src.categories),
     ];
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
@@ -2611,7 +2919,7 @@
       ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
-      ...src.categories,
+      ...sortByProfileCats(src.categories),
     ];
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
@@ -3955,6 +4263,10 @@
         <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>
       </section>
       <section class="settings-section">
+        <h2>Your profile <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
+        ${settingRow('Avatar and name', profile?.avatar || profile?.name ? `${profile?.name ? esc(profile.name) + ' · ' : ''}Shown in the top bar and as a greeting on Home.` : 'Pick an avatar, a name and what you like.', `<span class="su-set">${profile?.avatar ? avatarSvg(profile.avatar, 40) : ''}<button class="btn btn-gray" data-redo-setup>${profile?.done ? 'Set up again' : 'Set up my profile'}</button></span>`)}
+      </section>
+      <section class="settings-section">
         <h2>Kids mode <small>This device</small></h2>
         ${settingRow('Kids mode', 'Shows only titles rated for children and closes Live TV, Requests and Settings. You need a PIN to leave it.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
         ${settingRow('Allowed ratings', 'Titles with no rating are hidden.', selectHtml('kidsLevel', Object.entries(KIDS_LEVELS).map(([k, v]) => [k, v[0]]), kidsLevel()))}
@@ -4033,6 +4345,7 @@
       }
     });
     setupFeedback(page);
+    $('[data-redo-setup]', page)?.addEventListener('click', () => { location.hash = '#/home'; setTimeout(() => showFirstRun({ redo: true }), 200); });
     $('[data-kids-pin]', page)?.addEventListener('click', async () => {
       if (store.get('ef.kids.pin')) { const old = await pinPad('Current PIN', 'Enter your PIN first.'); if (old == null) return; if (!kidsPinOk(old)) return toast('Wrong PIN', 2500); }
       const pin = await kidsAskNewPin();
@@ -8071,6 +8384,7 @@
     if ($('#page .tm-guide')?.__closeGroups?.()) return true;
     if (adminMenuOpen()) { setAdminMenu(false); focusEl($('[data-admin-menu]')); return true; }
     if (updateRequiredOpen()) return false; // Back leaves the app instead
+    if (firstRun) { if (document.activeElement?.__onBack && isTextInput(document.activeElement)) { document.activeElement.__onBack(); return true; } firstRun.back(); return true; }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
     if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {
@@ -8426,7 +8740,7 @@
   // Shows the tour by itself, once per device, as soon as Home is up after sign-in.
   let tourWatching = false;
   function maybeStartTour() {
-    if (tourSeen() || tourWatching || tour || kidsOn()) return;
+    if (tourSeen() || tourWatching || tour || kidsOn() || firstRun) return;
     tourWatching = true;
     const t0 = Date.now();
     const check = () => {

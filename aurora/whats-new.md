@@ -1,1 +1,3 @@
-- New look for the update window: a gradient header with the new version, colour labels for what's new (New, Fixed, Improved), and a smoother download bar. It's also larger and easier to read on a TV.
+- New: first-time setup for new customers. Pick an avatar and colour, choose what to be called, pick your genres and a few favorite titles, set your language and subtitles, choose your Live TV categories, and see your plan, then take the app tour. Every step can be skipped.
+- New: your avatar shows in the top bar, Home greets you by name, and a "Because you like…" row is built from your genres.
+- New: Settings → Your profile, to set up or change all of it again.
