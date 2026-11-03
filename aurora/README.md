@@ -4,6 +4,9 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 
 ## Features
 
+Versions are `2.0.N` (the release is tagged `aurora-v2.0.N`): `N` is the build number, which is what the Android app compares to decide an update is newer, so it must keep rising. Devices on `1.2.N` update to `2.0.N` normally.
+
+
 - Sign in with your Emby username and password; everyone who signs in on a device gets a "Who's watching?" tile
   so they can switch back without retyping their password
 - Works with a TV remote or keyboard: arrow keys move around, OK/Enter selects, Back closes
@@ -26,6 +29,8 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 - Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size,
   color, edge and background, auto-play, "Are you still watching?" and streaming quality (saved on the device)
 - Live TV remote: number keys show the channel name while typing and OK jumps at once; Last (or 0) goes back to the previous channel; tiles and the player's channel list show a progress bar for the programme on now and the next one; a failing channel asks the guard whether others reported it.
+- First-time setup (`showFirstRun` in app.js): welcome, avatar (8 characters drawn in code x 6 colours), name, genres, favorite titles, language and subtitles, Live TV categories (only when Live TV is on), plan, then the tour. The profile is kept on the Emby account as the display preference `aurora-profile` ({avatar, name, genres, cats, done}), so it runs once per account; the tour still runs once per device. Admins and people who already saw the tour skip it; Settings → Your profile runs it again. Back goes to the previous step; Back on the first screen skips the setup.
+- Live TV → Sports (`renderIptvSports`): games found in the channel guide on channels in sport-named categories (NFL, NBA, Sports...), grouped when several channels carry the same game, split into Live now and Starting soon (next 12 hours), filterable by league (from the title, then the category, then common US team names) and by favorite channels. Replays, highlights and studio shows are left out. Version 2 adds live scores and the day's games from Aurora Guard's score feed (matched to channels by team name, aliases and TV network), favourite teams and leagues from the first-time setup (and Settings), a Spoiler-free switch, and **Remind me** (a notification from the Android app via `Reminders.java`, a toast while Aurora is open; saved on the account as `aurora-sports`). In a browser or without a guide it shows what's on now from the provider's short listing.
 - Kids mode (Settings, per device): only titles with an allowed rating (Little kids / Kids / Teens; unrated titles are hidden), Live TV,
   Requests, Admin and Settings closed, and a 4-digit PIN (on-screen number pad, works with a remote) to leave. The rating filter is
   applied to every Emby answer in `api()` (`kidsFilter`); episodes with no rating of their own follow their show. It keeps young

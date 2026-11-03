@@ -130,8 +130,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: aurora-v1.2.${{ env.VERSION_CODE }}
-          name: Aurora 1.2.${{ env.VERSION_CODE }}
+          tag_name: aurora-v2.0.${{ env.VERSION_CODE }}
+          name: Aurora 2.0.${{ env.VERSION_CODE }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: Aurora.apk

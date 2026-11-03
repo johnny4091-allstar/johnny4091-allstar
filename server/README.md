@@ -88,6 +88,8 @@ Administrator accounts are never limited or disabled.
 | `GET /extensions`, `PUT /extensions/{id}` | Emby administrators | The requests; `{action: "approve", days}` or `{action: "deny", message}`. |
 | `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
 | `GET /channel-status?userId=&channel=` | The signed-in user | How many *other* people reported that channel in the last hour (a number, no names), for the "is it just me?" line in the live player (guard 1.7.0). |
+| `GET /sports/games`, `GET /sports/teams?league=`, `GET /sports/aliases` | The signed-in user | Live scores and the day's games for the Sports tab, a league's teams (for the setup), and the admin's name aliases (guard 1.8.0). |
+| `GET /sports/status`, `PUT /sports/settings`, `PUT /sports/aliases`, `POST /sports/refresh` | Emby administrators | What the scores feed is doing, which leagues are on, the aliases, and "ask the feed again now" (guard 1.8.0). |
 | `GET /usage?days=` | Emby administrators | Minutes watched per day, per account and per title (guard 1.6.0). |
 | `GET /sharing`, `DELETE /sharing/{userId}` | Emby administrators | Accounts seen on many networks or playing from two at once; clear one's history (guard 1.6.0). |
 | `GET /server` | Emby administrators | Processor, memory, free disk space, streams now, and the last 24 hours (guard 1.6.0). |
@@ -120,6 +122,21 @@ when the provider is only refusing extra connections) and asks how many other pe
 the answer under the message. So that one bad connection doesn't look like a dead channel, an automatic "Channel is down"
 report is **not** passed to the TV provider until a second person reports the same channel within the hour (it shows as
 "waiting for a second person" in Admin → Channel reports).
+
+## Sports scores (guard 1.8.0)
+
+The Sports tab (Live TV → Sports) lists games found in the channel guide. The guard adds **live scores and the day's schedule** from
+ESPN's public scoreboard feed (NFL, NBA, MLB, NHL, college football and basketball, the big soccer leagues, UFC and Formula 1), kept in
+memory and refreshed every minute while a league has a live game (every ten minutes otherwise), so the apps never call the feed
+themselves. **This feed is not an official, documented service:** ESPN can change or stop it at any time (the tab then falls back to the
+channel guide on its own), and its terms haven't been confirmed for use in an app like this, so it is your call to keep it on.
+
+- Check it works from the PC: `node aurora-guard.js --test-scores` (one line per league).
+- Switch it off: `"scoresEnabled": false` in `config.json`, or untick it in Admin → Sports (which also picks the leagues).
+- `"scoresBase"` points at another server with the same shape if you use a different provider later.
+- **Admin → Sports → Name aliases** tells Aurora that two spellings are the same ("Man City" means "Manchester City", "SNF" means
+  "Sunday Night Football"). Games are matched to channels by team name in the guide, then by the TV network the feed names.
+- **Reminders** are kept on the customer's account and as notifications on their phone (the Android app); the guard isn't involved.
 
 ## Subscription plans (guard 1.5.0)
 

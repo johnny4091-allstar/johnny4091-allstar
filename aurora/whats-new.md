@@ -1,4 +1,4 @@
-- New in Live TV: a "Last channel" key. Press Last (or 0 on the remote) to flip back to the channel you were just watching, like a cable box.
-- New in Live TV: while you type a channel number on the remote, its name shows next to the digits, and OK jumps there at once instead of waiting.
-- New in Live TV: channel tiles and the in-player channel list show how far through the current programme it is, and what's on next.
-- New in Live TV: when a channel stops loading, Aurora tells you whether other people have reported it in the last hour, so you know if it's down at the source or just you.
+- Fixed: the Live TV Guide no longer jumps back to the top a few seconds after Aurora starts, just as you begin scrolling down.
+- Fixed: after watching a channel from the Guide, you land back on that channel, and the next Down carries on from there instead of starting at the top bar.
+- Fixed: holding Down in the Guide now loads more channels before you reach the end, so it never stalls or snaps back.
+- New in Live TV → Sports: live scores, favorite teams, spoiler-free mode and game reminders.

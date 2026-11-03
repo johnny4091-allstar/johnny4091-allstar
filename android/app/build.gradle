@@ -43,7 +43,7 @@ android {
         minSdk 26
         targetSdk 34
         versionCode appVersionCode
-        versionName "1.2.${appVersionCode}"
+        versionName "2.0.${appVersionCode}"
     }
 
     // The release key is NEVER in the repository. It comes from the environment (the build workflow sets these from

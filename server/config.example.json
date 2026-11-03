@@ -9,6 +9,7 @@
   "defaultLimit": 2,
   "diskPaths": [],
   "diskAlertPercent": 10,
+  "scoresEnabled": true,
   "sharingNetworks": 4,
   "sharingSimultaneousMinutes": 10,
   "dryRun": true,

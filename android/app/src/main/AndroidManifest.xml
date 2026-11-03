@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Keeps Wi-Fi awake while live TV plays (ExoPlayer wake mode). -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Game reminders: a notification before a game starts, and again after a restart. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <!-- One APK for phones, tablets and Android TV. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -50,6 +53,13 @@
             android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|navigation|uiMode|density" />
+
+        <receiver android:name=".Reminders$ReminderReceiver" android:exported="false" />
+        <receiver android:name=".Reminders$BootReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

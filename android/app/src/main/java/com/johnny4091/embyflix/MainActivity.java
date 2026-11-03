@@ -150,6 +150,8 @@ public class MainActivity extends Activity {
     // ---- App lock (phones only): the phone's own PIN, pattern or fingerprint to open Aurora ----
     private static final long LOCK_AFTER_MS = 60_000;
     private boolean appLockOn, locked, unlocking, inPlayer, tvDevice, resumed, allowShots;
+    /** Set when a reminder notification opened the app: the page to show (read once by the page). */
+    private static volatile String pendingHash;
     /**
      * Shared with the player screens: when any Aurora screen was last left (elapsed time, so changing the phone's clock
      * can't dodge it), and whether the lock is on. A player the viewer comes back to after a minute away closes itself
@@ -339,6 +341,7 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         CrashRecorder.install(this);
         new Thread(() -> CacheCleaner.tidy(getApplicationContext()), "cache-tidy").start(); // keeps the app's own cache small
+        captureLaunchHash(getIntent());
         tvDevice = detectTv();
         appLockOn = getSharedPreferences("aurora", MODE_PRIVATE).getBoolean("appLock", false);
         lockActive = appLockOn && !tvDevice;
@@ -651,11 +654,25 @@ public class MainActivity extends Activity {
         if (!locked && !unlocking && !inPlayer) awayAt = 0;
     }
 
+    private static void captureLaunchHash(Intent intent) {
+        String h = intent == null ? null : intent.getStringExtra(Reminders.EXTRA_OPEN);
+        if (h != null && h.startsWith("#/")) pendingHash = h;
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        captureLaunchHash(intent);
+    }
+
     @Override
     protected void onResume() {
         super.onResume();
         resumed = true;
         webView.onResume();
+        // Opened from a reminder notification: the page picks the target up (it also looks when it comes to the front).
+        if (pendingHash != null) webView.evaluateJavascript("window.auroraTakeLaunch && window.auroraTakeLaunch()", null);
         // Back from the "install unknown apps" screen: carry on with the update.
         if (pendingApk != null && getPackageManager().canRequestPackageInstalls()) installPendingApk();
     }
@@ -1090,6 +1107,40 @@ public class MainActivity extends Activity {
             lockActive = on;
             applySecureFlag();
             getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("appLock", on).apply();
+        }
+
+        /** A game reminder: a notification at this time (ms since 1970) that opens Live TV → Sports. */
+        @JavascriptInterface
+        public void scheduleReminder(String id, String title, String text, double whenMs) {
+            Reminders.schedule(getApplicationContext(), id, title, text, (long) whenMs);
+        }
+
+        @JavascriptInterface
+        public void cancelReminder(String id) {
+            Reminders.cancel(getApplicationContext(), id);
+        }
+
+        /** Whether notifications can be shown (Android 13 and newer ask the customer first). */
+        @JavascriptInterface
+        public boolean canNotify() {
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != PackageManager.PERMISSION_GRANTED) return false;
+            android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            return nm == null || nm.areNotificationsEnabled();
+        }
+
+        /** Asks for the notification permission (Android 13 and newer). */
+        @JavascriptInterface
+        public void requestNotifyPermission() {
+            if (Build.VERSION.SDK_INT < 33) return;
+            runOnUiThread(() -> requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 77));
+        }
+
+        /** The page asked for by the notification the customer tapped (once), or "". */
+        @JavascriptInterface
+        public String takeLaunchHash() {
+            String h = pendingHash == null ? "" : pendingHash;
+            pendingHash = null;
+            return h;
         }
 
         /** While the lock is on the window is hidden from screenshots and recordings; this lets the customer allow them. Ignored on a TV. */

@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -55,6 +55,10 @@ function loadConfig() {
     // Admin -> Server: drives to show free space for (blank = the drive the guard is on), and the free-space level that sends an alert.
     diskPaths: [],
     diskAlertPercent: 10,
+    // Sports scores (Live TV -> Sports): ESPN's public scoreboard feed. It is not an official, documented API and ESPN can change or
+    // stop it at any time. Set "scoresEnabled": false to switch it off, or "scoresBase" to point at another server with the same shape.
+    scoresEnabled: true,
+    scoresBase: 'https://site.api.espn.com',
     defaultLimit: 2,
     dryRun: false,
     // Where to send alerts (Discord webhook, ntfy.sh topic, or any web address that takes JSON). Blank = no alerts.
@@ -612,6 +616,9 @@ function describeChange(req, url, subject) {
     if (m === 'PUT') return `Changed plan ${b.name || ''}`.trim();
     if (m === 'DELETE') return 'Deleted a plan';
   }
+  if (p === '/sports/settings' && m === 'PUT') return `Changed the sports scores settings (${(b.leagues || []).length} leagues${b.enabled === false ? ', switched off' : ''})`;
+  if (p === '/sports/aliases' && m === 'PUT') return `Saved ${(b.aliases || []).length} sports name aliases`;
+  if (p === '/sports/refresh') return '';
   if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
   if (p === '/provider' && m === 'PUT') return 'Changed the TV provider reporting settings';
   if (p === '/provider/key' && m === 'DELETE') return 'Removed the TV provider key';
@@ -850,6 +857,137 @@ async function tick() {
   } finally { running = false; }
 }
 
+// ---------- Sports scores, teams and name aliases (1.8.0) ----------
+// The Sports tab in Aurora lists games found in the channel guide; this adds live scores, the customers' favourite teams and
+// reminders. Games come from ESPN's public scoreboard feed (unofficial: it can change or stop without notice). Each league is
+// asked every minute while it has a live game or one about to start, otherwise every ten minutes, and the answers are kept here, so
+// every customer's app reads this cache and nobody calls the feed directly.
+const SPORTS_LEAGUES = {
+  nfl: { path: 'football/nfl', name: 'NFL', group: 'NFL' },
+  ncaaf: { path: 'football/college-football', name: 'College Football', group: 'College' },
+  nba: { path: 'basketball/nba', name: 'NBA', group: 'NBA' },
+  wnba: { path: 'basketball/wnba', name: 'WNBA', group: 'NBA' },
+  ncaam: { path: 'basketball/mens-college-basketball', name: 'College Basketball', group: 'College' },
+  mlb: { path: 'baseball/mlb', name: 'MLB', group: 'MLB' },
+  nhl: { path: 'hockey/nhl', name: 'NHL', group: 'NHL' },
+  epl: { path: 'soccer/eng.1', name: 'Premier League', group: 'Soccer' },
+  laliga: { path: 'soccer/esp.1', name: 'La Liga', group: 'Soccer' },
+  bundesliga: { path: 'soccer/ger.1', name: 'Bundesliga', group: 'Soccer' },
+  seriea: { path: 'soccer/ita.1', name: 'Serie A', group: 'Soccer' },
+  ligue1: { path: 'soccer/fra.1', name: 'Ligue 1', group: 'Soccer' },
+  mls: { path: 'soccer/usa.1', name: 'MLS', group: 'Soccer' },
+  ucl: { path: 'soccer/uefa.champions', name: 'Champions League', group: 'Soccer' },
+  ufc: { path: 'mma/ufc', name: 'UFC', group: 'UFC & Fights' },
+  f1: { path: 'racing/f1', name: 'Formula 1', group: 'Racing' },
+};
+const SPORTS_DEFAULT_LEAGUES = ['nfl', 'ncaaf', 'nba', 'mlb', 'nhl', 'epl', 'laliga', 'bundesliga', 'seriea', 'ligue1', 'mls', 'ucl', 'ufc', 'f1'];
+const sportsState = { leagues: {}, teams: {}, updated: 0 }; // leagues[key] = { games, at, ok, error, nextAt }
+function sportsCfg() {
+  const c = store.sports || {};
+  const keys = Array.isArray(c.leagues) ? c.leagues.filter((k) => SPORTS_LEAGUES[k]) : SPORTS_DEFAULT_LEAGUES;
+  return { enabled: cfg.scoresEnabled !== false && c.enabled !== false, leagues: keys, aliases: Array.isArray(c.aliases) ? c.aliases : [] };
+}
+function getJson(address, timeoutMs = 9000) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(address), lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u, { timeout: timeoutMs, headers: { Accept: 'application/json', 'User-Agent': 'Aurora-Guard/' + VERSION } }, (res) => {
+      if (res.statusCode >= 400) { res.resume(); return reject(new Error(`${u.host} answered ${res.statusCode}`)); }
+      const chunks = []; let size = 0;
+      res.on('data', (c) => { size += c.length; if (size > 3 * 1024 * 1024) { req.destroy(new Error('answer too large')); } else chunks.push(c); });
+      res.on('end', () => { try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch { reject(new Error('not JSON')); } });
+    });
+    req.on('timeout', () => req.destroy(new Error('no answer in time')));
+    req.on('error', reject);
+  });
+}
+const hex6 = (v) => (/^[0-9a-f]{6}$/i.test(String(v || '')) ? '#' + String(v).toLowerCase() : '');
+// One ESPN scoreboard event -> the shape the app uses. Written defensively: any missing piece just stays empty.
+function normalizeSportsEvent(ev, key) {
+  const L = SPORTS_LEAGUES[key], comp = (ev.competitions && ev.competitions[0]) || {};
+  const cs = Array.isArray(comp.competitors) ? comp.competitors : [];
+  const side = (c) => c && {
+    id: String((c.team && c.team.id) || c.id || ''),
+    name: String((c.team && c.team.displayName) || (c.athlete && c.athlete.displayName) || '').slice(0, 60),
+    short: String((c.team && c.team.shortDisplayName) || (c.athlete && c.athlete.shortName) || (c.team && c.team.name) || '').slice(0, 40),
+    abbr: String((c.team && c.team.abbreviation) || '').slice(0, 6),
+    color: hex6(c.team && c.team.color),
+    score: c.score === undefined || c.score === null ? '' : String(c.score).slice(0, 6),
+    record: String((c.records && c.records[0] && c.records[0].summary) || '').slice(0, 12),
+    winner: !!c.winner,
+  };
+  const two = cs.length === 2;
+  const home = two ? side(cs.find((c) => c.homeAway === 'home') || cs[1]) : null;
+  const away = two ? side(cs.find((c) => c.homeAway === 'away') || cs[0]) : null;
+  const st = (ev.status && ev.status.type) || (comp.status && comp.status.type) || {};
+  const names = new Set();
+  for (const b of Array.isArray(comp.broadcasts) ? comp.broadcasts : []) for (const n of Array.isArray(b.names) ? b.names : []) names.add(String(n).slice(0, 30));
+  for (const b of Array.isArray(comp.geoBroadcasts) ? comp.geoBroadcasts : []) if (b && b.media && b.media.shortName) names.add(String(b.media.shortName).slice(0, 30));
+  const state = ['pre', 'in', 'post'].includes(st.state) ? st.state : 'pre';
+  return {
+    id: key + ':' + String(ev.id || ''), league: key, leagueName: L.name, group: L.group,
+    name: String(ev.name || '').slice(0, 120), short: String(ev.shortName || '').slice(0, 40),
+    start: Date.parse(ev.date) || 0, state,
+    detail: String(st.shortDetail || st.detail || '').slice(0, 40), clock: String((ev.status && ev.status.displayClock) || '').slice(0, 10),
+    home, away, broadcasts: [...names].slice(0, 6),
+  };
+}
+async function pollSportsLeague(key) {
+  const L = SPORTS_LEAGUES[key], rec = sportsState.leagues[key] || (sportsState.leagues[key] = { games: [], at: 0, ok: false, error: '', nextAt: 0 });
+  try {
+    const data = await getJson(`${cfg.scoresBase.replace(/\/+$/, '')}/apis/site/v2/sports/${L.path}/scoreboard`);
+    rec.games = (Array.isArray(data.events) ? data.events : []).map((ev) => normalizeSportsEvent(ev, key)).filter((g) => g.start);
+    rec.ok = true; rec.error = ''; rec.at = Date.now();
+  } catch (e) { rec.ok = false; rec.error = e.message; }
+  const hot = rec.games.some((g) => g.state === 'in' || (g.state === 'pre' && g.start - Date.now() < 30 * 60000 && g.start > Date.now() - 60000));
+  rec.nextAt = Date.now() + (rec.ok ? (hot ? 60000 : 10 * 60000) : 5 * 60000);
+  sportsState.updated = Date.now();
+}
+let sportsPolling = false;
+async function pollSports(force) {
+  const c = sportsCfg();
+  if (!c.enabled || sportsPolling) return;
+  sportsPolling = true;
+  try {
+    for (const key of c.leagues) {
+      const rec = sportsState.leagues[key];
+      if (force || !rec || Date.now() >= rec.nextAt) await pollSportsLeague(key);
+    }
+  } finally { sportsPolling = false; }
+}
+function sportsGames() {
+  const c = sportsCfg(), now = Date.now(), out = [];
+  for (const key of c.leagues) for (const g of (sportsState.leagues[key] && sportsState.leagues[key].games) || []) {
+    if (g.start > now - 8 * 3600000 && g.start < now + 36 * 3600000) out.push(g);
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+async function sportsTeams(key) {
+  const L = SPORTS_LEAGUES[key];
+  if (!L) return null;
+  const hit = sportsState.teams[key];
+  if (hit && Date.now() - hit.at < 24 * 3600000) return hit.list;
+  const data = await getJson(`${cfg.scoresBase.replace(/\/+$/, '')}/apis/site/v2/sports/${L.path}/teams?limit=100`);
+  const raw = [];
+  for (const sp of Array.isArray(data.sports) ? data.sports : []) for (const lg of Array.isArray(sp.leagues) ? sp.leagues : []) for (const t of Array.isArray(lg.teams) ? lg.teams : []) raw.push(t.team || t);
+  const list = raw.filter((t) => t && t.id && t.displayName).map((t) => ({ id: String(t.id), name: String(t.displayName).slice(0, 60), short: String(t.shortDisplayName || t.name || '').slice(0, 40), abbr: String(t.abbreviation || '').slice(0, 6), color: hex6(t.color) })).sort((a, b) => a.name.localeCompare(b.name));
+  sportsState.teams[key] = { at: Date.now(), list };
+  return list;
+}
+// node aurora-guard.js --test-scores: asks the feed once for each league and says what came back (to check it works from this PC).
+async function testScores() {
+  const keys = sportsCfg().leagues;
+  console.log(`Asking ${cfg.scoresBase} for ${keys.length} leagues...`);
+  let ok = 0;
+  for (const key of keys) {
+    await pollSportsLeague(key);
+    const r = sportsState.leagues[key];
+    console.log(`${(SPORTS_LEAGUES[key].name + ':').padEnd(22)}${r.ok ? `OK, ${r.games.length} games (${r.games.filter((g) => g.state === 'in').length} live)` : 'FAILED: ' + r.error}`);
+    if (r.ok) ok++;
+  }
+  console.log(ok === keys.length ? 'All leagues answered.' : `${ok} of ${keys.length} leagues answered. The feed may have changed or be blocked from this PC.`);
+  process.exit(ok ? 0 : 1);
+}
+
 // ---------- HTTP ----------
 function send(res, status, body) {
   const data = body === undefined ? '' : JSON.stringify(body);
@@ -958,8 +1096,9 @@ async function handle(req, res) {
     // second person reports it within the hour: one bad connection must not look like a dead channel.
     const hourAgo = Date.now() - 3600000, sameChannel = (x) => (channelId && x.channelId === channelId) || x.channel.toLowerCase() === channel.toLowerCase();
     const held = body.auto && reason === 'Channel is down' && !(store.reports || []).some((x) => x.at > hourAgo && x.user !== me.Name && sameChannel(x));
-    if (held) entry.forwarded = 'held';
-    if (!held && provider.enabled && provider.url && provider.key) {
+    const forwarding = provider.enabled && provider.url && provider.key;
+    if (held && forwarding) entry.forwarded = 'held'; // only meaningful when reports are being passed on
+    if (!held && forwarding) {
       const r = await sendToProvider({ channel, channelId, reason, note: note || (body.auto ? 'Reported automatically after repeated buffering' : ''), device: entry.device, user: me.Name, group: entry.group, time: new Date().toISOString() });
       entry.forwarded = r.ok ? 'sent' : 'failed';
       entry.providerStatus = r.status;
@@ -1007,6 +1146,25 @@ async function handle(req, res) {
     });
   }
   // The plans a customer can ask for (active ones only; name, price, length, connections).
+  // Sports (signed-in customers read; counts and names only): scores, a league's teams, and the admin's name aliases.
+  if (url.pathname === '/sports/games' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const c = sportsCfg();
+    return send(res, 200, { enabled: c.enabled, provider: 'espn', updated: sportsState.updated ? new Date(sportsState.updated).toISOString() : null, leagues: c.leagues, games: c.enabled ? sportsGames() : [] });
+  }
+  if (url.pathname === '/sports/teams' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const key = String(url.searchParams.get('league') || '');
+    if (!SPORTS_LEAGUES[key]) return send(res, 404, { error: 'No such league' });
+    try { return send(res, 200, { league: key, name: SPORTS_LEAGUES[key].name, group: SPORTS_LEAGUES[key].group, teams: await sportsTeams(key) }); } catch (e) { return send(res, 502, { error: `Can't load the teams: ${e.message}` }); }
+  }
+  if (url.pathname === '/sports/aliases' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, { aliases: sportsCfg().aliases });
+  }
   if (url.pathname === '/plans/public' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
     if (!me) return send(res, 401, { error: 'Not signed in' });
@@ -1089,6 +1247,32 @@ async function handle(req, res) {
       disks: diskInfo(), emby: { online: embyReach.ok, error: embyReach.error }, history,
     });
   }
+
+  // Sports (admin): what the feed is doing, which leagues are on, and the name aliases.
+  if (url.pathname === '/sports/status' && req.method === 'GET') {
+    const c = sportsCfg();
+    return send(res, 200, {
+      enabled: c.enabled, configEnabled: cfg.scoresEnabled !== false, provider: 'ESPN public scoreboard (unofficial)', base: cfg.scoresBase, aliases: c.aliases,
+      leagues: Object.entries(SPORTS_LEAGUES).map(([key, L]) => { const r = sportsState.leagues[key]; return { key, name: L.name, group: L.group, on: c.leagues.includes(key), ok: r ? r.ok : null, error: r ? r.error : '', games: r ? r.games.length : 0, live: r ? r.games.filter((g) => g.state === 'in').length : 0, at: r && r.at ? new Date(r.at).toISOString() : null }; }),
+    });
+  }
+  if (url.pathname === '/sports/settings' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    store.sports = { ...(store.sports || {}), enabled: body.enabled !== false, leagues: (Array.isArray(body.leagues) ? body.leagues : SPORTS_DEFAULT_LEAGUES).filter((k) => SPORTS_LEAGUES[k]) };
+    saveStore();
+    pollSports(false).catch(() => {});
+    return send(res, 200, { ok: true });
+  }
+  if (url.pathname === '/sports/aliases' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const list = (Array.isArray(body.aliases) ? body.aliases : []).map((a) => ({ from: String((a && a.from) || '').trim().slice(0, 40), to: String((a && a.to) || '').trim().slice(0, 40) })).filter((a) => a.from && a.to).slice(0, 200);
+    store.sports = { ...(store.sports || {}), aliases: list };
+    saveStore();
+    return send(res, 200, { ok: true, aliases: list });
+  }
+  if (url.pathname === '/sports/refresh' && req.method === 'POST') { await pollSports(true); return send(res, 200, { ok: true }); }
 
   if (url.pathname === '/limits' && req.method === 'GET') {
     return send(res, 200, {
@@ -1440,6 +1624,8 @@ function start() {
   }
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
+  setTimeout(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 4000);
+  setInterval(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 15000);
 }
 
 // node aurora-guard.js --test-alert: sends one test message to alertWebhookUrl and says whether it arrived.
@@ -1453,5 +1639,5 @@ async function testAlert() {
 // Usage and sharing are saved every 5 minutes; save once more when the service is stopped.
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { saveStore(); } catch {} process.exit(0); });
 
-if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else start(); }
-module.exports = { enforce, isExpired, activeByUser };
+if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else if (process.argv.includes('--test-scores')) testScores(); else start(); }
+module.exports = { enforce, isExpired, activeByUser, normalizeSportsEvent };

@@ -32,7 +32,7 @@
 
   // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
   const state = { server: DEFAULT_SERVER, requestsServer: '', requestsEnabled: false, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
-  const CLIENT = { name: 'Aurora', version: '1.2.0' };
+  const CLIENT = { name: 'Aurora', version: '2.0.0' };
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
@@ -298,6 +298,355 @@
       <div class="m-actions"><button class="btn btn-red" data-kids-leave>Enter PIN to leave</button><a class="btn btn-gray" href="#/home">Back to Home</a></div></section></div>`;
     $('[data-kids-leave]', page).addEventListener('click', async () => { if (await kidsLeave() && isCurrent()) route(); });
     autoFocus($('[data-kids-leave]', page));
+  }
+
+  // ---------- Profile and first-time setup ----------
+  // A short set-up on a new customer's first sign-in: an avatar, a name, what they like, language and subtitles, Live TV
+  // categories and a look at their plan, then the app tour. Everything is skippable. What they choose is kept on their Emby
+  // account ("aurora-profile"), so it follows them to every device; the tour still runs once on each new device.
+  const PROFILE_PREFS = 'aurora-profile';
+  const AVATAR_BGS = ['#7a5cff', '#2ad4d0', '#ff7a45', '#ff4d8d', '#f5c451', '#46d369'];
+  const AVATAR_KINDS = ['bear', 'panda', 'cat', 'fox', 'robot', 'alien', 'ghost', 'person'];
+  let profile = null;
+  let firstRun = null; // the setup that is on screen, if any
+  const profileKey = () => 'ef.profile.' + state.userId;
+  function loadProfileLocal() { try { profile = JSON.parse(store.get(profileKey()) || 'null'); } catch { profile = null; } }
+
+  // Avatars are drawn in code from a tiny recipe {k: character, bg: colour}: no image files, sharp at any size.
+  function avatarSvg(av, size = 40) {
+    const k = AVATAR_KINDS.includes(av?.k) ? av.k : 'bear', bg = /^#[0-9a-f]{6}$/i.test(av?.bg || '') ? av.bg : AVATAR_BGS[0], ink = '#1b1230'; // the saved value is account-writable: only a plain colour is drawn
+    const fur = { bear: '#c98b5a', panda: '#f4f4f8', cat: '#f2a65a', fox: '#f08a3c', robot: '#9fb4d6', alien: '#7fd48a', ghost: '#eef0ff', person: '#e7b48a' }[k];
+    let g = `<circle cx="50" cy="50" r="50" fill="${bg}"/>`;
+    const eyes = `<circle cx="40" cy="52" r="3.4" fill="${ink}"/><circle cx="60" cy="52" r="3.4" fill="${ink}"/>`;
+    const smile = `<path d="M42 66 q8 7 16 0" stroke="${ink}" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+    if (k === 'bear') g += `<circle cx="26" cy="30" r="11" fill="${fur}"/><circle cx="74" cy="30" r="11" fill="${fur}"/><circle cx="26" cy="30" r="5" fill="rgba(0,0,0,.18)"/><circle cx="74" cy="30" r="5" fill="rgba(0,0,0,.18)"/><circle cx="50" cy="56" r="31" fill="${fur}"/><ellipse cx="50" cy="66" rx="13" ry="10" fill="rgba(255,255,255,.35)"/><ellipse cx="50" cy="61" rx="4.5" ry="3" fill="${ink}"/>${eyes}<path d="M46 66 q4 4 8 0" stroke="${ink}" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'panda') g += `<circle cx="26" cy="30" r="11" fill="#2b2b3a"/><circle cx="74" cy="30" r="11" fill="#2b2b3a"/><circle cx="50" cy="56" r="31" fill="${fur}"/><ellipse cx="38" cy="52" rx="8" ry="10" fill="#2b2b3a" transform="rotate(-20 38 52)"/><ellipse cx="62" cy="52" rx="8" ry="10" fill="#2b2b3a" transform="rotate(20 62 52)"/><circle cx="38" cy="52" r="2.6" fill="#fff"/><circle cx="62" cy="52" r="2.6" fill="#fff"/><ellipse cx="50" cy="63" rx="4.5" ry="3" fill="#2b2b3a"/><path d="M45 69 q5 4 10 0" stroke="#2b2b3a" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'cat') g += `<polygon points="22,18 40,30 20,46" fill="${fur}"/><polygon points="78,18 60,30 80,46" fill="${fur}"/><ellipse cx="50" cy="56" rx="31" ry="28" fill="${fur}"/>${eyes}<polygon points="49,60 53,60 51,63" fill="${ink}"/>${smile}<path d="M34 62 L20 60 M34 66 L20 68 M66 62 L80 60 M66 66 L80 68" stroke="rgba(255,255,255,.6)" stroke-width="1.3"/>`;
+    else if (k === 'fox') g += `<polygon points="20,16 42,32 20,50" fill="${fur}"/><polygon points="80,16 58,32 80,50" fill="${fur}"/><path d="M20 48 Q50 24 80 48 Q74 80 50 84 Q26 80 20 48z" fill="${fur}"/><path d="M34 70 Q50 92 66 70 Q50 62 34 70z" fill="#fff"/>${eyes}<circle cx="50" cy="71" r="3.2" fill="${ink}"/>`;
+    else if (k === 'robot') g += `<line x1="50" y1="14" x2="50" y2="26" stroke="${fur}" stroke-width="3"/><circle cx="50" cy="13" r="4" fill="#ff5d6c"/><rect x="22" y="26" width="56" height="52" rx="14" fill="${fur}"/><rect x="28" y="40" width="44" height="16" rx="8" fill="#0b1020"/><circle cx="40" cy="48" r="4" fill="#2ad4d0"/><circle cx="60" cy="48" r="4" fill="#2ad4d0"/><rect x="38" y="64" width="24" height="5" rx="2.5" fill="#0b1020"/>`;
+    else if (k === 'alien') g += `<ellipse cx="50" cy="52" rx="28" ry="34" fill="${fur}"/><ellipse cx="38" cy="50" rx="9" ry="13" fill="#0b1020" transform="rotate(-15 38 50)"/><ellipse cx="62" cy="50" rx="9" ry="13" fill="#0b1020" transform="rotate(15 62 50)"/><path d="M44 76 q6 4 12 0" stroke="#0b1020" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'ghost') g += `<path d="M24 80 V44 a26 26 0 0 1 52 0 V80 l-9 -7 -9 7 -8 -7 -8 7 -9 -7 z" fill="${fur}"/>${eyes}${smile}`;
+    else g += `<path d="M22 44 a28 28 0 0 1 56 0 V50 H22z" fill="#2b1d3a"/><circle cx="50" cy="56" r="26" fill="${fur}"/><path d="M24 48 a26 22 0 0 1 52 0 q-14 -10 -26 -6 q-14 -4 -26 6z" fill="#2b1d3a"/>${eyes}${smile}`;
+    return `<svg viewBox="0 0 100 100" width="${size}" height="${size}" style="display:block;border-radius:50%" aria-hidden="true">${g}</svg>`;
+  }
+  const greeting = () => { const h = new Date().getHours(); return h < 5 ? 'Good evening' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
+  const firstName = () => (profile?.name || '').trim();
+
+  // The top-bar picture: the avatar they made (or their Emby photo, or their initial).
+  function applyProfileUi() {
+    const btn = $('#profile-btn');
+    if (!btn || !state.user) return;
+    if (profile?.avatar) {
+      btn.style.backgroundImage = ''; btn.style.backgroundColor = 'transparent';
+      btn.innerHTML = avatarSvg(profile.avatar, 40);
+      btn.classList.add('has-avatar');
+    } else btn.classList.remove('has-avatar');
+    if (profile?.name) btn.title = profile.name;
+  }
+  // Returns true when the account's profile was read (even if it is empty), false when the server couldn't be asked.
+  async function refreshProfile() {
+    let ok = true;
+    try {
+      const p = await readAuroraPref(PROFILE_PREFS);
+      if (p || !profile) { profile = p || null; store.set(profileKey(), JSON.stringify(profile)); }
+    } catch { ok = false; /* keep what this device has */ }
+    applyProfileUi();
+    return ok;
+  }
+  async function saveProfile(patch) {
+    profile = { ...(profile || {}), ...patch, v: 1 };
+    store.set(profileKey(), JSON.stringify(profile));
+    applyProfileUi();
+    try { await writeAuroraPref(PROFILE_PREFS, state.userId, profile); } catch (e) { appLog.add('warn', 'Profile not saved to the server: ' + e.message); }
+  }
+  const sortByProfileCats = (list) => {
+    const pref = new Set(profile?.cats || []);
+    return pref.size ? [...list.filter((c) => pref.has(c.name)), ...list.filter((c) => !pref.has(c.name))] : list;
+  };
+  // New customers get the setup (once per account); people who already did the tour before this existed, and admins, don't (Settings has "Set up again").
+  const needsSetup = () => !!state.userId && !kidsOn() && !isAdmin() && !(profile && profile.done) && !tourSeen();
+
+  function maybeStartSetup() {
+    if (firstRun) return;
+    const t0 = Date.now();
+    const check = () => {
+      if (firstRun || !needsSetup() || Date.now() - t0 > 120000) return;
+      const ready = splashDone && state.userId && !$('#main').classList.contains('hidden') && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && !updateRequiredOpen() && !trailerOpen()
+        && $('.hero-content, .hero.empty, .row-track .card, #page .empty-msg');
+      if (ready) showFirstRun(); else setTimeout(check, 400);
+    };
+    setTimeout(check, 600);
+  }
+
+  async function doSaveAccountConfig(changes) {
+    try {
+      const fresh = await api(`/Users/${state.userId}`);
+      const config = { ...(fresh.Configuration || {}), ...changes };
+      await api(`/Users/${state.userId}/Configuration`, { method: 'POST', body: config });
+      state.user = { ...fresh, Configuration: config };
+    } catch (e) { appLog.add('warn', 'Setup: could not save language settings: ' + e.message); }
+  }
+
+  async function showFirstRun({ redo = false, only = null } = {}) {
+    const modal = $('#modal'), content = $('#modal-content');
+    if (firstRun) return;
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    const cfg = state.user?.Configuration || {};
+    const hasLive = iptvOn() && !kidsOn();
+    const U = firstRun = {
+      i: 0, closing: false, redo,
+      avatar: { ...(profile?.avatar || { k: 'bear', bg: AVATAR_BGS[0] }) },
+      name: profile?.name || '',
+      genres: new Set(profile?.genres || []), favs: new Set(), cats: new Set(profile?.cats || []),
+      audio: cfg.AudioLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default', subSize: getPref('subSize'),
+      genreList: null, posters: null, catList: null, account: undefined,
+      leagues: new Set(profile?.leagues || []), teams: new Map((profile?.teams || []).map((t) => [t.lg + ':' + t.id, t])), teamLists: null, sportsOk: undefined, dir: 1, only: only || null,
+    };
+    const sportsOn = hasLive && guardEnabled;
+    const steps = only || ['welcome', 'avatar', 'name', 'genres', 'favorites', 'language', ...(hasLive ? ['live'] : []), ...(sportsOn ? ['sportsLeagues', 'sportsTeams'] : []), 'plan'];
+    U.steps = steps;
+    modal.classList.remove('hidden');
+    $('#modal .modal-box')?.classList.add('su-box');
+    document.body.style.overflow = 'hidden';
+    const who = state.user?.Name || 'there';
+
+    const close = (then) => {
+      U.closing = true; firstRun = null;
+      applySubtitleStyle();
+      closeModal();
+      if (then === 'tour') setTimeout(() => tourStart(), 350);
+      else if (!redo) maybeStartTour();
+      if (/^#\/settings/.test(location.hash)) route();
+      else if (profile?.cats?.length && /^#\/livetv/.test(location.hash)) route();
+      else if (/^#\/(home)?$/.test(location.hash || '#/home')) { rowCache.clear(); route(); }
+    };
+    const finish = async (then) => {
+      await saveProfile({ done: true });
+      close(then);
+    };
+    const chip = (label, on, attrs) => `<button class="su-chip${on ? ' on' : ''}" aria-pressed="${on ? 'true' : 'false'}" ${attrs}>${esc(label)}</button>`;
+
+    const views = {
+      welcome: () => ({ title: `Hi ${esc(who)} \u{1F44B}`, bare: true, skip: 'Skip setup', next: 'Start', back: false,
+        html: `<div class="su-center"><div class="su-hello">${avatarSvg(U.avatar, 84)}</div><h2 class="su-h su-big">Hi ${esc(who)} \u{1F44B}</h2><p class="su-p">Let's set up your Aurora. It takes about a minute, and you can skip anything.</p></div>` }),
+      avatar: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Pick your look</h2><div class="su-avatar"><div class="su-prev">${avatarSvg(U.avatar, 120)}</div>
+          <div><div class="su-grid">${AVATAR_KINDS.map((k) => `<button class="su-av${U.avatar.k === k ? ' on' : ''}" data-kind="${k}" aria-label="${k}">${avatarSvg({ k, bg: U.avatar.bg }, 52)}</button>`).join('')}</div>
+          <div class="su-cols">${AVATAR_BGS.map((c) => `<button class="su-col${U.avatar.bg === c ? ' on' : ''}" data-bg="${c}" style="background:${c}" aria-label="colour"></button>`).join('')}</div></div></div>` }),
+      name: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">What should we call you?</h2>
+          ${nav.tv ? `<div class="su-name-row"><button class="btn btn-gray" data-su="typename">${U.name ? esc(U.name) : 'Type a name'}</button></div><input class="su-input su-tv-input" type="text" maxlength="24" value="${esc(U.name)}" tabindex="-1" autocomplete="off">`
+            : `<input class="su-input" type="text" maxlength="24" placeholder="Your name" value="${esc(U.name)}" autocomplete="off">`}
+          <p class="su-p su-s">Optional. It's shown as a greeting on Home. Your sign-in name stays the same.</p>
+          <div class="su-example">${greeting()}, <b data-ex>${esc(U.name || who)}</b></div>` }),
+      genres: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Pick a few genres</h2>${U.genreList == null ? '<div class="spinner"></div>' : `<div class="su-chips">${U.genreList.map((g) => chip(g, U.genres.has(g), `data-genre="${esc(g)}"`)).join('')}</div>`}
+          <p class="su-p su-s" data-count>${U.genres.size ? U.genres.size + ' picked' : 'Choose as many as you like'}</p>` }),
+      favorites: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Tap titles you love</h2>${U.posters == null ? '<div class="spinner"></div>' : U.posters.length ? `<div class="su-posters">${U.posters.map((it) => `<button class="su-po${U.favs.has(it.Id) ? ' on' : ''}" data-fav="${esc(it.Id)}" aria-pressed="${U.favs.has(it.Id)}">${posterImage(it) ? `<img src="${esc(posterImage(it))}" alt="" loading="lazy">` : ''}<span class="su-pt">${esc(it.Name)}</span><span class="su-ck">✓</span></button>`).join('')}</div>` : '<p class="su-p">Nothing to show yet.</p>'}
+          <p class="su-p su-s">${U.favs.size ? U.favs.size + ' picked. ' : ''}They go to your Favorites, and Home gets a "Because you like…" row.</p>` }),
+      language: () => {
+        const langs = LANGUAGES.map(([v, l]) => [v, l]);
+        return { skip: 'Skip', next: 'Next',
+          html: `<h2 class="su-h">Language &amp; subtitles</h2>
+            <div class="su-opt"><span>Audio language</span>${selectHtml('su-audio', langs, U.audio)}</div>
+            <div class="su-opt"><span>Subtitles</span>${selectHtml('su-submode', SUBTITLE_MODES.map(([v, l]) => [v, l]), U.subMode)}</div>
+            <div class="su-opt"><span>Subtitle size</span>${selectHtml('su-subsize', Object.entries(SUB_SIZES).map(([k, v]) => [k, v[0]]), U.subSize)}</div>
+            <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>` };
+      },
+      live: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">What do you watch live?</h2>${U.catList == null ? '<div class="spinner"></div>' : U.catList.length ? `<div class="su-chips">${U.catList.map((c) => chip(c, U.cats.has(c), `data-cat="${esc(c)}"`)).join('')}</div>` : '<p class="su-p">No categories to show.</p>'}
+          <p class="su-p su-s">Those categories show first in Live TV.</p>` }),
+      sportsLeagues: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Which sports do you follow?</h2>${U.sportsOk === undefined ? '<div class="spinner"></div>' : `<div class="su-chips">${SPORT_GROUPS.map((g) => chip(g, U.leagues.has(g), `data-sl="${esc(g)}"`)).join('')}</div>`}
+          <p class="su-p su-s">Those leagues come first in Live TV → Sports.</p>` }),
+      sportsTeams: () => ({ skip: 'Skip', next: U.only ? 'Done' : 'Next',
+        html: `<h2 class="su-h">Pick your teams</h2>${U.teamLists == null ? '<div class="spinner"></div>' : `<div class="su-teamlists">${U.teamLists.map((l) => `<div class="su-tl"><span class="su-lab">${esc(l.name)}</span><div class="su-chips">${l.teams.map((t) => chip(t.short || t.name, U.teams.has(l.key + ':' + t.id), `data-team="${esc(l.key + ':' + t.id)}"`)).join('')}</div></div>`).join('')}</div>`}
+          <p class="su-p su-s" data-tcount>${U.teams.size ? U.teams.size + ' picked. ' : ''}Their games get a star and a "My teams" filter.</p>` }),
+      plan: () => {
+        const a = U.account;
+        let card = '';
+        if (a && !a.admin && a.plan !== undefined) {
+          const n = a.limit;
+          card = `<div class="su-plan">
+            <div><span>Plan</span><b>${esc(a.plan?.name || 'Your plan')}</b></div>
+            <div><span>Devices</span><b>Up to ${n} ${n === 1 ? 'device' : 'devices'}</b></div>
+            <div><span>Access until</span><b>${a.expires ? esc(fmtDay(a.expires)) : 'No end date'}</b></div></div>
+            <p class="su-p su-s">Need more time? You can ask for an extension anytime in Settings.</p>`;
+        } else if (U.account === undefined) card = '<div class="spinner"></div>';
+        return { skip: '', next: 'Take the tour', html: `<h2 class="su-h">You're all set${firstName() || U.name ? ', ' + esc(U.name) : ''}</h2>${card || '<p class="su-p">Everything is saved. Change any of it later in Settings.</p>'}` };
+      },
+    };
+
+    const loadFor = {
+      genres: async () => {
+        if (U.genreList) return;
+        try {
+          const res = await api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: 'Movie,Series', Recursive: true, SortBy: 'SortName' } });
+          U.genreList = (res?.Items || []).map((g) => g.Name).filter(Boolean).slice(0, 24);
+        } catch { U.genreList = []; }
+      },
+      favorites: async () => {
+        if (U.posters) return;
+        try {
+          const params = { IncludeItemTypes: 'Movie,Series', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 8, ImageTypes: 'Primary', Fields: ITEM_FIELDS };
+          if (U.genres.size) params.Genres = [...U.genres].join('|');
+          let items = (await getItems(params))?.Items || [];
+          if (items.length < 4 && U.genres.size) items = (await getItems({ ...params, Genres: undefined }))?.Items || items;
+          U.posters = items.filter((it) => posterImage(it)).slice(0, 8);
+        } catch { U.posters = []; }
+      },
+      live: async () => {
+        if (U.catList) return;
+        try { const src = await iptvSource(); U.catList = [...src.categories].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 18).map((c) => c.name); }
+        catch { U.catList = []; }
+      },
+      sportsLeagues: async () => {
+        if (U.sportsOk !== undefined) return;
+        try { U.sportsOk = !!(await guard('/sports/games', { params: { userId: state.userId }, quick: true })).enabled; } catch { U.sportsOk = false; }
+      },
+      sportsTeams: async () => {
+        if (U.teamLists) return;
+        const keysFor = { NFL: ['nfl'], NBA: ['nba'], MLB: ['mlb'], NHL: ['nhl'], Soccer: ['epl', 'laliga', 'bundesliga', 'seriea', 'ligue1', 'mls'] };
+        const keys = [...U.leagues].flatMap((g) => keysFor[g] || []);
+        const lists = await Promise.all(keys.map((k) => guard('/sports/teams', { params: { userId: state.userId, league: k } }).then((r) => ({ key: k, name: r.name, teams: r.teams || [] })).catch(() => null)));
+        U.teamLists = lists.filter((l) => l && l.teams.length);
+      },
+      plan: async () => {
+        if (U.account !== undefined) return;
+        if (!guardEnabled) { U.account = null; return; }
+        try { U.account = await guard('/account', { params: { userId: state.userId }, quick: true }); } catch { U.account = null; }
+      },
+    };
+
+    const dotsHtml = () => `<div class="su-dots">${steps.map((_, i) => `<i class="${i === U.i ? 'on' : ''}"></i>`).join('')}</div>`;
+    const draw = async (focusSel) => {
+      if (firstRun !== U) return;
+      const id = steps[U.i];
+      const need = loadFor[id];
+      const v0 = views[id]();
+      const paint = (v) => {
+        if (firstRun !== U) return;
+        const last = U.i === steps.length - 1;
+        content.innerHTML = `<div class="su" data-step="${id}">
+          <div class="su-top"><span class="su-logo">AURORA</span>${v.skip && !last ? `<button class="su-skip" data-su="skip">${esc(v.skip)}</button>` : '<span></span>'}</div>
+          <div class="su-body">${v.html}</div>
+          <div class="su-foot">${dotsHtml()}<div class="su-btns">${v.back === false || U.i === 0 ? '' : '<button class="btn btn-gray" data-su="back">Back</button>'}<button class="btn btn-red" data-su="next">${esc(v.next)}</button></div></div></div>`;
+        wire(id);
+        autoFocus($(focusSel || '[data-su="next"]', content));
+      };
+      paint(v0);
+      const pending = id === 'genres' ? U.genreList == null : id === 'favorites' ? U.posters == null : id === 'live' ? U.catList == null : id === 'sportsLeagues' ? U.sportsOk === undefined : id === 'sportsTeams' ? U.teamLists == null : id === 'plan' ? U.account === undefined : false;
+      if (need && pending) {
+        await need();
+        if (firstRun !== U || steps[U.i] !== id) return;
+        // No score feed, or no teams to pick: these steps simply aren't shown.
+        if ((id === 'sportsLeagues' && !U.sportsOk) || (id === 'sportsTeams' && !U.teamLists.length)) {
+          if (U.dir >= 0 && U.i === steps.length - 1) return finish(U.only ? '' : 'tour');
+          U.i = Math.max(0, Math.min(steps.length - 1, U.i + (U.dir >= 0 ? 1 : -1)));
+          return draw();
+        }
+        paint(views[id]());
+      }
+    };
+
+    // Saves what this step asked, then moves on.
+    const commit = async (id) => {
+      if (id === 'avatar') await saveProfile({ avatar: U.avatar });
+      else if (id === 'name') await saveProfile({ name: U.name.trim() });
+      else if (id === 'genres') { await saveProfile({ genres: [...U.genres] }); U.posters = null; } // the posters follow the genres picked
+      else if (id === 'favorites') {
+        for (const itemId of U.favs) { try { await api(userPath(`/FavoriteItems/${itemId}`), { method: 'POST' }); } catch { /* skip */ } }
+        U.favs = new Set();
+      } else if (id === 'language') {
+        setPref('subSize', U.subSize); applySubtitleStyle();
+        await doSaveAccountConfig({ AudioLanguagePreference: U.audio, SubtitleMode: U.subMode });
+      } else if (id === 'live') await saveProfile({ cats: [...U.cats] });
+      else if (id === 'sportsLeagues') { await saveProfile({ leagues: [...U.leagues] }); U.teamLists = null; }
+      else if (id === 'sportsTeams') await saveProfile({ teams: [...U.teams.values()] });
+    };
+    const go = async (delta, { skipping = false } = {}) => {
+      const id = steps[U.i];
+      U.dir = delta;
+      if (delta > 0 && !skipping) await commit(id);
+      if (id === 'language' && (delta < 0 || skipping)) applySubtitleStyle(); // the size shown while choosing is only a preview
+      if (delta > 0 && U.i === steps.length - 1) return finish(U.only ? '' : 'tour');
+      U.i = Math.max(0, Math.min(steps.length - 1, U.i + delta));
+      draw();
+    };
+    U.back = () => { if (U.i === 0) { if (U.only) close(); else saveProfile({ done: true }).then(() => close()); } else go(-1); };
+
+    function wire(id) {
+      const root = $('.su', content);
+      $('[data-su="next"]', root).addEventListener('click', (e) => { e.target.disabled = true; go(1); });
+      $('[data-su="back"]', root)?.addEventListener('click', () => go(-1));
+      $('[data-su="skip"]', root)?.addEventListener('click', async () => {
+        if (id === 'welcome') { await saveProfile({ done: true }); close(); } else go(1, { skipping: true });
+      });
+      if (id === 'avatar') {
+        const repaint = () => {
+          $('.su-prev', root).innerHTML = avatarSvg(U.avatar, 120);
+          $$('.su-av', root).forEach((b) => { b.classList.toggle('on', b.dataset.kind === U.avatar.k); b.innerHTML = avatarSvg({ k: b.dataset.kind, bg: U.avatar.bg }, 52); });
+          $$('.su-col', root).forEach((b) => b.classList.toggle('on', b.dataset.bg === U.avatar.bg));
+        };
+        $$('.su-av', root).forEach((b) => b.addEventListener('click', () => { U.avatar.k = b.dataset.kind; repaint(); }));
+        $$('.su-col', root).forEach((b) => b.addEventListener('click', () => { U.avatar.bg = b.dataset.bg; repaint(); }));
+      } else if (id === 'name') {
+        const input = $('.su-input', root), ex = $('[data-ex]', root);
+        input.addEventListener('input', () => { U.name = input.value; ex.textContent = input.value.trim() || who; });
+        const typeBtn = $('[data-su="typename"]', root);
+        typeBtn?.addEventListener('click', () => { input.tabIndex = 0; focusEl(input); nativeApp?.showKeyboard(); });
+        if (typeBtn) {
+          input.addEventListener('blur', () => { input.tabIndex = -1; typeBtn.textContent = input.value.trim() || 'Type a name'; });
+          input.__onBack = () => focusEl($('[data-su="next"]', root));
+        }
+      } else if (id === 'genres') {
+        $$('[data-genre]', root).forEach((b) => b.addEventListener('click', () => {
+          const g = b.dataset.genre;
+          if (U.genres.has(g)) U.genres.delete(g); else U.genres.add(g);
+          b.classList.toggle('on', U.genres.has(g)); b.setAttribute('aria-pressed', U.genres.has(g));
+          $('[data-count]', root).textContent = U.genres.size ? U.genres.size + ' picked' : 'Choose as many as you like';
+        }));
+      } else if (id === 'favorites') {
+        $$('[data-fav]', root).forEach((b) => b.addEventListener('click', () => {
+          const f = b.dataset.fav;
+          if (U.favs.has(f)) U.favs.delete(f); else U.favs.add(f);
+          b.classList.toggle('on', U.favs.has(f)); b.setAttribute('aria-pressed', U.favs.has(f));
+        }));
+      } else if (id === 'language') {
+        root.addEventListener('change', (e) => {
+          const sel = e.target.closest('[data-setting]');
+          if (!sel) return;
+          if (sel.dataset.setting === 'su-audio') U.audio = sel.value;
+          else if (sel.dataset.setting === 'su-submode') U.subMode = sel.value;
+          else if (sel.dataset.setting === 'su-subsize') { U.subSize = sel.value; document.documentElement.style.setProperty('--cue-size', (SUB_SIZES[U.subSize] || SUB_SIZES.m)[1]); }
+        });
+      } else if (id === 'sportsLeagues') {
+        $$('[data-sl]', root).forEach((b) => b.addEventListener('click', () => {
+          const g = b.dataset.sl;
+          if (U.leagues.has(g)) U.leagues.delete(g); else U.leagues.add(g);
+          b.classList.toggle('on', U.leagues.has(g)); b.setAttribute('aria-pressed', U.leagues.has(g));
+        }));
+      } else if (id === 'sportsTeams') {
+        const all = new Map();
+        for (const l of U.teamLists || []) for (const t of l.teams) all.set(l.key + ':' + t.id, { lg: l.key, id: t.id, name: t.name, short: t.short, abbr: t.abbr });
+        $$('[data-team]', root).forEach((b) => b.addEventListener('click', () => {
+          const k = b.dataset.team;
+          if (U.teams.has(k)) U.teams.delete(k); else if (all.has(k)) U.teams.set(k, all.get(k));
+          b.classList.toggle('on', U.teams.has(k)); b.setAttribute('aria-pressed', U.teams.has(k));
+          $('[data-tcount]', root).textContent = (U.teams.size ? U.teams.size + ' picked. ' : '') + 'Their games get a star and a "My teams" filter.';
+        }));
+      } else if (id === 'live') {
+        $$('[data-cat]', root).forEach((b) => b.addEventListener('click', () => {
+          const c = b.dataset.cat;
+          if (U.cats.has(c)) U.cats.delete(c); else U.cats.add(c);
+          b.classList.toggle('on', U.cats.has(c)); b.setAttribute('aria-pressed', U.cats.has(c));
+        }));
+      }
+    }
+    draw();
   }
 
   let signingOut = false;
@@ -585,11 +934,13 @@
       checkAccess(user, 'signin').then((blocked) => { if (blocked && state.userId === user.Id) blockAccount(user, blocked); }).catch(() => {});
     }
     store.set('ef.userId', user.Id);
+    loadProfileLocal();
     const a = avatarInfo(user), btn = $('#profile-btn');
     btn.style.backgroundImage = a.image ? `url("${a.image}")` : '';
     btn.style.backgroundColor = a.image ? '' : a.color;
     btn.textContent = a.image ? '' : a.initial;
     btn.title = user.Name || '';
+    applyProfileUi();
     // Tell Emby what this device is (it shows in the dashboard like Emby's own apps).
     api('/Sessions/Capabilities/Full', {
       method: 'POST',
@@ -606,14 +957,16 @@
     refreshAppConfig();
     syncFavorites({ force: true });
     syncPlanCategories();
+    const iptvBefore = JSON.stringify(iptv.config);
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
       // for people who've used Live TV lately: reading a big guide is real work for a TV box.
       const usedLive = Date.now() - Number(store.get('ef.iptv.used') || 0) < 14 * 86400000;
       if (iptvOn() && nativeApp?.loadEpg && usedLive) setTimeout(() => { if (iptvOn() && !isPlayerOpen()) loadIptvGuide().catch(() => {}); }, 20000);
-      // If the Live TV source changed while the Live TV page or Home was showing, redraw it.
-      if (/^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
+      // If the Live TV source changed while the Live TV page or Home was showing, redraw it. (Only if it did change: redrawing the
+      // Guide at every start-up threw the viewer back to the top just as they began scrolling down it.)
+      if (JSON.stringify(iptv.config) !== iptvBefore && /^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
@@ -624,7 +977,12 @@
     applyKidsUi();
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
-    maybeStartTour();
+    // New customers: first-time setup, then the tour. Everyone else: just the tour (if they haven't seen it on this device).
+    // (If the profile couldn't be read, don't run the setup now: finishing it would overwrite a profile saved earlier. Try again next time.)
+    loadSportsPrefsLocal();
+    refreshSportsPrefs();
+    takeLaunchHash();
+    refreshProfile().then((read) => { if (read && needsSetup()) maybeStartSetup(); else maybeStartTour(); });
   }
 
   function connectionErrorMessage(e) {
@@ -779,6 +1137,7 @@
     rows.className = 'rows';
     page.appendChild(rows);
     homeNotice(rows, isCurrent);
+    if (profile?.name && !kidsOn()) rows.insertAdjacentHTML('afterbegin', `<div class="home-greet">${esc(greeting())}, <b>${esc(profile.name)}</b></div>`);
 
     const add = (title, loader, opts) => addRow(rows, title, loader, { isCurrent, ...opts });
 
@@ -803,6 +1162,11 @@
       const since = Date.now() - 7 * 86400000;
       return (res?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > since).slice(0, 20);
     }));
+    if (profile?.genres?.length && !kidsOn()) {
+      const gs = profile.genres.slice(0, 6), label = gs.length > 2 ? gs.slice(0, 2).join(' & ') + ' and more' : gs.join(' & ');
+      add(`Because you like ${label}`, () => cachedRow(`${state.userId}:like:${gs.join('|')}`, async () =>
+        (await getItems({ IncludeItemTypes: 'Movie,Series', Genres: gs.join('|'), SortBy: 'Random', IsPlayed: false, Limit: 20 }))?.Items));
+    }
     add('Favorites', async () =>
       (await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 20 }))?.Items);
 
@@ -1200,12 +1564,13 @@
   const updateRequiredOpen = () => !!$('#modal-content .update-body.required') && !$('#modal').classList.contains('hidden');
   function closeModal() {
     // A required update can't be closed; the app stays locked until it's installed.
-    if (updateRequiredOpen()) return;
+    if (updateRequiredOpen() || (firstRun && !firstRun.closing)) return; // the first-time setup closes itself
     modalToken++;
     if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(false); }
     if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
     document.body.style.overflow = '';
+    $('#modal .modal-box')?.classList.remove('upd-box', 'su-box'); // the narrower, modern look of the update window and the setup
     restoreFocus('modal');
   }
 
@@ -2131,6 +2496,10 @@
   window.auroraLiveClosed = (index, stats) => {
     store.del('ef.liveReturn');
     const p = iptvPlaying;
+    // Opened from the Guide: the page has lost its focus meanwhile, so the next Down would start again from the top bar. Put it back.
+    const backToGuide = () => { const g = $('#page .tm-guide'); if (g?.__restore) g.__restore(p?.list?.[index]); };
+    setTimeout(backToGuide, 0);
+    setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) backToGuide(); }, 400);
     iptvPlaying = null;
     if (!p || index < 0) return;
     // Channels the viewer starred (or un-starred) from inside the player.
@@ -2211,9 +2580,11 @@
   // Move the bars along once a minute while Live TV tiles are on screen.
   setInterval(() => {
     if (document.hidden) return;
+    let refreshed = 0;
     $$('#page .iptv-tile[data-end]').forEach((t) => {
       const s = Number(t.dataset.start), e = Number(t.dataset.end), now = Date.now();
-      if (now >= e) { paintProgress(t, t.__ch, nowNext(t.__ch)); return; } // the programme ended: look up the next one
+      // The programme ended: ask for what's on now (a few tiles a minute, so a screenful ending at :00 doesn't hit the provider at once), then redraw.
+      if (now >= e) { if (refreshed < 6) { refreshed++; Promise.resolve(iptvNow(t.__ch)).then(() => paintTile(t)); } return; }
       const bar = $('[data-prog] span', t);
       if (bar) bar.style.width = Math.round(100 * (now - s) / (e - s)) + '%';
     });
@@ -2263,7 +2634,7 @@
       ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
-      ...src.categories,
+      ...sortByProfileCats(src.categories),
     ];
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
@@ -2311,6 +2682,20 @@
     const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); requestAnimationFrame(() => fit()); };
     let list = [], drawn = 0, groupName = '', token = 0;
     const PAGE = 30;
+    const GUIDE_LAST = 'ef.guide.last';
+    const readLast = () => { try { const v = JSON.parse(store.get(GUIDE_LAST) || 'null'); return v && Date.now() - v.t < 15 * 60000 ? v : null; } catch { return null; } };
+    const endPending = () => { const v = readLast(); if (v) store.set(GUIDE_LAST, JSON.stringify({ ...v, pending: false })); };
+    // Puts the remote back on a channel's row (drawing rows down to it first if it is further than the page that is showing).
+    const focusChannel = (id) => {
+      const at = list.findIndex((c) => c.id === id);
+      if (at < 0) return false;
+      while (drawn <= at && drawn < list.length) drawMore();
+      const el = $$('.guide-row', rows).find((r) => r.__guide.ch.id === id);
+      if (!el) return false;
+      focusEl($('.guide-prog.now', el) || $('.guide-prog, .guide-empty', el) || $('.guide-ch', el));
+      return true;
+    };
+    root.__restore = (ended) => { const last = readLast(); const ok = focusChannel(ended?.id || last?.id); endPending(); return ok; };
 
     // ----- Details panel -----
     const info = {
@@ -2349,6 +2734,8 @@
     root.addEventListener('focusin', (e) => {
       const el = e.target.closest('.guide-row');
       if (!el) return;
+      // Close to the last drawn row: draw the next page now, so holding Down never runs out of rows to land on.
+      if (el.__guide.idx >= drawn - 6 && drawn < list.length) drawMore();
       showInfo(el.__guide.ch, e.target.__prog || nowOf(el));
       markSelection(el, e.target.__prog);
     });
@@ -2465,8 +2852,9 @@
           <span class="guide-ch-name">${esc(ch.name)}</span>
         </button>
         <div class="guide-progs" style="width:${width}px"></div>`;
-      const play = () => playIptv(list, idx, groupName);
-      el.__guide = { ch, play };
+      // Remember the place, so coming back from the player (or the app being reloaded meanwhile) lands on this channel again.
+      const play = () => { store.set(GUIDE_LAST, JSON.stringify({ group: current, id: ch.id, name: ch.name, t: Date.now(), pending: true })); playIptv(list, idx, groupName); };
+      el.__guide = { ch, play, idx };
       el.classList.toggle('is-fav', isIptvFav(ch));
       const chBtn = $('.guide-ch', el);
       chBtn.addEventListener('click', play);
@@ -2553,7 +2941,9 @@
     }
     await openCat(current);
     tick();
-    if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
+    const lastSeen = readLast();
+    if (lastSeen?.pending && lastSeen.group === current && focusChannel(lastSeen.id)) endPending();
+    else if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
   }
 
   function showIptvProgram(p, ch, play) {
@@ -2577,7 +2967,7 @@
 
   function renderIptvLive(page, tab, isCurrent) {
     store.set('ef.iptv.used', String(Date.now()));
-    const tabs = [['channels', 'Channels'], ['guide', 'Guide']];
+    const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ['sports', 'Sports']];
     if (!tabs.some(([id]) => id === tab)) tab = 'channels';
     page.innerHTML = `
       <div class="page-pad live-page iptv-page${tab === 'guide' ? ' guide-tab' : ''}">
@@ -2590,9 +2980,311 @@
       </div>`;
     const body = $('[data-live-body]', page);
     if (tab === 'guide') { renderIptvGuide(body, isCurrent); return; }
+    if (tab === 'sports') { renderIptvSports(body, isCurrent); return; }
     renderIptvChannels(page, body, isCurrent);
     // Logos and what's on fill in when the guide arrives.
     loadIptvGuide().then(() => { if (isCurrent()) repaintTiles(); }).catch(() => {});
+  }
+
+  // ----- Sports (Live TV → Sports) -----
+  // What's on now and what starts soon. Two sources are merged:
+  //  - the channel guide (version 1): games found in the listings of sport-named categories, with the channels carrying them;
+  //  - the scores feed in Aurora Guard (version 2): live scores and the day's schedule for the big leagues, matched to channels by team
+  //    name (after the admin's name aliases) and, failing that, by the TV network named in the feed.
+  // Customers can pick favourite teams and leagues (first-time setup or Settings), hide scores (spoiler-free), and ask for a
+  // reminder before a game (a notification from the Android app; a toast while Aurora is open).
+  const SPORT_CATS = /sport|nfl|nba|mlb|nhl|nascar|soccer|football|futbol|ufc|mma|fight|wwe|boxing|golf|tennis|racing|f1\b|formula|espn|dazn|bein|premier|liga|olympic|ppv|rugby|cricket|hockey|baseball|basketball/i;
+  const SPORT_LEAGUES = [
+    ['NFL', /\bnfl\b|redzone|sunday night football|monday night football|thursday night football/i],
+    ['NBA', /\bnba\b|\bwnba\b/i],
+    ['MLB', /\bmlb\b|baseball/i],
+    ['NHL', /\bnhl\b|hockey/i],
+    ['Soccer', /soccer|premier league|la ?liga|serie a|bundesliga|ligue 1|\bmls\b|champions league|europa league|fifa|uefa|copa |futbol|liga mx/i],
+    ['College', /ncaa|college|\bcfb\b|march madness|big ten|big 12|\bsec\b|\bacc\b/i],
+    ['UFC & Fights', /ufc|\bmma\b|boxing|wwe|bellator|fight night|\bpfl\b/i],
+    ['Racing', /formula|\bf1\b|nascar|indycar|grand prix|motogp|racing/i],
+    ['Golf', /golf|\bpga\b|masters|lpga/i],
+    ['Tennis', /tennis|\batp\b|\bwta\b|wimbledon|roland garros|us open/i],
+  ];
+  const SPORT_GROUPS = ['NFL', 'NBA', 'MLB', 'NHL', 'Soccer', 'College', 'UFC & Fights', 'Racing'];
+  // Games with only team names in the title ("Warriors vs Lakers"): the common nicknames of the big US leagues.
+  const SPORT_TEAMS = [
+    ['NFL', /\b(eagles|commanders|cowboys|giants|jets|patriots|bills|dolphins|ravens|steelers|browns|bengals|texans|colts|jaguars|titans|chiefs|raiders|chargers|broncos|packers|bears|lions|vikings|falcons|panthers|saints|buccaneers|cardinals|rams|49ers|seahawks)\b/i],
+    ['NBA', /\b(lakers|warriors|celtics|knicks|nets|bulls|heat|bucks|suns|mavericks|spurs|rockets|clippers|nuggets|thunder|76ers|sixers|raptors|hawks|hornets|cavaliers|cavs|pistons|pacers|magic|wizards|jazz|kings|grizzlies|pelicans|timberwolves|trail blazers|blazers)\b/i],
+    ['MLB', /\b(yankees|red sox|dodgers|cubs|mets|braves|astros|phillies|padres|blue jays|orioles|rays|guardians|tigers|royals|twins|white sox|angels|athletics|mariners|rangers|diamondbacks|rockies|brewers|reds|pirates|marlins|nationals)\b/i],
+    ['NHL', /\b(bruins|canadiens|maple leafs|penguins|capitals|flyers|blackhawks|red wings|lightning|oilers|flames|canucks|avalanche|golden knights|kraken|predators|islanders|devils|sabres|senators|hurricanes|blue jackets|wild|blues|ducks|sharks|coyotes)\b/i],
+  ];
+  const sportLeague = (title, cat) => (SPORT_LEAGUES.find(([, re]) => re.test(title)) || SPORT_LEAGUES.find(([, re]) => re.test(cat))
+    || SPORT_TEAMS.find(([, re]) => re.test(title)) || ['Other'])[0];
+  const SPORT_NOT_GAME = /\b(replay|rerun|re-air|classic|highlights?|recap|encore|best of|top \d+|talk|analysis|preview|postgame|pre-?game|countdown|sportscenter|first take|pardon the|around the horn|show)\b/i;
+  const SPORT_GAME = /(\bvs\.?\s|\bv\.?\s|\bat\s|@|\bversus\b)|\b(live|game|match|fight|grand prix|final|playoffs?|semi-?final|quarter-?final|round of|week \d+|race|open|cup|bowl|series|tournament|derby)\b/i;
+  const looksLikeGame = (title) => !!title && (/\blive\b/i.test(title) || (!SPORT_NOT_GAME.test(title) && SPORT_GAME.test(title)));
+  const sportTeams = (title) => {
+    const t = title.replace(/^[^:]{2,28}:\s*/, '').replace(/\s*\(.*?\)\s*$/, ''), m = t.split(/\s+(?:vs\.?|v\.?|at|@|versus)\s+/i);
+    return m.length === 2 && m[0].length < 40 && m[1].length < 40 ? m : null;
+  };
+  const SPORT_HOURS = { NFL: 3.5, NBA: 2.6, MLB: 3.2, NHL: 2.7, Soccer: 2, College: 3.4, 'UFC & Fights': 5, Racing: 3 };
+  const clockTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const untilText = (ms) => { const m = Math.max(0, Math.round((ms - Date.now()) / 60000)); return m < 1 ? 'starting now' : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + ' min' : ''}`; };
+  // Words are compared without accents, punctuation or case; the admin's aliases ("Man City" = "Manchester City") are applied first.
+  const sportNorm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const sportAlias = (txt, aliases) => {
+    let t = ' ' + sportNorm(txt) + ' ';
+    for (const a of aliases) { const f = sportNorm(a.from), to = sportNorm(a.to); if (f && f !== to) t = t.split(' ' + f + ' ').join(' ' + to + ' '); }
+    return t.trim();
+  };
+  const sports = { loading: null, at: 0 };
+
+  // ---- Customer's sports settings: spoiler-free and reminders (kept on the account as "aurora-sports") ----
+  const SPORTS_PREFS = 'aurora-sports', REMIND_LEAD = 10 * 60000;
+  let sportsPrefs = { spoilerFree: false, reminders: [] };
+  const sportsPrefsKey = () => 'ef.sportsprefs.' + state.userId;
+  function loadSportsPrefsLocal() { try { sportsPrefs = { spoilerFree: false, reminders: [], ...(JSON.parse(store.get(sportsPrefsKey()) || 'null') || {}) }; } catch { sportsPrefs = { spoilerFree: false, reminders: [] }; } }
+  function saveSportsPrefs() {
+    store.set(sportsPrefsKey(), JSON.stringify(sportsPrefs));
+    writeAuroraPref(SPORTS_PREFS, state.userId, sportsPrefs).catch((e) => appLog.add('warn', 'Sports settings not saved to the server: ' + e.message));
+  }
+  async function refreshSportsPrefs() {
+    try {
+      const p = await readAuroraPref(SPORTS_PREFS);
+      if (p) { sportsPrefs = { spoilerFree: false, reminders: [], ...p }; store.set(sportsPrefsKey(), JSON.stringify(sportsPrefs)); }
+    } catch { /* keep this device's copy */ }
+    syncReminderAlarms();
+  }
+  // Hands the Android app every reminder still to come (it schedules a notification for each; asking again is harmless).
+  function syncReminderAlarms() {
+    const now = Date.now();
+    sportsPrefs.reminders = (sportsPrefs.reminders || []).filter((r) => r.start > now - 3600000);
+    if (!nativeApp?.scheduleReminder) return;
+    for (const r of sportsPrefs.reminders) if (r.start - REMIND_LEAD > now) { try { nativeApp.scheduleReminder(r.id, r.title, reminderText(r), r.start - REMIND_LEAD); } catch { /* not the Android app */ } }
+  }
+  const reminderText = (r) => `${clockTime(r.start)}${r.chan ? ' · ' + r.chan : ''}. Tap to open Aurora.`;
+  const hasReminder = (id) => (sportsPrefs.reminders || []).some((r) => r.id === id);
+  function toggleReminder(card) {
+    const id = card.key;
+    if (hasReminder(id)) {
+      sportsPrefs.reminders = sportsPrefs.reminders.filter((r) => r.id !== id);
+      try { nativeApp?.cancelReminder?.(id); } catch { /* ignore */ }
+      saveSportsPrefs();
+      toast('Reminder removed', 1800);
+      return false;
+    }
+    const r = { id, title: card.title, start: card.start, chan: card.chans[0]?.name || '', league: card.league };
+    sportsPrefs.reminders = [...(sportsPrefs.reminders || []), r].slice(-40);
+    saveSportsPrefs();
+    if (nativeApp?.scheduleReminder) {
+      let allowed = true;
+      try { allowed = nativeApp.canNotify ? nativeApp.canNotify() : true; } catch { /* assume yes */ }
+      if (!allowed) { try { nativeApp.requestNotifyPermission?.(); } catch { /* ignore */ } toast('Allow notifications so Aurora can remind you', 4000); }
+      else toast(`We'll remind you 10 minutes before ${card.title}`, 3000);
+      syncReminderAlarms();
+    } else toast("Reminder saved. You'll see it here while Aurora is open. Notifications need the Aurora app.", 4500);
+    return true;
+  }
+  // While Aurora is open: a toast when a reminded game is about to start (the Android notification covers the closed app).
+  const firedReminders = new Set();
+  setInterval(() => {
+    if (document.hidden || !state.userId) return;
+    const now = Date.now();
+    for (const r of sportsPrefs.reminders || []) {
+      if (firedReminders.has(r.id) || now < r.start - REMIND_LEAD || now > r.start + 20 * 60000) continue;
+      firedReminders.add(r.id);
+      toast(`${r.title} starts ${untilText(r.start)}${r.chan ? ' on ' + r.chan : ''}. Live TV → Sports.`, 8000);
+    }
+  }, 30000);
+  // The Android app opens Aurora from a reminder notification at a given page.
+  window.auroraOpenHash = (h) => { if (typeof h === 'string' && /^#\/[\w?=&/%-]*$/.test(h) && state.userId) location.hash = h; };
+  window.auroraTakeLaunch = () => takeLaunchHash();
+  function takeLaunchHash() { try { const h = nativeApp?.takeLaunchHash?.(); if (h) window.auroraOpenHash(h); } catch { /* not the Android app */ } }
+
+  // ---- Finding the games ----
+  // Sports channels, their guide listings, the score feed and the aliases, all loaded once and kept for ten minutes.
+  async function sportsLoad() {
+    const src = await iptvSource();
+    const cats = src.categories.filter((c) => SPORT_CATS.test(c.name)).slice(0, 24);
+    const seen = new Set(), channels = [];
+    const queue = cats.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const c = queue.shift();
+        let list = [];
+        try { list = await iptvChannels(c.id); } catch { continue; }
+        for (const ch of list) { const k = ch.id || ch.name; if (!seen.has(k) && channels.length < 800) { seen.add(k); channels.push({ ch, cat: c.name }); } }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    const [guide, feed, al] = await Promise.all([
+      loadIptvGuide().catch(() => null),
+      guardEnabled ? guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null) : null,
+      guardEnabled ? guard('/sports/aliases', { params: { userId: state.userId }, quick: true }).catch(() => null) : null,
+    ]);
+    const events = []; // {ch, cat, title, start, end}
+    if (guide) {
+      guidePrefetch(channels.map((x) => x.ch), guide);
+      const to = Date.now() + 14 * 3600000;
+      for (const { ch, cat } of channels) {
+        for (const pr of guideFor(ch, guide)?.progs || []) {
+          if (pr.end > Date.now() - 3 * 3600000 && pr.start < to) events.push({ ch, cat, title: pr.title || '', start: pr.start, end: pr.end });
+        }
+      }
+    } else if (iptv.config?.type === 'xtream') {
+      // No full guide (a browser, or the provider has none): the provider's short listing says what's on now, for the first few channels.
+      const queue2 = channels.slice(0, 150);
+      const w2 = async () => { while (queue2.length) { const { ch, cat } = queue2.shift(); const n = await iptvNow(ch).catch(() => null); if (n?.title) events.push({ ch, cat, title: n.title, start: n.start || Date.now() - 600000, end: n.end || Date.now() + 1800000 }); } };
+      await Promise.all([0, 1, 2, 3, 4, 5].map(w2));
+    }
+    return { channels: channels.map((x) => x.ch), events, feed: feed && feed.enabled ? feed : null, aliases: al?.aliases || [], cats: cats.length, guide: !!guide };
+  }
+
+  // Turns the guide events and the feed's games into cards (each a game, with its channels).
+  function sportsCards(S) {
+    const aliases = S.aliases, now = Date.now(), cards = [];
+    const hd = (ch) => (/\b(hd|fhd|4k|uhd)\b/i.test(ch.name) ? 0 : 1);
+    const used = new Set();
+    const evNorm = S.events.map((e) => ' ' + sportAlias(e.title, aliases) + ' ');
+    const tokens = (t) => {
+      const out = new Set();
+      for (const v of [t.name, t.short]) { const n = sportAlias(v, aliases); if (n.length >= 3) out.add(n); }
+      const last = sportAlias(t.name, aliases).split(' ').pop();
+      if (last && last.length >= 4) out.add(last);
+      return [...out];
+    };
+    const has = (txt, toks) => toks.some((k) => txt.includes(' ' + k + ' '));
+    const chans = (list) => { const seen = new Set(); return list.filter((c) => { const k = (c.id || '') + '|' + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => hd(a) - hd(b)); };
+    // 1) the feed's games
+    for (const g of S.feed?.games || []) {
+      if (g.state === 'post' && g.start < now - 6 * 3600000) continue;
+      let found = [];
+      if (g.home && g.away) {
+        const ht = tokens(g.home), at = tokens(g.away);
+        S.events.forEach((e, i) => { if (Math.abs(e.start - g.start) < 3 * 3600000 && has(evNorm[i], ht) && has(evNorm[i], at)) { found.push(e.ch); used.add(i); } });
+      } else {
+        // An event with no two sides (a fight card, a race): the guide title and the event's name contain one another.
+        const nm = sportAlias(g.name, aliases);
+        if (nm.length >= 6) S.events.forEach((e, i) => { const et = evNorm[i].trim(); if (Math.abs(e.start - g.start) < 4 * 3600000 && (et.includes(nm) || nm.includes(et))) { found.push(e.ch); used.add(i); } });
+      }
+      let likely = false;
+      if (!found.length && g.broadcasts?.length && g.state !== 'post') {
+        for (const net of g.broadcasts) {
+          const n = sportNorm(sportAlias(net, aliases)).replace(/ /g, '');
+          if (n.length < 3) continue;
+          for (const ch of S.channels) if (sportNorm(ch.name).replace(/ /g, '').includes(n) && found.length < 3) found.push(ch);
+          if (found.length) { likely = true; break; }
+        }
+      }
+      const hours = SPORT_HOURS[g.group] || 3;
+      cards.push({ key: g.id, feed: g, kind: 'feed', league: g.group, leagueName: g.leagueName, title: g.home && g.away ? `${g.away.short || g.away.name} at ${g.home.short || g.home.name}` : g.name,
+        start: g.start, end: g.state === 'in' ? Math.max(now + 600000, g.start + hours * 3600000) : g.start + hours * 3600000,
+        state: g.state, chans: chans(found), likely, teams: [g.home, g.away].filter(Boolean).map((t) => ({ lg: g.league, id: t.id, name: t.name })) });
+    }
+    // 2) guide events the feed didn't explain (other leagues, events, or no feed): grouped across channels
+    const groups = new Map();
+    S.events.forEach((e, i) => {
+      if (used.has(i) || !looksLikeGame(e.title)) return;
+      const key = e.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + '|' + Math.round(e.start / 900000);
+      const g = groups.get(key) || { key: 'g:' + key, kind: 'guide', title: e.title, league: sportLeague(e.title, e.cat), leagueName: sportLeague(e.title, e.cat), start: e.start, end: e.end, state: e.start <= now ? (e.end > now ? 'in' : 'post') : 'pre', chans: [], teams: [] };
+      g.chans.push(e.ch);
+      groups.set(key, g);
+    });
+    for (const g of groups.values()) { if (g.end <= now) continue; g.chans = chans(g.chans); cards.push(g); }
+    return cards.sort((a, b) => a.start - b.start);
+  }
+
+  async function renderIptvSports(body, isCurrent) {
+    body.innerHTML = '<div class="spinner"></div>';
+    let S;
+    try {
+      if (!sports.loading || Date.now() - sports.at > 5 * 60000) { sports.at = Date.now(); sports.loading = sportsLoad(); sports.loading.catch(() => { sports.loading = null; }); }
+      S = await sports.loading;
+    } catch (e) { if (isCurrent()) liveError(body, `Couldn't load the sports schedule: ${esc(e.message)}`, () => { sports.loading = null; route(); }); return; }
+    if (!isCurrent()) return;
+    if (!S.cats && !(S.feed?.games || []).length) { body.innerHTML = '<p class="empty-msg">No sports channels found. Aurora looks for categories named like Sports, NFL, NBA, Soccer or UFC.</p>'; return; }
+    const myTeams = profile?.teams || [], myLeagues = profile?.leagues || [];
+    const isMine = (c) => c.teams.some((t) => myTeams.some((m) => m.lg === t.lg && String(m.id) === String(t.id)));
+    let league = store.get('ef.sports.league') || 'All';
+    let cards = sportsCards(S);
+    const draw = () => {
+      if (!body.isConnected || !isCurrent()) return false;
+      const now = Date.now(), spoil = !!sportsPrefs.spoilerFree;
+      cards = sportsCards(S);
+      const visible = cards.filter((c) => c.state === 'post' ? c.start > now - 5 * 3600000 : c.end > now);
+      const counts = new Map();
+      for (const c of visible) counts.set(c.league, (counts.get(c.league) || 0) + 1);
+      const mineN = visible.filter(isMine).length, favN = visible.filter((c) => c.chans.some((ch) => isIptvFav(ch))).length;
+      let names = SPORT_LEAGUES.map(([n]) => n).concat('Other').filter((n) => counts.has(n));
+      names = [...names.filter((n) => myLeagues.includes(n)), ...names.filter((n) => !myLeagues.includes(n))];
+      if (league !== 'All' && league !== '__mine' && league !== '__fav' && !counts.has(league)) league = 'All';
+      if (league === '__mine' && !mineN) league = 'All';
+      if (league === '__fav' && !favN) league = 'All';
+      const shown = visible.filter((c) => league === 'All' || (league === '__mine' ? isMine(c) : league === '__fav' ? c.chans.some((ch) => isIptvFav(ch)) : c.league === league));
+      const live = shown.filter((c) => c.state === 'in'), soon = shown.filter((c) => c.state === 'pre' && c.start < now + 14 * 3600000), done = shown.filter((c) => c.state === 'post');
+      const chip = (id, label) => `<button class="chip${league === id ? ' active' : ''}" data-league="${esc(id)}">${esc(label)}</button>`;
+      const crest = (t) => `<span class="sp-crest" style="background:${t.color || '#2b3566'}">${esc((t.abbr || t.short || t.name || '?').slice(0, 3))}</span>`;
+      const side = (t, c) => `<div class="sp-row">${crest(t)}<span class="sp-tn">${esc(t.short || t.name)}</span>${c.state === 'pre' ? `<span class="sp-rec">${esc(t.record || '')}</span>` : spoil ? '<span class="sp-sc hide">–</span>' : `<span class="sp-sc${c.state === 'post' && t.winner ? ' win' : ''}">${esc(t.score || '0')}</span>`}</div>`;
+      const card = (c) => {
+        const ci = cards.indexOf(c), g = c.feed, t = !g && sportTeams(c.title), pct = Math.max(0, Math.min(100, Math.round(100 * (now - c.start) / Math.max(1, c.end - c.start))));
+        const alt = c.chans.slice(1, 4), main = c.chans[0];
+        const status = c.state === 'in' ? `<span class="sp-live">LIVE${g && !spoil && g.detail ? ' · ' + esc(g.detail) : ''}</span>` : c.state === 'post' ? '<span class="sp-when">Final</span>' : `<span class="sp-when">${esc(clockTime(c.start))} · ${esc(untilText(c.start))}</span>`;
+        const teams = g && g.home && g.away ? side(g.away, c) + side(g.home, c) : t ? `<div class="sp-team">${esc(t[0])}</div><div class="sp-team">${esc(t[1])}</div>` : `<div class="sp-title">${esc(g ? g.name : c.title)}</div>`;
+        const bell = c.state === 'pre' ? `<button class="sp-bell${hasReminder(c.key) ? ' on' : ''}" data-bell="${ci}" aria-label="Remind me" aria-pressed="${hasReminder(c.key)}">${hasReminder(c.key) ? '\u{1F514} Reminding' : '\u{1F514} Remind me'}</button>` : '';
+        return `<div class="sp-card ${c.state === 'in' ? 'is-live' : c.state === 'post' ? 'is-done' : ''}" role="button" tabindex="0" data-game="${ci}">
+          <div class="sp-top"><span class="sp-lg">${esc(g ? g.leagueName : c.league)}${isMine(c) ? ' ★' : ''}</span>${status}</div>
+          ${teams}
+          ${c.state === 'in' && !g ? `<div class="sp-prog"><span style="width:${pct}%"></span></div>` : ''}
+          <div class="sp-foot"><span class="sp-ch">${main ? `${main.num ? `<b>${esc(main.num)}</b> ` : ''}${esc(main.name)}${c.likely ? ' <i>(likely)</i>' : ''}` : '<i>No channel found</i>'}</span>${main && c.state !== 'post' ? '<span class="sp-watch">▶ Watch</span>' : ''}</div>
+          ${alt.length ? `<div class="sp-alt"><span>Also on</span>${alt.map((ch, i) => `<button class="sp-altb" data-game="${ci}" data-alt="${i + 1}">${esc(ch.name)}</button>`).join('')}</div>` : ''}
+          ${bell ? `<div class="sp-act">${bell}</div>` : ''}
+        </div>`;
+      };
+      const teamRow = (m) => {
+        const mine = visible.filter((c) => c.teams.some((t) => t.lg === m.lg && String(t.id) === String(m.id)));
+        const g = mine.find((c) => c.state === 'in') || mine.find((c) => c.state === 'pre');
+        const txt = !g ? 'No game soon' : g.state === 'in' ? (spoil || !g.feed ? 'Playing now' : `Playing now · ${g.feed.away?.abbr || ''} ${g.feed.away?.score || 0}, ${g.feed.home?.abbr || ''} ${g.feed.home?.score || 0}`) : `${new Date(g.start).toLocaleDateString([], { weekday: 'short' })} ${clockTime(g.start)}`;
+        return `<span class="sp-tm"><span class="sp-crest" style="background:#2b3566">${esc((m.abbr || m.name).slice(0, 3))}</span>${esc(m.short || m.name)} · ${esc(txt)}</span>`;
+      };
+      body.innerHTML = `<div class="sp">
+        <div class="sp-bar"><div class="chip-row sp-chips">${chip('All', 'All')}${mineN ? chip('__mine', `★ My teams · ${mineN}`) : ''}${favN ? chip('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => chip(n, `${n} · ${counts.get(n)}`)).join('')}</div>
+          ${S.feed ? `<button class="sp-spoil" role="switch" aria-checked="${spoil}" data-spoiler><span>Spoiler-free</span><i class="sp-sw${spoil ? ' on' : ''}"><b></b></i></button>` : ''}</div>
+        ${league === 'All' && myTeams.length ? `<div class="sp-teams"><span class="sp-lab">Your teams</span>${myTeams.slice(0, 8).map(teamRow).join('')}</div>` : ''}
+        ${live.length ? `<h2 class="sp-h"><span class="sp-dot"></span>Live now <small>${live.length} ${live.length === 1 ? 'game' : 'games'}</small></h2><div class="sp-grid">${live.map(card).join('')}</div>` : ''}
+        ${soon.length ? `<h2 class="sp-h">Starting soon <small>next 14 hours</small></h2><div class="sp-grid">${soon.map(card).join('')}</div>` : ''}
+        ${done.length ? `<h2 class="sp-h">Finished <small>last few hours</small></h2><div class="sp-grid">${done.map(card).join('')}</div>` : ''}
+        ${!live.length && !soon.length && !done.length ? `<p class="empty-msg">${S.guide || S.feed || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : 'Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link.'}</p>` : ''}
+        <p class="muted sp-note">${S.feed ? 'Scores come from Aurora; channels are found in your TV guide, so names and times are only as good as the guide.' : S.guide ? 'Found in your channel guide, so names and times are only as good as the guide.' : "Showing what's on now. The full schedule needs the Aurora app and a TV guide."}</p>
+      </div>`;
+      const first = $('.sp-card', body);
+      if (nav.on && first && !body.contains(document.activeElement)) focusEl(first);
+      return true;
+    };
+    const watch = (ci, altIdx = 0) => {
+      const c = cards[ci];
+      const ch = c?.chans[altIdx] || c?.chans[0];
+      if (!ch) { if (c) toast('No channel found for this game yet. Try the Guide tab.', 3500); return; }
+      const list = S.channels, at = list.findIndex((x) => x.id === ch.id && x.name === ch.name);
+      playIptv(list, at < 0 ? 0 : at, 'Sports');
+    };
+    body.addEventListener('click', (e) => {
+      const lg = e.target.closest('[data-league]');
+      if (lg) { league = lg.dataset.league; store.set('ef.sports.league', league); draw(); const b = $(`[data-league="${CSS.escape(league)}"]`, body); if (nav.on && b) focusEl(b); return; }
+      if (e.target.closest('[data-spoiler]')) { sportsPrefs.spoilerFree = !sportsPrefs.spoilerFree; saveSportsPrefs(); draw(); const b = $('[data-spoiler]', body); if (nav.on && b) focusEl(b); return; }
+      const bell = e.target.closest('[data-bell]');
+      if (bell) { const ci = Number(bell.dataset.bell); toggleReminder(cards[ci]); draw(); const b = $(`[data-bell="${ci}"]`, body); if (nav.on && b) focusEl(b); return; }
+      const alt = e.target.closest('[data-alt]');
+      if (alt) { watch(Number(alt.dataset.game), Number(alt.dataset.alt)); return; }
+      const card = e.target.closest('[data-game]');
+      if (card) watch(Number(card.dataset.game));
+    });
+    draw();
+    // Keep "live now / starting soon", scores and progress true while the page is open.
+    let tick = 0;
+    const timer = setInterval(async () => {
+      if (document.hidden || isPlayerOpen()) return;
+      if (!body.isConnected || !isCurrent()) { clearInterval(timer); return; }
+      if (++tick % 2 === 0 && guardEnabled && S.feed) { const f = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null); if (f?.enabled) S.feed = f; }
+      const focused = document.activeElement?.closest?.('[data-game]')?.dataset.game;
+      if (!draw()) { clearInterval(timer); return; }
+      if (focused != null && nav.on) { const el = $(`.sp-card[data-game="${focused}"]`, body); if (el) focusEl(el); }
+    }, 30000);
   }
 
   async function renderIptvChannels(page, body, isCurrent) {
@@ -2608,7 +3300,7 @@
       ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
-      ...src.categories,
+      ...sortByProfileCats(src.categories),
     ];
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
@@ -3952,6 +4644,11 @@
         <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>
       </section>
       <section class="settings-section">
+        <h2>Your profile <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
+        ${guardEnabled && iptvOn() ? settingRow('Sports teams and leagues', (profile?.leagues?.length || profile?.teams?.length) ? `${(profile.leagues || []).join(', ') || 'No leagues'}${profile.teams?.length ? ' · ' + profile.teams.length + ' ' + (profile.teams.length === 1 ? 'team' : 'teams') : ''}. Shown first in Live TV → Sports.` : 'Pick the leagues and teams you follow. Their games come first in Live TV → Sports.', '<button class="btn btn-gray" data-edit-sports>Change</button>') : ''}
+        ${settingRow('Avatar and name', profile?.avatar || profile?.name ? `${profile?.name ? esc(profile.name) + ' · ' : ''}Shown in the top bar and as a greeting on Home.` : 'Pick an avatar, a name and what you like.', `<span class="su-set">${profile?.avatar ? avatarSvg(profile.avatar, 40) : ''}<button class="btn btn-gray" data-redo-setup>${profile?.done ? 'Set up again' : 'Set up my profile'}</button></span>`)}
+      </section>
+      <section class="settings-section">
         <h2>Kids mode <small>This device</small></h2>
         ${settingRow('Kids mode', 'Shows only titles rated for children and closes Live TV, Requests and Settings. You need a PIN to leave it.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
         ${settingRow('Allowed ratings', 'Titles with no rating are hidden.', selectHtml('kidsLevel', Object.entries(KIDS_LEVELS).map(([k, v]) => [k, v[0]]), kidsLevel()))}
@@ -4030,6 +4727,8 @@
       }
     });
     setupFeedback(page);
+    $('[data-edit-sports]', page)?.addEventListener('click', () => showFirstRun({ redo: true, only: ['sportsLeagues', 'sportsTeams'] }));
+    $('[data-redo-setup]', page)?.addEventListener('click', () => { location.hash = '#/home'; setTimeout(() => showFirstRun({ redo: true }), 200); });
     $('[data-kids-pin]', page)?.addEventListener('click', async () => {
       if (store.get('ef.kids.pin')) { const old = await pinPad('Current PIN', 'Enter your PIN first.'); if (old == null) return; if (!kidsPinOk(old)) return toast('Wrong PIN', 2500); }
       const pin = await kidsAskNewPin();
@@ -4240,7 +4939,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -4280,7 +4979,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
@@ -4289,7 +4988,7 @@
   const ADMIN_GROUPS = [
     ['Dashboard', ['overview', 'problems', 'feedback']],
     ['Customers', ['users', 'plans', 'devices', 'usage', 'sharing']],
-    ['Live TV & Requests', ['livetv', 'requests', 'reports']],
+    ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
     ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
   function adminMenuHtml(tab) {
@@ -6038,7 +6737,7 @@
         <div class="live-result" data-result></div>
       </section>
       <section class="admin-card">
-        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 1.2.${latest}` : ''}</small></h2>
+        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 2.0.${latest}` : ''}</small></h2>
         ${codes ? '' : '<p class="muted">Couldn\'t reach GitHub to count releases.</p>'}
         <div class="admin-list">${aurora.map(row).join('') || '<p class="muted">Every device is up to date.</p>'}</div>
       </section>`;
@@ -6329,6 +7028,51 @@
     }, 15000);
   }
 
+  // ----- Admin → Sports (scores feed and name aliases; Aurora Guard 1.8.0) -----
+  async function adminSports(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Sports');
+    let st;
+    try { st = await guard('/sports/status'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Sports</h2><p class="live-result bad">${guardOldNote(e, 'sports scores')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const leagueRow = (l) => `<label class="admin-check sp-adm-lg"><input type="checkbox" data-lg="${esc(l.key)}"${l.on ? ' checked' : ''}> <strong>${esc(l.name)}</strong>
+        <span class="muted">${l.on ? (l.ok === null ? 'not asked yet' : l.ok ? `${l.games} ${l.games === 1 ? 'game' : 'games'}${l.live ? `, ${l.live} live` : ''} · ${esc(timeAgo(l.at))}` : '') : 'off'}</span>${l.on && l.ok === false ? ` <span class="pill bad">Failed: ${esc(l.error)}</span>` : ''}</label>`;
+    const aliasRow = (a = { from: '', to: '' }) => `<div class="sp-adm-alias"><input type="text" data-from maxlength="40" placeholder="Name in the guide or feed" value="${esc(a.from)}"><span>means</span><input type="text" data-to maxlength="40" placeholder="Same thing, written this way" value="${esc(a.to)}"><button class="btn btn-gray" data-rm>Remove</button></div>`;
+    body.innerHTML = `
+      <section class="admin-card"><h2>Sports scores <small>${esc(st.provider)}</small></h2>
+        <p class="muted">Live scores and schedules for the Sports tab come from ESPN's public scoreboard feed through Aurora Guard. It isn't an official, supported service: ESPN can change or stop it at any time, and the tab keeps working from the channel guide if it does. Check from the PC with <code>node aurora-guard.js --test-scores</code>.</p>
+        ${!st.configEnabled ? '<p class="live-result bad">Switched off in the guard\'s config.json ("scoresEnabled": false).</p>' : ''}
+        <label class="admin-check"><input type="checkbox" data-enabled${st.enabled ? ' checked' : ''}> Show scores in the Sports tab</label>
+        <div class="sp-adm-leagues">${st.leagues.map(leagueRow).join('')}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save-leagues>Save</button><button class="btn btn-gray" data-refresh-feed>Ask the feed again now</button></div>
+        <div class="live-result" data-sp-result></div>
+      </section>
+      <section class="admin-card"><h2>Name aliases <small>${st.aliases.length}</small></h2>
+        <p class="muted">Aurora matches a game in the score feed to the channel guide by team name. When a guide spells a name differently, tell Aurora they're the same. It also helps channel names: the feed says which TV network shows a game ("Prime Video", "NBC"), and Aurora looks for a sports channel with that name.</p>
+        <div data-aliases>${st.aliases.map(aliasRow).join('')}</div>
+        <p class="muted">Examples: <em>Man City</em> means <em>Manchester City</em> · <em>SNF</em> means <em>Sunday Night Football</em> · <em>Prime Video</em> means <em>Amazon</em></p>
+        <div class="m-actions"><button class="btn btn-gray" data-add-alias>Add an alias</button><button class="btn btn-red" data-save-aliases>Save aliases</button></div>
+        <div class="live-result" data-al-result></div>
+      </section>`;
+    const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
+    $('[data-save-leagues]', body).addEventListener('click', async () => {
+      try {
+        await guard('/sports/settings', { method: 'PUT', body: { enabled: $('[data-enabled]', body).checked, leagues: $$('[data-lg]', body).filter((c) => c.checked).map((c) => c.dataset.lg) } });
+        say('[data-sp-result]', 'Saved.', 'good'); setTimeout(() => { if (isCurrent()) adminSports(body, isCurrent); }, 1500);
+      } catch (e) { say('[data-sp-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+    $('[data-refresh-feed]', body).addEventListener('click', async () => {
+      say('[data-sp-result]', '<div class="spinner"></div> Asking the feed…');
+      try { await guard('/sports/refresh', { method: 'POST' }); if (isCurrent()) adminSports(body, isCurrent); } catch (e) { say('[data-sp-result]', "Couldn't ask: " + esc(e.message), 'bad'); }
+    });
+    const list = $('[data-aliases]', body);
+    $('[data-add-alias]', body).addEventListener('click', () => { list.insertAdjacentHTML('beforeend', aliasRow()); focusEl($$('[data-from]', list).pop()); });
+    list.addEventListener('click', (e) => { const rm = e.target.closest('[data-rm]'); if (rm) rm.closest('.sp-adm-alias').remove(); });
+    $('[data-save-aliases]', body).addEventListener('click', async () => {
+      const aliases = $$('.sp-adm-alias', list).map((r) => ({ from: $('[data-from]', r).value.trim(), to: $('[data-to]', r).value.trim() })).filter((a) => a.from && a.to);
+      try { await guard('/sports/aliases', { method: 'PUT', body: { aliases } }); say('[data-al-result]', `Saved ${aliases.length} ${aliases.length === 1 ? 'alias' : 'aliases'}. Customers get them within a few minutes.`, 'good'); sports.loading = null; } catch (e) { say('[data-al-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+  }
+
   async function adminAudit(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Audit log');
     let data;
@@ -6563,18 +7307,33 @@
   }
 
   function showUpdatePrompt(update, { required = false } = {}) {
+    if (firstRun) { firstRun.closing = true; firstRun = null; applySubtitleStyle(); } // the update comes first; the setup returns next launch
     const modal = $('#modal'), content = $('#modal-content');
     modalToken++;
     if (modal.classList.contains('hidden')) rememberFocus('modal');
     modal.classList.toggle('update-required', required);
+    // "New: …", "Fixed: …", "New in Live TV: …" become a coloured label, an optional small tag and the text.
+    const noteParts = (n) => {
+      const m = String(n).match(/^(New|Fixed|Improved|Changed)(?:\s+(?:in|for|on)\s+([^:]+))?:\s*([\s\S]*)$/i);
+      return m ? { kind: m[1].toLowerCase(), tag: m[2] || '', text: m[3].charAt(0).toUpperCase() + m[3].slice(1) } : { kind: 'info', tag: '', text: String(n) };
+    };
+    const kindLabel = { new: 'New', fixed: 'Fixed', improved: 'Improved', changed: 'Changed', info: 'Update' };
+    $('#modal .modal-box')?.classList.add('upd-box');
     content.innerHTML = `
-      <div class="m-body update-body${required ? ' required' : ''}">
-        <h2>${required ? 'Update required' : 'Update available'}</h2>
-        <p class="overview">${required
-          ? `This version of Aurora is ${update.behind} updates behind and has stopped working. Install ${esc(update.version)} to keep watching. It keeps you signed in.`
-          : `${esc(update.version)} is ready to install. It keeps you signed in.`}</p>
-        ${update.notes?.length ? `<h3 class="update-notes-title">What's new</h3>
-        <ul class="update-notes">${update.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+      <div class="m-body update-body upd${required ? ' required' : ''}">
+        <div class="upd-hero">
+          <div class="upd-orb" aria-hidden="true"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg></div>
+          <div class="upd-hd">
+            <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
+            <h2>${esc(update.version)}</h2>
+            <p>${required
+              ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
+              : 'Ready to install. You stay signed in.'}</p>
+          </div>
+        </div>
+        ${update.notes?.length ? `<div class="upd-notes-title">What's new <small>${update.notes.length} ${update.notes.length === 1 ? 'change' : 'changes'}</small></div>
+        <ul class="update-notes upd-list">${update.notes.map((n) => { const x = noteParts(n);
+          return `<li><span class="upd-kind ${x.kind}">${kindLabel[x.kind]}</span><span class="upd-text">${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
         <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
         <div class="m-actions update-actions">
           <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>
@@ -7768,7 +8527,7 @@
   // ---------- Remote control & keyboard navigation ----------
   // Arrow keys move focus to the nearest item in that direction (TV remotes send arrow keys),
   // OK/Enter activates it and Back closes the top layer.
-  const nav = { on: false, tv: false, returnFocus: {} };
+  const nav = { on: false, tv: false, returnFocus: {}, last: null };
   const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, [tabindex]';
 
   function enableNav() {
@@ -7857,7 +8616,12 @@
   function moveFocus(dir) {
     const layer = activeLayer();
     const cur = document.activeElement;
-    if (!cur || cur === document.body || !layer.contains(cur)) { focusInitial(layer); return; }
+    if (!cur || cur === document.body || !layer.contains(cur)) {
+      const back = nav.last;
+      if (back && back.isConnected && layer.contains(back) && !back.disabled && back.getBoundingClientRect().width > 1) focusEl(back);
+      else focusInitial(layer);
+      return;
+    }
     // The usual case (a row of cards on Home): go straight to the neighbour without looking at the whole page.
     const quick = quickMove(cur, dir);
     if (quick) { focusEl(quick); if (document.activeElement === quick) return; }
@@ -8027,6 +8791,7 @@
     document.addEventListener('mousedown', pointer, true);
     document.addEventListener('touchstart', pointer, { capture: true, passive: true });
     document.addEventListener('focusin', (e) => {
+      if (e.target.closest?.('#page')) nav.last = e.target; // where the remote was, if the focus is ever lost
       if (!tour && !e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
     });
     if (nativeApp?.isTv?.()) {
@@ -8054,6 +8819,7 @@
     if ($('#page .tm-guide')?.__closeGroups?.()) return true;
     if (adminMenuOpen()) { setAdminMenu(false); focusEl($('[data-admin-menu]')); return true; }
     if (updateRequiredOpen()) return false; // Back leaves the app instead
+    if (firstRun) { if (document.activeElement?.__onBack && isTextInput(document.activeElement)) { document.activeElement.__onBack(); return true; } firstRun.back(); return true; }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
     if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
     if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {
@@ -8409,7 +9175,7 @@
   // Shows the tour by itself, once per device, as soon as Home is up after sign-in.
   let tourWatching = false;
   function maybeStartTour() {
-    if (tourSeen() || tourWatching || tour || kidsOn()) return;
+    if (tourSeen() || tourWatching || tour || kidsOn() || firstRun) return;
     tourWatching = true;
     const t0 = Date.now();
     const check = () => {
@@ -8430,6 +9196,7 @@
     loadConfig();
     autoCheckForUpdate();
     document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) takeLaunchHash();
       if (!document.hidden && Date.now() - updates.lastCheck > RECHECK_AFTER) autoCheckForUpdate();
       // A TV left on the home screen for hours shows lists from when it was opened. Coming back after a long
       // time, load them again (the titles may have been removed or replaced meanwhile).
