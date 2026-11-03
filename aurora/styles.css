@@ -1522,3 +1522,33 @@ html { overflow-x: hidden; }
 .sp-note { margin-top: 1.4rem; }
 .tv .sp-grid { grid-template-columns: repeat(3, 1fr); } .tv .sp-card { padding: 1rem 1.2rem; } .tv .sp-team, .tv .sp-title { font-size: 1.25rem; } .tv .sp-meta, .tv .sp-ch, .tv .sp-watch, .tv .sp-top, .tv .sp-altb { font-size: 1rem; }
 @media (max-width: 560px) { .sp-grid { grid-template-columns: 1fr; } }
+
+/* ---- Sports: scores, my teams, spoiler-free, reminders ---- */
+.sp-bar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.sp-bar .chip-row { margin-bottom: .6rem; flex: 1 1 auto; }
+.sp-spoil { display: inline-flex; align-items: center; gap: .6rem; background: none; border: 0; color: #b9bdd8; font-size: .9rem; padding: .3rem .5rem; border-radius: 999px; margin-bottom: .6rem; }
+.sp-sw { width: 34px; height: 18px; border-radius: 999px; background: #2c3763; position: relative; display: inline-block; }
+.sp-sw b { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s; }
+.sp-sw.on { background: var(--accent); } .sp-sw.on b { left: 18px; }
+.sp-teams { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: .2rem 0 .4rem; }
+.sp-lab { color: var(--dim); font-size: .8rem; margin-right: .2rem; }
+.sp-tm { display: inline-flex; align-items: center; gap: .45rem; padding: .25rem .8rem .25rem .3rem; border-radius: 999px; background: var(--bg-2); border: 1px solid rgba(255,255,255,.1); color: #fff; font-size: .85rem; font-weight: 600; }
+.sp-crest { flex: none; width: 24px; height: 24px; border-radius: 50%; display: inline-grid; place-items: center; font-size: .6rem; font-weight: 800; color: #fff; letter-spacing: -.02em; }
+.sp-row { display: flex; align-items: center; gap: .55rem; margin: .1rem 0; }
+.sp-tn { flex: 1; min-width: 0; color: #fff; font-weight: 700; font-size: 1rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp-sc { font-weight: 800; font-size: 1.15rem; color: #fff; min-width: 1.6rem; text-align: right; } .sp-sc.win { color: #7ef0ec; } .sp-sc.hide { color: #4d5680; }
+.sp-rec { color: #8e92b0; font-size: .8rem; }
+.sp-card.is-done { opacity: .85; }
+.sp-act { display: flex; }
+.sp-bell { background: var(--bg-3); color: #cfd6f5; border: 0; border-radius: 999px; padding: .3rem .8rem; font-size: .78rem; font-weight: 600; }
+.sp-bell.on { background: rgba(42,212,208,.2); color: #7ef0ec; }
+.sp-ch i { color: #8e92b0; font-style: normal; font-size: .75rem; }
+.tv .sp-tn { font-size: 1.2rem; } .tv .sp-sc { font-size: 1.4rem; } .tv .sp-bell, .tv .sp-spoil, .tv .sp-tm { font-size: 1rem; }
+.su-teamlists { display: flex; flex-direction: column; gap: .8rem; max-height: 46vh; overflow-y: auto; padding-right: .3rem; }
+.su-tl .su-lab { display: block; color: var(--dim); font-size: .8rem; margin-bottom: .35rem; }
+.tv .su-teamlists { max-height: 44vh; }
+.sp-adm-leagues { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .3rem 1rem; margin: .8rem 0; }
+.sp-adm-lg { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.sp-adm-alias { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
+.sp-adm-alias input { flex: 1 1 160px; min-width: 0; padding: .5rem .7rem; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: var(--bg-2); color: #fff; font: inherit; }
+.sp-adm-alias span { color: var(--dim); font-size: .85rem; }

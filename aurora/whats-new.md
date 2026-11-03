@@ -1,1 +1,3 @@
-- New in Live TV: a Sports tab. See which games are on right now (with a progress bar) and what starts in the next 12 hours, with the channels carrying each one. Tap a game to watch it, pick another channel from "Also on", and filter by NFL, NBA, MLB, Soccer, UFC and more. It's found from your channel guide, so it needs a TV guide to list upcoming games.
+- New in Live TV → Sports: live scores and the day's games for the NFL, NBA, MLB, NHL, college sports, soccer, UFC and Formula 1, with the channel to watch each one on.
+- New: pick your favorite leagues and teams (in the first-time setup or Settings → Your profile). Their games get a star, come first, and have a "My teams" filter.
+- New: a Spoiler-free switch that hides scores, and "Remind me" on upcoming games for a notification 10 minutes before they start (the Android app asks to allow notifications).
