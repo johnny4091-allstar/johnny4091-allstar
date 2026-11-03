@@ -362,7 +362,6 @@
   };
   // New customers get the setup (once per account); people who already did the tour before this existed, and admins, don't (Settings has "Set up again").
   const needsSetup = () => !!state.userId && !kidsOn() && !isAdmin() && !(profile && profile.done) && !tourSeen();
-  const setupOpen = () => !!firstRun;
 
   function maybeStartSetup() {
     if (firstRun) return;
