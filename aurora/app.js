@@ -1026,6 +1026,7 @@
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
       case 'livetv': return iptvOn() ? renderIptvLive(page, params.get('tab') || 'channels', isCurrent) : renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
+      case 'status': return renderStatus(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
       case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
       default: return renderHome(page, isCurrent);
@@ -4616,6 +4617,186 @@
     draw();
   }
 
+  // ---------- Status page and "Is it just me?" ----------
+  // Settings → Status. Checks, from this device: the internet, the Aurora server and the Live TV provider; then asks Aurora
+  // Guard what everyone else is seeing (outages, channel reports, the sports feed). The answer says whether it is just
+  // this device or everybody. Nothing here changes any setting.
+  const SLOW_MS = 1500;
+  async function stTime(fn) {
+    const t0 = performance.now();
+    try { const extra = await fn(); return { ok: true, ms: Math.round(performance.now() - t0), ...(extra || {}) }; }
+    catch (e) { return { ok: false, ms: Math.round(performance.now() - t0), error: e?.message || 'failed' }; }
+  }
+  const stInternet = () => stTime(async () => {
+    if (navigator.onLine === false) throw new Error('offline');
+    await fetch('https://www.gstatic.com/generate_204', { mode: 'no-cors', cache: 'no-store', signal: timeoutSignal(7000) });
+  });
+  const stServer = () => stTime(async () => {
+    const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: timeoutSignal(8000) });
+    if (!res.ok) throw new Error(`answered ${res.status}`);
+  });
+  // An Xtream provider can be asked about the account without opening a stream; a playlist link can't be tested without downloading it.
+  const stProvider = () => (iptv.config?.type === 'xtream'
+    ? stTime(async () => { await iptvText(xtUrl(iptv.config, {}), iptv.config, 8000); })
+    : Promise.resolve({ ok: true, ms: 0, skipped: true }));
+
+  async function statusGather(ui) {
+    const live = iptvOn();
+    const names = ['Your device', 'Aurora server', ...(live ? ['Live TV provider'] : []), 'Other viewers'];
+    ui?.start(names);
+    let i = 0;
+    const step = async (fn) => { ui?.begin(i); const v = await fn(); ui?.end(i, v.text, v.level); i++; return v; };
+    const r = { live };
+    // Everything is asked at once (a dead server can take its full 8 seconds), then the steps are shown one by one.
+    const pNet = stInternet(), pServer = stServer(), pProv = live ? stProvider() : null;
+    const gp = guardEnabled ? guard('/service-status', { params: { userId: state.userId } }).catch(() => null) : Promise.resolve(null);
+    r.net = await step(async () => {
+      const t = await pNet;
+      return { ...t, level: !t.ok ? 'bad' : t.ms > SLOW_MS ? 'warn' : 'ok', text: !t.ok ? 'No internet connection' : `Online, ${t.ms} ms${t.ms > SLOW_MS ? ' (slow)' : ''}` };
+    });
+    r.server = await step(async () => {
+      const t = await pServer;
+      return { ...t, level: !t.ok ? (r.net.ok ? 'bad' : 'warn') : t.ms > SLOW_MS ? 'warn' : 'ok', text: !t.ok ? (r.net.ok ? "Didn't answer" : 'Skipped') : `Reachable, ${t.ms} ms${t.ms > SLOW_MS ? ' (slow)' : ''}` };
+    });
+    // The guard sits next to the server, so it can answer even when the server can't be reached from here.
+    if (live) {
+      r.provider = await step(async () => {
+        const t = await pProv;
+        return { ...t, level: !t.ok ? 'bad' : 'ok', text: !t.ok ? "No answer (didn't respond)" : t.skipped ? 'Not tested directly (playlist link)' : 'Responding' };
+      });
+    }
+    r.g = await gp;
+    r.others = await step(async () => {
+      const g = r.g;
+      if (!g) return { level: 'na', text: guardEnabled ? 'Not available right now' : 'Not available' };
+      if (g.server && !g.server.online) return { level: 'bad', text: "Aurora's own check says the server is offline" };
+      if (live && g.live?.state === 'bad') return { level: 'bad', text: `${g.live.reporters} others reported Live TV problems` };
+      if (live && g.live?.channels?.length) { const c = g.live.channels[0]; return { level: 'warn', text: `${c.reports} others reported ${c.name}` }; }
+      return { level: 'ok', text: 'No problems reported' };
+    });
+    r.verdict = statusVerdict(r);
+    return r;
+  }
+
+  function statusVerdict(r) {
+    const g = r.g, live = g?.live;
+    if (!r.net.ok) return { level: 'warn', title: 'It looks like just you', text: "This device has no internet connection. Check Wi-Fi or mobile data, then check again.", actions: ['again'] };
+    if (!r.server.ok) {
+      if (g?.server?.online) return { level: 'warn', title: 'It looks like just you', text: "Aurora is running, but this device can't reach it. Try switching between Wi-Fi and mobile data.", actions: ['again'] };
+      return { level: 'bad', title: 'Not just you: Aurora is offline', text: 'Nothing is wrong with your internet or your device. The server is not answering.', actions: ['notify', 'again'] };
+    }
+    if (g && g.server && !g.server.online) return { level: 'bad', title: 'Not just you: Aurora is offline', text: 'The server stopped answering a moment ago. It should be back soon.', actions: ['notify', 'again'] };
+    if (r.provider && !r.provider.ok) {
+      if (live && live.state !== 'ok') return { level: 'bad', title: 'Not just you: Live TV is down for everyone', text: `Movies and shows still work.${live.reporters ? ` ${live.reporters} other ${live.reporters === 1 ? 'viewer has' : 'viewers have'} reported it.` : ''}`, actions: ['watch', 'notify', 'again'], others: live.reporters };
+      return { level: 'bad', title: "Live TV isn't answering", text: "Movies and shows still work. No one else has reported it yet, so it may be your connection to the provider. Try again in a minute.", actions: ['watch', 'notify', 'again'] };
+    }
+    if (live && live.state === 'bad') return { level: 'warn', title: 'Not just you: Live TV is having problems', text: 'Several channels are failing for other viewers too. Movies and shows still work.', actions: ['watch', 'notify', 'again'], others: live.reporters };
+    if (live && live.channels.length) { const c = live.channels[0]; return { level: 'warn', title: `Not just you: ${c.name} has problems`, text: 'Other channels work. Try another channel, or the same game on a different one.', actions: ['notify', 'again'], others: c.reports }; }
+    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or lower the video quality in Settings.', actions: ['again'] };
+    return { level: 'ok', title: 'Everything looks fine from here', text: "If something still won't play, try a different title or restart Aurora.", actions: ['again'] };
+  }
+
+  let statusWatchTimer = null;
+  function startStatusWatch() {
+    clearInterval(statusWatchTimer);
+    let left = 60;
+    statusWatchTimer = setInterval(async () => {
+      if (--left < 0) { clearInterval(statusWatchTimer); return; }
+      if (document.hidden) return;
+      try {
+        const r = await statusGather();
+        if (r.verdict.level === 'ok') { clearInterval(statusWatchTimer); toast("Aurora is working again.", 6000); }
+      } catch { /* try again next minute */ }
+    }, 60000);
+    toast("OK. If Aurora is still open, a message will appear when it's working again.", 5000);
+  }
+
+  async function renderStatus(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad status-page">
+      <div class="page-head"><h1>Status</h1></div>
+      <div class="st-banner" data-st-banner role="status"><span class="st-dot"></span><div><b data-st-title>Checking…</b><small data-st-sub></small></div></div>
+      <div class="st-note hidden" data-st-note></div>
+      <div class="st-grid">
+        <div>
+          <section class="settings-section"><h2>Services</h2><div data-st-svcs><div class="spinner"></div></div><div data-st-hours></div></section>
+          <section class="settings-section hidden" data-st-recent-sec><h2>Recent</h2><div data-st-recent></div></section>
+        </div>
+        <div>
+          <section class="settings-section"><h2>Is it just me?</h2>
+            <p class="setting-desc">Something not loading or buffering? Aurora checks this device, the server, the Live TV provider and what other viewers are seeing.</p>
+            <button class="btn btn-white" data-st-run>Check now</button>
+            <div class="st-steps" data-st-steps></div><div data-st-verdict></div>
+          </section>
+        </div>
+      </div></div>`;
+    const q = (sel) => $(sel, page);
+    const pill = (level, text) => `<span class="st-pill ${level}">${esc(text)}</span>`;
+    const paint = (r) => {
+      const v = r.verdict, g = r.g;
+      const b = q('[data-st-banner]');
+      b.className = 'st-banner ' + v.level;
+      q('[data-st-title]').textContent = v.level === 'ok' ? 'Everything is running' : v.title;
+      q('[data-st-sub]').textContent = `Checked ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      const note = q('[data-st-note]');
+      if (g?.note?.text) { note.textContent = g.note.text; note.classList.remove('hidden'); } else note.classList.add('hidden');
+      const rows = [
+        ['📡', 'Your connection', r.net.ok ? `${r.net.ms} ms` : 'No internet', r.net.level, r.net.level === 'ok' ? 'Good' : r.net.level === 'warn' ? 'Slow' : 'Offline'],
+        ['🎬', 'Aurora server', r.server.ok ? `Movies and shows · ${r.server.ms} ms` : "Didn't answer", r.server.level === 'bad' && g?.server?.online ? 'warn' : r.server.level, r.server.ok ? (r.server.level === 'warn' ? 'Slow' : 'Online') : (g?.server?.online ? 'Unreachable' : 'Down')],
+      ];
+      if (r.live) {
+        const ls = r.provider.ok ? (g?.live?.state === 'bad' ? 'bad' : g?.live?.state === 'warn' ? 'warn' : 'ok') : 'bad';
+        rows.push(['📺', 'Live TV provider', !r.provider.ok ? "Didn't answer" : g?.live?.state === 'bad' ? 'Several channels failing' : g?.live?.channels?.length ? `${g.live.channels[0].name} has problems` : r.provider.skipped ? 'Playlist link' : 'Responding', ls, ls === 'ok' ? 'Online' : ls === 'warn' ? 'Partial' : 'Down']);
+      }
+      if (g?.scores?.enabled && g.scores.state !== 'na') rows.push(['🏈', 'Sports scores', g.scores.ageSeconds != null ? `Updated ${g.scores.ageSeconds < 60 ? g.scores.ageSeconds + ' s' : Math.round(g.scores.ageSeconds / 60) + ' min'} ago` : '', g.scores.state === 'ok' ? 'ok' : 'warn', g.scores.state === 'ok' ? 'Online' : 'Unavailable']);
+      q('[data-st-svcs]').innerHTML = rows.map(([ic, nm, sub, lv, label]) => `<div class="st-svc"><span class="st-ic">${ic}</span><div class="st-nm"><b>${esc(nm)}</b><small>${esc(sub)}</small></div>${pill(lv, label)}</div>`).join('');
+      q('[data-st-hours]').innerHTML = g?.hours ? `<div class="st-hours-label">Aurora server, last 24 hours</div><div class="st-bars">${g.hours.map((h) => `<i class="${h || 'none'}"></i>`).join('')}</div><div class="st-legend"><span>24 h ago</span><span>now</span></div>` : '';
+      const inc = g?.incidents || [];
+      q('[data-st-recent-sec]').classList.toggle('hidden', !inc.length);
+      q('[data-st-recent]').innerHTML = inc.map((x) => `<div class="st-inc"><b>${esc(x.title)}</b><small>${x.end ? `Resolved ${esc(timeAgo(x.end))}` : 'Ongoing'} · started ${esc(timeAgo(x.start))}</small></div>`).join('');
+    };
+    const paintVerdict = (r) => {
+      const v = r.verdict;
+      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead' };
+      q('[data-st-verdict]').innerHTML = `<div class="st-verdict ${v.level}"><h3>${esc(v.title)}</h3><p>${esc(v.text)}</p>
+        ${v.others ? `<p class="st-others">${v.others} other ${v.others === 1 ? 'viewer' : 'viewers'} reported this</p>` : ''}
+        <div class="st-actions">${v.actions.map((a) => `<button class="btn btn-gray" data-st-act="${a}">${labels[a]}</button>`).join('')}</div></div>`;
+    };
+    // First look when the page opens: no step-by-step, just the picture.
+    const first = await statusGather();
+    if (!isCurrent()) return;
+    paint(first);
+    const runBtn = q('[data-st-run]');
+    const check = async () => {
+      runBtn.disabled = true; runBtn.textContent = 'Checking…';
+      q('[data-st-verdict]').innerHTML = '';
+      const steps = q('[data-st-steps]');
+      const ui = {
+        start: (names) => { steps.innerHTML = names.map((n, i) => `<div class="st-step" data-i="${i}"><span class="st-mark"></span><div><b>${esc(n)}</b><div class="st-stext"></div></div></div>`).join(''); },
+        begin: (i) => { const el = $(`[data-i="${i}"]`, steps); if (el) el.classList.add('run'); },
+        end: (i, text, level) => { const el = $(`[data-i="${i}"]`, steps); if (!el) return; el.classList.remove('run'); el.classList.add('done', level); $('.st-mark', el).textContent = level === 'ok' ? '✓' : level === 'warn' ? '!' : level === 'bad' ? '✕' : '–'; $('.st-stext', el).textContent = text; },
+      };
+      let r;
+      try { r = await statusGather(ui); } catch (e) { runBtn.disabled = false; runBtn.textContent = 'Check now'; toast("Couldn't run the check. Try again.", 4000); return; }
+      if (!isCurrent()) return;
+      paint(r); paintVerdict(r);
+      runBtn.disabled = false; runBtn.textContent = 'Check again';
+      if (nav.tv) autoFocus(runBtn);
+    };
+    runBtn.addEventListener('click', check);
+    page.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-st-act]')?.dataset.stAct;
+      if (a === 'again') check();
+      else if (a === 'notify') startStatusWatch();
+      else if (a === 'watch') location.hash = '#/movies';
+    });
+    // Look again quietly every minute while the page is open (not while a check is running).
+    const timer = setInterval(async () => {
+      if (!isCurrent() || !page.isConnected) { clearInterval(timer); return; }
+      if (document.hidden || runBtn.disabled) return;
+      try { const r = await statusGather(); if (isCurrent() && !runBtn.disabled) paint(r); } catch { /* keep what is shown */ }
+    }, 60000);
+  }
+
   async function renderSettings(page, isCurrent) {
     page.innerHTML = `<div class="page-pad settings-page"><div class="page-head"><h1>Settings</h1></div><div class="spinner"></div></div>`;
     let user = state.user;
@@ -4629,6 +4810,9 @@
       <div class="page-head"><h1>Settings</h1>
         <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
+      <section class="settings-section"><h2>Status</h2>
+        ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
+      </section>
       <section class="settings-section">
         <h2>Language &amp; subtitles <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
         ${settingRow('Audio language', 'Pick this language when a title has more than one.', selectHtml('audioLang', langs(cfg.AudioLanguagePreference), cfg.AudioLanguagePreference || ''))}
@@ -6988,12 +7172,29 @@
 
   async function adminServer(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Server health');
+    // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
+    const noteBox = document.createElement('div'), main = document.createElement('div');
+    body.append(noteBox, main);
+    (async () => {
+      let current = '';
+      try { current = (await guard('/service-status', { params: { userId: state.userId } })).note?.text || ''; } catch { return; }
+      if (!isCurrent()) return;
+      noteBox.innerHTML = `<section class="admin-card"><h2>Message on the Status page <small>Customers see it at the top of Settings → Status</small></h2>
+        <div class="admin-row"><input type="text" class="st-note-input" data-note maxlength="200" placeholder="For example: Maintenance tonight 2–3 AM" value="${esc(current)}"> <button class="btn btn-white" data-note-save>Save</button> <button class="btn btn-gray" data-note-clear>Clear</button></div>
+        <p class="muted" data-note-result></p></section>`;
+      const save = async (text) => {
+        try { await guard('/status-note', { method: 'PUT', body: { text } }); $('[data-note]', noteBox).value = text; $('[data-note-result]', noteBox).textContent = text ? 'Saved. Customers will see it now.' : 'Cleared.'; }
+        catch (e) { $('[data-note-result]', noteBox).textContent = e.status === 404 ? 'Update Aurora Guard to 1.9.0 to use this.' : e.message; }
+      };
+      $('[data-note-save]', noteBox).addEventListener('click', () => save($('[data-note]', noteBox).value.trim()));
+      $('[data-note-clear]', noteBox).addEventListener('click', () => save(''));
+    })();
     const draw = (s) => {
       const hot = (v, at) => (v != null && v >= at ? 'bad' : '');
       const disks = (s.disks || []).map((d) => d.error ? `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong><div class="muted">${esc(d.error)}</div></div></div>`
         : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> <span class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</span>
           <div class="usage-bar${d.freePct < 10 ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
-      body.innerHTML = `
+      main.innerHTML = `
         <div class="stat-grid">
           ${statTile('Processor', s.cpu == null ? '…' : s.cpu + '%', `${s.cores} cores`, hot(s.cpu, 85))}
           ${statTile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, hot(s.mem.pct, 90))}

@@ -89,6 +89,8 @@ Administrator accounts are never limited or disabled.
 | `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
 | `GET /channel-status?userId=&channel=` | The signed-in user | How many *other* people reported that channel in the last hour (a number, no names), for the "is it just me?" line in the live player (guard 1.7.0). |
 | `GET /sports/games`, `GET /sports/teams?league=`, `GET /sports/aliases` | The signed-in user | Live scores and the day's games for the Sports tab, a league's teams (for the setup), and the admin's name aliases (guard 1.8.0). |
+| `GET /service-status?userId=` | The signed-in user | The Status page (guard 1.9.0): whether the server answers, channels several other viewers reported in the last 15 minutes (counts and channel names only), the sports feed, the last 24 hours, recent outages and the admin's message. While the server is down it still answers, with the outage only. |
+| `PUT /status-note` | Emby administrators | The message shown at the top of every customer's Status page (empty clears it). |
 | `GET /sports/status`, `PUT /sports/settings`, `PUT /sports/aliases`, `POST /sports/refresh` | Emby administrators | What the scores feed is doing, which leagues are on, the aliases, and "ask the feed again now" (guard 1.8.0). |
 | `GET /usage?days=` | Emby administrators | Minutes watched per day, per account and per title (guard 1.6.0). |
 | `GET /sharing`, `DELETE /sharing/{userId}` | Emby administrators | Accounts seen on many networks or playing from two at once; clear one's history (guard 1.6.0). |

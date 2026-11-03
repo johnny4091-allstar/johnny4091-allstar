@@ -1552,3 +1552,57 @@ html { overflow-x: hidden; }
 .sp-adm-alias { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .sp-adm-alias input { flex: 1 1 160px; min-width: 0; padding: .5rem .7rem; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: var(--bg-2); color: #fff; font: inherit; }
 .sp-adm-alias span { color: var(--dim); font-size: .85rem; }
+
+/* ---------- Status page and "Is it just me?" ---------- */
+.status-page { max-width: 62rem; }
+.st-banner { display: flex; gap: .9rem; align-items: center; border-radius: 12px; padding: .9rem 1.1rem; margin-bottom: 1rem; border: 1px solid var(--line, rgba(255,255,255,.12)); background: var(--bg-2); }
+.st-banner b { display: block; font-size: 1.1rem; }
+.st-banner small { color: var(--dim); }
+.st-dot { width: .9rem; height: .9rem; border-radius: 50%; flex: none; background: var(--dim); }
+.st-banner.ok { background: rgba(47,191,113,.1); border-color: rgba(47,191,113,.4); }
+.st-banner.ok .st-dot { background: #2fbf71; box-shadow: 0 0 10px #2fbf71; }
+.st-banner.warn { background: rgba(245,184,75,.1); border-color: rgba(245,184,75,.4); }
+.st-banner.warn .st-dot { background: #f5b84b; box-shadow: 0 0 10px #f5b84b; }
+.st-banner.bad { background: rgba(239,90,95,.1); border-color: rgba(239,90,95,.4); }
+.st-banner.bad .st-dot { background: #ef5a5f; box-shadow: 0 0 10px #ef5a5f; }
+.st-note { background: rgba(108,140,255,.12); border: 1px solid rgba(108,140,255,.4); border-radius: 12px; padding: .75rem 1.1rem; margin-bottom: 1rem; overflow-wrap: anywhere; }
+.st-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 1.2rem; align-items: start; }
+@media (max-width: 760px) { .st-grid { grid-template-columns: minmax(0, 1fr); } }
+.st-svc { display: flex; align-items: center; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
+.st-svc:first-child { border-top: 0; }
+.st-ic { width: 2.1rem; height: 2.1rem; border-radius: 9px; background: rgba(255,255,255,.06); display: grid; place-items: center; flex: none; }
+.st-nm { flex: 1; min-width: 0; }
+.st-nm b { display: block; }
+.st-nm small { color: var(--dim); overflow-wrap: anywhere; }
+.st-pill { font-size: .78rem; font-weight: 700; border-radius: 99px; padding: .15rem .65rem; white-space: nowrap; background: rgba(255,255,255,.08); color: var(--dim); }
+.st-pill.ok { background: rgba(47,191,113,.18); color: #7ee2a8; }
+.st-pill.warn { background: rgba(245,184,75,.18); color: #f5b84b; }
+.st-pill.bad { background: rgba(239,90,95,.18); color: #ff8a8e; }
+.st-hours-label { color: var(--dim); font-size: .85rem; margin-top: .9rem; }
+.st-bars { display: flex; gap: 2px; margin-top: .35rem; }
+.st-bars i { flex: 1; height: 1rem; border-radius: 2px; background: #2fbf71; opacity: .85; }
+.st-bars i.warn { background: #f5b84b; } .st-bars i.bad { background: #ef5a5f; } .st-bars i.none { background: rgba(255,255,255,.12); }
+.st-legend { display: flex; justify-content: space-between; color: var(--dim); font-size: .75rem; margin-top: .25rem; }
+.st-inc { padding: .55rem 0; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
+.st-inc:first-child { border-top: 0; }
+.st-inc small { display: block; color: var(--dim); }
+.st-steps { margin-top: .9rem; }
+.st-step { display: flex; gap: .7rem; padding: .45rem 0; opacity: .45; transition: opacity .25s; }
+.st-step.run, .st-step.done { opacity: 1; }
+.st-mark { width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); flex: none; display: grid; place-items: center; font-size: .75rem; font-weight: 800; margin-top: .1rem; }
+.st-step.run .st-mark { border-color: var(--accent, #6c8cff); border-top-color: transparent; animation: st-spin .8s linear infinite; }
+.st-step.done.ok .st-mark { background: #2fbf71; border-color: #2fbf71; color: #052317; }
+.st-step.done.warn .st-mark { background: #f5b84b; border-color: #f5b84b; color: #2a1d00; }
+.st-step.done.bad .st-mark { background: #ef5a5f; border-color: #ef5a5f; color: #2a0507; }
+.st-step.done.na .st-mark { color: var(--dim); }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+.st-stext { color: var(--dim); overflow-wrap: anywhere; }
+.st-verdict { border-radius: 12px; padding: .9rem 1rem; margin-top: .7rem; border: 1px solid; }
+.st-verdict h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
+.st-verdict p { margin: 0; color: var(--dim); }
+.st-verdict .st-others { margin-top: .5rem; color: var(--text, #fff); }
+.st-verdict.ok { background: rgba(47,191,113,.1); border-color: rgba(47,191,113,.4); }
+.st-verdict.warn { background: rgba(245,184,75,.1); border-color: rgba(245,184,75,.4); }
+.st-verdict.bad { background: rgba(239,90,95,.1); border-color: rgba(239,90,95,.4); }
+.st-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+.st-note-input { flex: 1; min-width: 0; background: var(--bg, #0b0b10); color: inherit; border: 1px solid rgba(255,255,255,.2); border-radius: 8px; padding: .5rem .7rem; font: inherit; }

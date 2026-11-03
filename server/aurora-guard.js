@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -500,6 +500,37 @@ async function signOutDevice(user, device, reason) {
   log('Signed out', device.name, `(${device.client})`, 'from', user.Name, '-', reason);
 }
 
+// What the Status page shows: how many checks of the Aurora server worked in each of the last 24 hours, and a short list of
+// outages ("Aurora server not responding", started / ended). An outage starts after two failed checks in a row, so one
+// hiccup isn't reported, and ends at the next good one.
+let reachFails = 0;
+function statusHours(now) {
+  const hours = [];
+  for (let i = 23; i >= 0; i--) {
+    const b = (store.reach || {})[new Date(now - i * 3600000).toISOString().slice(0, 13)];
+    hours.push(!b ? null : b.bad === 0 ? 'ok' : b.ok === 0 ? 'bad' : 'warn');
+  }
+  return hours;
+}
+function trackReach(ok) {
+  const now = Date.now(), hour = new Date(now).toISOString().slice(0, 13);
+  const reach = store.reach || (store.reach = {});
+  const b = reach[hour] || (reach[hour] = { ok: 0, bad: 0 });
+  if (ok) b.ok++; else b.bad++;
+  usageDirtyAt = now; // saved with the usage data, at most every 5 minutes
+  for (const k of Object.keys(reach).sort().slice(0, -48)) delete reach[k];
+  const list = store.incidents || (store.incidents = []);
+  const open = list.find((x) => x.kind === 'server' && !x.end);
+  if (ok) {
+    reachFails = 0;
+    if (open) { open.end = now; usageDirtyAt = now; saveStore(); }
+  } else if (++reachFails >= 2 && !open) {
+    list.unshift({ kind: 'server', title: 'Aurora server not responding', start: now - cfg.intervalSeconds * 1000, end: 0 });
+    store.incidents = list.slice(0, 30);
+    saveStore();
+  }
+}
+
 // One pass. onlyUserId: just that account (after an admin changes it).
 async function enforce(onlyUserId) {
   let users, sessions;
@@ -508,10 +539,11 @@ async function enforce(onlyUserId) {
     sessions = await emby('GET', '/Sessions');
     if (!onlyUserId) {
       embyReach = { at: Date.now(), ok: true, error: '' }; lastSnapshot = { users, sessions };
+      try { trackReach(true); } catch (e) { log('Status tracking failed:', e.message); }
       try { samplePass(users, sessions); } catch (e) { log('Usage sampling failed:', e.message); }
     }
   } catch (e) {
-    if (!onlyUserId) embyReach = { at: Date.now(), ok: false, error: e.message };
+    if (!onlyUserId) { embyReach = { at: Date.now(), ok: false, error: e.message }; try { trackReach(false); } catch { /* status history only */ } }
     throw e;
   }
   const active = activeByUser(sessions);
@@ -618,6 +650,7 @@ function describeChange(req, url, subject) {
   }
   if (p === '/sports/settings' && m === 'PUT') return `Changed the sports scores settings (${(b.leagues || []).length} leagues${b.enabled === false ? ', switched off' : ''})`;
   if (p === '/sports/aliases' && m === 'PUT') return `Saved ${(b.aliases || []).length} sports name aliases`;
+  if (p === '/status-note' && m === 'PUT') return b.text ? `Set the Status page message: "${String(b.text).slice(0, 60)}"` : 'Cleared the Status page message';
   if (p === '/sports/refresh') return '';
   if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
   if (p === '/provider' && m === 'PUT') return 'Changed the TV provider reporting settings';
@@ -1124,6 +1157,43 @@ async function handle(req, res) {
     return send(res, 200, { others: others.size, lastMinutes: last ? Math.round((Date.now() - last) / 60000) : null, windowMinutes: 60 });
   }
 
+  // The Status page for customers: whether the server answers, what the channel reports say about Live TV, the sports feed,
+  // the last 24 hours and the recent outages, plus a message from the admin. Counts only; no names.
+  if (url.pathname === '/service-status' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    const now = Date.now(), recent = now - 15 * 60000;
+    const stale = now - embyReach.at > Math.max(180000, cfg.intervalSeconds * 3000);
+    const online = !!embyReach.at && embyReach.ok && !stale;
+    // While the server is down nobody can be signed-in-checked (that needs the server), and that is exactly when the page is
+    // needed: answer with the outage only (nothing about channels or other viewers).
+    if (!me && online) return send(res, 401, { error: 'Not signed in' });
+    if (!me) {
+      return send(res, 200, { now, server: { online: false, checkedAt: embyReach.at || null }, limited: true, hours: statusHours(now),
+        incidents: (store.incidents || []).slice(0, 5).map((x) => ({ title: x.title, start: x.start, end: x.end || null })),
+        note: store.statusNote && store.statusNote.text ? { text: store.statusNote.text, at: store.statusNote.at } : null });
+    }
+    // Live TV: channels several different people reported in the last 15 minutes. Many channels at once means the provider.
+    const per = new Map(), people = new Set();
+    for (const x of store.reports || []) {
+      if (x.at < recent || x.user === me.Name || x.reason === 'Wrong channel' || x.reason === 'Other') continue;
+      const k = String(x.channel).toLowerCase();
+      const r = per.get(k) || { name: x.channel, users: new Set() };
+      r.users.add(x.user); per.set(k, r); people.add(x.user);
+    }
+    const bad = [...per.values()].filter((r) => r.users.size >= 2).map((r) => ({ name: r.name, reports: r.users.size })).sort((a, b) => b.reports - a.reports);
+    const wide = per.size >= 3 && people.size >= 3;
+    const live = { state: wide ? 'bad' : bad.length ? 'warn' : 'ok', reporters: people.size, channels: bad.slice(0, 5) };
+    const sc = sportsCfg();
+    const leagues = sc.leagues.map((k) => sportsState.leagues[k]).filter(Boolean);
+    const okLeagues = leagues.filter((r) => r.ok);
+    const newest = Math.max(0, ...okLeagues.map((r) => r.at || 0));
+    const scores = { enabled: sc.enabled, state: !sc.enabled ? 'na' : okLeagues.length ? 'ok' : leagues.length ? 'bad' : 'na', ageSeconds: newest ? Math.round((now - newest) / 1000) : null };
+    const hours = statusHours(now);
+    const incidents = (store.incidents || []).slice(0, 5).map((x) => ({ title: x.title, start: x.start, end: x.end || null }));
+    const note = store.statusNote && store.statusNote.text ? { text: store.statusNote.text, at: store.statusNote.at } : null;
+    return send(res, 200, { now, server: { online, checkedAt: embyReach.at || null }, live, scores, hours, incidents, note });
+  }
+
   // A signed-in customer's own plan: how many devices at once, how many in use, when access ends, and the state of
   // an extension request. About themselves only; nothing about anyone else.
   if (url.pathname === '/account' && req.method === 'GET') {
@@ -1246,6 +1316,16 @@ async function handle(req, res) {
       streams: { playing: health.playing, transcoding: health.transcoding, direct: health.direct, live: connections.inUse || 0 },
       disks: diskInfo(), emby: { online: embyReach.ok, error: embyReach.error }, history,
     });
+  }
+
+  // The message at the top of every customer's Status page ("Maintenance tonight 2-3 AM"). Empty clears it.
+  if (url.pathname === '/status-note' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const text = String(body.text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    store.statusNote = text ? { text, at: Date.now() } : null;
+    saveStore();
+    return send(res, 200, { ok: true, note: store.statusNote });
   }
 
   // Sports (admin): what the feed is doing, which leagues are on, and the name aliases.
