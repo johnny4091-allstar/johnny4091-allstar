@@ -1415,3 +1415,9 @@ html { overflow-x: hidden; }
   .mobile-tabs { gap: 0; }
   .mobile-tabs a { flex: 1 1 auto; min-width: 0; text-align: center; padding: .5rem clamp(.15rem, 1.4vw, .5rem); font-size: clamp(.58rem, 2.9vw, .7rem); overflow: hidden; text-overflow: ellipsis; }
 }
+
+/* ---- Live TV tiles: how far through the programme, and what's next ---- */
+.iptv-prog { height: 3px; border-radius: 2px; background: rgba(255,255,255,.14); margin: .3rem 0 .1rem; overflow: hidden; }
+.iptv-prog[hidden], .iptv-next[hidden] { display: none; }
+.iptv-prog span { display: block; height: 100%; width: 0; border-radius: 2px; background: var(--accent, #e50914); }
+.iptv-next { opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: .72rem; }

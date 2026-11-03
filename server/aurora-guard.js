@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -954,7 +954,12 @@ async function handle(req, res) {
       at: Date.now(), channel, channelId, reason, note, user: me.Name, device: String(body.device || '').slice(0, 80),
       group: String(body.group || '').slice(0, 80), auto: !!body.auto, forwarded: 'off',
     };
-    if (provider.enabled && provider.url && provider.key) {
+    // A channel that stopped loading for one viewer (an automatic "Channel is down") isn't sent to the TV provider until a
+    // second person reports it within the hour: one bad connection must not look like a dead channel.
+    const hourAgo = Date.now() - 3600000, sameChannel = (x) => (channelId && x.channelId === channelId) || x.channel.toLowerCase() === channel.toLowerCase();
+    const held = body.auto && reason === 'Channel is down' && !(store.reports || []).some((x) => x.at > hourAgo && x.user !== me.Name && sameChannel(x));
+    if (held) entry.forwarded = 'held';
+    if (!held && provider.enabled && provider.url && provider.key) {
       const r = await sendToProvider({ channel, channelId, reason, note: note || (body.auto ? 'Reported automatically after repeated buffering' : ''), device: entry.device, user: me.Name, group: entry.group, time: new Date().toISOString() });
       entry.forwarded = r.ok ? 'sent' : 'failed';
       entry.providerStatus = r.status;
@@ -963,6 +968,21 @@ async function handle(req, res) {
     store.reports = [entry, ...(store.reports || [])].slice(0, 1000);
     saveStore();
     return send(res, 200, { ok: true });
+  }
+
+  // "Is it just me?": how many other people reported this channel in the last hour (counts only, no names).
+  if (url.pathname === '/channel-status' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const channel = String(url.searchParams.get('channel') || '').slice(0, 120).trim().toLowerCase();
+    if (!channel) return send(res, 400, { error: 'channel is needed' });
+    const since = Date.now() - 3600000, others = new Set();
+    let last = 0;
+    for (const x of store.reports || []) {
+      if (x.at < since || String(x.channel).toLowerCase() !== channel || x.user === me.Name) continue;
+      others.add(x.user); last = Math.max(last, x.at);
+    }
+    return send(res, 200, { others: others.size, lastMinutes: last ? Math.round((Date.now() - last) / 60000) : null, windowMinutes: 60 });
   }
 
   // A signed-in customer's own plan: how many devices at once, how many in use, when access ends, and the state of
