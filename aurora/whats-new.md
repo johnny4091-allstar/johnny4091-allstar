@@ -1,2 +1,4 @@
-- Fixed: on phones, some pages (the admin Overview with long file names, for one) were wider than the screen, so the whole app, top bar and tabs included, slid sideways when you touched it. Long names now wrap and the page never scrolls sideways.
-- Fixed: the bottom tab bar ran off the right edge on narrow phones when the Requests tab was showing. The six tabs now shrink to fit.
+- New in Live TV: a "Last channel" key. Press Last (or 0 on the remote) to flip back to the channel you were just watching, like a cable box.
+- New in Live TV: while you type a channel number on the remote, its name shows next to the digits, and OK jumps there at once instead of waiting.
+- New in Live TV: channel tiles and the in-player channel list show how far through the current programme it is, and what's on next.
+- New in Live TV: when a channel stops loading, Aurora tells you whether other people have reported it in the last hour, so you know if it's down at the source or just you.

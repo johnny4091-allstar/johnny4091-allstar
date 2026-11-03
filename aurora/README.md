@@ -25,6 +25,7 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
   3 episodes in a row, or 4 hours of Live TV, with no button pressed (the stream stops so it doesn't use bandwidth or a tuner)
 - Settings: audio language, subtitle language and when subtitles show (saved to the Emby account); subtitle size,
   color, edge and background, auto-play, "Are you still watching?" and streaming quality (saved on the device)
+- Live TV remote: number keys show the channel name while typing and OK jumps at once; Last (or 0) goes back to the previous channel; tiles and the player's channel list show a progress bar for the programme on now and the next one; a failing channel asks the guard whether others reported it.
 - Kids mode (Settings, per device): only titles with an allowed rating (Little kids / Kids / Teens; unrated titles are hidden), Live TV,
   Requests, Admin and Settings closed, and a 4-digit PIN (on-screen number pad, works with a remote) to leave. The rating filter is
   applied to every Emby answer in `api()` (`kidsFilter`); episodes with no rating of their own follow their show. It keeps young

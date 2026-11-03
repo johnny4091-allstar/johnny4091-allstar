@@ -87,6 +87,7 @@ Administrator accounts are never limited or disabled.
 | `POST /extension` | The signed-in customer | Asks for an extension (one waiting at a time, 4 a month). Sends an alert. |
 | `GET /extensions`, `PUT /extensions/{id}` | Emby administrators | The requests; `{action: "approve", days}` or `{action: "deny", message}`. |
 | `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
+| `GET /channel-status?userId=&channel=` | The signed-in user | How many *other* people reported that channel in the last hour (a number, no names), for the "is it just me?" line in the live player (guard 1.7.0). |
 | `GET /usage?days=` | Emby administrators | Minutes watched per day, per account and per title (guard 1.6.0). |
 | `GET /sharing`, `DELETE /sharing/{userId}` | Emby administrators | Accounts seen on many networks or playing from two at once; clear one's history (guard 1.6.0). |
 | `GET /server` | Emby administrators | Processor, memory, free disk space, streams now, and the last 24 hours (guard 1.6.0). |
@@ -111,6 +112,14 @@ Emby administrators can read them. They appear in Aurora's Admin menu as **Usage
   when one has less than `diskAlertPercent` free (default 10). Free space needs Node 18.15 or newer.
 - **Audit log:** each change made through the admin endpoints is written with the admin's name (sent by the app) and the time;
   the last 500 are kept.
+
+## Live TV: "is it just me?" (guard 1.7.0)
+
+When a channel stops loading, the Aurora player tells the guard (an automatic "Channel is down" report, once per channel; not
+when the provider is only refusing extra connections) and asks how many other people reported it in the last hour. It shows
+the answer under the message. So that one bad connection doesn't look like a dead channel, an automatic "Channel is down"
+report is **not** passed to the TV provider until a second person reports the same channel within the hour (it shows as
+"waiting for a second person" in Admin → Channel reports).
 
 ## Subscription plans (guard 1.5.0)
 

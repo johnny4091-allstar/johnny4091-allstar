@@ -1743,6 +1743,14 @@
     return v;
   }
   const iptvNowCached = (ch) => guideNow(ch)?.title || iptv.epg.get(ch.streamId)?.v?.title || '';
+  // What's on and what's next for a channel, from the guide if it's loaded (or the provider's short listing): {title, start, end, next}.
+  function nowNext(ch, at = Date.now()) {
+    const progs = guideFor(ch)?.progs || [];
+    const i = progs.findIndex((p) => p.start <= at && p.end > at);
+    if (i >= 0) return { title: progs[i].title, start: progs[i].start, end: progs[i].end, next: progs[i + 1]?.title || '' };
+    const v = iptv.epg.get(ch.streamId)?.v;
+    return v?.title ? { title: v.title, start: v.start || 0, end: v.end || 0, next: '' } : null;
+  }
 
   // The next few programmes for one Xtream channel, used by the Guide while the full guide is still loading.
   // A few at a time, kept for 10 minutes.
@@ -1934,6 +1942,7 @@
     if (!list[index]) return;
     whenAllowed(() => startIptv(list, index, groupName));
   }
+  const nowNextFields = (c) => { const n = nowNext(c); return n ? { nowStart: n.start || 0, nowEnd: n.end || 0, next: n.next || '' } : {}; };
   function startIptv(list, index, groupName) {
     const ch = list[index];
     if (!ch) return;
@@ -1950,12 +1959,12 @@
     iptvPlaying = { list: slice, offset: from, group: groupName };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
-      ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c), fav: isIptvFav(c) }
+      ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c), ...nowNextFields(c), fav: isIptvFav(c) }
       : { name: c.name, url: c.url, logo: c.logo || '', num: c.num, now: '', fav: isIptvFav(c) }))),
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
-        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), guardUrl: guardEnabled ? guardUrl : undefined, buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
   }
   // ----- Favorites -----
   // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
@@ -2159,7 +2168,7 @@
     tile.innerHTML = `
       <div class="iptv-logo"><span class="iptv-fallback">${esc(ch.name)}</span></div>
       <button class="fav-btn" tabindex="-1" aria-label="Favorite"></button>
-      <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now></div></div>`;
+      <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now></div><div class="iptv-prog" data-prog hidden><span></span></div><div class="sub iptv-next" data-next hidden></div></div>`;
     paintTile(tile);
     const on = isIptvFav(ch), star = $('.fav-btn', tile);
     tile.classList.toggle('is-fav', on);
@@ -2178,6 +2187,7 @@
     const ch = tile.__ch;
     const now = iptvNowCached(ch);
     $('[data-now]', tile).textContent = [ch.num, now].filter(Boolean).join(' · ');
+    paintProgress(tile, ch);
     const logo = channelLogo(ch);
     if (logo && !$('img', tile)) {
       const img = document.createElement('img');
@@ -2187,6 +2197,27 @@
       setLogo(img, logo, (ok) => { if (ok) tile.classList.add('has-logo'); else img.remove(); });
     }
   }
+  // The thin "how far through the programme" bar and the next programme's title under a channel tile.
+  function paintProgress(tile, ch, now = nowNext(ch)) {
+    const bar = $('[data-prog]', tile), next = $('[data-next]', tile);
+    if (!bar) return;
+    const ok = !!(now && now.end > now.start && Date.now() >= now.start && Date.now() < now.end);
+    bar.hidden = !ok;
+    if (ok) { tile.dataset.start = now.start; tile.dataset.end = now.end; $('span', bar).style.width = Math.round(100 * (Date.now() - now.start) / (now.end - now.start)) + '%'; }
+    else { delete tile.dataset.start; delete tile.dataset.end; }
+    next.hidden = !(ok && now.next);
+    next.textContent = now?.next ? 'Next: ' + now.next : '';
+  }
+  // Move the bars along once a minute while Live TV tiles are on screen.
+  setInterval(() => {
+    if (document.hidden) return;
+    $$('#page .iptv-tile[data-end]').forEach((t) => {
+      const s = Number(t.dataset.start), e = Number(t.dataset.end), now = Date.now();
+      if (now >= e) { paintProgress(t, t.__ch, nowNext(t.__ch)); return; } // the programme ended: look up the next one
+      const bar = $('[data-prog] span', t);
+      if (bar) bar.style.width = Math.round(100 * (now - s) / (e - s)) + '%';
+    });
+  }, 60000);
   function repaintTiles() {
     const tiles = $$('#page .iptv-tile');
     guidePrefetch(tiles.map((t) => t.__ch).filter(Boolean));
@@ -2203,7 +2234,7 @@
         epgObserver.unobserve(en.target);
         const c = en.target.__ch;
         iptvNow(c).then((now) => {
-          if (now?.title) $('[data-now]', en.target).textContent = [c.num, now.title].filter(Boolean).join(' · ');
+          if (now?.title) { $('[data-now]', en.target).textContent = [c.num, now.title].filter(Boolean).join(' · '); paintProgress(en.target, c, nowNext(c)); }
         });
       }), { rootMargin: '200px' });
     }
@@ -6048,7 +6079,7 @@
       <div class="muted">${esc(Object.entries(c.reasons).map(([k, v]) => `${k} ×${v}`).join(' · '))} · ${c.users} ${c.users === 1 ? 'customer' : 'customers'}</div></div>
       <div class="admin-row-time">${c.count} ${c.count === 1 ? 'report' : 'reports'} · ${esc(timeAgo(c.last))}</div></div>`;
     const recRow = (r) => `<div class="admin-row" tabindex="-1"><div class="admin-row-main"><strong>${esc(r.channel)}</strong> · ${esc(r.reason)}${r.auto ? ' <span class="pill">automatic</span>' : ''}
-      <div class="muted">${esc(r.user)} · ${esc(r.device)}${r.note ? ' · ' + esc(r.note) : ''} · ${r.forwarded === 'sent' ? 'sent to the provider' : r.forwarded === 'failed' ? '<span class="pill bad">the provider did not accept it</span>' : 'kept here only'}</div></div>
+      <div class="muted">${esc(r.user)} · ${esc(r.device)}${r.note ? ' · ' + esc(r.note) : ''} · ${r.forwarded === 'sent' ? 'sent to the provider' : r.forwarded === 'failed' ? '<span class="pill bad">the provider did not accept it</span>' : r.forwarded === 'held' ? 'kept here, waiting for a second person to report it before it goes to the provider' : 'kept here only'}</div></div>
       <div class="admin-row-time">${esc(timeAgo(r.at))}</div></div>`;
     body.innerHTML = `
       <section class="admin-card">

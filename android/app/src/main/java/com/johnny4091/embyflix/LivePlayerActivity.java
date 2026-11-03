@@ -122,9 +122,18 @@ public class LivePlayerActivity extends Activity {
     private ListView listView;
     private ChannelAdapter adapter;
     private final StringBuilder typedNumber = new StringBuilder();
+    /** The channel watched before this one (the Last / 0 key goes back to it); -1 until the viewer has changed channel. */
+    private int lastIndex = -1;
+    private boolean tuned;
+    /** Aurora Guard, for "has anyone else reported this channel?" when a channel stops working. */
+    private String guardUrl = "", guardToken = "", guardUser = "", guardDevice = "";
+    /** A line added under the "isn't working" message once the guard has answered. */
+    private String statusNote = "";
 
     static final class Channel {
-        String name, url, logo, num, now;
+        String name, url, logo, num, now, next = "";
+        /** When the programme on now starts and ends (epoch ms), for the progress bar; 0 if unknown. */
+        long nowStart, nowEnd;
         /** In the viewer's Favorites; favInitial is how it was when the player opened (only changes are handed back). */
         boolean fav, favInitial;
         /** The same channel in the other format (MPEG-TS / HLS), tried when the first keeps failing. */
@@ -149,6 +158,9 @@ public class LivePlayerActivity extends Activity {
                 c.logo = o.optString("logo", "");
                 c.num = o.optString("num", "");
                 c.now = o.optString("now", "");
+                c.next = o.optString("next", "");
+                c.nowStart = o.optLong("nowStart", 0);
+                c.nowEnd = o.optLong("nowEnd", 0);
                 c.fav = c.favInitial = o.optBoolean("fav", false);
                 channels.add(c);
             }
@@ -168,6 +180,11 @@ public class LivePlayerActivity extends Activity {
             String level = extra.optString("buffer", "medium");
             softwareDecoders = !extra.optString("ffmpeg", "on").equals("off");
             if (level.equals("small") || level.equals("large")) bufferLevel = level;
+            guardUrl = extra.optString("guardUrl", "");
+            guardToken = extra.optString("apiKey", "");
+            currentGuardToken = guardToken;
+            guardUser = extra.optString("userId", "");
+            guardDevice = extra.optString("device", "");
             int stallSeconds = extra.optInt("stallSeconds", 25);
             if (stallSeconds >= 8 && stallSeconds <= 120) stallMs = stallSeconds * 1000L;
         } catch (Exception ignored) {
@@ -267,7 +284,11 @@ public class LivePlayerActivity extends Activity {
 
     private void tune(int i) {
         if (channels.isEmpty() || player == null) return;
-        index = (i + channels.size()) % channels.size();
+        int target = (i + channels.size()) % channels.size();
+        if (tuned && target != index) lastIndex = index;
+        tuned = true;
+        index = target;
+        statusNote = "";
         retries = 0;
         failed = false;
         failureCounted = false;
@@ -397,17 +418,82 @@ public class LivePlayerActivity extends Activity {
             // A provider that says "too many connections" is also counting our retries: don't hammer it.
             handler.postDelayed(retryRunnable, code == 429 || code == 458 ? 8000L : Math.min(1000L * retries, 5000L));
         } else if (retries <= MAX_RETRIES + SLOW_RETRIES) {
-            if (!failureCounted) { failureCounted = true; failedChannels++; failedName = c.name; failedCode = code; }
+            if (!failureCounted) { failureCounted = true; failedChannels++; failedName = c.name; failedCode = code; askChannelStatus(c, code); }
             failed = true;
-            status.setText("This channel isn't working right now. Still trying…" + providerNote + "\nPress OK to try again now, or pick another channel.");
+            status.setText("This channel isn't working right now. Still trying…" + providerNote + statusNote + "\nPress OK to try again now, or pick another channel.");
             status.setVisibility(View.VISIBLE);
             handler.postDelayed(retryRunnable, SLOW_RETRY_MS);
         } else {
             failed = true;
-            status.setText("This channel isn't working right now." + providerNote + "\nPress OK to try again, or pick another channel.");
+            status.setText("This channel isn't working right now." + providerNote + statusNote + "\nPress OK to try again, or pick another channel.");
             status.setVisibility(View.VISIBLE);
         }
     }
+
+    /**
+     * "Is it just me?": when a channel stops loading, tell Aurora Guard (once per channel, unless the provider is only
+     * refusing extra connections) and ask how many other people reported the same channel in the last hour.
+     * The answer is added under the message. Everything here is best effort: no guard, no answer, no change.
+     */
+    private void askChannelStatus(final Channel c, final int code) {
+        if (guardUrl.isEmpty() || guardUser.isEmpty() || guardToken.isEmpty()) return;
+        final int asked = index;
+        final String name = c.name, num = c.num;
+        new Thread(() -> {
+            String note;
+            try {
+                String base = guardUrl.replaceAll("/+$", "");
+                if (code != 429 && code != 458) {
+                    JSONObject body = new JSONObject().put("userId", guardUser).put("channel", name).put("channelId", num)
+                            .put("reason", "Channel is down").put("auto", true).put("group", group).put("device", guardDevice)
+                            .put("note", "Reported automatically when the channel stopped loading");
+                    guardRequest("POST", base + "/report", body.toString());
+                }
+                String answer = guardRequest("GET", base + "/channel-status?userId=" + java.net.URLEncoder.encode(guardUser, "UTF-8")
+                        + "&channel=" + java.net.URLEncoder.encode(name, "UTF-8"), null);
+                int others = new JSONObject(answer).optInt("others", 0);
+                if (others >= 2) note = "\n" + others + " other people reported this channel in the last hour. It is probably down at the source.";
+                else if (others == 1) note = "\n1 other person reported this channel recently.";
+                else note = "\nNobody else has reported this channel yet, so it may be your connection.";
+            } catch (Exception e) {
+                return;
+            }
+            final String line = note;
+            runOnUiThread(() -> {
+                if (asked != index || !failed || player == null) return;
+                statusNote = line;
+                String shown = status.getText().toString();
+                if (!shown.contains(line)) status.setText(shown + line);
+            });
+        }, "channel-status").start();
+    }
+
+    private static String guardRequest(String method, String address, String json) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(address).openConnection();
+        try {
+            conn.setRequestMethod(method);
+            conn.setConnectTimeout(4000);
+            conn.setReadTimeout(5000);
+            conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("X-Emby-Token", currentGuardToken);
+            if (json != null) {
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+                try (java.io.OutputStream out = conn.getOutputStream()) { out.write(json.getBytes("UTF-8")); }
+            }
+            if (conn.getResponseCode() >= 400) throw new java.io.IOException("guard answered " + conn.getResponseCode());
+            try (InputStream in = conn.getInputStream()) {
+                ByteArrayOutputStream buf = new ByteArrayOutputStream();
+                byte[] chunk = new byte[2048];
+                int n;
+                while ((n = in.read(chunk)) > 0 && buf.size() < 65536) buf.write(chunk, 0, n);
+                return buf.toString("UTF-8");
+            }
+        } finally {
+            conn.disconnect();
+        }
+    }
+    private static volatile String currentGuardToken = "";
 
     /** OK while a channel is failing: try again straight away. */
     private void retryNow() {
@@ -591,7 +677,7 @@ public class LivePlayerActivity extends Activity {
             favButton.setAlpha(1f);
             favButton.setVisibility(View.VISIBLE);
         }
-        bannerNow.setText(c.now.isEmpty() ? "" : "Now: " + c.now);
+        bannerNow.setText(c.now.isEmpty() ? "" : "Now: " + c.now + (c.next.isEmpty() ? "" : "     Next: " + c.next));
         bannerNow.setVisibility(c.now.isEmpty() ? View.GONE : View.VISIBLE);
         bannerGroup.setText(group.toUpperCase());
         bannerGroup.setVisibility(group.isEmpty() ? View.GONE : View.VISIBLE);
@@ -737,6 +823,25 @@ public class LivePlayerActivity extends Activity {
                 TextView now = text(12, Color.parseColor("#9AA3BD"), false);
                 texts.addView(name);
                 texts.addView(now);
+                // A thin bar showing how far through the programme on now: a filled part and an empty part, sized by weight.
+                LinearLayout prog = new LinearLayout(LivePlayerActivity.this);
+                prog.setOrientation(LinearLayout.HORIZONTAL);
+                GradientDrawable track = new GradientDrawable();
+                track.setColor(Color.parseColor("#2A3566"));
+                track.setCornerRadius(dp(2));
+                prog.setBackground(track);
+                View fill = new View(LivePlayerActivity.this);
+                GradientDrawable fillBg = new GradientDrawable();
+                fillBg.setColor(ACCENT);
+                fillBg.setCornerRadius(dp(2));
+                fill.setBackground(fillBg);
+                prog.addView(fill, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0));
+                prog.addView(new View(LivePlayerActivity.this), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1000));
+                LinearLayout.LayoutParams progLp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3));
+                progLp.topMargin = dp(4);
+                texts.addView(prog, progLp);
+                TextView nextLine = text(11, Color.parseColor("#7F89AD"), false);
+                texts.addView(nextLine);
                 row.addView(num);
                 row.addView(logo, new LinearLayout.LayoutParams(dp(56), dp(40)));
                 row.addView(texts, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -752,6 +857,22 @@ public class LivePlayerActivity extends Activity {
             name.setTextColor(position == index ? ACCENT : Color.WHITE);
             now.setText(c.now);
             now.setVisibility(c.now.isEmpty() ? View.GONE : View.VISIBLE);
+            LinearLayout prog = (LinearLayout) texts.getChildAt(2);
+            TextView nextLine = (TextView) texts.getChildAt(3);
+            long at = System.currentTimeMillis();
+            boolean running = c.nowEnd > c.nowStart && at >= c.nowStart && at < c.nowEnd;
+            prog.setVisibility(running ? View.VISIBLE : View.GONE);
+            if (running) {
+                float done = Math.max(0, Math.min(1000, (int) (1000L * (at - c.nowStart) / (c.nowEnd - c.nowStart))));
+                LinearLayout.LayoutParams a = (LinearLayout.LayoutParams) prog.getChildAt(0).getLayoutParams();
+                LinearLayout.LayoutParams b = (LinearLayout.LayoutParams) prog.getChildAt(1).getLayoutParams();
+                a.weight = done;
+                b.weight = 1000 - done;
+                prog.getChildAt(0).setLayoutParams(a);
+                prog.getChildAt(1).setLayoutParams(b);
+            }
+            nextLine.setText(c.next.isEmpty() ? "" : "Next: " + c.next);
+            nextLine.setVisibility(c.next.isEmpty() ? View.GONE : View.VISIBLE);
             logo.setImageDrawable(null);
             loadLogo(c.logo, logo);
             return row;
@@ -760,6 +881,25 @@ public class LivePlayerActivity extends Activity {
 
     // ---------- Remote ----------
 
+    private final Runnable hideNumber = () -> { if (numberEntry != null && typedNumber.length() == 0) numberEntry.setVisibility(View.GONE); };
+
+    /** Last / 0 / Previous: back to the channel watched before this one, with a short "Back to 4 ESPN" note. */
+    private void goLastChannel() {
+        if (lastIndex < 0 || lastIndex >= channels.size() || lastIndex == index) {
+            numberEntry.setText("No earlier channel yet");
+            numberEntry.setVisibility(View.VISIBLE);
+            handler.removeCallbacks(hideNumber);
+            handler.postDelayed(hideNumber, 1600);
+            return;
+        }
+        Channel c = channels.get(lastIndex);
+        numberEntry.setText("\u21BA  " + (c.num.isEmpty() ? "" : c.num + "  ") + c.name);
+        numberEntry.setVisibility(View.VISIBLE);
+        handler.removeCallbacks(hideNumber);
+        handler.postDelayed(hideNumber, 1600);
+        tune(lastIndex);
+    }
+
     private final Runnable tuneTypedNumber = () -> {
         String n = typedNumber.toString();
         typedNumber.setLength(0);
@@ -767,6 +907,8 @@ public class LivePlayerActivity extends Activity {
         for (int i = 0; i < channels.size(); i++) {
             if (n.equals(channels.get(i).num)) { tune(i); return; }
         }
+        // A lone 0 (no channel is numbered 0) is the usual "recall" key: back to the channel before this one.
+        if (n.equals("0")) { goLastChannel(); return; }
         // No channel with that number: treat it as a position in the list.
         try {
             int pos = Integer.parseInt(n) - 1;
@@ -792,13 +934,26 @@ public class LivePlayerActivity extends Activity {
         }
         if (code >= KeyEvent.KEYCODE_0 && code <= KeyEvent.KEYCODE_9) {
             if (typedNumber.length() < 5) typedNumber.append((char) ('0' + code - KeyEvent.KEYCODE_0));
-            numberEntry.setText(typedNumber);
+            String typed = typedNumber.toString(), match = null;
+            for (Channel ch : channels) { if (typed.equals(ch.num)) { match = ch.name; break; } }
+            numberEntry.setText(match == null ? typed : typed + "  " + match);
             numberEntry.setVisibility(View.VISIBLE);
+            handler.removeCallbacks(hideNumber);
             handler.removeCallbacks(tuneTypedNumber);
             handler.postDelayed(tuneTypedNumber, 1500);
             return true;
         }
+        // OK while a number is on screen: go there now instead of waiting.
+        if (typedNumber.length() > 0 && (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER)) {
+            handler.removeCallbacks(tuneTypedNumber);
+            tuneTypedNumber.run();
+            return true;
+        }
         switch (code) {
+            case KeyEvent.KEYCODE_LAST_CHANNEL:
+            case KeyEvent.KEYCODE_MEDIA_PREVIOUS:
+                if (event.getRepeatCount() == 0) goLastChannel();
+                return true;
             case KeyEvent.KEYCODE_DPAD_UP:
             case KeyEvent.KEYCODE_CHANNEL_UP:
                 if (event.getRepeatCount() == 0) tune(index + 1);
