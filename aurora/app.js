@@ -1206,6 +1206,7 @@
     if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
     document.body.style.overflow = '';
+    $('#modal .modal-box')?.classList.remove('upd-box'); // the narrower, modern look of the update window
     restoreFocus('modal');
   }
 
@@ -6569,14 +6570,28 @@
     modalToken++;
     if (modal.classList.contains('hidden')) rememberFocus('modal');
     modal.classList.toggle('update-required', required);
+    // "New: …", "Fixed: …", "New in Live TV: …" become a coloured label, an optional small tag and the text.
+    const noteParts = (n) => {
+      const m = String(n).match(/^(New|Fixed|Improved|Changed)(?:\s+(?:in|for|on)\s+([^:]+))?:\s*([\s\S]*)$/i);
+      return m ? { kind: m[1].toLowerCase(), tag: m[2] || '', text: m[3].charAt(0).toUpperCase() + m[3].slice(1) } : { kind: 'info', tag: '', text: String(n) };
+    };
+    const kindLabel = { new: 'New', fixed: 'Fixed', improved: 'Improved', changed: 'Changed', info: 'Update' };
+    $('#modal .modal-box')?.classList.add('upd-box');
     content.innerHTML = `
-      <div class="m-body update-body${required ? ' required' : ''}">
-        <h2>${required ? 'Update required' : 'Update available'}</h2>
-        <p class="overview">${required
-          ? `This version of Aurora is ${update.behind} updates behind and has stopped working. Install ${esc(update.version)} to keep watching. It keeps you signed in.`
-          : `${esc(update.version)} is ready to install. It keeps you signed in.`}</p>
-        ${update.notes?.length ? `<h3 class="update-notes-title">What's new</h3>
-        <ul class="update-notes">${update.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+      <div class="m-body update-body upd${required ? ' required' : ''}">
+        <div class="upd-hero">
+          <div class="upd-orb" aria-hidden="true"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg></div>
+          <div class="upd-hd">
+            <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
+            <h2>${esc(update.version)}</h2>
+            <p>${required
+              ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
+              : 'Ready to install. You stay signed in.'}</p>
+          </div>
+        </div>
+        ${update.notes?.length ? `<div class="upd-notes-title">What's new <small>${update.notes.length} ${update.notes.length === 1 ? 'change' : 'changes'}</small></div>
+        <ul class="update-notes upd-list">${update.notes.map((n) => { const x = noteParts(n);
+          return `<li><span class="upd-kind ${x.kind}">${kindLabel[x.kind]}</span><span class="upd-text">${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
         <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
         <div class="m-actions update-actions">
           <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>

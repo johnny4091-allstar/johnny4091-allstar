@@ -1,2 +1,1 @@
-- Fixed: Live TV tiles now refresh the programme title, bar and "Next" line when a programme ends, a few tiles at a time, instead of showing the old programme.
-- Fixed: for admins, reports waiting for a second person only show that note when reports are actually being passed on to the TV provider.
+- New look for the update window: a gradient header with the new version, colour labels for what's new (New, Fixed, Improved), and a smoother download bar. It's also larger and easier to read on a TV.
