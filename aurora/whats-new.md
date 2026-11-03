@@ -1,4 +1,2 @@
-- New in Live TV: a "Last channel" key. Press Last (or 0 on the remote) to flip back to the channel you were just watching, like a cable box.
-- New in Live TV: while you type a channel number on the remote, its name shows next to the digits, and OK jumps there at once instead of waiting.
-- New in Live TV: channel tiles and the in-player channel list show how far through the current programme it is, and what's on next.
-- New in Live TV: when a channel stops loading, Aurora tells you whether other people have reported it in the last hour, so you know if it's down at the source or just you.
+- Fixed: Live TV tiles now refresh the programme title, bar and "Next" line when a programme ends, a few tiles at a time, instead of showing the old programme.
+- Fixed: for admins, reports waiting for a second person only show that note when reports are actually being passed on to the TV provider.

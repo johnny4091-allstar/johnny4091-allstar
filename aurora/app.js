@@ -2211,9 +2211,11 @@
   // Move the bars along once a minute while Live TV tiles are on screen.
   setInterval(() => {
     if (document.hidden) return;
+    let refreshed = 0;
     $$('#page .iptv-tile[data-end]').forEach((t) => {
       const s = Number(t.dataset.start), e = Number(t.dataset.end), now = Date.now();
-      if (now >= e) { paintProgress(t, t.__ch, nowNext(t.__ch)); return; } // the programme ended: look up the next one
+      // The programme ended: ask for what's on now (a few tiles a minute, so a screenful ending at :00 doesn't hit the provider at once), then redraw.
+      if (now >= e) { if (refreshed < 6) { refreshed++; Promise.resolve(iptvNow(t.__ch)).then(() => paintTile(t)); } return; }
       const bar = $('[data-prog] span', t);
       if (bar) bar.style.width = Math.round(100 * (now - s) / (e - s)) + '%';
     });

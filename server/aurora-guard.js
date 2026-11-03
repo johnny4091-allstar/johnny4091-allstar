@@ -958,8 +958,9 @@ async function handle(req, res) {
     // second person reports it within the hour: one bad connection must not look like a dead channel.
     const hourAgo = Date.now() - 3600000, sameChannel = (x) => (channelId && x.channelId === channelId) || x.channel.toLowerCase() === channel.toLowerCase();
     const held = body.auto && reason === 'Channel is down' && !(store.reports || []).some((x) => x.at > hourAgo && x.user !== me.Name && sameChannel(x));
-    if (held) entry.forwarded = 'held';
-    if (!held && provider.enabled && provider.url && provider.key) {
+    const forwarding = provider.enabled && provider.url && provider.key;
+    if (held && forwarding) entry.forwarded = 'held'; // only meaningful when reports are being passed on
+    if (!held && forwarding) {
       const r = await sendToProvider({ channel, channelId, reason, note: note || (body.auto ? 'Reported automatically after repeated buffering' : ''), device: entry.device, user: me.Name, group: entry.group, time: new Date().toISOString() });
       entry.forwarded = r.ok ? 'sent' : 'failed';
       entry.providerStatus = r.status;
