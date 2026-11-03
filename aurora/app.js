@@ -32,7 +32,7 @@
 
   // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
   const state = { server: DEFAULT_SERVER, requestsServer: '', requestsEnabled: false, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
-  const CLIENT = { name: 'Aurora', version: '1.2.0' };
+  const CLIENT = { name: 'Aurora', version: '2.0.0' };
   // Set by the Android wrapper (android/); undefined in a normal browser.
   const nativeApp = window.EmbyFlixAndroid || null;
 
@@ -314,7 +314,7 @@
 
   // Avatars are drawn in code from a tiny recipe {k: character, bg: colour}: no image files, sharp at any size.
   function avatarSvg(av, size = 40) {
-    const k = AVATAR_KINDS.includes(av?.k) ? av.k : 'bear', bg = av?.bg || AVATAR_BGS[0], ink = '#1b1230';
+    const k = AVATAR_KINDS.includes(av?.k) ? av.k : 'bear', bg = /^#[0-9a-f]{6}$/i.test(av?.bg || '') ? av.bg : AVATAR_BGS[0], ink = '#1b1230'; // the saved value is account-writable: only a plain colour is drawn
     const fur = { bear: '#c98b5a', panda: '#f4f4f8', cat: '#f2a65a', fox: '#f08a3c', robot: '#9fb4d6', alien: '#7fd48a', ghost: '#eef0ff', person: '#e7b48a' }[k];
     let g = `<circle cx="50" cy="50" r="50" fill="${bg}"/>`;
     const eyes = `<circle cx="40" cy="52" r="3.4" fill="${ink}"/><circle cx="60" cy="52" r="3.4" fill="${ink}"/>`;
@@ -343,12 +343,15 @@
     } else btn.classList.remove('has-avatar');
     if (profile?.name) btn.title = profile.name;
   }
+  // Returns true when the account's profile was read (even if it is empty), false when the server couldn't be asked.
   async function refreshProfile() {
+    let ok = true;
     try {
       const p = await readAuroraPref(PROFILE_PREFS);
       if (p || !profile) { profile = p || null; store.set(profileKey(), JSON.stringify(profile)); }
-    } catch { /* keep what this device has */ }
+    } catch { ok = false; /* keep what this device has */ }
     applyProfileUi();
+    return ok;
   }
   async function saveProfile(patch) {
     profile = { ...(profile || {}), ...patch, v: 1 };
@@ -409,6 +412,7 @@
 
     const close = (then) => {
       U.closing = true; firstRun = null;
+      applySubtitleStyle();
       closeModal();
       if (then === 'tour') setTimeout(() => tourStart(), 350);
       else if (!redo) maybeStartTour();
@@ -524,7 +528,7 @@
     const commit = async (id) => {
       if (id === 'avatar') await saveProfile({ avatar: U.avatar });
       else if (id === 'name') await saveProfile({ name: U.name.trim() });
-      else if (id === 'genres') await saveProfile({ genres: [...U.genres] });
+      else if (id === 'genres') { await saveProfile({ genres: [...U.genres] }); U.posters = null; } // the posters follow the genres picked
       else if (id === 'favorites') {
         for (const itemId of U.favs) { try { await api(userPath(`/FavoriteItems/${itemId}`), { method: 'POST' }); } catch { /* skip */ } }
         U.favs = new Set();
@@ -536,6 +540,7 @@
     const go = async (delta, { skipping = false } = {}) => {
       const id = steps[U.i];
       if (delta > 0 && !skipping) await commit(id);
+      if (id === 'language' && (delta < 0 || skipping)) applySubtitleStyle(); // the size shown while choosing is only a preview
       if (delta > 0 && U.i === steps.length - 1) return finish('tour');
       U.i = Math.max(0, Math.min(steps.length - 1, U.i + delta));
       draw();
@@ -925,7 +930,8 @@
     if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
     else route();
     // New customers: first-time setup, then the tour. Everyone else: just the tour (if they haven't seen it on this device).
-    refreshProfile().finally(() => { if (needsSetup()) maybeStartSetup(); else maybeStartTour(); });
+    // (If the profile couldn't be read, don't run the setup now: finishing it would overwrite a profile saved earlier. Try again next time.)
+    refreshProfile().then((read) => { if (read && needsSetup()) maybeStartSetup(); else maybeStartTour(); });
   }
 
   function connectionErrorMessage(e) {
@@ -6353,7 +6359,7 @@
         <div class="live-result" data-result></div>
       </section>
       <section class="admin-card">
-        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 1.2.${latest}` : ''}</small></h2>
+        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 2.0.${latest}` : ''}</small></h2>
         ${codes ? '' : '<p class="muted">Couldn\'t reach GitHub to count releases.</p>'}
         <div class="admin-list">${aurora.map(row).join('') || '<p class="muted">Every device is up to date.</p>'}</div>
       </section>`;
@@ -6878,6 +6884,7 @@
   }
 
   function showUpdatePrompt(update, { required = false } = {}) {
+    if (firstRun) { firstRun.closing = true; firstRun = null; applySubtitleStyle(); } // the update comes first; the setup returns next launch
     const modal = $('#modal'), content = $('#modal-content');
     modalToken++;
     if (modal.classList.contains('hidden')) rememberFocus('modal');

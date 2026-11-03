@@ -1,3 +1,3 @@
-- New: first-time setup for new customers. Pick an avatar and colour, choose what to be called, pick your genres and a few favorite titles, set your language and subtitles, choose your Live TV categories, and see your plan, then take the app tour. Every step can be skipped.
-- New: your avatar shows in the top bar, Home greets you by name, and a "Because you like…" row is built from your genres.
-- New: Settings → Your profile, to set up or change all of it again.
+- Aurora 2.0: a bigger release with a new look, first-time setup (avatar, name, genres, favorites, language, Live TV), Kids mode with a PIN, "New This Week", Live TV last-channel key, programme progress bars and "is it just me?" channel checks, and a new update window.
+- Fixed: the first-time setup can no longer overwrite a profile saved earlier if the server can't be reached, its posters follow the genres you pick, and a subtitle size you only previewed is put back if you skip it.
+- Fixed: an update arriving during the first-time setup now takes over the window instead of leaving it stuck.

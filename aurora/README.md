@@ -4,6 +4,9 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 
 ## Features
 
+Versions are `2.0.N` (the release is tagged `aurora-v2.0.N`): `N` is the build number, which is what the Android app compares to decide an update is newer, so it must keep rising. Devices on `1.2.N` update to `2.0.N` normally.
+
+
 - Sign in with your Emby username and password; everyone who signs in on a device gets a "Who's watching?" tile
   so they can switch back without retyping their password
 - Works with a TV remote or keyboard: arrow keys move around, OK/Enter selects, Back closes
