@@ -957,14 +957,16 @@
     refreshAppConfig();
     syncFavorites({ force: true });
     syncPlanCategories();
+    const iptvBefore = JSON.stringify(iptv.config);
     refreshIptvConfig().then(() => {
       topUpIptvConfig();
       // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
       // for people who've used Live TV lately: reading a big guide is real work for a TV box.
       const usedLive = Date.now() - Number(store.get('ef.iptv.used') || 0) < 14 * 86400000;
       if (iptvOn() && nativeApp?.loadEpg && usedLive) setTimeout(() => { if (iptvOn() && !isPlayerOpen()) loadIptvGuide().catch(() => {}); }, 20000);
-      // If the Live TV source changed while the Live TV page or Home was showing, redraw it.
-      if (/^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
+      // If the Live TV source changed while the Live TV page or Home was showing, redraw it. (Only if it did change: redrawing the
+      // Guide at every start-up threw the viewer back to the top just as they began scrolling down it.)
+      if (JSON.stringify(iptv.config) !== iptvBefore && /^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
@@ -2494,6 +2496,10 @@
   window.auroraLiveClosed = (index, stats) => {
     store.del('ef.liveReturn');
     const p = iptvPlaying;
+    // Opened from the Guide: the page has lost its focus meanwhile, so the next Down would start again from the top bar. Put it back.
+    const backToGuide = () => { const g = $('#page .tm-guide'); if (g?.__restore) g.__restore(p?.list?.[index]); };
+    setTimeout(backToGuide, 0);
+    setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) backToGuide(); }, 400);
     iptvPlaying = null;
     if (!p || index < 0) return;
     // Channels the viewer starred (or un-starred) from inside the player.
@@ -2676,6 +2682,20 @@
     const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); requestAnimationFrame(() => fit()); };
     let list = [], drawn = 0, groupName = '', token = 0;
     const PAGE = 30;
+    const GUIDE_LAST = 'ef.guide.last';
+    const readLast = () => { try { const v = JSON.parse(store.get(GUIDE_LAST) || 'null'); return v && Date.now() - v.t < 15 * 60000 ? v : null; } catch { return null; } };
+    const endPending = () => { const v = readLast(); if (v) store.set(GUIDE_LAST, JSON.stringify({ ...v, pending: false })); };
+    // Puts the remote back on a channel's row (drawing rows down to it first if it is further than the page that is showing).
+    const focusChannel = (id) => {
+      const at = list.findIndex((c) => c.id === id);
+      if (at < 0) return false;
+      while (drawn <= at && drawn < list.length) drawMore();
+      const el = $$('.guide-row', rows).find((r) => r.__guide.ch.id === id);
+      if (!el) return false;
+      focusEl($('.guide-prog.now', el) || $('.guide-prog, .guide-empty', el) || $('.guide-ch', el));
+      return true;
+    };
+    root.__restore = (ended) => { const last = readLast(); const ok = focusChannel(ended?.id || last?.id); endPending(); return ok; };
 
     // ----- Details panel -----
     const info = {
@@ -2714,6 +2734,8 @@
     root.addEventListener('focusin', (e) => {
       const el = e.target.closest('.guide-row');
       if (!el) return;
+      // Close to the last drawn row: draw the next page now, so holding Down never runs out of rows to land on.
+      if (el.__guide.idx >= drawn - 6 && drawn < list.length) drawMore();
       showInfo(el.__guide.ch, e.target.__prog || nowOf(el));
       markSelection(el, e.target.__prog);
     });
@@ -2830,8 +2852,9 @@
           <span class="guide-ch-name">${esc(ch.name)}</span>
         </button>
         <div class="guide-progs" style="width:${width}px"></div>`;
-      const play = () => playIptv(list, idx, groupName);
-      el.__guide = { ch, play };
+      // Remember the place, so coming back from the player (or the app being reloaded meanwhile) lands on this channel again.
+      const play = () => { store.set(GUIDE_LAST, JSON.stringify({ group: current, id: ch.id, name: ch.name, t: Date.now(), pending: true })); playIptv(list, idx, groupName); };
+      el.__guide = { ch, play, idx };
       el.classList.toggle('is-fav', isIptvFav(ch));
       const chBtn = $('.guide-ch', el);
       chBtn.addEventListener('click', play);
@@ -2918,7 +2941,9 @@
     }
     await openCat(current);
     tick();
-    if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
+    const lastSeen = readLast();
+    if (lastSeen?.pending && lastSeen.group === current && focusChannel(lastSeen.id)) endPending();
+    else if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
   }
 
   function showIptvProgram(p, ch, play) {
@@ -8502,7 +8527,7 @@
   // ---------- Remote control & keyboard navigation ----------
   // Arrow keys move focus to the nearest item in that direction (TV remotes send arrow keys),
   // OK/Enter activates it and Back closes the top layer.
-  const nav = { on: false, tv: false, returnFocus: {} };
+  const nav = { on: false, tv: false, returnFocus: {}, last: null };
   const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, [tabindex]';
 
   function enableNav() {
@@ -8591,7 +8616,12 @@
   function moveFocus(dir) {
     const layer = activeLayer();
     const cur = document.activeElement;
-    if (!cur || cur === document.body || !layer.contains(cur)) { focusInitial(layer); return; }
+    if (!cur || cur === document.body || !layer.contains(cur)) {
+      const back = nav.last;
+      if (back && back.isConnected && layer.contains(back) && !back.disabled && back.getBoundingClientRect().width > 1) focusEl(back);
+      else focusInitial(layer);
+      return;
+    }
     // The usual case (a row of cards on Home): go straight to the neighbour without looking at the whole page.
     const quick = quickMove(cur, dir);
     if (quick) { focusEl(quick); if (document.activeElement === quick) return; }
@@ -8761,6 +8791,7 @@
     document.addEventListener('mousedown', pointer, true);
     document.addEventListener('touchstart', pointer, { capture: true, passive: true });
     document.addEventListener('focusin', (e) => {
+      if (e.target.closest?.('#page')) nav.last = e.target; // where the remote was, if the focus is ever lost
       if (!tour && !e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
     });
     if (nativeApp?.isTv?.()) {

@@ -1,3 +1,4 @@
-- New in Live TV → Sports: live scores and the day's games for the NFL, NBA, MLB, NHL, college sports, soccer, UFC and Formula 1, with the channel to watch each one on.
-- New: pick your favorite leagues and teams (in the first-time setup or Settings → Your profile). Their games get a star, come first, and have a "My teams" filter.
-- New: a Spoiler-free switch that hides scores, and "Remind me" on upcoming games for a notification 10 minutes before they start (the Android app asks to allow notifications).
+- Fixed: the Live TV Guide no longer jumps back to the top a few seconds after Aurora starts, just as you begin scrolling down.
+- Fixed: after watching a channel from the Guide, you land back on that channel, and the next Down carries on from there instead of starting at the top bar.
+- Fixed: holding Down in the Guide now loads more channels before you reach the end, so it never stalls or snaps back.
+- New in Live TV → Sports: live scores, favorite teams, spoiler-free mode and game reminders.
