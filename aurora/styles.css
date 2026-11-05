@@ -1609,3 +1609,40 @@ html { overflow-x: hidden; }
 
 /* Buttons and headings never break inside a word (the long-text safety rule above made narrow flex rows squeeze "Select" and "Save" onto two lines). */
 button, .btn, .pill, .admin-card h2, .settings-section h2, .stat-label { overflow-wrap: normal; word-break: normal; }
+
+/* ---------- Notifications, announcements, help, referrals, stats ---------- */
+.bell-btn { position: relative; }
+.bell-badge { position: absolute; right: -4px; top: -4px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #ef5a5f; color: #fff; font-size: .68rem; font-weight: 800; display: grid; place-items: center; border: 2px solid var(--bg); }
+.announce { position: fixed; left: var(--gutter, 16px); right: var(--gutter, 16px); top: 74px; z-index: 40; display: flex; flex-direction: column; gap: .4rem; pointer-events: none; }
+.announce > * { pointer-events: auto; }
+.ann { display: flex; gap: .7rem; align-items: center; padding: .6rem .9rem; border-radius: 12px; border: 1px solid rgba(124,140,255,.5); background: rgba(20,26,50,.96); box-shadow: 0 8px 28px rgba(0,0,0,.45); }
+.ann.warn { border-color: rgba(245,184,75,.6); background: rgba(48,36,12,.96); }
+.ann.bad { border-color: rgba(239,90,95,.6); background: rgba(52,16,18,.96); }
+.ann-tx { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.ann-x { background: none; border: 0; color: inherit; font-size: 1.4rem; line-height: 1; padding: 0 .3rem; cursor: pointer; opacity: .7; }
+html:not(.tv) .page-pad { padding-top: calc(100px + var(--ann-h, 0px)); }
+.inbox-list { display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1rem; }
+.inbox-item { display: flex; gap: .9rem; align-items: flex-start; background: var(--bg-2); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: .8rem 1rem; }
+.inbox-item.unread { border-color: rgba(124,140,255,.55); background: rgba(124,140,255,.08); }
+.inbox-ic { width: 2.4rem; height: 2.4rem; border-radius: 12px; background: rgba(255,255,255,.07); display: grid; place-items: center; font-size: 1.2rem; flex: none; }
+.inbox-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.inbox-main .m-actions { margin-top: .5rem; }
+.inbox-dot { width: .6rem; height: .6rem; border-radius: 50%; background: #7c8cff; flex: none; margin-top: .4rem; }
+.faq { border-top: 1px solid rgba(255,255,255,.08); padding: .6rem 0; }
+.faq:first-of-type { border-top: 0; }
+.faq summary { cursor: pointer; font-weight: 600; }
+.faq p { color: var(--dim); margin: .5rem 0 0; }
+.help-thread { display: flex; flex-direction: column; gap: .5rem; margin: .4rem 0 .8rem; }
+.help-msg { max-width: 85%; padding: .55rem .8rem; border-radius: 14px; overflow-wrap: anywhere; background: rgba(255,255,255,.09); border-bottom-left-radius: 4px; }
+.help-msg.me { align-self: flex-end; background: #7c8cff; color: #06080f; border-bottom-left-radius: 14px; border-bottom-right-radius: 4px; }
+.help-msg small { display: block; opacity: .7; font-size: .72rem; margin-top: .15rem; }
+.help-diag { font-size: .85rem; margin: .5rem 0; overflow-wrap: anywhere; }
+.refer-card { text-align: center; }
+.refer-code { font-size: 2.4rem; font-weight: 800; letter-spacing: .05em; margin: .4rem 0; background: linear-gradient(120deg,#5eead4,#7c8cff 55%,#c084fc); -webkit-background-clip: text; background-clip: text; color: transparent; overflow-wrap: anywhere; }
+.refer-card .m-actions { justify-content: center; }
+.refer-redeem { display: flex; gap: .6rem; flex-wrap: wrap; }
+.refer-redeem input { flex: 1; min-width: 10rem; }
+.stats-big { font-size: 3rem; font-weight: 800; letter-spacing: -.03em; }
+.stats-hero { background: linear-gradient(150deg, rgba(124,58,237,.35), var(--bg-2)); }
+.need-row { display: flex; gap: .8rem; align-items: center; cursor: pointer; }
+.need-row input { width: 1.2rem; height: 1.2rem; flex: none; }

@@ -90,6 +90,10 @@
       </nav>
       </div>
       <div class="nav-right">
+        <button id="bell-btn" class="icon-btn bell-btn hidden" aria-label="Notifications" onclick="location.hash='#/inbox'">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 2a6 6 0 0 0-6 6v3.6L4.3 15a1 1 0 0 0 .9 1.4h13.6a1 1 0 0 0 .9-1.4L18 11.6V8a6 6 0 0 0-6-6Zm0 20a3 3 0 0 0 2.8-2H9.2A3 3 0 0 0 12 22Z"/></svg>
+          <span id="bell-badge" class="bell-badge hidden"></span>
+        </button>
         <div class="profile-menu">
           <button id="profile-btn" class="avatar-btn" aria-label="Profile menu"></button>
           <div id="profile-dropdown" class="dropdown hidden">
@@ -102,6 +106,7 @@
         </div>
       </div>
     </header>
+    <div id="announce" class="announce hidden" role="status"></div>
     <main id="page"></main>
     <nav class="mobile-tabs">
       <a href="#/home" data-route="home">Home</a>

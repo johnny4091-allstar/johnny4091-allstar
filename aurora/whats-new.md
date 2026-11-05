@@ -1,2 +1,4 @@
-- New: a Status page (Settings → Status) that checks whether Aurora, Live TV and your connection are working, and tells you if a problem is just you.
-- New for resellers: a Reseller panel where you use your credits to add and renew your own customers, with a ready-to-send welcome message.
+- New: a notification bell with messages from your provider, plan reminders, new titles and support replies.
+- New: Settings → Get help sends your provider a message with the details they need attached.
+- New: Refer a friend (you both get free days) and Your Aurora, a summary of your week.
+- New for resellers: bulk renew, reminder messages, credit requests and a monthly report.

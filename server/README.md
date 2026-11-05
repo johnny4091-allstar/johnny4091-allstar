@@ -91,6 +91,14 @@ Administrator accounts are never limited or disabled.
 | `GET /sports/games`, `GET /sports/teams?league=`, `GET /sports/aliases` | The signed-in user | Live scores and the day's games for the Sports tab, a league's teams (for the setup), and the admin's name aliases (guard 1.8.0). |
 | `GET /resellers`, `POST /resellers`, `PUT /resellers/{id}`, `POST /resellers/{id}/credits`, `GET /resellers/{id}/log`, `POST /resellers/{id}/password` | Emby administrators | Resellers (guard 1.10.0): list them with their credits, add one (this also creates their Emby login), change name, contact, plans they may sell or suspend them, add / remove / set credits with a reason, see the ledger, make a new password. |
 | `GET /reseller/me`, `POST /reseller/customers`, `PUT /reseller/customers/{id}`, `POST /reseller/customers/{id}/renew`, `/password`, `/signout` | The signed-in reseller, for customers they created | The reseller panel: credits, plans with their credit cost, customers; create a customer (an Emby account plus the plan, paid in credits, or a free 2-day trial), renew, edit details, reset the password, sign out devices. Nothing about any other account is reachable. |
+| `GET /inbox`, `POST /inbox/read` | The signed-in user | The notification bell (guard 1.11.0): announcements for them, plan-ending notices (7 / 3 / 1 days, ended), new titles this week, replies from support, and the unread count. |
+| `GET /support`, `POST /support` (with `userId`) | The signed-in user | Their Get help conversation; sending adds the details Aurora attaches (version, device, connection, what was playing, recent problems). 10 messages an hour. |
+| `GET /referral`, `POST /referral/redeem` | The signed-in user | Their referral code and friends; using a friend's code (first 14 days of an account, once) gives both people `referralDays` free days. |
+| `GET /stats` | The signed-in user | Their own week: minutes watched, last week, Live TV minutes, most watched. |
+| `POST /reseller/credit-request`, `POST /reseller/renew-many` | The reseller | Ask the admin for credits; renew several of their customers at once (all or nothing, checked against their credits first). |
+| `GET/POST /announcements`, `DELETE /announcements/{id}` | Emby administrators | Messages for customers: everyone, one plan or one reseller's customers; they expire by themselves. |
+| `GET /support`, `POST /support/{id}/reply`, `PUT /support/{id}` | Emby administrators | The support inbox: all conversations with their diagnostics, reply, mark solved or reopen. |
+| `GET /credit-requests`, `PUT /credit-requests/{id}`, `GET /admin-inbox` | Emby administrators | Reseller credit requests (approve adds the credits, deny closes it) and one summary of everything waiting for the admin. |
 | `GET /service-status?userId=` | The signed-in user | The Status page (guard 1.9.0): whether the server answers, channels several other viewers reported in the last 15 minutes (counts and channel names only), the sports feed, the last 24 hours, recent outages and the admin's message. While the server is down it still answers, with the outage only. |
 | `PUT /status-note` | Emby administrators | The message shown at the top of every customer's Status page (empty clears it). |
 | `GET /sports/status`, `PUT /sports/settings`, `PUT /sports/aliases`, `POST /sports/refresh` | Emby administrators | What the scores feed is doing, which leagues are on, the aliases, and "ask the feed again now" (guard 1.8.0). |
@@ -295,3 +303,15 @@ connections × months** (one credit = one connection for one month). A free 2-da
 - **Safety:** one change at a time per reseller (no double-spending), the balance can't go below zero, usernames are checked, the Emby password is set before credits are taken.
 - **Config (optional, in config.json):** `"resellerLowCredits": 3` (warn at or under this), `"resellerTrialsPerDay": 5`.
 - New customers also get the Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
+
+## Notifications, announcements, support, referrals (guard 1.11.0)
+
+- **Bell:** every customer gets an inbox: announcements you send, "your plan ends in 7 / 3 / 1 days" with an **Ask for more time** button (this is the
+  existing extension request), new titles added in the last week, and replies from support. Admins see their Admin inbox count on the bell instead.
+- **Announcements:** Admin → Customers → Announcements. A banner at the top of the app (customers can dismiss it) and an entry in the bell.
+  Send to everyone, one plan or one reseller's customers; it disappears after the time you choose.
+- **Help & support:** Settings → Help & support. The customer's message arrives in Admin → Support with the diagnostics attached.
+- **Refer a friend:** each customer has a code. Config keys (optional): `"referralDays": 7` (0 switches it off) and `"referralMaxPerYear": 10`.
+  Free days are added to both end dates; accounts with no end date get nothing to add.
+- **Resellers:** Needs renewing list with bulk renew and copyable reminder messages, a monthly report, and **Request credits**
+  (approve in Admin → Inbox).

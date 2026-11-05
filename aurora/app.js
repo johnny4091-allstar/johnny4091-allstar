@@ -251,6 +251,7 @@
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
     $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isAdmin());
     $('#profile-dropdown [data-action="reseller"]')?.classList.toggle('hidden', on || !state.isReseller);
+    paintBell(); paintBanners();
   }
   // A number pad (works with a remote). Resolves with the digits, or null when cancelled.
   function pinPad(title, text, length = 4) {
@@ -972,6 +973,8 @@
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
     state.isReseller = false;
+    refreshInbox();
+    clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
     if (guardEnabled && !isAdmin()) guard('/reseller/me', { params: { userId: state.userId }, quick: true }).then((r) => { state.isReseller = !!r.reseller; applyKidsUi(); }).catch(() => {});
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
@@ -1019,7 +1022,7 @@
 
     const isCurrent = () => token === routeToken;
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin', 'reseller'].includes(name)) { location.hash = '#/home'; return; }
+      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1031,6 +1034,10 @@
       case 'settings': return renderSettings(page, isCurrent);
       case 'status': return renderStatus(page, isCurrent);
       case 'reseller': return renderReseller(page, isCurrent);
+      case 'inbox': return renderInbox(page, isCurrent);
+      case 'help': return renderHelp(page, isCurrent);
+      case 'refer': return renderRefer(page, isCurrent);
+      case 'stats': return renderStats(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
       case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
       default: return renderHome(page, isCurrent);
@@ -4626,6 +4633,7 @@
   // Guard what everyone else is seeing (outages, channel reports, the sports feed). The answer says whether it is just
   // this device or everybody. Nothing here changes any setting.
   const SLOW_MS = 1500;
+  let lastStatusVerdict = '';
   async function stTime(fn) {
     const t0 = performance.now();
     try { const extra = await fn(); return { ok: true, ms: Math.round(performance.now() - t0), ...(extra || {}) }; }
@@ -4679,6 +4687,7 @@
       return { level: 'ok', text: 'No problems reported' };
     });
     r.verdict = statusVerdict(r);
+    lastStatusVerdict = r.verdict.title;
     return r;
   }
 
@@ -4815,6 +4824,11 @@
         <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
       ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
+      <section class="settings-section"><h2>Help &amp; more</h2>
+        ${settingRow('Get help', 'Send a message to your provider with the details they need attached.', '<a class="btn btn-gray" href="#/help">Help &amp; support</a>')}
+        ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
+        ${settingRow('Your Aurora', 'What you watched this week.', '<a class="btn btn-gray" href="#/stats">See my week</a>')}
+      </section>
       <section class="settings-section"><h2>Status</h2>
         ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
       </section>
@@ -5128,7 +5142,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -5168,15 +5182,15 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
 
   // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
   const ADMIN_GROUPS = [
-    ['Dashboard', ['overview', 'problems', 'feedback']],
-    ['Customers', ['users', 'plans', 'resellers', 'devices', 'usage', 'sharing']],
+    ['Dashboard', ['inbox', 'overview', 'support', 'problems', 'feedback']],
+    ['Customers', ['users', 'plans', 'resellers', 'announce', 'devices', 'usage', 'sharing']],
     ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
     ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
@@ -6494,6 +6508,227 @@
     });
   }
 
+  // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
+  let inboxState = { items: [], unread: 0, banners: [], ok: false };
+  let inboxTimer = null;
+  const dismissedAnn = () => { try { return new Set(JSON.parse(store.get('ef.annDismissed') || '[]')); } catch { return new Set(); } };
+  function paintBell() {
+    const b = $('#bell-btn'), badge = $('#bell-badge');
+    if (!b) return;
+    b.classList.toggle('hidden', !inboxState.ok || kidsOn());
+    b.onclick = () => { location.hash = isAdmin() ? '#/admin?tab=inbox' : '#/inbox'; };
+    const n = inboxState.badge ?? inboxState.unread;
+    badge.textContent = n > 9 ? '9+' : String(n);
+    badge.classList.toggle('hidden', !n);
+  }
+  function paintBanners() {
+    const el = $('#announce');
+    if (!el) return;
+    const gone = dismissedAnn();
+    const list = (inboxState.banners || []).filter((a) => !gone.has(a.id)).slice(0, 2);
+    el.classList.toggle('hidden', !list.length || kidsOn());
+    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span><button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button></div>`).join('');
+    document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
+    $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
+  }
+  async function refreshInbox() {
+    if (!guardEnabled || !state.userId) { inboxState.ok = false; paintBell(); return; }
+    try {
+      const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });
+      inboxState = { ...d, ok: true };
+      if (isAdmin()) { try { const a = await guard('/admin-inbox', { quick: true }); inboxState.badge = a.total; inboxState.adminTotal = a.total; } catch { /* older guard */ } }
+    } catch { inboxState.ok = false; }
+    paintBell(); paintBanners();
+  }
+  const inboxIcon = (i) => ({ announcement: '📣', plan: '⏳', new: '🎬', support: '💬', reminder: '🏀' })[i.type] || '🔔';
+  async function renderInbox(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad inbox-page"><div class="page-head"><h1>Notifications</h1></div><div class="spinner"></div></div>';
+    const root = $('.inbox-page', page);
+    const head = '<div class="page-head"><h1>Notifications</h1></div>';
+    let d;
+    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for notifications.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    const now = Date.now();
+    const local = (sportsPrefs.reminders || []).filter((r) => r.start > now && r.start < now + 36 * 3600000).map((r) => ({ id: 'rem:' + r.id, type: 'reminder', level: 'info', title: r.title, text: `Reminder · ${new Date(r.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${r.chan ? ' · ' + r.chan : ''}`, at: r.start, action: 'sports', unread: false }));
+    const items = [...local, ...d.items].sort((a, b) => b.at - a.at);
+    const btn = (i) => ({ renew: '<button class="btn btn-white" data-act="renew">Ask for more time</button>', help: '<a class="btn btn-gray" href="#/help">Open</a>', browse: '<a class="btn btn-gray" href="#/movies">Browse</a>', sports: '<a class="btn btn-gray" href="#/livetv?tab=sports">Open Sports</a>' })[i.action] || '';
+    root.innerHTML = `${head}${items.length ? '' : '<p class="empty-msg">You are all caught up.</p>'}
+      <div class="inbox-list">${items.map((i, k) => `<div class="inbox-item${i.unread ? ' unread' : ''}" data-i="${k}"><div class="inbox-ic">${inboxIcon(i)}</div>
+        <div class="inbox-main"><strong>${esc(i.title)}</strong><div class="muted">${esc(i.text)}${i.type === 'plan' ? '' : ' · ' + esc(timeAgo(i.at))}</div>${i.action ? `<div class="m-actions">${btn(i)}</div>` : ''}</div>${i.unread ? '<span class="inbox-dot"></span>' : ''}</div>`).join('')}</div>
+      ${d.unread ? '<div class="m-actions"><button class="btn btn-gray" data-readall>Mark all as read</button></div>' : ''}`;
+    guard('/inbox/read', { method: 'POST', params: { userId: state.userId }, body: {} }).then(refreshInbox).catch(() => {});
+    $('[data-readall]', root)?.addEventListener('click', () => { $$('.inbox-item.unread', root).forEach((x) => x.classList.remove('unread')); $$('.inbox-dot', root).forEach((x) => x.remove()); });
+    $$('[data-act="renew"]', root).forEach((b) => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await guard('/extension', { method: 'POST', body: { userId: state.userId, note: '' } }); toast('Request sent to your provider', 3000); b.textContent = 'Requested'; }
+      catch (e) { b.disabled = false; toast(e.message || "Couldn't send the request", 4000); }
+    }));
+  }
+
+  // Help & support: a message to the provider with the details they would otherwise have to ask for.
+  function helpDiag() {
+    const cur = iptvPlaying?.list?.[iptvPlaying.index || 0];
+    return {
+      app: nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
+      device: nativeApp?.getDeviceName?.() || navigator.userAgent.slice(0, 80),
+      connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
+      playing: cur?.name ? `Live: ${cur.name}` : '',
+      status: lastStatusVerdict,
+      errors: appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100)),
+    };
+  }
+  async function renderHelp(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad help-page"><div class="page-head"><h1>Help &amp; support</h1></div><div class="spinner"></div></div>';
+    const root = $('.help-page', page);
+    const head = '<div class="page-head"><h1>Help &amp; support</h1></div>';
+    let t = null;
+    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Help &amp; support.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    const open = t && t.status === 'open';
+    const dg = helpDiag();
+    root.innerHTML = `${head}
+      <section class="settings-section"><h2>Quick answers</h2>
+        <details class="faq"><summary>Why did my video quality drop?</summary><p>Aurora lowers the quality when your connection is slow, so the picture doesn't keep stopping. Move closer to the router, or choose a lower quality in Settings.</p></details>
+        <details class="faq"><summary>A channel won't load or keeps freezing</summary><p>Open <a href="#/status">Status</a> and press <strong>Check now</strong>. It tells you if it is just you or everyone. If other channels work, try the same game on another channel.</p></details>
+        <details class="faq"><summary>I forgot my password</summary><p>Send a message below, or contact the person you got Aurora from. They can make you a new one.</p></details>
+      </section>
+      <section class="settings-section"><h2>Message your provider${open ? ' <small>conversation open</small>' : ''}</h2>
+        <div class="help-thread" data-thread>${(t?.messages || []).map((m) => `<div class="help-msg ${m.from === 'user' ? 'me' : 'them'}">${esc(m.text)}<small>${m.from === 'user' ? 'You' : 'Support'} · ${esc(timeAgo(m.at))}</small></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div>
+        <textarea class="st-note-input" data-msg rows="3" maxlength="1000" placeholder="Describe the problem"></textarea>
+        <p class="muted help-diag">Sent with your message: ${esc(dg.app)} · ${esc(dg.device)} · ${esc(dg.connection)}${dg.playing ? ' · ' + esc(dg.playing) : ''}${dg.status ? ' · ' + esc(dg.status) : ''}</p>
+        <div class="m-actions"><button class="btn btn-white" data-send>Send</button></div><div class="live-result" data-result></div></section>`;
+    $('[data-send]', root).addEventListener('click', async () => {
+      const text = $('[data-msg]', root).value.trim();
+      const r = $('[data-result]', root);
+      if (!text) { r.className = 'live-result bad'; r.textContent = 'Write a message first.'; return; }
+      $('[data-send]', root).disabled = true;
+      try { await guard('/support', { method: 'POST', params: { userId: state.userId }, body: { text, diag: helpDiag() } }); toast('Sent', 2000); renderHelp(page, isCurrent); }
+      catch (e) { $('[data-send]', root).disabled = false; r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+  }
+
+  async function renderRefer(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad refer-page"><div class="page-head"><h1>Refer a friend</h1></div><div class="spinner"></div></div>';
+    const root = $('.refer-page', page);
+    const head = '<div class="page-head"><h1>Refer a friend</h1></div>';
+    let d;
+    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Refer a friend.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    if (!d.enabled) { root.innerHTML = `${head}<p class="empty-msg">Referrals are not on right now.</p>`; return; }
+    const msg = `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
+    root.innerHTML = `${head}
+      <section class="settings-section refer-card"><p class="muted">Your code</p><div class="refer-code">${esc(d.code)}</div>
+        <p class="muted">Your friend gets <strong>${d.days} free days</strong>, and so do you when they join.</p>
+        <div class="m-actions"><button class="btn btn-white" data-share>Share my code</button><button class="btn btn-gray" data-copy>Copy</button></div></section>
+      <div class="stat-grid">${statTile('Friends joined', d.friends.length, '')}${statTile('Free days earned', d.earned, '')}</div>
+      ${d.friends.length ? `<section class="settings-section"><h2>Your friends</h2>${d.friends.map((f) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(f.name)}</strong><div class="muted">Joined ${esc(timeAgo(f.at))} · +${d.days} days</div></div></div>`).join('')}</section>` : ''}
+      ${d.canRedeem ? `<section class="settings-section"><h2>Did a friend invite you?</h2><p class="muted">Enter their code in your first 14 days.</p>
+        <div class="refer-redeem"><input type="text" class="st-note-input" data-code maxlength="20" autocapitalize="characters" autocomplete="off" placeholder="FRIEND-1AB"><button class="btn btn-white" data-redeem>Use code</button></div><div class="live-result" data-result></div></section>` : ''}`;
+    const copy = () => { try { navigator.clipboard.writeText(msg).then(() => toast('Copied', 1500), () => toast(msg, 6000)); } catch { toast(msg, 6000); } };
+    $('[data-copy]', root).addEventListener('click', copy);
+    $('[data-share]', root).addEventListener('click', () => { if (navigator.share) navigator.share({ text: msg }).catch(() => {}); else copy(); });
+    $('[data-redeem]', root)?.addEventListener('click', async () => {
+      const r = $('[data-result]', root);
+      try { const x = await guard('/referral/redeem', { method: 'POST', body: { userId: state.userId, code: $('[data-code]', root).value } }); toast(x.days ? `You got ${x.days} free days` : 'Code accepted', 3500); renderRefer(page, isCurrent); }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+  }
+
+  async function renderStats(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad stats-page"><div class="page-head"><h1>Your Aurora</h1></div><div class="spinner"></div></div>';
+    const root = $('.stats-page', page);
+    const head = '<div class="page-head"><h1>Your Aurora</h1></div>';
+    let d;
+    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for this page.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
+    const diff = d.thisWeek - d.lastWeek;
+    const txt = d.thisWeek ? `This week on Aurora I watched ${hm(d.thisWeek)}${d.top[0] ? `, mostly ${d.top[0].title}` : ''}.` : '';
+    root.innerHTML = `${head}
+      <section class="settings-section stats-hero"><p class="muted">You watched this week</p><div class="stats-big">${d.thisWeek ? hm(d.thisWeek) : '0h 0m'}</div>
+        <p class="muted">${d.lastWeek || d.thisWeek ? (diff === 0 ? 'The same as last week' : `${hm(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than last week`) : 'Start watching and your week will show up here.'}</p></section>
+      <div class="stat-grid">${statTile('Days you watched', d.days, 'of 7')}${statTile('Live TV', hm(d.live), 'this week')}</div>
+      ${d.top.length ? `<section class="settings-section"><h2>Most watched</h2>${d.top.map((t) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(t.title)}</strong></div><div class="admin-row-time">${esc(hm(t.minutes))}</div></div>`).join('')}</section>` : ''}
+      ${txt ? '<div class="m-actions"><button class="btn btn-white" data-share>Share my week</button></div>' : ''}`;
+    $('[data-share]', root)?.addEventListener('click', () => { if (navigator.share) navigator.share({ text: txt }).catch(() => {}); else { try { navigator.clipboard.writeText(txt); toast('Copied', 1500); } catch { toast(txt, 6000); } } });
+  }
+
+  // ----- Admin → Inbox, Announcements and Support (Aurora Guard 1.11.0) -----
+  const guardTooOld = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.11.0 to use ${what} (copy the new aurora-guard.js and restart the task).` : esc(e.message));
+  async function adminInbox(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Inbox');
+    let inbox, reqs, tickets;
+    try { [inbox, reqs, tickets] = await Promise.all([guard('/admin-inbox'), guard('/credit-requests'), guard('/support')]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="live-result bad">${guardTooOld(e, 'the Inbox')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const pending = reqs.requests.filter((x) => x.status === 'pending');
+    const open = tickets.tickets.filter((t) => t.status === 'open');
+    body.innerHTML = `
+      <div class="stat-grid">${statTile('Waiting for you', inbox.total, '', inbox.total ? 'bad' : '')}${statTile('Credit requests', inbox.creditRequests, '')}${statTile('Support messages', inbox.tickets, 'not answered')}${statTile('Time requests', inbox.extensions, 'customers')}</div>
+      <section class="admin-card"><h2>Credit requests</h2><div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
+          <div class="muted">${x.note ? '"' + esc(x.note) + '" · ' : ''}has ${x.balance} now · ${esc(timeAgo(x.at))}</div></div>
+          <div class="plan-actions"><button class="btn btn-white" data-ok>Approve ${x.amount}</button><button class="btn btn-gray" data-no>Decline</button></div></div>`).join('') || '<p class="muted">No credit requests.</p>'}</div></section>
+      <section class="admin-card"><h2>Other things waiting</h2><div class="admin-list">
+        <div class="admin-row"><div class="admin-row-main"><strong>${open.length} open support ${open.length === 1 ? 'message' : 'messages'}</strong></div><a class="btn btn-gray" href="#/admin?tab=support">Open Support</a></div>
+        <div class="admin-row"><div class="admin-row-main"><strong>${inbox.extensions} customer ${inbox.extensions === 1 ? 'request' : 'requests'} for more time</strong></div><a class="btn btn-gray" href="#/admin?tab=users">Open Users</a></div>
+        ${inbox.lowResellers.map((r) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(r.name)}</strong> is low on credits <span class="pill warn">${r.credits}</span></div><a class="btn btn-gray" href="#/admin?tab=resellers">Open Resellers</a></div>`).join('')}</div></section>`;
+    $$('[data-req]', body).forEach((el) => {
+      const id = el.dataset.req;
+      const act = async (action) => { try { await guard(`/credit-requests/${encodeURIComponent(id)}`, { method: 'PUT', body: { action } }); toast(action === 'approve' ? 'Credits added' : 'Declined', 2000); refreshInbox(); if (isCurrent()) adminInbox(body, isCurrent); } catch (e) { toast(e.message, 4000); } };
+      $('[data-ok]', el).addEventListener('click', () => act('approve'));
+      $('[data-no]', el).addEventListener('click', () => act('deny'));
+    });
+  }
+
+  async function adminAnnounce(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Announcements');
+    let list, plans, resellers;
+    try { [list, plans, resellers] = await Promise.all([guard('/announcements'), guard('/plans').then((x) => x.plans || []), guard('/resellers').then((x) => x.resellers || []).catch(() => [])]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Announcements</h2><p class="live-result bad">${guardTooOld(e, 'announcements')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const levelName = { info: 'Info', warn: 'Warning', bad: 'Outage' };
+    body.innerHTML = `
+      <section class="admin-card"><h2>New announcement <small>Customers see it as a banner and in their notifications</small></h2>
+        <label class="admin-field"><span>Message</span><input type="text" data-f="text" maxlength="200" placeholder="e.g. Maintenance tonight 2–3 AM"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info</option><option value="warn">Warning</option><option value="bad">Outage</option></select></label>
+          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
+          <label class="admin-field"><span>Disappears after</span><select data-f="hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
+        </div>
+        <div class="m-actions"><button class="btn btn-red" data-send>Send now</button></div><div class="live-result" data-result></div></section>
+      <section class="admin-card"><h2>Showing now</h2><div class="admin-list">${list.announcements.map((a) => `<div class="admin-row" data-a="${esc(a.id)}"><div class="admin-row-main"><span class="pill${a.level === 'bad' ? ' bad' : a.level === 'warn' ? ' warn' : ''}">${levelName[a.level] || 'Info'}</span> <strong>${esc(a.text)}</strong>
+          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
+    const f = (k) => $(`[data-f="${k}"]`, body);
+    $('[data-send]', body).addEventListener('click', async () => {
+      const [type, id] = f('aud').value.split(':'), r = $('[data-result]', body);
+      try { await guard('/announcements', { method: 'POST', body: { text: f('text').value, level: f('level').value, hours: Number(f('hours').value), audience: { type, id } } }); toast('Sent', 2500); refreshInbox(); if (isCurrent()) adminAnnounce(body, isCurrent); }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+    $$('[data-a]', body).forEach((el) => $('[data-rm]', el).addEventListener('click', async () => { try { await guard(`/announcements/${encodeURIComponent(el.dataset.a)}`, { method: 'DELETE' }); toast('Removed', 1500); refreshInbox(); if (isCurrent()) adminAnnounce(body, isCurrent); } catch (e) { toast(e.message, 4000); } }));
+  }
+
+  async function adminSupport(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Support');
+    let d;
+    try { d = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Support</h2><p class="live-result bad">${guardTooOld(e, 'Support')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const tickets = [...d.tickets].sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || b.updated - a.updated);
+    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
+    body.innerHTML = `<section class="admin-card"><h2>Support <small>Messages customers sent with Get help</small></h2><div class="admin-list">${tickets.map((t) => `<div class="admin-row support-row" data-t="${esc(t.id)}"><div class="admin-row-main">
+        <strong>${esc(t.name)}</strong> <span class="pill${t.status === 'open' ? ' warn' : ''}">${t.status === 'open' ? 'Open' : 'Solved'}</span>${t.reseller ? ` <span class="muted">via ${esc(t.reseller)}</span>` : ''}
+        <div class="help-thread">${t.messages.map((m) => `<div class="help-msg ${m.from === 'user' ? 'them' : 'me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(t.name) : esc(m.by || 'You')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
+        <div class="help-diag muted">${diag(t.diag)}</div>
+        <textarea class="st-note-input" data-reply rows="2" maxlength="1000" placeholder="Reply"></textarea>
+        <div class="m-actions"><button class="btn btn-white" data-send>Reply</button><button class="btn btn-gray" data-toggle>${t.status === 'open' ? 'Mark solved' : 'Reopen'}</button></div></div></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div></section>`;
+    $$('[data-t]', body).forEach((el) => {
+      const t = tickets.find((x) => x.id === el.dataset.t);
+      $('[data-send]', el).addEventListener('click', async () => {
+        const text = $('[data-reply]', el).value.trim();
+        if (!text) { toast('Write a reply first', 2000); return; }
+        try { await guard(`/support/${encodeURIComponent(t.id)}/reply`, { method: 'POST', body: { text } }); toast('Reply sent', 2000); refreshInbox(); if (isCurrent()) adminSupport(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+      $('[data-toggle]', el).addEventListener('click', async () => { try { await guard(`/support/${encodeURIComponent(t.id)}`, { method: 'PUT', body: { status: t.status === 'open' ? 'solved' : 'open' } }); refreshInbox(); if (isCurrent()) adminSupport(body, isCurrent); } catch (e) { toast(e.message, 4000); } });
+    });
+  }
+
   // ----- The reseller's own panel (profile menu → Reseller panel) -----
   async function renderReseller(page, isCurrent) {
     page.innerHTML = '<div class="page-pad reseller-page"><div class="page-head"><h1>Reseller panel</h1></div><div class="spinner"></div></div>';
@@ -6511,6 +6746,7 @@
         <div class="plan-actions"><button class="btn btn-gray" data-details>Details</button><button class="btn btn-gray" data-renew>Renew</button></div></div>`;
     const lRow = (e) => `<div class="admin-row"><div class="admin-row-main">${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}<div class="muted">${esc(e.by)}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
     const soon = d.customers.filter((c) => !c.expired && c.daysLeft != null && c.daysLeft <= 7).length, gone = d.customers.filter((c) => c.expired).length;
+    const need = d.customers.filter((c) => c.expired || (c.daysLeft != null && c.daysLeft <= 7));
     root.innerHTML = `${head}
       <div class="stat-grid">
         ${statTile('Your credits', d.credits, d.low ? 'running low' : 'available', d.low ? 'bad' : '')}
@@ -6518,7 +6754,14 @@
         ${statTile('Ending within 7 days', soon, '')}
         ${statTile('Expired', gone, '')}
       </div>
-      ${d.low ? '<section class="admin-card"><p><strong>Running low on credits.</strong> Contact your provider to top up.</p></section>' : ''}
+      ${d.low ? '<section class="admin-card"><p><strong>Running low on credits.</strong> Ask your provider for more below.</p></section>' : ''}
+      ${d.report ? '' : '<section class="admin-card"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
+      <section class="admin-card${d.report ? '' : ' hidden'}"><h2>Credits <small>${esc(d.report?.month || '')}</small></h2>
+        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div>
+        ${d.request ? `<p class="muted">Your request for ${esc(creditsWord(d.request.amount))} is waiting for your provider.</p>` : '<div class="m-actions"><button class="btn btn-gray" data-ask>Request credits</button></div><div class="plan-form hidden" data-askform></div>'}</section>
+      ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
+        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}<div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
+        <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
       <section class="admin-card"><h2>My customers</h2>
         <div class="admin-list" data-list>${d.customers.map(cRow).join('') || '<p class="muted">No customers yet. Add your first one.</p>'}</div>
         <div class="m-actions"><button class="btn btn-white" data-new>New customer</button></div>
@@ -6595,6 +6838,33 @@
       form.scrollIntoView({ block: 'center' });
     };
     $('[data-new]', root).addEventListener('click', openNew);
+    $('[data-ask]', root)?.addEventListener('click', () => {
+      const af = $('[data-askform]', root); af.classList.remove('hidden');
+      af.innerHTML = `<div class="plan-grid"><label class="admin-field"><span>How many credits?</span><input type="number" data-f="amount" min="1" max="1000" step="1" inputmode="numeric" value="20"></label><label class="admin-field"><span>Note (optional)</span><input type="text" data-f="note" maxlength="200" placeholder="e.g. 12 renewals this week"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-sendreq>Send request</button><button class="btn btn-gray" data-cancelreq>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancelreq]', af).addEventListener('click', () => { af.classList.add('hidden'); af.innerHTML = ''; });
+      $('[data-sendreq]', af).addEventListener('click', async () => {
+        try { await guard('/reseller/credit-request', { method: 'POST', params: { userId: state.userId }, body: { amount: Number($('[data-f="amount"]', af).value), note: $('[data-f="note"]', af).value } }); toast('Request sent to your provider', 3000); reload(); }
+        catch (e) { const r = $('[data-result]', af); r.className = 'live-result bad'; r.textContent = e.message; }
+      });
+    });
+    const chosenIds = () => $$('[data-n]:checked', root).map((x) => x.dataset.n);
+    $('[data-bulk]', root)?.addEventListener('click', async () => {
+      const ids = chosenIds(), res = $('[data-bulkresult]', root);
+      if (!ids.length) { res.className = 'live-result bad'; res.textContent = 'Choose at least one customer.'; return; }
+      const cost = ids.reduce((n, id) => { const c = d.customers.find((x) => x.id === id); const p = d.plans.find((x) => x.id === c.planId) || d.plans[0]; return n + (p ? p.credits : 0); }, 0);
+      if (!(await confirmAction(`Renew ${ids.length} ${ids.length === 1 ? 'customer' : 'customers'}?`, `This uses ${creditsWord(cost)}. You have ${d.credits}.`, 'Renew'))) return;
+      try { const r = await guard('/reseller/renew-many', { method: 'POST', params: { userId: state.userId }, body: { ids } }); toast(`Renewed ${r.renewed} · ${creditsWord(r.spent)} used`, 3500); reload(); }
+      catch (e) { res.className = 'live-result bad'; res.textContent = e.message; }
+    });
+    $('[data-msgs]', root)?.addEventListener('click', () => {
+      const lines = chosenIds().map((id) => d.customers.find((x) => x.id === id)).filter(Boolean).map((c) => {
+        const first = (c.full || c.name).split(' ')[0];
+        return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
+      }).join('\n\n');
+      if (!lines) { toast('Choose at least one customer', 2500); return; }
+      try { navigator.clipboard.writeText(lines).then(() => toast('Messages copied', 2000), () => toast(lines, 8000)); } catch { toast(lines, 8000); }
+    });
     $$('[data-c]', root).forEach((el) => {
       const c = d.customers.find((x) => x.id === el.dataset.c);
       $('[data-details]', el).addEventListener('click', () => openDetails(c));

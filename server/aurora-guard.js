@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.10.0';
+const VERSION = '1.11.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -58,6 +58,9 @@ function loadConfig() {
     // Resellers: a reseller is warned when their credits are at or under this, and can start this many free 2-day trials a day.
     resellerLowCredits: 3,
     resellerTrialsPerDay: 5,
+    // Refer a friend: free days for both people (0 switches it off), and the most friends one customer can bring a year.
+    referralDays: 7,
+    referralMaxPerYear: 10,
     // Sports scores (Live TV -> Sports): ESPN's public scoreboard feed. It is not an official, documented API and ESPN can change or
     // stop it at any time. Set "scoresEnabled": false to switch it off, or "scoresBase" to point at another server with the same shape.
     scoresEnabled: true,
@@ -279,6 +282,7 @@ const planCredits = (p) => (Number.isInteger(p.credits) && p.credits >= 0 ? p.cr
 const resellerList = () => store.resellers || (store.resellers = {});
 const resellerOfUser = (userId) => Object.values(resellerList()).find((r) => r.userId === userId) || null;
 const resellerBusy = new Set();
+const supportCount = new Map();
 const cleanUserName = (v) => { const t = String(v || '').trim(); return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(t) ? t : null; };
 const cleanText = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 function creditEntry(r, delta, why, by, extra) {
@@ -323,6 +327,85 @@ async function newEmbyAccount(name, password) {
   return u;
 }
 const genPassword = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; return w[crypto.randomInt(w.length)] + w[crypto.randomInt(w.length)] + (10 + crypto.randomInt(90)); };
+
+// ---------- Notifications, announcements, support, referrals, stats (guard 1.11.0) ----------
+const audienceOk = (a, userId) => {
+  const au = a.audience || { type: 'all' }, rec = store.users[userId];
+  if (au.type === 'plan') return rec?.plan?.id === au.id;
+  if (au.type === 'reseller') return rec?.reseller === au.id;
+  return true;
+};
+let newTitlesCache = { at: 0, text: '', n: 0 };
+async function newTitlesNote() {
+  if (Date.now() - newTitlesCache.at < 10 * 60000) return newTitlesCache;
+  newTitlesCache = { at: Date.now(), text: '', n: 0 };
+  try {
+    const r = await emby('GET', '/Items', { query: { Recursive: 'true', SortBy: 'DateCreated', SortOrder: 'Descending', IncludeItemTypes: 'Movie,Series', Limit: 30, Fields: 'DateCreated' } });
+    const week = Date.now() - 7 * 86400000;
+    const fresh = (r?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > week);
+    newTitlesCache = { at: Date.now(), n: fresh.length, text: fresh.slice(0, 3).map((i) => i.Name).join(', '), newest: fresh[0] ? Date.parse(fresh[0].DateCreated) : 0 };
+  } catch { /* no list: no notice */ }
+  return newTitlesCache;
+}
+async function inboxFor(me) {
+  const now = Date.now(), items = [];
+  for (const a of store.announcements || []) {
+    if (a.expires && a.expires < now) continue;
+    if (!audienceOk(a, me.Id)) continue;
+    items.push({ id: 'ann:' + a.id, type: 'announcement', level: a.level, title: a.text, text: 'From your provider', at: a.at });
+  }
+  const rec = store.users[me.Id];
+  if (rec?.expires && !me.Policy?.IsAdministrator) {
+    const d = daysUntil(rec.expires), end = new Date(rec.expires + 'T23:59:59').getTime();
+    if (d < 0) items.push({ id: `plan:${rec.expires}:x`, type: 'plan', level: 'bad', title: 'Your access has ended', text: 'Ask for more time to keep watching.', at: end, action: 'renew' });
+    else { const b = d <= 1 ? 1 : d <= 3 ? 3 : d <= 7 ? 7 : 0; if (b) items.push({ id: `plan:${rec.expires}:${b}`, type: 'plan', level: b <= 3 ? 'warn' : 'info', title: d <= 1 ? 'Your plan ends today or tomorrow' : `Your plan ends in ${d} days`, text: `${rec.plan?.name ? rec.plan.name + ' · ' : ''}ends ${rec.expires}`, at: end - b * 86400000, action: 'renew' }); }
+  }
+  const nt = await newTitlesNote();
+  if (nt.n) items.push({ id: 'new:' + dayKey(nt.newest), type: 'new', level: 'info', title: `New this week: ${nt.text}${nt.n > 3 ? ` and ${nt.n - 3} more` : ''}`, text: 'Added to Aurora', at: nt.newest || now, action: 'browse' });
+  const t = (store.tickets || []).find((x) => x.userId === me.Id && x.status === 'open');
+  const lastAdmin = t && [...t.messages].reverse().find((m) => m.from !== 'user');
+  if (lastAdmin) items.push({ id: `support:${t.id}:${lastAdmin.at}`, type: 'support', level: 'info', title: 'Reply from support', text: lastAdmin.text.slice(0, 120), at: lastAdmin.at, action: 'help' });
+  const read = (store.inboxRead || {})[me.Id] || 0;
+  items.sort((a, b) => b.at - a.at);
+  for (const i of items) i.unread = i.at > read;
+  return { items: items.slice(0, 40), unread: items.filter((i) => i.unread).length, banners: items.filter((i) => i.type === 'announcement').map((i) => ({ id: i.id, level: i.level, text: i.title })) };
+}
+const ticketPublic = (t) => ({ id: t.id, userId: t.userId, name: t.name, status: t.status, at: t.at, updated: t.updated, diag: t.diag || null, reseller: t.resellerName || '', messages: t.messages });
+const cleanDiag = (d) => {
+  const o = {}; if (!d || typeof d !== 'object') return o;
+  for (const k of ['app', 'device', 'connection', 'playing', 'status', 'errors']) if (d[k] !== undefined) o[k] = cleanText(Array.isArray(d[k]) ? d[k].join(' | ') : d[k], 400);
+  return o;
+};
+function statsFor(userId) {
+  const now = Date.now(), out = { thisWeek: 0, lastWeek: 0, live: 0, days: 0, top: [] }, titles = {};
+  for (let i = 0; i < 14; i++) {
+    const u = (store.usage || {})[dayKey(now - i * 86400000)]?.[userId];
+    if (!u) continue;
+    if (i < 7) { out.thisWeek += u.min; out.days++; for (const [t, m] of Object.entries(u.titles || {})) { if (t.startsWith('Live:')) out.live += m; else titles[t] = (titles[t] || 0) + m; } } else out.lastWeek += u.min;
+  }
+  out.top = Object.entries(titles).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([title, minutes]) => ({ title, minutes: Math.round(minutes) }));
+  out.thisWeek = Math.round(out.thisWeek); out.lastWeek = Math.round(out.lastWeek); out.live = Math.round(out.live);
+  return out;
+}
+function referralCode(userId, name) {
+  const rec = store.users[userId] || (store.users[userId] = { limit: cfg.defaultLimit, expires: null, name, updated: Date.now() });
+  if (!rec.refCode) {
+    const base = String(name).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'FRIEND';
+    let code;
+    do { code = `${base}-${crypto.randomBytes(2).toString('hex').toUpperCase().slice(0, 3)}`; } while (Object.values(store.users).some((u) => u.refCode === code));
+    rec.refCode = code; saveStore();
+  }
+  return rec.refCode;
+}
+// Free days for a friend and the person who brought them, taken from today or from the end date if that is later.
+function giveDays(userId, days, why) {
+  const rec = store.users[userId];
+  if (!rec?.expires) return false;
+  const today = localDay(new Date()), from = rec.expires > today ? rec.expires : today;
+  rec.expires = addDays(from, days); rec.updated = Date.now();
+  recordAction({ type: 'extended', userId, name: rec.name, why: `${why}: +${days} days, now ends ${rec.expires}` });
+  return true;
+}
 
 // ---------- Plan details and extension requests ----------
 // A customer sees their own plan (devices allowed, in use now, the date access ends) and may ask for more time;
@@ -716,6 +799,10 @@ function describeChange(req, url, subject) {
   if ((r = p.match(/^\/resellers\/([\w-]{1,32})$/)) && m === 'PUT') return `Changed the reseller ${(store.resellers || {})[r[1]]?.name || ''}${b.status ? ` (${b.status})` : ''}`.trim();
   if ((r = p.match(/^\/resellers\/([\w-]{1,32})\/credits$/)) && m === 'POST') return `${b.mode === 'remove' ? 'Removed' : b.mode === 'set' ? 'Set to' : 'Added'} ${b.amount} credits for ${(store.resellers || {})[r[1]]?.name || 'a reseller'}${b.why ? ' (' + String(b.why).slice(0, 40) + ')' : ''}`;
   if ((r = p.match(/^\/resellers\/([\w-]{1,32})\/password$/)) && m === 'POST') return `Reset the password of the reseller ${(store.resellers || {})[r[1]]?.name || ''}`.trim();
+  if (p === '/announcements' && m === 'POST') return `Sent the announcement "${String(b.text || '').slice(0, 60)}"`;
+  if (/^\/announcements\//.test(p) && m === 'DELETE') return 'Removed an announcement';
+  if (/^\/credit-requests\//.test(p) && m === 'PUT') return `${b.action === 'approve' ? 'Approved' : 'Declined'} a credit request`;
+  if (/^\/support\//.test(p)) return '';
   if (p === '/status-note' && m === 'PUT') return b.text ? `Set the Status page message: "${String(b.text).slice(0, 60)}"` : 'Cleared the Status page message';
   if (p === '/sports/refresh') return '';
   if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
@@ -1342,7 +1429,10 @@ async function handle(req, res) {
       const trialsToday = Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length;
       return send(res, 200, { reseller: true, name: r.name, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
         plans: (store.plans || []).filter((p) => p.active !== false && (r.plans || []).includes(p.id)).map((p) => ({ id: p.id, name: p.name, connections: p.connections, length: p.length, unit: p.unit, credits: planCredits(p) })),
-        customers: mine, ledger: (store.creditLog || []).filter((e) => e.reseller === r.id).slice(0, 40) });
+        customers: mine, ledger: (store.creditLog || []).filter((e) => e.reseller === r.id).slice(0, 40),
+        request: (store.creditRequests || []).find((x) => x.reseller === r.id && x.status === 'pending') || null,
+        report: (() => { const ms = new Date(); ms.setDate(1); ms.setHours(0, 0, 0, 0); const e = (store.creditLog || []).filter((x) => x.reseller === r.id && x.at >= ms.getTime());
+          return { month: ms.toLocaleString('en-US', { month: 'long', year: 'numeric' }), added: e.filter((x) => x.customer && x.delta <= 0 && !/^Renewed/.test(x.why)).length, renewed: e.filter((x) => /^Renewed/.test(x.why)).length, used: -e.filter((x) => x.delta < 0).reduce((n, x) => n + x.delta, 0), received: e.filter((x) => x.delta > 0).reduce((n, x) => n + x.delta, 0) }; })() });
     }
     if (!r) return send(res, 403, { error: 'This account is not a reseller.' });
     if (r.status !== 'active') return send(res, 403, { error: 'This reseller account is suspended. Contact your provider.' });
@@ -1382,6 +1472,38 @@ async function handle(req, res) {
         copyAppDefaults(user.Id).catch(() => {});
         try { await enforce(user.Id); } catch (e) { log('Applying', username, 'failed:', e.message); }
         return send(res, 200, { ok: true, password, credits: r.credits, customer: publicCustomer(user.Id, rec) });
+      }
+      if (url.pathname === '/reseller/credit-request' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const amount = Number(body.amount);
+        if (!Number.isInteger(amount) || amount < 1 || amount > 1000) return send(res, 400, { error: 'Ask for a whole number of credits from 1 to 1000.' });
+        if ((store.creditRequests || []).some((x) => x.reseller === r.id && x.status === 'pending')) return send(res, 409, { error: 'You already have a request waiting. Your provider will answer it.' });
+        const entry = { id: crypto.randomBytes(5).toString('hex'), reseller: r.id, amount, note: cleanText(body.note, 200), at: Date.now(), status: 'pending' };
+        store.creditRequests = [entry, ...(store.creditRequests || [])].slice(0, 300);
+        saveStore();
+        sendAlert('Aurora: credit request', `${r.name} asked for ${amount} credits.${entry.note ? '\n"' + entry.note + '"' : ''}`, false);
+        return send(res, 200, { ok: true, request: entry });
+      }
+      if (url.pathname === '/reseller/renew-many' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const ids = [...new Set(Array.isArray(body.ids) ? body.ids.map(String) : [])].filter((id) => owns(id)).slice(0, 50);
+        if (!ids.length) return send(res, 400, { error: 'Choose at least one of your customers.' });
+        const plans = ids.map((id) => ({ id, plan: sellable(body.planId || store.users[id].plan?.id) }));
+        const missing = plans.find((x) => !x.plan);
+        if (missing) return send(res, 400, { error: `${store.users[missing.id].name} is on a plan you can't sell. Renew them one by one.` });
+        const total = plans.reduce((n, x) => n + planCredits(x.plan), 0);
+        if (r.credits < total) return send(res, 402, { error: `Not enough credits: this costs ${total} and you have ${r.credits}.` });
+        for (const { id, plan } of plans) {
+          const rec = store.users[id], cost = planCredits(plan);
+          applyPlan(id, rec.name, plan, 'extend'); rec.trial = false;
+          creditEntry(r, -cost, 'Renewed ' + plan.name, by, { customer: rec.name });
+        }
+        recordAudit(by, `Renewed ${ids.length} customers (${total} credits)`);
+        saveStore();
+        for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
+        return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
       const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout))?$/);
       if (cm) {
@@ -1427,6 +1549,81 @@ async function handle(req, res) {
       }
       return send(res, 404, { error: 'Not found' });
     } finally { resellerBusy.delete(r.id); }
+  }
+
+  // ----- Notifications, support, referrals and stats: the signed-in customer's own (guard 1.11.0) -----
+  if (url.pathname === '/inbox' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, await inboxFor(me));
+  }
+  if (url.pathname === '/inbox/read' && req.method === 'POST') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    (store.inboxRead || (store.inboxRead = {}))[me.Id] = Date.now();
+    saveStore();
+    return send(res, 200, { ok: true });
+  }
+  if (url.pathname === '/support' && (req.method === 'GET' || req.method === 'POST') && url.searchParams.get('userId')) {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const mine = (store.tickets || []).filter((x) => x.userId === me.Id);
+    if (req.method === 'GET') return send(res, 200, { ticket: mine[0] ? ticketPublic(mine[0]) : null });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const text = cleanText(body.text, 1000);
+    if (!text) return send(res, 400, { error: 'Write a message first.' });
+    const c = supportCount.get(me.Id);
+    if (!c || Date.now() - c.since > 3600000) supportCount.set(me.Id, { n: 1, since: Date.now() });
+    else if (++c.n > 10) return send(res, 429, { error: 'That is a lot of messages. Please wait a little.' });
+    let t = mine[0] && mine[0].status === 'open' ? mine[0] : null;
+    const rec = store.users[me.Id];
+    if (!t) {
+      t = { id: crypto.randomBytes(5).toString('hex'), userId: me.Id, name: me.Name, status: 'open', at: Date.now(), messages: [], resellerName: rec?.reseller ? (resellerList()[rec.reseller]?.name || '') : '' };
+      store.tickets = [t, ...(store.tickets || [])].slice(0, 500);
+    }
+    t.messages.push({ from: 'user', text, at: Date.now() });
+    if (t.messages.length > 100) t.messages.shift();
+    if (body.diag) t.diag = cleanDiag(body.diag);
+    t.updated = Date.now(); t.unseen = true;
+    saveStore();
+    if (t.messages.filter((m) => m.from === 'user').length === 1) sendAlert('Aurora: support message', `${me.Name}: ${text.slice(0, 200)}`, false);
+    return send(res, 200, { ok: true, ticket: ticketPublic(t) });
+  }
+  if (url.pathname === '/referral' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const rec = store.users[me.Id];
+    const friends = Object.values(store.users).filter((u) => u.referredBy === me.Id).map((u) => ({ name: u.name, at: u.referredAt || 0 }));
+    return send(res, 200, { enabled: cfg.referralDays > 0, days: cfg.referralDays, code: cfg.referralDays > 0 ? referralCode(me.Id, me.Name) : null, friends, earned: friends.length * cfg.referralDays, canRedeem: cfg.referralDays > 0 && !rec?.referredBy && !me.Policy?.IsAdministrator });
+  }
+  if (url.pathname === '/referral/redeem' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const me = await userOfToken(token, String(body.userId || ''));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    if (!(cfg.referralDays > 0)) return send(res, 400, { error: 'Referrals are switched off.' });
+    if (me.Policy?.IsAdministrator) return send(res, 400, { error: 'Administrator accounts cannot use a code.' });
+    const code = String(body.code || '').trim().toUpperCase();
+    const mine = store.users[me.Id] || (store.users[me.Id] = { limit: cfg.defaultLimit, expires: null, name: me.Name, updated: Date.now() });
+    if (mine.referredBy) return send(res, 409, { error: 'You have already used a code.' });
+    const refId = Object.keys(store.users).find((id) => store.users[id].refCode === code);
+    if (!refId || refId === me.Id) return send(res, 404, { error: 'That code was not found.' });
+    const seen = Math.min(mine.created || Infinity, ...Object.values(store.firstSeen[me.Id] || {}));
+    if (Number.isFinite(seen) && Date.now() - seen > 14 * 86400000) return send(res, 409, { error: 'Codes can be used in the first 14 days of an account.' });
+    const yearAgo = Date.now() - 365 * 86400000;
+    if (Object.values(store.users).filter((u) => u.referredBy === refId && (u.referredAt || 0) > yearAgo).length >= cfg.referralMaxPerYear) return send(res, 409, { error: 'That code has reached its limit.' });
+    mine.referredBy = refId; mine.referredAt = Date.now();
+    const gotYou = giveDays(me.Id, cfg.referralDays, 'referral code'), gotThem = giveDays(refId, cfg.referralDays, `referral: ${me.Name} joined`);
+    recordAudit('Referral', `${me.Name} used the code of ${store.users[refId].name}${gotYou ? ` (+${cfg.referralDays} days each)` : ' (no end date to extend)'}`);
+    saveStore();
+    try { await enforce(me.Id); if (gotThem) await enforce(refId); } catch { /* applied at the next check */ }
+    return send(res, 200, { ok: true, days: gotYou ? cfg.referralDays : 0, expires: mine.expires });
+  }
+  if (url.pathname === '/stats' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, statsFor(me.Id));
   }
 
   // Everything else: Emby administrators only.
@@ -1483,6 +1680,86 @@ async function handle(req, res) {
       streams: { playing: health.playing, transcoding: health.transcoding, direct: health.direct, live: connections.inUse || 0 },
       disks: diskInfo(), emby: { online: embyReach.ok, error: embyReach.error }, history,
     });
+  }
+
+  // ----- Announcements, support inbox, credit requests (admin) -----
+  if (url.pathname === '/announcements' && req.method === 'GET') {
+    const now = Date.now();
+    return send(res, 200, { announcements: (store.announcements || []).filter((a) => !a.expires || a.expires > now) });
+  }
+  if (url.pathname === '/announcements' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const text = cleanText(body.text, 200);
+    if (!text) return send(res, 400, { error: 'Write the message.' });
+    const level = ['info', 'warn', 'bad'].includes(body.level) ? body.level : 'info';
+    const hours = Number(body.hours);
+    if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30) return send(res, 400, { error: 'It must last between 1 hour and 30 days.' });
+    let audience = { type: 'all' };
+    if (body.audience && body.audience.type && body.audience.type !== 'all') {
+      const ok = (body.audience.type === 'plan' && (store.plans || []).some((p) => p.id === body.audience.id)) || (body.audience.type === 'reseller' && resellerList()[body.audience.id]);
+      if (!ok) return send(res, 400, { error: 'Choose who should get it: everyone, a plan, or a reseller that exists.' });
+      audience = { type: body.audience.type, id: body.audience.id };
+    }
+    const a = { id: crypto.randomBytes(5).toString('hex'), text, level, at: Date.now(), expires: Date.now() + hours * 3600000, audience, by: auditBy };
+    store.announcements = [a, ...(store.announcements || [])].slice(0, 100);
+    saveStore();
+    return send(res, 200, { ok: true, announcement: a });
+  }
+  const anm = url.pathname.match(/^\/announcements\/([\w-]{1,32})$/);
+  if (anm && req.method === 'DELETE') { store.announcements = (store.announcements || []).filter((a) => a.id !== anm[1]); saveStore(); return send(res, 200, { ok: true }); }
+  if (url.pathname === '/support' && req.method === 'GET') {
+    return send(res, 200, { tickets: (store.tickets || []).slice(0, 100).map(ticketPublic) });
+  }
+  const spm = url.pathname.match(/^\/support\/([\w-]{1,32})(?:\/(reply))?$/);
+  if (spm) {
+    const t = (store.tickets || []).find((x) => x.id === spm[1]);
+    if (!t) return send(res, 404, { error: 'No such message' });
+    let body = {};
+    if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if (spm[2] === 'reply' && req.method === 'POST') {
+      const text = cleanText(body.text, 1000);
+      if (!text) return send(res, 400, { error: 'Write a reply.' });
+      t.messages.push({ from: 'admin', by: auditBy, text, at: Date.now() }); t.updated = Date.now(); t.unseen = false; t.status = 'open';
+      saveStore();
+      return send(res, 200, { ok: true, ticket: ticketPublic(t) });
+    }
+    if (!spm[2] && req.method === 'PUT') {
+      if (body.status === 'open' || body.status === 'solved') { t.status = body.status; t.unseen = false; }
+      saveStore();
+      return send(res, 200, { ok: true, ticket: ticketPublic(t) });
+    }
+  }
+  if (url.pathname === '/credit-requests' && req.method === 'GET') {
+    return send(res, 200, { requests: (store.creditRequests || []).slice(0, 60).map((x) => ({ ...x, resellerName: resellerList()[x.reseller]?.name || '', balance: resellerList()[x.reseller]?.credits ?? null })) });
+  }
+  const crm = url.pathname.match(/^\/credit-requests\/([\w-]{1,32})$/);
+  if (crm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const x = (store.creditRequests || []).find((q) => q.id === crm[1]);
+    if (!x) return send(res, 404, { error: 'No such request' });
+    if (x.status !== 'pending') return send(res, 409, { error: `Already ${x.status}.` });
+    const r = resellerList()[x.reseller];
+    if (body.action === 'approve') {
+      if (!r) return send(res, 404, { error: 'That reseller no longer exists.' });
+      const amount = body.amount === undefined ? x.amount : Number(body.amount);
+      if (!Number.isInteger(amount) || amount < 1 || amount > 100000) return send(res, 400, { error: 'The credits must be a whole number from 1 up.' });
+      creditEntry(r, amount, 'Request approved', auditBy);
+      x.status = 'approved'; x.granted = amount;
+    } else if (body.action === 'deny') x.status = 'denied';
+    else return send(res, 400, { error: 'action must be approve or deny' });
+    x.decidedAt = Date.now(); x.by = auditBy;
+    saveStore();
+    return send(res, 200, { ok: true, request: x });
+  }
+  // One number for the Admin menu, and what is in it.
+  if (url.pathname === '/admin-inbox' && req.method === 'GET') {
+    const pendingExt = (store.extensions || []).filter((e) => e.status === 'pending').length;
+    const requests = (store.creditRequests || []).filter((x) => x.status === 'pending').length;
+    const tickets = (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length;
+    const low = Object.values(resellerList()).filter((r) => r.status === 'active' && r.credits <= cfg.resellerLowCredits).map((r) => ({ id: r.id, name: r.name, credits: r.credits }));
+    return send(res, 200, { total: pendingExt + requests + tickets + low.length, extensions: pendingExt, creditRequests: requests, tickets, lowResellers: low });
   }
 
   // ----- Resellers (admin): add a reseller, change their details and plans, add or remove credits, see the ledger. -----
