@@ -243,6 +243,7 @@
     if (/\/Items\/[\w-]+$/.test(path) && data.Id && !kidsAllows(data)) throw Object.assign(new Error('Not available in Kids mode'), { status: 403, path });
     return data;
   }
+  const resellerOnly = () => !!state.isReseller && !isAdmin();
   function applyKidsUi() {
     const on = kidsOn();
     document.documentElement.classList.toggle('kids', on);
@@ -251,6 +252,8 @@
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
     $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isAdmin());
     $('#profile-dropdown [data-action="reseller"]')?.classList.toggle('hidden', on || !state.isReseller);
+    document.documentElement.classList.toggle('reseller-only', resellerOnly());
+    $('#profile-dropdown [data-action="settings"]')?.classList.toggle('hidden', resellerOnly());
     paintBell(); paintBanners();
   }
   // A number pad (works with a remote). Resolves with the digits, or null when cancelled.
@@ -972,11 +975,22 @@
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
-    state.isReseller = false;
-    syncDownloadLicense();
+    // A reseller account only gets the Reseller panel (no content, Live TV or Requests). Known from last time, then checked with the guard;
+    // the first time on this device the page waits a moment for the answer so nothing else flashes up.
+    state.isReseller = store.get('ef.reseller.' + user.Id) === '1';
+    if (guardEnabled && !isAdmin()) {
+      const known = store.get('ef.reseller.' + user.Id) != null;
+      const check = guard('/reseller/me', { params: { userId: user.Id }, quick: true }).then((r) => {
+        const is = !!r.reseller, changed = is !== state.isReseller;
+        store.set('ef.reseller.' + user.Id, is ? '1' : '0'); state.isReseller = is; applyKidsUi();
+        if (changed && state.userId === user.Id) { location.hash = is ? '#/reseller' : '#/home'; route(); }
+      }).catch(() => {});
+      if (!known) await Promise.race([check, new Promise((r) => setTimeout(r, 2500))]);
+    }
+    applyKidsUi();
+    if (!resellerOnly()) syncDownloadLicense();
     refreshInbox();
     clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
-    if (guardEnabled && !isAdmin()) guard('/reseller/me', { params: { userId: state.userId }, quick: true }).then((r) => { state.isReseller = !!r.reseller; applyKidsUi(); }).catch(() => {});
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
     setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
@@ -1022,6 +1036,7 @@
     }
 
     const isCurrent = () => token === routeToken;
+    if (resellerOnly() && name !== 'reseller') { location.replace('#/reseller'); return; }
     if (kidsOn()) {
       if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
@@ -6626,12 +6641,13 @@
     if (!el) return;
     const gone = dismissedAnn();
     const list = (inboxState.banners || []).filter((a) => !gone.has(a.id)).slice(0, 2);
-    el.classList.toggle('hidden', !list.length || kidsOn());
+    el.classList.toggle('hidden', !list.length || kidsOn() || resellerOnly());
     el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span><button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button></div>`).join('');
     document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
     $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
   }
   async function refreshInbox() {
+    if (resellerOnly()) { inboxState.ok = false; paintBell(); paintBanners(); return; }
     if (!guardEnabled || !state.userId) { inboxState.ok = false; paintBell(); return; }
     try {
       const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });

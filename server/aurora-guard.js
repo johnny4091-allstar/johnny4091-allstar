@@ -326,6 +326,12 @@ async function newEmbyAccount(name, password) {
   } catch (e) { await emby('DELETE', `/Users/${u.Id}`).catch(() => {}); throw new Error('Could not set the password: ' + e.message); }
   return u;
 }
+// A reseller account is for the panel only: nothing to watch, no Live TV, no downloads, even from other Emby apps.
+async function limitResellerAccount(userId) {
+  const fresh = await emby('GET', `/Users/${userId}`);
+  await emby('POST', `/Users/${userId}/Policy`, { body: { ...(fresh.Policy || {}), EnableAllFolders: false, EnabledFolders: [], EnableLiveTvAccess: false, EnableLiveTvManagement: false,
+    EnableMediaPlayback: false, EnableAudioPlaybackTranscoding: false, EnableVideoPlaybackTranscoding: false, EnablePlaybackRemuxing: false, EnableContentDownloading: false } });
+}
 const genPassword = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; return w[crypto.randomInt(w.length)] + w[crypto.randomInt(w.length)] + (10 + crypto.randomInt(90)); };
 
 // ---------- Notifications, announcements, support, referrals, stats (guard 1.11.0) ----------
@@ -1764,6 +1770,7 @@ async function handle(req, res) {
 
   // ----- Resellers (admin): add a reseller, change their details and plans, add or remove credits, see the ledger. -----
   if (url.pathname === '/resellers' && req.method === 'GET') {
+    for (const r of Object.values(resellerList())) if (!r.limited) { try { await limitResellerAccount(r.userId); r.limited = true; saveStore(); } catch { /* try again next time */ } }
     const list = Object.values(resellerList()).map(publicReseller);
     return send(res, 200, { resellers: list, totalCredits: list.reduce((n, r) => n + r.credits, 0), lowCredits: cfg.resellerLowCredits, log: (store.creditLog || []).slice(0, 40).map((e) => ({ ...e, resellerName: resellerList()[e.reseller]?.name || '' })) });
   }
@@ -1786,6 +1793,7 @@ async function handle(req, res) {
     const id = crypto.randomBytes(4).toString('hex');
     const r = { id, userId: user.Id, userName, name, contact: cleanText(body.contact, 100), credits: 0, status: 'active', plans: planIds, created: Date.now() };
     resellerList()[id] = r;
+    try { await limitResellerAccount(user.Id); r.limited = true; } catch (e) { log('Could not limit the reseller account', userName, '-', e.message); }
     if (credits) creditEntry(r, credits, 'Starting credits', auditBy);
     saveStore();
     log('Reseller added:', name, `(${userName}) with`, credits, 'credits');

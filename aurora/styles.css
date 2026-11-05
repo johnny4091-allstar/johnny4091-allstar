@@ -1646,3 +1646,6 @@ html:not(.tv) .page-pad { padding-top: calc(100px + var(--ann-h, 0px)); }
 .stats-hero { background: linear-gradient(150deg, rgba(124,58,237,.35), var(--bg-2)); }
 .need-row { display: flex; gap: .8rem; align-items: center; cursor: pointer; }
 .need-row input { width: 1.2rem; height: 1.2rem; flex: none; }
+
+/* A reseller account sees only the Reseller panel. */
+html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-only .mobile-tabs, html.reseller-only #bell-btn, html.reseller-only #announce { display: none !important; }
