@@ -1109,6 +1109,32 @@ public class MainActivity extends Activity {
             getSharedPreferences("aurora", MODE_PRIVATE).edit().putBoolean("appLock", on).apply();
         }
 
+        /** Offline downloads (see Downloads.java). Returns "" when started, otherwise a sentence for the customer. */
+        @JavascriptInterface
+        public String startDownload(String itemId, String url, String token, String title, String subtitle, String ext, boolean wifiOnly) {
+            return Downloads.start(getApplicationContext(), itemId, url, token, title, subtitle, ext, wifiOnly);
+        }
+
+        @JavascriptInterface
+        public String downloadsList() {
+            return Downloads.list(getApplicationContext());
+        }
+
+        @JavascriptInterface
+        public void removeDownload(String itemId) {
+            Downloads.remove(getApplicationContext(), itemId);
+        }
+
+        @JavascriptInterface
+        public void removeAllDownloads() {
+            Downloads.removeAll(getApplicationContext());
+        }
+
+        @JavascriptInterface
+        public String downloadsStorage() {
+            return Downloads.storage(getApplicationContext());
+        }
+
         /** A game reminder: a notification at this time (ms since 1970) that opens Live TV → Sports. */
         @JavascriptInterface
         public void scheduleReminder(String id, String title, String text, double whenMs) {

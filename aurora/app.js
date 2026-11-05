@@ -973,6 +973,7 @@
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
     state.isReseller = false;
+    syncDownloadLicense();
     refreshInbox();
     clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
     if (guardEnabled && !isAdmin()) guard('/reseller/me', { params: { userId: state.userId }, quick: true }).then((r) => { state.isReseller = !!r.reseller; applyKidsUi(); }).catch(() => {});
@@ -1022,7 +1023,7 @@
 
     const isCurrent = () => token === routeToken;
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats'].includes(name)) { location.hash = '#/home'; return; }
+      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1035,6 +1036,7 @@
       case 'status': return renderStatus(page, isCurrent);
       case 'reseller': return renderReseller(page, isCurrent);
       case 'inbox': return renderInbox(page, isCurrent);
+      case 'downloads': return renderDownloads(page, isCurrent);
       case 'help': return renderHelp(page, isCurrent);
       case 'refer': return renderRefer(page, isCurrent);
       case 'stats': return renderStats(page, isCurrent);
@@ -1643,6 +1645,7 @@
           <div class="m-actions">
             <button class="btn btn-white" data-act="play">${ICONS.play} <span>${resumeTicks ? 'Resume' : 'Play'}</span></button>
             ${resumeTicks ? `<button class="btn btn-gray" data-act="restart">Start Over</button>` : ''}
+            ${dlSupported() && downloadsAllowed() && !isSeries && !kidsOn() ? '<button class="btn btn-gray" data-act="download">Download</button>' : ''}
             ${hasTrailer(item) ? `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>` : ''}
             <button class="circle-btn" data-act="fav" title="Add to Favorites"></button>
             <button class="circle-btn" data-act="played" title="Mark as watched"></button>
@@ -1703,6 +1706,7 @@
     const extra = $('[data-extra]', content);
     const playBtn = $('[data-act="play"]', content);
     autoFocus(playBtn);
+    $('[data-act="download"]', content)?.addEventListener('click', () => startItemDownload(item));
 
     if (isSeries) {
       // Play button targets the focused episode, else next up, else the first episode.
@@ -4824,6 +4828,7 @@
         <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
       ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
+      ${dlSupported() && downloadsAllowed() ? `<section class="settings-section"><h2>Downloads</h2>${settingRow('Watch without internet', 'Movies and shows saved on this phone or tablet.', '<a class="btn btn-gray" href="#/downloads">Open Downloads</a>')}</section>` : ''}
       <section class="settings-section"><h2>Help &amp; more</h2>
         ${settingRow('Get help', 'Send a message to your provider with the details they need attached.', '<a class="btn btn-gray" href="#/help">Help &amp; support</a>')}
         ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
@@ -6508,6 +6513,101 @@
     });
   }
 
+  // ---------- Offline downloads (Android app) ----------
+  // The Android side (Downloads.java) saves the file with the system DownloadManager; this page asks Emby for the file, lists progress
+  // and plays a finished one through the normal player. Downloads stop working when the account ends (checked online with the guard and
+  // remembered as a date for offline use), and the admin can switch the feature off in Admin → Playback.
+  const dlSupported = () => !!nativeApp?.startDownload;
+  const downloadsAllowed = () => playbackCfg.downloads !== 'off';
+  const dlWifi = () => store.get('ef.dlWifi') !== '0';
+  let offlinePlaying = null, offlineMode = false;
+  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]'); } catch { return []; } };
+  const dlStorage = () => { try { return JSON.parse(nativeApp.downloadsStorage() || '{}'); } catch { return {}; } };
+  const offlineLicenseOk = () => { const e = store.get('ef.dl.expires'); return !e || Date.now() <= new Date(e + 'T23:59:59').getTime(); };
+  async function syncDownloadLicense() {
+    if (!dlSupported()) return;
+    if (!downloadsAllowed()) { if (dlItems().length) nativeApp.removeAllDownloads(); return; }
+    if (!guardEnabled || isAdmin()) return;
+    try {
+      const a = await guard('/account', { params: { userId: state.userId }, quick: true });
+      if (a.admin) return;
+      if (a.expired || a.disabled) { nativeApp.removeAllDownloads(); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
+    } catch { /* offline or an older guard: keep what is saved */ }
+  }
+  async function startItemDownload(item) {
+    try {
+      const full = await api(`/Users/${state.userId}/Items/${item.Id}`);
+      const source = full.MediaSources?.[0];
+      if (!source) throw new Error('This video has no file to download.');
+      const size = source.Size ? fmtBytes(source.Size) : '';
+      if (!(await confirmAction(`Download "${itemTitle(full)}"?`, `${size ? size + '. ' : ''}${dlWifi() ? 'It downloads on Wi-Fi only. ' : ''}You can watch it without internet while your plan is active.`, 'Download'))) return;
+      const ext = String(source.Container || 'mp4').split(',')[0].replace(/[^a-z0-9]/gi, '') || 'mp4';
+      const url = `${state.server}/emby/Items/${full.Id}/Download?MediaSourceId=${encodeURIComponent(source.Id)}`;
+      const err = nativeApp.startDownload(full.Id, url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
+      if (err) toast(err, 5000); else { toast('Download started. You can follow it in Settings → Downloads.', 4500); appLog.add('info', 'Download started: ' + itemTitle(full)); }
+    } catch (e) { toast(e.message || "Couldn't start the download", 4000); }
+  }
+  function playDownload(d) {
+    if (!offlineLicenseOk()) { toast('Your access has ended, so saved downloads are locked. Renew to watch them again.', 6000); return; }
+    offlinePlaying = d.itemId;
+    nativeApp.playVod(JSON.stringify({ url: d.url, hls: false, startMs: Number(store.get('ef.dl.pos.' + d.itemId)) || 0, title: d.title, subtitle: d.subtitle, subs: [], softwareDecoders: getPref('ffmpeg') !== 'off' }));
+  }
+  const dlRowHtml = (d) => {
+    const pct = d.total > 0 ? Math.min(100, Math.round(d.bytes / d.total * 100)) : 0;
+    const line = d.status === 'done' ? `Ready to watch offline${d.size ? ' · ' + fmtBytes(d.size) : ''}` : d.status === 'running' ? `${pct}%${d.total ? ` · ${fmtBytes(d.bytes)} of ${fmtBytes(d.total)}` : ''}` : d.status === 'paused' ? 'Waiting for Wi-Fi or a connection' : d.status === 'pending' ? 'Waiting to start' : "Failed. Remove it and try again.";
+    return `<div class="admin-row dl-row" data-dl="${esc(d.itemId)}"><div class="admin-row-main"><strong>${esc(d.title)}</strong>${d.subtitle ? ' <span class="muted">' + esc(d.subtitle) + '</span>' : ''}
+      <div class="muted">${esc(line)}</div>${d.status === 'running' || d.status === 'paused' || d.status === 'pending' ? `<div class="usage-bar"><span style="width:${Math.max(2, pct)}%"></span></div>` : ''}</div>
+      <div class="plan-actions">${d.status === 'done' ? '<button class="btn btn-white" data-play>Play</button>' : ''}<button class="btn btn-gray" data-rm>${d.status === 'done' || d.status === 'failed' ? 'Remove' : 'Cancel'}</button></div></div>`;
+  };
+  async function renderDownloads(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad dl-page"><div class="page-head"><h1>Downloads</h1></div><div data-body></div></div>';
+    const root = $('[data-body]', page);
+    if (!dlSupported()) { root.innerHTML = '<p class="empty-msg">Downloads are available in the Android app.</p>'; return; }
+    if (!downloadsAllowed()) { root.innerHTML = '<p class="empty-msg">Downloads are switched off by your provider.</p>'; return; }
+    let sig = '';
+    const paint = () => {
+      const list = dlItems(), st = dlStorage();
+      const now = JSON.stringify([list.map((d) => [d.itemId, d.status, d.total ? Math.floor(d.bytes / d.total * 50) : 0]), st.used, dlWifi()]);
+      if (now === sig) return;
+      sig = now;
+      root.innerHTML = `
+        <div class="stat-grid">${statTile('Saved here', st.used != null ? fmtBytes(st.used) : '…', `${list.filter((d) => d.status === 'done').length} ready`)}${statTile('Free space', st.free != null ? fmtBytes(st.free) : '…', 'on this device')}</div>
+        <section class="settings-section"><h2>Downloads</h2><div class="admin-list">${list.map(dlRowHtml).join('') || '<p class="muted">Nothing saved yet. Open a movie or show and press Download.</p>'}</div>
+          <label class="admin-check"><input type="checkbox" data-wifi${dlWifi() ? ' checked' : ''}> Only download on Wi-Fi</label>
+          ${offlineLicenseOk() ? '' : '<p class="live-result bad">Your access has ended, so saved downloads are locked.</p>'}</section>`;
+      $('[data-wifi]', root)?.addEventListener('change', (e) => { store.set('ef.dlWifi', e.target.checked ? '1' : '0'); });
+      $$('[data-dl]', root).forEach((el) => {
+        const d = list.find((x) => x.itemId === el.dataset.dl);
+        $('[data-play]', el)?.addEventListener('click', () => playDownload(d));
+        $('[data-rm]', el).addEventListener('click', async () => {
+          if (d.status === 'done' && !(await confirmAction(`Remove "${d.title}"?`, 'It is deleted from this device. You can download it again later.', 'Remove'))) return;
+          nativeApp.removeDownload(d.itemId); sig = ''; paint();
+        });
+      });
+    };
+    paint();
+    const timer = setInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
+  }
+  // No connection when Aurora opens: let people reach what they saved.
+  function offerOfflineDownloads() {
+    if (!dlSupported() || !downloadsAllowed() || $('#setup-offline')) return;
+    if (!dlItems().some((d) => d.status === 'done')) return;
+    const b = document.createElement('button');
+    b.id = 'setup-offline'; b.type = 'button'; b.className = 'btn btn-gray btn-block'; b.textContent = 'Watch my downloads';
+    b.addEventListener('click', openOfflineDownloads);
+    $('#setup-form').after(b);
+  }
+  function openOfflineDownloads() {
+    offlineMode = true;
+    const modal = $('#modal'), content = $('#modal-content');
+    const list = dlItems().filter((d) => d.status === 'done');
+    content.innerHTML = `<div class="m-body"><h2>Downloads</h2>${offlineLicenseOk() ? '' : '<p class="live-result bad">Your access has ended, so saved downloads are locked.</p>'}
+      <div class="admin-list">${list.map((d) => `<div class="admin-row" data-dl="${esc(d.itemId)}"><div class="admin-row-main"><strong>${esc(d.title)}</strong>${d.subtitle ? ' <span class="muted">' + esc(d.subtitle) + '</span>' : ''}</div><button class="btn btn-white" data-play>Play</button></div>`).join('') || '<p class="muted">Nothing saved on this device.</p>'}</div></div>`;
+    modal.classList.remove('hidden');
+    $$('[data-dl]', content).forEach((el) => $('[data-play]', el).addEventListener('click', () => playDownload(list.find((x) => x.itemId === el.dataset.dl))));
+    autoFocus($('[data-play]', content));
+  }
+
   // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
   let inboxState = { items: [], unread: 0, banners: [], ok: false };
   let inboxTimer = null;
@@ -7567,6 +7667,8 @@
           [['', "Customer's choice"], ['on', 'Required']], cfg.appLock)}
         ${sel('asIs', 'Play as they are', "Converting needs your server's ffmpeg to start in time; when it can't, a video never starts. 'Shows and movies' sends every file untouched (no converting, no limit; a customer on a slow line may buffer). 'Each device decides' plays shows as they are, and any device whose conversions fail twice stops asking for them for 6 hours. 'Let Aurora convert' is the old behaviour.",
           [['', 'Each device decides (shows as they are)'], ['all', 'Shows and movies as they are'], ['off', 'Let Aurora convert when it helps']], cfg.asIs || '')}
+        ${sel('downloads', 'Offline downloads (Android app)', 'Lets customers save movies and shows on their phone to watch without internet. Downloads use your server\'s upload bandwidth once per title. Off removes the Download button and deletes saved downloads the next time Aurora opens.',
+          [['', 'On'], ['off', 'Off']], cfg.downloads || '')}
         ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
           [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
         <div class="m-actions">
@@ -7589,7 +7691,7 @@
     };
     const pick = (id) => $(`[data-pb="${id}"]`, body).value;
     $('[data-save]', body).addEventListener('click', () => {
-      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), t: Date.now() };
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), downloads: pick('downloads'), t: Date.now() };
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
@@ -8653,6 +8755,12 @@
 
   window.auroraVodClosed = async (r) => {
     store.del('ef.liveReturn');
+    if (offlinePlaying) { // a saved download: remember where they stopped; there is no server to tell
+      const id = offlinePlaying; offlinePlaying = null;
+      if (r && r.ended) store.del('ef.dl.pos.' + id); else if (r && r.positionMs > 5000) store.set('ef.dl.pos.' + id, String(Math.round(r.positionMs)));
+      if (!offlineMode && location.hash.startsWith('#/downloads')) route();
+      return;
+    }
     appLog.add('info', 'Aurora player closed: ' + (!r ? 'no answer from the player screen (it closed or crashed at once)'
       : r.error ? `${r.error} (${r.ready ? 'played, then stopped' : 'never started'})` : r.ready ? `played ${Math.round((r.watchedMs || 0) / 1000)} s` : 'never started'));
     const s = vodSession;
@@ -9936,7 +10044,7 @@
         removeAccount(state.userId);
         state.apiKey = ''; store.del('ef.apiKey');
         showSetup('Your sign-in has expired. Please sign in again.');
-      } else showSetup(connectionErrorMessage(e));
+      } else { showSetup(connectionErrorMessage(e)); offerOfflineDownloads(); }
     }
   }
 
