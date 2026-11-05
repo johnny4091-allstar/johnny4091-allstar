@@ -643,7 +643,7 @@ html.tv { font-size: 18px; }
 .stat-value { font-size: 2.2rem; font-weight: 700; margin: .2rem 0; font-variant-numeric: tabular-nums; }
 .stat-note { color: var(--dim); font-size: .8rem; line-height: 1.35; }
 .admin-card { background: var(--bg-2); border-radius: 10px; padding: 1.1rem 1.4rem; margin-bottom: 1.5rem; min-width: 0; }
-.admin-card h2 { font-size: 1.1rem; margin: 0 0 .8rem; display: flex; align-items: baseline; gap: .7rem; }
+.admin-card h2 { font-size: 1.1rem; margin: 0 0 .8rem; display: flex; align-items: baseline; gap: .1rem .7rem; flex-wrap: wrap; }
 .admin-card h2 small { font-size: .78rem; font-weight: 500; color: var(--dim); }
 .admin-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
 .admin-sub { font-size: .95rem; margin: 1rem 0 .4rem; }
@@ -1552,3 +1552,107 @@ html { overflow-x: hidden; }
 .sp-adm-alias { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; }
 .sp-adm-alias input { flex: 1 1 160px; min-width: 0; padding: .5rem .7rem; border-radius: 8px; border: 1px solid rgba(255,255,255,.14); background: var(--bg-2); color: #fff; font: inherit; }
 .sp-adm-alias span { color: var(--dim); font-size: .85rem; }
+
+/* ---------- Status page and "Is it just me?" ---------- */
+.status-page { max-width: 62rem; }
+.st-banner { display: flex; gap: .9rem; align-items: center; border-radius: 12px; padding: .9rem 1.1rem; margin-bottom: 1rem; border: 1px solid var(--line, rgba(255,255,255,.12)); background: var(--bg-2); }
+.st-banner b { display: block; font-size: 1.1rem; }
+.st-banner small { color: var(--dim); }
+.st-dot { width: .9rem; height: .9rem; border-radius: 50%; flex: none; background: var(--dim); }
+.st-banner.ok { background: rgba(47,191,113,.1); border-color: rgba(47,191,113,.4); }
+.st-banner.ok .st-dot { background: #2fbf71; box-shadow: 0 0 10px #2fbf71; }
+.st-banner.warn { background: rgba(245,184,75,.1); border-color: rgba(245,184,75,.4); }
+.st-banner.warn .st-dot { background: #f5b84b; box-shadow: 0 0 10px #f5b84b; }
+.st-banner.bad { background: rgba(239,90,95,.1); border-color: rgba(239,90,95,.4); }
+.st-banner.bad .st-dot { background: #ef5a5f; box-shadow: 0 0 10px #ef5a5f; }
+.st-note { background: rgba(108,140,255,.12); border: 1px solid rgba(108,140,255,.4); border-radius: 12px; padding: .75rem 1.1rem; margin-bottom: 1rem; overflow-wrap: anywhere; }
+.st-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 0 1.2rem; align-items: start; }
+@media (max-width: 760px) { .st-grid { grid-template-columns: minmax(0, 1fr); } }
+.st-svc { display: flex; align-items: center; gap: .8rem; padding: .65rem 0; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
+.st-svc:first-child { border-top: 0; }
+.st-ic { width: 2.1rem; height: 2.1rem; border-radius: 9px; background: rgba(255,255,255,.06); display: grid; place-items: center; flex: none; }
+.st-nm { flex: 1; min-width: 0; }
+.st-nm b { display: block; }
+.st-nm small { color: var(--dim); overflow-wrap: anywhere; }
+.st-pill { font-size: .78rem; font-weight: 700; border-radius: 99px; padding: .15rem .65rem; white-space: nowrap; background: rgba(255,255,255,.08); color: var(--dim); }
+.st-pill.ok { background: rgba(47,191,113,.18); color: #7ee2a8; }
+.st-pill.warn { background: rgba(245,184,75,.18); color: #f5b84b; }
+.st-pill.bad { background: rgba(239,90,95,.18); color: #ff8a8e; }
+.st-hours-label { color: var(--dim); font-size: .85rem; margin-top: .9rem; }
+.st-bars { display: flex; gap: 2px; margin-top: .35rem; }
+.st-bars i { flex: 1; height: 1rem; border-radius: 2px; background: #2fbf71; opacity: .85; }
+.st-bars i.warn { background: #f5b84b; } .st-bars i.bad { background: #ef5a5f; } .st-bars i.none { background: rgba(255,255,255,.12); }
+.st-legend { display: flex; justify-content: space-between; color: var(--dim); font-size: .75rem; margin-top: .25rem; }
+.st-inc { padding: .55rem 0; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
+.st-inc:first-child { border-top: 0; }
+.st-inc small { display: block; color: var(--dim); }
+.st-steps { margin-top: .9rem; }
+.st-step { display: flex; gap: .7rem; padding: .45rem 0; opacity: .45; transition: opacity .25s; }
+.st-step.run, .st-step.done { opacity: 1; }
+.st-mark { width: 1.35rem; height: 1.35rem; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); flex: none; display: grid; place-items: center; font-size: .75rem; font-weight: 800; margin-top: .1rem; }
+.st-step.run .st-mark { border-color: var(--accent, #6c8cff); border-top-color: transparent; animation: st-spin .8s linear infinite; }
+.st-step.done.ok .st-mark { background: #2fbf71; border-color: #2fbf71; color: #052317; }
+.st-step.done.warn .st-mark { background: #f5b84b; border-color: #f5b84b; color: #2a1d00; }
+.st-step.done.bad .st-mark { background: #ef5a5f; border-color: #ef5a5f; color: #2a0507; }
+.st-step.done.na .st-mark { color: var(--dim); }
+@keyframes st-spin { to { transform: rotate(360deg); } }
+.st-stext { color: var(--dim); overflow-wrap: anywhere; }
+.st-verdict { border-radius: 12px; padding: .9rem 1rem; margin-top: .7rem; border: 1px solid; }
+.st-verdict h3 { margin: 0 0 .25rem; font-size: 1.05rem; }
+.st-verdict p { margin: 0; color: var(--dim); }
+.st-verdict .st-others { margin-top: .5rem; color: var(--text, #fff); }
+.st-verdict.ok { background: rgba(47,191,113,.1); border-color: rgba(47,191,113,.4); }
+.st-verdict.warn { background: rgba(245,184,75,.1); border-color: rgba(245,184,75,.4); }
+.st-verdict.bad { background: rgba(239,90,95,.1); border-color: rgba(239,90,95,.4); }
+.st-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
+.st-note-input { flex: 1; min-width: 0; background: var(--bg, #0b0b10); color: inherit; border: 1px solid rgba(255,255,255,.2); border-radius: 8px; padding: .5rem .7rem; font: inherit; }
+
+/* Buttons and headings never break inside a word (the long-text safety rule above made narrow flex rows squeeze "Select" and "Save" onto two lines). */
+button, .btn, .pill, .admin-card h2, .settings-section h2, .stat-label { overflow-wrap: normal; word-break: normal; }
+
+/* ---------- Notifications, announcements, help, referrals, stats ---------- */
+.bell-btn { position: relative; }
+.bell-badge { position: absolute; right: -4px; top: -4px; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 9px; background: #ef5a5f; color: #fff; font-size: .68rem; font-weight: 800; display: grid; place-items: center; border: 2px solid var(--bg); }
+.announce { position: fixed; left: var(--gutter, 16px); right: var(--gutter, 16px); top: 74px; z-index: 40; display: flex; flex-direction: column; gap: .4rem; pointer-events: none; }
+.announce > * { pointer-events: auto; }
+.ann { display: flex; gap: .7rem; align-items: center; padding: .6rem .9rem; border-radius: 12px; border: 1px solid rgba(124,140,255,.5); background: rgba(20,26,50,.96); box-shadow: 0 8px 28px rgba(0,0,0,.45); }
+.ann.warn { border-color: rgba(245,184,75,.6); background: rgba(48,36,12,.96); }
+.ann.bad { border-color: rgba(239,90,95,.6); background: rgba(52,16,18,.96); }
+.ann-tx { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.ann-x { background: none; border: 0; color: inherit; font-size: 1.4rem; line-height: 1; padding: 0 .3rem; cursor: pointer; opacity: .7; }
+html:not(.tv) .page-pad { padding-top: calc(100px + var(--ann-h, 0px)); }
+.inbox-list { display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1rem; }
+.inbox-item { display: flex; gap: .9rem; align-items: flex-start; background: var(--bg-2); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: .8rem 1rem; }
+.inbox-item.unread { border-color: rgba(124,140,255,.55); background: rgba(124,140,255,.08); }
+.inbox-ic { width: 2.4rem; height: 2.4rem; border-radius: 12px; background: rgba(255,255,255,.07); display: grid; place-items: center; font-size: 1.2rem; flex: none; }
+.inbox-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.inbox-main .m-actions { margin-top: .5rem; }
+.inbox-dot { width: .6rem; height: .6rem; border-radius: 50%; background: #7c8cff; flex: none; margin-top: .4rem; }
+.faq { border-top: 1px solid rgba(255,255,255,.08); padding: .6rem 0; }
+.faq:first-of-type { border-top: 0; }
+.faq summary { cursor: pointer; font-weight: 600; }
+.faq p { color: var(--dim); margin: .5rem 0 0; }
+.help-thread { display: flex; flex-direction: column; gap: .5rem; margin: .4rem 0 .8rem; }
+.help-msg { max-width: 85%; padding: .55rem .8rem; border-radius: 14px; overflow-wrap: anywhere; background: rgba(255,255,255,.09); border-bottom-left-radius: 4px; }
+.help-msg.me { align-self: flex-end; background: #7c8cff; color: #06080f; border-bottom-left-radius: 14px; border-bottom-right-radius: 4px; }
+.help-msg small { display: block; opacity: .7; font-size: .72rem; margin-top: .15rem; }
+.help-diag { font-size: .85rem; margin: .5rem 0; overflow-wrap: anywhere; }
+.refer-card { text-align: center; }
+.refer-code { font-size: 2.4rem; font-weight: 800; letter-spacing: .05em; margin: .4rem 0; background: linear-gradient(120deg,#5eead4,#7c8cff 55%,#c084fc); -webkit-background-clip: text; background-clip: text; color: transparent; overflow-wrap: anywhere; }
+.refer-card .m-actions { justify-content: center; }
+.refer-redeem { display: flex; gap: .6rem; flex-wrap: wrap; }
+.refer-redeem input { flex: 1; min-width: 10rem; }
+.stats-big { font-size: 3rem; font-weight: 800; letter-spacing: -.03em; }
+.stats-hero { background: linear-gradient(150deg, rgba(124,58,237,.35), var(--bg-2)); }
+.need-row { display: flex; gap: .8rem; align-items: center; cursor: pointer; }
+.need-row input { width: 1.2rem; height: 1.2rem; flex: none; }
+
+/* A reseller account sees only the Reseller panel. */
+html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-only .mobile-tabs, html.reseller-only #bell-btn, html.reseller-only #announce { display: none !important; }
+
+/* Rows with several buttons (Credits / Edit / New password / Suspend) wrap under the text on a narrow screen instead of squeezing it to one letter wide. */
+.admin-row { flex-wrap: wrap; }
+.admin-row-main { flex: 1 1 14rem; }
+.plan-actions { flex-wrap: wrap; max-width: 100%; }
+.admin-row > .btn, .admin-row > a.btn { flex: none; }
+.admin-card .m-actions, .settings-section .m-actions { flex-wrap: wrap; }

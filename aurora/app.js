@@ -243,6 +243,7 @@
     if (/\/Items\/[\w-]+$/.test(path) && data.Id && !kidsAllows(data)) throw Object.assign(new Error('Not available in Kids mode'), { status: 403, path });
     return data;
   }
+  const resellerOnly = () => !!state.isReseller && !isAdmin();
   function applyKidsUi() {
     const on = kidsOn();
     document.documentElement.classList.toggle('kids', on);
@@ -250,6 +251,10 @@
     const st = $('#profile-dropdown [data-action="settings"]');
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
     $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isAdmin());
+    $('#profile-dropdown [data-action="reseller"]')?.classList.toggle('hidden', on || !state.isReseller);
+    document.documentElement.classList.toggle('reseller-only', resellerOnly());
+    $('#profile-dropdown [data-action="settings"]')?.classList.toggle('hidden', resellerOnly());
+    paintBell(); paintBanners();
   }
   // A number pad (works with a remote). Resolves with the digits, or null when cancelled.
   function pinPad(title, text, length = 4) {
@@ -970,6 +975,22 @@
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
+    // A reseller account only gets the Reseller panel (no content, Live TV or Requests). Known from last time, then checked with the guard;
+    // the first time on this device the page waits a moment for the answer so nothing else flashes up.
+    state.isReseller = store.get('ef.reseller.' + user.Id) === '1';
+    if (guardEnabled && !isAdmin()) {
+      const known = store.get('ef.reseller.' + user.Id) != null;
+      const check = guard('/reseller/me', { params: { userId: user.Id }, quick: true }).then((r) => {
+        const is = !!r.reseller, changed = is !== state.isReseller;
+        store.set('ef.reseller.' + user.Id, is ? '1' : '0'); state.isReseller = is; applyKidsUi();
+        if (changed && state.userId === user.Id) { location.hash = is ? '#/reseller' : '#/home'; route(); }
+      }).catch(() => {});
+      if (!known) await Promise.race([check, new Promise((r) => setTimeout(r, 2500))]);
+    }
+    applyKidsUi();
+    if (!resellerOnly()) syncDownloadLicense();
+    refreshInbox();
+    clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
     setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
@@ -1015,8 +1036,9 @@
     }
 
     const isCurrent = () => token === routeToken;
+    if (resellerOnly() && name !== 'reseller') { location.replace('#/reseller'); return; }
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin'].includes(name)) { location.hash = '#/home'; return; }
+      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1026,6 +1048,13 @@
       case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
       case 'livetv': return iptvOn() ? renderIptvLive(page, params.get('tab') || 'channels', isCurrent) : renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
+      case 'status': return renderStatus(page, isCurrent);
+      case 'reseller': return renderReseller(page, isCurrent);
+      case 'inbox': return renderInbox(page, isCurrent);
+      case 'downloads': return renderDownloads(page, isCurrent);
+      case 'help': return renderHelp(page, isCurrent);
+      case 'refer': return renderRefer(page, isCurrent);
+      case 'stats': return renderStats(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
       case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
       default: return renderHome(page, isCurrent);
@@ -1631,6 +1660,7 @@
           <div class="m-actions">
             <button class="btn btn-white" data-act="play">${ICONS.play} <span>${resumeTicks ? 'Resume' : 'Play'}</span></button>
             ${resumeTicks ? `<button class="btn btn-gray" data-act="restart">Start Over</button>` : ''}
+            ${dlSupported() && downloadsAllowed() && !isSeries && !kidsOn() ? '<button class="btn btn-gray" data-act="download">Download</button>' : ''}
             ${hasTrailer(item) ? `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>` : ''}
             <button class="circle-btn" data-act="fav" title="Add to Favorites"></button>
             <button class="circle-btn" data-act="played" title="Mark as watched"></button>
@@ -1691,6 +1721,7 @@
     const extra = $('[data-extra]', content);
     const playBtn = $('[data-act="play"]', content);
     autoFocus(playBtn);
+    $('[data-act="download"]', content)?.addEventListener('click', () => startItemDownload(item));
 
     if (isSeries) {
       // Play button targets the focused episode, else next up, else the first episode.
@@ -4616,6 +4647,188 @@
     draw();
   }
 
+  // ---------- Status page and "Is it just me?" ----------
+  // Settings → Status. Checks, from this device: the internet, the Aurora server and the Live TV provider; then asks Aurora
+  // Guard what everyone else is seeing (outages, channel reports, the sports feed). The answer says whether it is just
+  // this device or everybody. Nothing here changes any setting.
+  const SLOW_MS = 1500;
+  let lastStatusVerdict = '';
+  async function stTime(fn) {
+    const t0 = performance.now();
+    try { const extra = await fn(); return { ok: true, ms: Math.round(performance.now() - t0), ...(extra || {}) }; }
+    catch (e) { return { ok: false, ms: Math.round(performance.now() - t0), error: e?.message || 'failed' }; }
+  }
+  const stInternet = () => stTime(async () => {
+    if (navigator.onLine === false) throw new Error('offline');
+    await fetch('https://www.gstatic.com/generate_204', { mode: 'no-cors', cache: 'no-store', signal: timeoutSignal(7000) });
+  });
+  const stServer = () => stTime(async () => {
+    const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: timeoutSignal(8000) });
+    if (!res.ok) throw new Error(`answered ${res.status}`);
+  });
+  // An Xtream provider can be asked about the account without opening a stream; a playlist link can't be tested without downloading it.
+  const stProvider = () => (iptv.config?.type === 'xtream'
+    ? stTime(async () => { await iptvText(xtUrl(iptv.config, {}), iptv.config, 8000); })
+    : Promise.resolve({ ok: true, ms: 0, skipped: true }));
+
+  async function statusGather(ui) {
+    const live = iptvOn();
+    const names = ['Your device', 'Aurora server', ...(live ? ['Live TV provider'] : []), 'Other viewers'];
+    ui?.start(names);
+    let i = 0;
+    const step = async (fn) => { ui?.begin(i); const v = await fn(); ui?.end(i, v.text, v.level); i++; return v; };
+    const r = { live };
+    // Everything is asked at once (a dead server can take its full 8 seconds), then the steps are shown one by one.
+    const pNet = stInternet(), pServer = stServer(), pProv = live ? stProvider() : null;
+    const gp = guardEnabled ? guard('/service-status', { params: { userId: state.userId } }).catch(() => null) : Promise.resolve(null);
+    r.net = await step(async () => {
+      const t = await pNet;
+      return { ...t, level: !t.ok ? 'bad' : t.ms > SLOW_MS ? 'warn' : 'ok', text: !t.ok ? 'No internet connection' : `Online, ${t.ms} ms${t.ms > SLOW_MS ? ' (slow)' : ''}` };
+    });
+    r.server = await step(async () => {
+      const t = await pServer;
+      return { ...t, level: !t.ok ? (r.net.ok ? 'bad' : 'warn') : t.ms > SLOW_MS ? 'warn' : 'ok', text: !t.ok ? (r.net.ok ? "Didn't answer" : 'Skipped') : `Reachable, ${t.ms} ms${t.ms > SLOW_MS ? ' (slow)' : ''}` };
+    });
+    // The guard sits next to the server, so it can answer even when the server can't be reached from here.
+    if (live) {
+      r.provider = await step(async () => {
+        const t = await pProv;
+        return { ...t, level: !t.ok ? 'bad' : 'ok', text: !t.ok ? "No answer (didn't respond)" : t.skipped ? 'Not tested directly (playlist link)' : 'Responding' };
+      });
+    }
+    r.g = await gp;
+    r.others = await step(async () => {
+      const g = r.g;
+      if (!g) return { level: 'na', text: guardEnabled ? 'Not available right now' : 'Not available' };
+      if (g.server && !g.server.online) return { level: 'bad', text: "Aurora's own check says the server is offline" };
+      if (live && g.live?.state === 'bad') return { level: 'bad', text: `${g.live.reporters} others reported Live TV problems` };
+      if (live && g.live?.channels?.length) { const c = g.live.channels[0]; return { level: 'warn', text: `${c.reports} others reported ${c.name}` }; }
+      return { level: 'ok', text: 'No problems reported' };
+    });
+    r.verdict = statusVerdict(r);
+    lastStatusVerdict = r.verdict.title;
+    return r;
+  }
+
+  function statusVerdict(r) {
+    const g = r.g, live = g?.live;
+    if (!r.net.ok) return { level: 'warn', title: 'It looks like just you', text: "This device has no internet connection. Check Wi-Fi or mobile data, then check again.", actions: ['again'] };
+    if (!r.server.ok) {
+      if (g?.server?.online) return { level: 'warn', title: 'It looks like just you', text: "Aurora is running, but this device can't reach it. Try switching between Wi-Fi and mobile data.", actions: ['again'] };
+      return { level: 'bad', title: 'Not just you: Aurora is offline', text: 'Nothing is wrong with your internet or your device. The server is not answering.', actions: ['notify', 'again'] };
+    }
+    if (g && g.server && !g.server.online) return { level: 'bad', title: 'Not just you: Aurora is offline', text: 'The server stopped answering a moment ago. It should be back soon.', actions: ['notify', 'again'] };
+    if (r.provider && !r.provider.ok) {
+      if (live && live.state !== 'ok') return { level: 'bad', title: 'Not just you: Live TV is down for everyone', text: `Movies and shows still work.${live.reporters ? ` ${live.reporters} other ${live.reporters === 1 ? 'viewer has' : 'viewers have'} reported it.` : ''}`, actions: ['watch', 'notify', 'again'], others: live.reporters };
+      return { level: 'bad', title: "Live TV isn't answering", text: "Movies and shows still work. No one else has reported it yet, so it may be your connection to the provider. Try again in a minute.", actions: ['watch', 'notify', 'again'] };
+    }
+    if (live && live.state === 'bad') return { level: 'warn', title: 'Not just you: Live TV is having problems', text: 'Several channels are failing for other viewers too. Movies and shows still work.', actions: ['watch', 'notify', 'again'], others: live.reporters };
+    if (live && live.channels.length) { const c = live.channels[0]; return { level: 'warn', title: `Not just you: ${c.name} has problems`, text: 'Other channels work. Try another channel, or the same game on a different one.', actions: ['notify', 'again'], others: c.reports }; }
+    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or lower the video quality in Settings.', actions: ['again'] };
+    return { level: 'ok', title: 'Everything looks fine from here', text: "If something still won't play, try a different title or restart Aurora.", actions: ['again'] };
+  }
+
+  let statusWatchTimer = null;
+  function startStatusWatch() {
+    clearInterval(statusWatchTimer);
+    let left = 60;
+    statusWatchTimer = setInterval(async () => {
+      if (--left < 0) { clearInterval(statusWatchTimer); return; }
+      if (document.hidden) return;
+      try {
+        const r = await statusGather();
+        if (r.verdict.level === 'ok') { clearInterval(statusWatchTimer); toast("Aurora is working again.", 6000); }
+      } catch { /* try again next minute */ }
+    }, 60000);
+    toast("OK. If Aurora is still open, a message will appear when it's working again.", 5000);
+  }
+
+  async function renderStatus(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad status-page">
+      <div class="page-head"><h1>Status</h1></div>
+      <div class="st-banner" data-st-banner role="status"><span class="st-dot"></span><div><b data-st-title>Checking…</b><small data-st-sub></small></div></div>
+      <div class="st-note hidden" data-st-note></div>
+      <div class="st-grid">
+        <div>
+          <section class="settings-section"><h2>Services</h2><div data-st-svcs><div class="spinner"></div></div><div data-st-hours></div></section>
+          <section class="settings-section hidden" data-st-recent-sec><h2>Recent</h2><div data-st-recent></div></section>
+        </div>
+        <div>
+          <section class="settings-section"><h2>Is it just me?</h2>
+            <p class="setting-desc">Something not loading or buffering? Aurora checks this device, the server, the Live TV provider and what other viewers are seeing.</p>
+            <button class="btn btn-white" data-st-run>Check now</button>
+            <div class="st-steps" data-st-steps></div><div data-st-verdict></div>
+          </section>
+        </div>
+      </div></div>`;
+    const q = (sel) => $(sel, page);
+    const pill = (level, text) => `<span class="st-pill ${level}">${esc(text)}</span>`;
+    const paint = (r) => {
+      const v = r.verdict, g = r.g;
+      const b = q('[data-st-banner]');
+      b.className = 'st-banner ' + v.level;
+      q('[data-st-title]').textContent = v.level === 'ok' ? 'Everything is running' : v.title;
+      q('[data-st-sub]').textContent = `Checked ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      const note = q('[data-st-note]');
+      if (g?.note?.text) { note.textContent = g.note.text; note.classList.remove('hidden'); } else note.classList.add('hidden');
+      const rows = [
+        ['📡', 'Your connection', r.net.ok ? `${r.net.ms} ms` : 'No internet', r.net.level, r.net.level === 'ok' ? 'Good' : r.net.level === 'warn' ? 'Slow' : 'Offline'],
+        ['🎬', 'Aurora server', r.server.ok ? `Movies and shows · ${r.server.ms} ms` : "Didn't answer", r.server.level === 'bad' && g?.server?.online ? 'warn' : r.server.level, r.server.ok ? (r.server.level === 'warn' ? 'Slow' : 'Online') : (g?.server?.online ? 'Unreachable' : 'Down')],
+      ];
+      if (r.live) {
+        const ls = r.provider.ok ? (g?.live?.state === 'bad' ? 'bad' : g?.live?.state === 'warn' ? 'warn' : 'ok') : 'bad';
+        rows.push(['📺', 'Live TV provider', !r.provider.ok ? "Didn't answer" : g?.live?.state === 'bad' ? 'Several channels failing' : g?.live?.channels?.length ? `${g.live.channels[0].name} has problems` : r.provider.skipped ? 'Playlist link' : 'Responding', ls, ls === 'ok' ? 'Online' : ls === 'warn' ? 'Partial' : 'Down']);
+      }
+      if (g?.scores?.enabled && g.scores.state !== 'na') rows.push(['🏈', 'Sports scores', g.scores.ageSeconds != null ? `Updated ${g.scores.ageSeconds < 60 ? g.scores.ageSeconds + ' s' : Math.round(g.scores.ageSeconds / 60) + ' min'} ago` : '', g.scores.state === 'ok' ? 'ok' : 'warn', g.scores.state === 'ok' ? 'Online' : 'Unavailable']);
+      q('[data-st-svcs]').innerHTML = rows.map(([ic, nm, sub, lv, label]) => `<div class="st-svc"><span class="st-ic">${ic}</span><div class="st-nm"><b>${esc(nm)}</b><small>${esc(sub)}</small></div>${pill(lv, label)}</div>`).join('');
+      q('[data-st-hours]').innerHTML = g?.hours ? `<div class="st-hours-label">Aurora server, last 24 hours</div><div class="st-bars">${g.hours.map((h) => `<i class="${h || 'none'}"></i>`).join('')}</div><div class="st-legend"><span>24 h ago</span><span>now</span></div>` : '';
+      const inc = g?.incidents || [];
+      q('[data-st-recent-sec]').classList.toggle('hidden', !inc.length);
+      q('[data-st-recent]').innerHTML = inc.map((x) => `<div class="st-inc"><b>${esc(x.title)}</b><small>${x.end ? `Resolved ${esc(timeAgo(x.end))}` : 'Ongoing'} · started ${esc(timeAgo(x.start))}</small></div>`).join('');
+    };
+    const paintVerdict = (r) => {
+      const v = r.verdict;
+      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead' };
+      q('[data-st-verdict]').innerHTML = `<div class="st-verdict ${v.level}"><h3>${esc(v.title)}</h3><p>${esc(v.text)}</p>
+        ${v.others ? `<p class="st-others">${v.others} other ${v.others === 1 ? 'viewer' : 'viewers'} reported this</p>` : ''}
+        <div class="st-actions">${v.actions.map((a) => `<button class="btn btn-gray" data-st-act="${a}">${labels[a]}</button>`).join('')}</div></div>`;
+    };
+    // First look when the page opens: no step-by-step, just the picture.
+    const first = await statusGather();
+    if (!isCurrent()) return;
+    paint(first);
+    const runBtn = q('[data-st-run]');
+    const check = async () => {
+      runBtn.disabled = true; runBtn.textContent = 'Checking…';
+      q('[data-st-verdict]').innerHTML = '';
+      const steps = q('[data-st-steps]');
+      const ui = {
+        start: (names) => { steps.innerHTML = names.map((n, i) => `<div class="st-step" data-i="${i}"><span class="st-mark"></span><div><b>${esc(n)}</b><div class="st-stext"></div></div></div>`).join(''); },
+        begin: (i) => { const el = $(`[data-i="${i}"]`, steps); if (el) el.classList.add('run'); },
+        end: (i, text, level) => { const el = $(`[data-i="${i}"]`, steps); if (!el) return; el.classList.remove('run'); el.classList.add('done', level); $('.st-mark', el).textContent = level === 'ok' ? '✓' : level === 'warn' ? '!' : level === 'bad' ? '✕' : '–'; $('.st-stext', el).textContent = text; },
+      };
+      let r;
+      try { r = await statusGather(ui); } catch (e) { runBtn.disabled = false; runBtn.textContent = 'Check now'; toast("Couldn't run the check. Try again.", 4000); return; }
+      if (!isCurrent()) return;
+      paint(r); paintVerdict(r);
+      runBtn.disabled = false; runBtn.textContent = 'Check again';
+      if (nav.tv) autoFocus(runBtn);
+    };
+    runBtn.addEventListener('click', check);
+    page.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-st-act]')?.dataset.stAct;
+      if (a === 'again') check();
+      else if (a === 'notify') startStatusWatch();
+      else if (a === 'watch') location.hash = '#/movies';
+    });
+    // Look again quietly every minute while the page is open (not while a check is running).
+    const timer = setInterval(async () => {
+      if (!isCurrent() || !page.isConnected) { clearInterval(timer); return; }
+      if (document.hidden || runBtn.disabled) return;
+      try { const r = await statusGather(); if (isCurrent() && !runBtn.disabled) paint(r); } catch { /* keep what is shown */ }
+    }, 60000);
+  }
+
   async function renderSettings(page, isCurrent) {
     page.innerHTML = `<div class="page-pad settings-page"><div class="page-head"><h1>Settings</h1></div><div class="spinner"></div></div>`;
     let user = state.user;
@@ -4629,6 +4842,16 @@
       <div class="page-head"><h1>Settings</h1>
         <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
+      ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
+      ${dlSupported() && downloadsAllowed() ? `<section class="settings-section"><h2>Downloads</h2>${settingRow('Watch without internet', 'Movies and shows saved on this phone or tablet.', '<a class="btn btn-gray" href="#/downloads">Open Downloads</a>')}</section>` : ''}
+      <section class="settings-section"><h2>Help &amp; more</h2>
+        ${settingRow('Get help', 'Send a message to your provider with the details they need attached.', '<a class="btn btn-gray" href="#/help">Help &amp; support</a>')}
+        ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
+        ${settingRow('Your Aurora', 'What you watched this week.', '<a class="btn btn-gray" href="#/stats">See my week</a>')}
+      </section>
+      <section class="settings-section"><h2>Status</h2>
+        ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
+      </section>
       <section class="settings-section">
         <h2>Language &amp; subtitles <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
         ${settingRow('Audio language', 'Pick this language when a title has more than one.', selectHtml('audioLang', langs(cfg.AudioLanguagePreference), cfg.AudioLanguagePreference || ''))}
@@ -4939,7 +5162,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -4979,15 +5202,15 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
 
   // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
   const ADMIN_GROUPS = [
-    ['Dashboard', ['overview', 'problems', 'feedback']],
-    ['Customers', ['users', 'plans', 'devices', 'usage', 'sharing']],
+    ['Dashboard', ['inbox', 'overview', 'support', 'problems', 'feedback']],
+    ['Customers', ['users', 'plans', 'resellers', 'announce', 'devices', 'usage', 'sharing']],
     ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
     ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
@@ -6063,6 +6286,8 @@
   const money = (n) => '$' + (Number.isInteger(Number(n)) ? Number(n) : Number(n).toFixed(2));
   const planLength = (p) => `${p.length} ${p.unit}${p.length === 1 ? '' : 's'}`;
   const planSummary = (p) => `${money(p.price)} · ${planLength(p)} · ${p.connections} ${p.connections === 1 ? 'connection' : 'connections'}`;
+  const planCreditCost = (p) => (Number.isInteger(p.credits) && p.credits >= 0 ? p.credits : Math.max(1, p.connections * (p.unit === 'day' ? Math.ceil(p.length / 30) : p.length)));
+  const creditsWord = (n) => `${n} ${n === 1 ? 'credit' : 'credits'}`;
   const planCatsText = (p) => (p.categories ? `${p.categories.length} Live TV ${p.categories.length === 1 ? 'category' : 'categories'}` : 'All Live TV categories');
   const planOptions = (plans, selected = '') => plans.filter((p) => p.active || p.id === selected)
     .map((p) => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name)} — ${esc(money(p.price))}${p.active ? '' : ' (hidden)'}</option>`).join('');
@@ -6120,7 +6345,9 @@
           <label class="admin-field"><span>Length</span><input type="number" data-p="length" min="1" step="1" inputmode="numeric" value="${esc(p.length)}"></label>
           <label class="admin-field"><span>&nbsp;</span><select data-p="unit"><option value="month"${p.unit === 'month' ? ' selected' : ''}>month(s)</option><option value="day"${p.unit === 'day' ? ' selected' : ''}>day(s)</option></select></label>
           <label class="admin-field"><span>Connections</span><input type="number" data-p="connections" min="1" max="50" step="1" inputmode="numeric" value="${esc(p.connections)}"></label>
+          <label class="admin-field"><span>Reseller credits</span><input type="number" data-p="credits" min="0" step="1" inputmode="numeric" value="${p.credits == null ? '' : esc(p.credits)}" placeholder="automatic"></label>
         </div>
+        <p class="muted">Credits a reseller pays for this plan. Blank means connections × months (1 credit is one connection for one month).</p>
         <label class="admin-check"><input type="checkbox" data-p="active"${p.active ? ' checked' : ''}> On offer (customers can ask for it, and it shows when you pick a plan)</label>
         <div class="cat-pick-wrap">
           <div class="cat-pick-head"><div><strong>Live TV categories</strong><div class="muted" data-cat-summary></div></div>
@@ -6160,7 +6387,7 @@
       $('[data-save]', form).addEventListener('click', async () => {
         const v = (n) => $(`[data-p="${n}"]`, form).value;
         const payload = { name: v('name').trim(), price: Number(v('price')), length: Number(v('length')), unit: v('unit'), connections: Number(v('connections')),
-          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null };
+          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null, credits: v('credits').trim() === '' ? null : Number(v('credits')) };
         if (v('price') === '' || Number.isNaN(payload.price)) return say('Enter the price.', 'bad');
         say('<div class="spinner"></div>');
         try {
@@ -6178,6 +6405,591 @@
       $('[data-del]', el).addEventListener('click', async () => {
         if (!(await confirmAction(`Delete "${p.name}"?`, 'Customers who already have it keep what they were given (their connections, end date and categories). It just disappears from the list.', 'Delete plan'))) return;
         try { await guard(`/plans/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast('Plan deleted', 2000); if (isCurrent()) adminPlans(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
+  // ----- Admin → Resellers (Aurora Guard 1.10.0) -----
+  // A reseller is an Emby account that has credits. They sign in to Aurora as usual and get a Reseller panel (profile menu) where credits
+  // pay for creating and renewing their own customers. Here the admin adds resellers, sets what they can sell and adds or removes credits.
+  async function adminResellers(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Resellers');
+    let d, plans;
+    try { [d, plans] = await Promise.all([guard('/resellers'), guard('/plans').then((x) => x.plans || [])]); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Resellers</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.10.0 to use resellers (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
+    const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
+        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>
+        <div class="muted">${esc(r.userName)}${r.contact ? ' · ' + esc(r.contact) : ''} · ${r.customers} ${r.customers === 1 ? 'customer' : 'customers'}${r.status === 'active' && r.low ? ' · low on credits' : ''}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-cr>Credits</button><button class="btn btn-gray" data-ed>Edit</button><button class="btn btn-gray" data-pw>New password</button><button class="btn btn-gray" data-su>${r.status === 'active' ? 'Suspend' : 'Restore'}</button></div></div>`;
+    const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
+        <div class="muted">${esc(e.by)} · balance ${e.balance}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
+    const viaResellers = d.resellers.reduce((n, r) => n + r.customers, 0);
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('Resellers', d.resellers.length, `${d.resellers.filter((r) => r.status === 'active').length} active`)}
+        ${statTile('Credits held', d.totalCredits, 'across all resellers')}
+        ${statTile('Customers', viaResellers, 'created by resellers')}
+        ${statTile('Low on credits', d.resellers.filter((r) => r.status === 'active' && r.low).length, `at ${d.lowCredits} or fewer`, d.resellers.some((r) => r.status === 'active' && r.low) ? 'bad' : '')}
+      </div>
+      <section class="admin-card"><h2>Resellers <small>They sign in to Aurora with the login you give them</small></h2>
+        <div class="admin-list" data-list>${d.resellers.map(row).join('') || '<p class="muted">No resellers yet. Add one below.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add>Add a reseller</button></div>
+        <div class="plan-form hidden" data-form></div></section>
+      <section class="admin-card"><h2>Recent credit changes <small>Newest first</small></h2>
+        <div class="admin-list">${d.log.map(logRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+    const form = $('[data-form]', body);
+    const reload = () => { if (isCurrent()) adminResellers(body, isCurrent); };
+    const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    const chosenPlans = () => $$('[data-plan]:checked', form).map((x) => x.dataset.plan);
+    const openAdd = () => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">New reseller</h3>
+        <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" placeholder="e.g. Dave Tech"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Login name</span><input type="text" data-f="login" maxlength="32" autocapitalize="none" autocomplete="off" placeholder="davetech"></label>
+          <label class="admin-field"><span>Password (blank = make one)</span><input type="text" data-f="pw" maxlength="64" autocomplete="off"></label>
+          <label class="admin-field"><span>Starting credits</span><input type="number" data-f="credits" min="0" step="1" inputmode="numeric" value="10"></label>
+        </div>
+        <label class="admin-field"><span>Contact (email or phone)</span><input type="text" data-f="contact" maxlength="100"></label>
+        <div class="admin-field"><span>Plans they can sell</span>${planChecks(plans.filter((p) => p.active).map((p) => p.id))}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save>Add reseller</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        const f = (n) => $(`[data-f="${n}"]`, form).value.trim();
+        say('<div class="spinner"></div>');
+        try {
+          const r = await guard('/resellers', { method: 'POST', body: { name: f('name'), userName: f('login'), password: f('pw') || undefined, credits: f('credits') === '' ? 0 : Number(f('credits')), contact: f('contact'), plans: chosenPlans() } });
+          toast(`${r.reseller.name} added`, 2500);
+          form.innerHTML = `<h3 class="admin-sub">${esc(r.reseller.name)} is ready</h3><p>Give them this to sign in to Aurora. The password is shown only now.</p>
+            <div class="live-result good"><strong>Login:</strong> ${esc(r.reseller.userName)}<br><strong>Password:</strong> ${esc(r.password)}</div>
+            <div class="m-actions"><button class="btn btn-white" data-done>Done</button></div>`;
+          $('[data-done]', form).addEventListener('click', reload);
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl($('[data-f="name"]', form)); else $('[data-f="name"]', form).scrollIntoView({ block: 'center' });
+    };
+    const openCredits = (r) => {
+      form.classList.remove('hidden');
+      let mode = 'add';
+      form.innerHTML = `<h3 class="admin-sub">Credits for ${esc(r.name)} <small>now ${esc(creditsWord(r.credits))}</small></h3>
+        <div class="seg-row">${[['add', 'Add'], ['remove', 'Remove'], ['set', 'Set to']].map(([m, l]) => `<label class="admin-check"><input type="radio" name="crmode" data-mode="${m}"${m === 'add' ? ' checked' : ''}> ${l}</label>`).join('')}</div>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Credits</span><input type="number" data-f="amount" min="0" step="1" inputmode="numeric" value="10"></label>
+          <label class="admin-field"><span>Reason (saved in the ledger)</span><select data-f="why">${['Payment received', 'Monthly top-up', 'Refund', 'Correction', 'Other'].map((x) => `<option>${x}</option>`).join('')}</select></label>
+        </div><p class="muted" data-sum></p>
+        <div class="m-actions"><button class="btn btn-red" data-save>Confirm</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      const calc = () => { const a = Number($('[data-f="amount"]', form).value) || 0; return mode === 'add' ? r.credits + a : mode === 'remove' ? Math.max(0, r.credits - a) : a; };
+      const sum = () => { const n = calc(), dlt = n - r.credits; $('[data-sum]', form).textContent = `New balance: ${creditsWord(n)} (${dlt >= 0 ? '+' : ''}${dlt})`; };
+      sum();
+      $$('[data-mode]', form).forEach((x) => x.addEventListener('change', () => { mode = x.dataset.mode; sum(); }));
+      $('[data-f="amount"]', form).addEventListener('input', sum);
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        say('<div class="spinner"></div>');
+        try {
+          await guard(`/resellers/${encodeURIComponent(r.id)}/credits`, { method: 'POST', body: { mode, amount: Number($('[data-f="amount"]', form).value), why: $('[data-f="why"]', form).value } });
+          toast(`${r.name}: now ${creditsWord(calc())}`, 2500); reload();
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    const openEdit = (r) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">Edit ${esc(r.name)}</h3>
+        <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" value="${esc(r.name)}"></label>
+        <label class="admin-field"><span>Contact</span><input type="text" data-f="contact" maxlength="100" value="${esc(r.contact)}"></label>
+        <div class="admin-field"><span>Plans they can sell</span>${planChecks(r.plans)}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { name: $('[data-f="name"]', form).value.trim(), contact: $('[data-f="contact"]', form).value.trim(), plans: chosenPlans() } }); toast('Saved', 2000); reload(); }
+        catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    $('[data-add]', body).addEventListener('click', openAdd);
+    $$('[data-r]', body).forEach((el) => {
+      const r = d.resellers.find((x) => x.id === el.dataset.r);
+      $('[data-cr]', el).addEventListener('click', () => openCredits(r));
+      $('[data-ed]', el).addEventListener('click', () => openEdit(r));
+      $('[data-su]', el).addEventListener('click', async () => {
+        const stop = r.status === 'active';
+        if (stop && !(await confirmAction(`Suspend ${r.name}?`, 'They can no longer create or renew customers or see the panel. Their customers keep working.', 'Suspend'))) return;
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { status: stop ? 'suspended' : 'active' } }); toast(stop ? 'Suspended' : 'Restored', 2000); reload(); } catch (e) { toast(e.message, 4000); }
+      });
+      $('[data-pw]', el).addEventListener('click', async () => {
+        if (!(await confirmAction(`New password for ${r.name}?`, 'Their old password stops working. The new one is shown once.', 'Make new password'))) return;
+        try { const x = await guard(`/resellers/${encodeURIComponent(r.id)}/password`, { method: 'POST', body: {} }); form.classList.remove('hidden'); form.innerHTML = `<h3 class="admin-sub">New password for ${esc(r.name)}</h3><div class="live-result good"><strong>Login:</strong> ${esc(r.userName)}<br><strong>Password:</strong> ${esc(x.password)}</div><p class="muted">Shown only now.</p>`; form.scrollIntoView({ block: 'center' }); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
+  // ---------- Offline downloads (Android app) ----------
+  // The Android side (Downloads.java) saves the file with the system DownloadManager; this page asks Emby for the file, lists progress
+  // and plays a finished one through the normal player. Downloads stop working when the account ends (checked online with the guard and
+  // remembered as a date for offline use), and the admin can switch the feature off in Admin → Playback.
+  const dlSupported = () => !!nativeApp?.startDownload;
+  const downloadsAllowed = () => playbackCfg.downloads !== 'off';
+  const dlWifi = () => store.get('ef.dlWifi') !== '0';
+  let offlinePlaying = null, offlineMode = false;
+  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]'); } catch { return []; } };
+  const dlStorage = () => { try { return JSON.parse(nativeApp.downloadsStorage() || '{}'); } catch { return {}; } };
+  const offlineLicenseOk = () => { const e = store.get('ef.dl.expires'); return !e || Date.now() <= new Date(e + 'T23:59:59').getTime(); };
+  async function syncDownloadLicense() {
+    if (!dlSupported()) return;
+    if (!downloadsAllowed()) { if (dlItems().length) nativeApp.removeAllDownloads(); return; }
+    if (!guardEnabled || isAdmin()) return;
+    try {
+      const a = await guard('/account', { params: { userId: state.userId }, quick: true });
+      if (a.admin) return;
+      if (a.expired || a.disabled) { nativeApp.removeAllDownloads(); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
+    } catch { /* offline or an older guard: keep what is saved */ }
+  }
+  async function startItemDownload(item) {
+    try {
+      const full = await api(`/Users/${state.userId}/Items/${item.Id}`);
+      const source = full.MediaSources?.[0];
+      if (!source) throw new Error('This video has no file to download.');
+      const size = source.Size ? fmtBytes(source.Size) : '';
+      if (!(await confirmAction(`Download "${itemTitle(full)}"?`, `${size ? size + '. ' : ''}${dlWifi() ? 'It downloads on Wi-Fi only. ' : ''}You can watch it without internet while your plan is active.`, 'Download'))) return;
+      const ext = String(source.Container || 'mp4').split(',')[0].replace(/[^a-z0-9]/gi, '') || 'mp4';
+      const url = `${state.server}/emby/Items/${full.Id}/Download?MediaSourceId=${encodeURIComponent(source.Id)}`;
+      const err = nativeApp.startDownload(full.Id, url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
+      if (err) toast(err, 5000); else { toast('Download started. You can follow it in Settings → Downloads.', 4500); appLog.add('info', 'Download started: ' + itemTitle(full)); }
+    } catch (e) { toast(e.message || "Couldn't start the download", 4000); }
+  }
+  function playDownload(d) {
+    if (!offlineLicenseOk()) { toast('Your access has ended, so saved downloads are locked. Renew to watch them again.', 6000); return; }
+    offlinePlaying = d.itemId;
+    nativeApp.playVod(JSON.stringify({ url: d.url, hls: false, startMs: Number(store.get('ef.dl.pos.' + d.itemId)) || 0, title: d.title, subtitle: d.subtitle, subs: [], softwareDecoders: getPref('ffmpeg') !== 'off' }));
+  }
+  const dlRowHtml = (d) => {
+    const pct = d.total > 0 ? Math.min(100, Math.round(d.bytes / d.total * 100)) : 0;
+    const line = d.status === 'done' ? `Ready to watch offline${d.size ? ' · ' + fmtBytes(d.size) : ''}` : d.status === 'running' ? `${pct}%${d.total ? ` · ${fmtBytes(d.bytes)} of ${fmtBytes(d.total)}` : ''}` : d.status === 'paused' ? 'Waiting for Wi-Fi or a connection' : d.status === 'pending' ? 'Waiting to start' : "Failed. Remove it and try again.";
+    return `<div class="admin-row dl-row" data-dl="${esc(d.itemId)}"><div class="admin-row-main"><strong>${esc(d.title)}</strong>${d.subtitle ? ' <span class="muted">' + esc(d.subtitle) + '</span>' : ''}
+      <div class="muted">${esc(line)}</div>${d.status === 'running' || d.status === 'paused' || d.status === 'pending' ? `<div class="usage-bar"><span style="width:${Math.max(2, pct)}%"></span></div>` : ''}</div>
+      <div class="plan-actions">${d.status === 'done' ? '<button class="btn btn-white" data-play>Play</button>' : ''}<button class="btn btn-gray" data-rm>${d.status === 'done' || d.status === 'failed' ? 'Remove' : 'Cancel'}</button></div></div>`;
+  };
+  async function renderDownloads(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad dl-page"><div class="page-head"><h1>Downloads</h1></div><div data-body></div></div>';
+    const root = $('[data-body]', page);
+    if (!dlSupported()) { root.innerHTML = '<p class="empty-msg">Downloads are available in the Android app.</p>'; return; }
+    if (!downloadsAllowed()) { root.innerHTML = '<p class="empty-msg">Downloads are switched off by your provider.</p>'; return; }
+    let sig = '';
+    const paint = () => {
+      const list = dlItems(), st = dlStorage();
+      const now = JSON.stringify([list.map((d) => [d.itemId, d.status, d.total ? Math.floor(d.bytes / d.total * 50) : 0]), st.used, dlWifi()]);
+      if (now === sig) return;
+      sig = now;
+      root.innerHTML = `
+        <div class="stat-grid">${statTile('Saved here', st.used != null ? fmtBytes(st.used) : '…', `${list.filter((d) => d.status === 'done').length} ready`)}${statTile('Free space', st.free != null ? fmtBytes(st.free) : '…', 'on this device')}</div>
+        <section class="settings-section"><h2>Downloads</h2><div class="admin-list">${list.map(dlRowHtml).join('') || '<p class="muted">Nothing saved yet. Open a movie or show and press Download.</p>'}</div>
+          <label class="admin-check"><input type="checkbox" data-wifi${dlWifi() ? ' checked' : ''}> Only download on Wi-Fi</label>
+          ${offlineLicenseOk() ? '' : '<p class="live-result bad">Your access has ended, so saved downloads are locked.</p>'}</section>`;
+      $('[data-wifi]', root)?.addEventListener('change', (e) => { store.set('ef.dlWifi', e.target.checked ? '1' : '0'); });
+      $$('[data-dl]', root).forEach((el) => {
+        const d = list.find((x) => x.itemId === el.dataset.dl);
+        $('[data-play]', el)?.addEventListener('click', () => playDownload(d));
+        $('[data-rm]', el).addEventListener('click', async () => {
+          if (d.status === 'done' && !(await confirmAction(`Remove "${d.title}"?`, 'It is deleted from this device. You can download it again later.', 'Remove'))) return;
+          nativeApp.removeDownload(d.itemId); sig = ''; paint();
+        });
+      });
+    };
+    paint();
+    const timer = setInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
+  }
+  // No connection when Aurora opens: let people reach what they saved.
+  function offerOfflineDownloads() {
+    if (!dlSupported() || !downloadsAllowed() || $('#setup-offline')) return;
+    if (!dlItems().some((d) => d.status === 'done')) return;
+    const b = document.createElement('button');
+    b.id = 'setup-offline'; b.type = 'button'; b.className = 'btn btn-gray btn-block'; b.textContent = 'Watch my downloads';
+    b.addEventListener('click', openOfflineDownloads);
+    $('#setup-form').after(b);
+  }
+  function openOfflineDownloads() {
+    offlineMode = true;
+    const modal = $('#modal'), content = $('#modal-content');
+    const list = dlItems().filter((d) => d.status === 'done');
+    content.innerHTML = `<div class="m-body"><h2>Downloads</h2>${offlineLicenseOk() ? '' : '<p class="live-result bad">Your access has ended, so saved downloads are locked.</p>'}
+      <div class="admin-list">${list.map((d) => `<div class="admin-row" data-dl="${esc(d.itemId)}"><div class="admin-row-main"><strong>${esc(d.title)}</strong>${d.subtitle ? ' <span class="muted">' + esc(d.subtitle) + '</span>' : ''}</div><button class="btn btn-white" data-play>Play</button></div>`).join('') || '<p class="muted">Nothing saved on this device.</p>'}</div></div>`;
+    modal.classList.remove('hidden');
+    $$('[data-dl]', content).forEach((el) => $('[data-play]', el).addEventListener('click', () => playDownload(list.find((x) => x.itemId === el.dataset.dl))));
+    autoFocus($('[data-play]', content));
+  }
+
+  // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
+  let inboxState = { items: [], unread: 0, banners: [], ok: false };
+  let inboxTimer = null;
+  const dismissedAnn = () => { try { return new Set(JSON.parse(store.get('ef.annDismissed') || '[]')); } catch { return new Set(); } };
+  function paintBell() {
+    const b = $('#bell-btn'), badge = $('#bell-badge');
+    if (!b) return;
+    b.classList.toggle('hidden', !inboxState.ok || kidsOn());
+    b.onclick = () => { location.hash = isAdmin() ? '#/admin?tab=inbox' : '#/inbox'; };
+    const n = inboxState.badge ?? inboxState.unread;
+    badge.textContent = n > 9 ? '9+' : String(n);
+    badge.classList.toggle('hidden', !n);
+  }
+  function paintBanners() {
+    const el = $('#announce');
+    if (!el) return;
+    const gone = dismissedAnn();
+    const list = (inboxState.banners || []).filter((a) => !gone.has(a.id)).slice(0, 2);
+    el.classList.toggle('hidden', !list.length || kidsOn() || resellerOnly());
+    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span><button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button></div>`).join('');
+    document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
+    $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
+  }
+  async function refreshInbox() {
+    if (resellerOnly()) { inboxState.ok = false; paintBell(); paintBanners(); return; }
+    if (!guardEnabled || !state.userId) { inboxState.ok = false; paintBell(); return; }
+    try {
+      const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });
+      inboxState = { ...d, ok: true };
+      if (isAdmin()) { try { const a = await guard('/admin-inbox', { quick: true }); inboxState.badge = a.total; inboxState.adminTotal = a.total; } catch { /* older guard */ } }
+    } catch { inboxState.ok = false; }
+    paintBell(); paintBanners();
+  }
+  const inboxIcon = (i) => ({ announcement: '📣', plan: '⏳', new: '🎬', support: '💬', reminder: '🏀' })[i.type] || '🔔';
+  async function renderInbox(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad inbox-page"><div class="page-head"><h1>Notifications</h1></div><div class="spinner"></div></div>';
+    const root = $('.inbox-page', page);
+    const head = '<div class="page-head"><h1>Notifications</h1></div>';
+    let d;
+    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for notifications.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    const now = Date.now();
+    const local = (sportsPrefs.reminders || []).filter((r) => r.start > now && r.start < now + 36 * 3600000).map((r) => ({ id: 'rem:' + r.id, type: 'reminder', level: 'info', title: r.title, text: `Reminder · ${new Date(r.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${r.chan ? ' · ' + r.chan : ''}`, at: r.start, action: 'sports', unread: false }));
+    const items = [...local, ...d.items].sort((a, b) => b.at - a.at);
+    const btn = (i) => ({ renew: '<button class="btn btn-white" data-act="renew">Ask for more time</button>', help: '<a class="btn btn-gray" href="#/help">Open</a>', browse: '<a class="btn btn-gray" href="#/movies">Browse</a>', sports: '<a class="btn btn-gray" href="#/livetv?tab=sports">Open Sports</a>' })[i.action] || '';
+    root.innerHTML = `${head}${items.length ? '' : '<p class="empty-msg">You are all caught up.</p>'}
+      <div class="inbox-list">${items.map((i, k) => `<div class="inbox-item${i.unread ? ' unread' : ''}" data-i="${k}"><div class="inbox-ic">${inboxIcon(i)}</div>
+        <div class="inbox-main"><strong>${esc(i.title)}</strong><div class="muted">${esc(i.text)}${i.type === 'plan' ? '' : ' · ' + esc(timeAgo(i.at))}</div>${i.action ? `<div class="m-actions">${btn(i)}</div>` : ''}</div>${i.unread ? '<span class="inbox-dot"></span>' : ''}</div>`).join('')}</div>
+      ${d.unread ? '<div class="m-actions"><button class="btn btn-gray" data-readall>Mark all as read</button></div>' : ''}`;
+    guard('/inbox/read', { method: 'POST', params: { userId: state.userId }, body: {} }).then(refreshInbox).catch(() => {});
+    $('[data-readall]', root)?.addEventListener('click', () => { $$('.inbox-item.unread', root).forEach((x) => x.classList.remove('unread')); $$('.inbox-dot', root).forEach((x) => x.remove()); });
+    $$('[data-act="renew"]', root).forEach((b) => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await guard('/extension', { method: 'POST', body: { userId: state.userId, note: '' } }); toast('Request sent to your provider', 3000); b.textContent = 'Requested'; }
+      catch (e) { b.disabled = false; toast(e.message || "Couldn't send the request", 4000); }
+    }));
+  }
+
+  // Help & support: a message to the provider with the details they would otherwise have to ask for.
+  function helpDiag() {
+    const cur = iptvPlaying?.list?.[iptvPlaying.index || 0];
+    return {
+      app: nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
+      device: nativeApp?.getDeviceName?.() || navigator.userAgent.slice(0, 80),
+      connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
+      playing: cur?.name ? `Live: ${cur.name}` : '',
+      status: lastStatusVerdict,
+      errors: appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100)),
+    };
+  }
+  async function renderHelp(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad help-page"><div class="page-head"><h1>Help &amp; support</h1></div><div class="spinner"></div></div>';
+    const root = $('.help-page', page);
+    const head = '<div class="page-head"><h1>Help &amp; support</h1></div>';
+    let t = null;
+    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Help &amp; support.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    const open = t && t.status === 'open';
+    const dg = helpDiag();
+    root.innerHTML = `${head}
+      <section class="settings-section"><h2>Quick answers</h2>
+        <details class="faq"><summary>Why did my video quality drop?</summary><p>Aurora lowers the quality when your connection is slow, so the picture doesn't keep stopping. Move closer to the router, or choose a lower quality in Settings.</p></details>
+        <details class="faq"><summary>A channel won't load or keeps freezing</summary><p>Open <a href="#/status">Status</a> and press <strong>Check now</strong>. It tells you if it is just you or everyone. If other channels work, try the same game on another channel.</p></details>
+        <details class="faq"><summary>I forgot my password</summary><p>Send a message below, or contact the person you got Aurora from. They can make you a new one.</p></details>
+      </section>
+      <section class="settings-section"><h2>Message your provider${open ? ' <small>conversation open</small>' : ''}</h2>
+        <div class="help-thread" data-thread>${(t?.messages || []).map((m) => `<div class="help-msg ${m.from === 'user' ? 'me' : 'them'}">${esc(m.text)}<small>${m.from === 'user' ? 'You' : 'Support'} · ${esc(timeAgo(m.at))}</small></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div>
+        <textarea class="st-note-input" data-msg rows="3" maxlength="1000" placeholder="Describe the problem"></textarea>
+        <p class="muted help-diag">Sent with your message: ${esc(dg.app)} · ${esc(dg.device)} · ${esc(dg.connection)}${dg.playing ? ' · ' + esc(dg.playing) : ''}${dg.status ? ' · ' + esc(dg.status) : ''}</p>
+        <div class="m-actions"><button class="btn btn-white" data-send>Send</button></div><div class="live-result" data-result></div></section>`;
+    $('[data-send]', root).addEventListener('click', async () => {
+      const text = $('[data-msg]', root).value.trim();
+      const r = $('[data-result]', root);
+      if (!text) { r.className = 'live-result bad'; r.textContent = 'Write a message first.'; return; }
+      $('[data-send]', root).disabled = true;
+      try { await guard('/support', { method: 'POST', params: { userId: state.userId }, body: { text, diag: helpDiag() } }); toast('Sent', 2000); renderHelp(page, isCurrent); }
+      catch (e) { $('[data-send]', root).disabled = false; r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+  }
+
+  async function renderRefer(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad refer-page"><div class="page-head"><h1>Refer a friend</h1></div><div class="spinner"></div></div>';
+    const root = $('.refer-page', page);
+    const head = '<div class="page-head"><h1>Refer a friend</h1></div>';
+    let d;
+    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Refer a friend.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    if (!d.enabled) { root.innerHTML = `${head}<p class="empty-msg">Referrals are not on right now.</p>`; return; }
+    const msg = `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
+    root.innerHTML = `${head}
+      <section class="settings-section refer-card"><p class="muted">Your code</p><div class="refer-code">${esc(d.code)}</div>
+        <p class="muted">Your friend gets <strong>${d.days} free days</strong>, and so do you when they join.</p>
+        <div class="m-actions"><button class="btn btn-white" data-share>Share my code</button><button class="btn btn-gray" data-copy>Copy</button></div></section>
+      <div class="stat-grid">${statTile('Friends joined', d.friends.length, '')}${statTile('Free days earned', d.earned, '')}</div>
+      ${d.friends.length ? `<section class="settings-section"><h2>Your friends</h2>${d.friends.map((f) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(f.name)}</strong><div class="muted">Joined ${esc(timeAgo(f.at))} · +${d.days} days</div></div></div>`).join('')}</section>` : ''}
+      ${d.canRedeem ? `<section class="settings-section"><h2>Did a friend invite you?</h2><p class="muted">Enter their code in your first 14 days.</p>
+        <div class="refer-redeem"><input type="text" class="st-note-input" data-code maxlength="20" autocapitalize="characters" autocomplete="off" placeholder="FRIEND-1AB"><button class="btn btn-white" data-redeem>Use code</button></div><div class="live-result" data-result></div></section>` : ''}`;
+    const copy = () => { try { navigator.clipboard.writeText(msg).then(() => toast('Copied', 1500), () => toast(msg, 6000)); } catch { toast(msg, 6000); } };
+    $('[data-copy]', root).addEventListener('click', copy);
+    $('[data-share]', root).addEventListener('click', () => { if (navigator.share) navigator.share({ text: msg }).catch(() => {}); else copy(); });
+    $('[data-redeem]', root)?.addEventListener('click', async () => {
+      const r = $('[data-result]', root);
+      try { const x = await guard('/referral/redeem', { method: 'POST', body: { userId: state.userId, code: $('[data-code]', root).value } }); toast(x.days ? `You got ${x.days} free days` : 'Code accepted', 3500); renderRefer(page, isCurrent); }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+  }
+
+  async function renderStats(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad stats-page"><div class="page-head"><h1>Your Aurora</h1></div><div class="spinner"></div></div>';
+    const root = $('.stats-page', page);
+    const head = '<div class="page-head"><h1>Your Aurora</h1></div>';
+    let d;
+    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for this page.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
+    const diff = d.thisWeek - d.lastWeek;
+    const txt = d.thisWeek ? `This week on Aurora I watched ${hm(d.thisWeek)}${d.top[0] ? `, mostly ${d.top[0].title}` : ''}.` : '';
+    root.innerHTML = `${head}
+      <section class="settings-section stats-hero"><p class="muted">You watched this week</p><div class="stats-big">${d.thisWeek ? hm(d.thisWeek) : '0h 0m'}</div>
+        <p class="muted">${d.lastWeek || d.thisWeek ? (diff === 0 ? 'The same as last week' : `${hm(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than last week`) : 'Start watching and your week will show up here.'}</p></section>
+      <div class="stat-grid">${statTile('Days you watched', d.days, 'of 7')}${statTile('Live TV', hm(d.live), 'this week')}</div>
+      ${d.top.length ? `<section class="settings-section"><h2>Most watched</h2>${d.top.map((t) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(t.title)}</strong></div><div class="admin-row-time">${esc(hm(t.minutes))}</div></div>`).join('')}</section>` : ''}
+      ${txt ? '<div class="m-actions"><button class="btn btn-white" data-share>Share my week</button></div>' : ''}`;
+    $('[data-share]', root)?.addEventListener('click', () => { if (navigator.share) navigator.share({ text: txt }).catch(() => {}); else { try { navigator.clipboard.writeText(txt); toast('Copied', 1500); } catch { toast(txt, 6000); } } });
+  }
+
+  // ----- Admin → Inbox, Announcements and Support (Aurora Guard 1.11.0) -----
+  const guardTooOld = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.11.0 to use ${what} (copy the new aurora-guard.js and restart the task).` : esc(e.message));
+  async function adminInbox(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Inbox');
+    let inbox, reqs, tickets;
+    try { [inbox, reqs, tickets] = await Promise.all([guard('/admin-inbox'), guard('/credit-requests'), guard('/support')]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="live-result bad">${guardTooOld(e, 'the Inbox')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const pending = reqs.requests.filter((x) => x.status === 'pending');
+    const open = tickets.tickets.filter((t) => t.status === 'open');
+    body.innerHTML = `
+      <div class="stat-grid">${statTile('Waiting for you', inbox.total, '', inbox.total ? 'bad' : '')}${statTile('Credit requests', inbox.creditRequests, '')}${statTile('Support messages', inbox.tickets, 'not answered')}${statTile('Time requests', inbox.extensions, 'customers')}</div>
+      <section class="admin-card"><h2>Credit requests</h2><div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
+          <div class="muted">${x.note ? '"' + esc(x.note) + '" · ' : ''}has ${x.balance} now · ${esc(timeAgo(x.at))}</div></div>
+          <div class="plan-actions"><button class="btn btn-white" data-ok>Approve ${x.amount}</button><button class="btn btn-gray" data-no>Decline</button></div></div>`).join('') || '<p class="muted">No credit requests.</p>'}</div></section>
+      <section class="admin-card"><h2>Other things waiting</h2><div class="admin-list">
+        <div class="admin-row"><div class="admin-row-main"><strong>${open.length} open support ${open.length === 1 ? 'message' : 'messages'}</strong></div><a class="btn btn-gray" href="#/admin?tab=support">Open Support</a></div>
+        <div class="admin-row"><div class="admin-row-main"><strong>${inbox.extensions} customer ${inbox.extensions === 1 ? 'request' : 'requests'} for more time</strong></div><a class="btn btn-gray" href="#/admin?tab=users">Open Users</a></div>
+        ${inbox.lowResellers.map((r) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(r.name)}</strong> is low on credits <span class="pill warn">${r.credits}</span></div><a class="btn btn-gray" href="#/admin?tab=resellers">Open Resellers</a></div>`).join('')}</div></section>`;
+    $$('[data-req]', body).forEach((el) => {
+      const id = el.dataset.req;
+      const act = async (action) => { try { await guard(`/credit-requests/${encodeURIComponent(id)}`, { method: 'PUT', body: { action } }); toast(action === 'approve' ? 'Credits added' : 'Declined', 2000); refreshInbox(); if (isCurrent()) adminInbox(body, isCurrent); } catch (e) { toast(e.message, 4000); } };
+      $('[data-ok]', el).addEventListener('click', () => act('approve'));
+      $('[data-no]', el).addEventListener('click', () => act('deny'));
+    });
+  }
+
+  async function adminAnnounce(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Announcements');
+    let list, plans, resellers;
+    try { [list, plans, resellers] = await Promise.all([guard('/announcements'), guard('/plans').then((x) => x.plans || []), guard('/resellers').then((x) => x.resellers || []).catch(() => [])]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Announcements</h2><p class="live-result bad">${guardTooOld(e, 'announcements')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const levelName = { info: 'Info', warn: 'Warning', bad: 'Outage' };
+    body.innerHTML = `
+      <section class="admin-card"><h2>New announcement <small>Customers see it as a banner and in their notifications</small></h2>
+        <label class="admin-field"><span>Message</span><input type="text" data-f="text" maxlength="200" placeholder="e.g. Maintenance tonight 2–3 AM"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info</option><option value="warn">Warning</option><option value="bad">Outage</option></select></label>
+          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
+          <label class="admin-field"><span>Disappears after</span><select data-f="hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
+        </div>
+        <div class="m-actions"><button class="btn btn-red" data-send>Send now</button></div><div class="live-result" data-result></div></section>
+      <section class="admin-card"><h2>Showing now</h2><div class="admin-list">${list.announcements.map((a) => `<div class="admin-row" data-a="${esc(a.id)}"><div class="admin-row-main"><span class="pill${a.level === 'bad' ? ' bad' : a.level === 'warn' ? ' warn' : ''}">${levelName[a.level] || 'Info'}</span> <strong>${esc(a.text)}</strong>
+          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
+    const f = (k) => $(`[data-f="${k}"]`, body);
+    $('[data-send]', body).addEventListener('click', async () => {
+      const [type, id] = f('aud').value.split(':'), r = $('[data-result]', body);
+      try { await guard('/announcements', { method: 'POST', body: { text: f('text').value, level: f('level').value, hours: Number(f('hours').value), audience: { type, id } } }); toast('Sent', 2500); refreshInbox(); if (isCurrent()) adminAnnounce(body, isCurrent); }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+    $$('[data-a]', body).forEach((el) => $('[data-rm]', el).addEventListener('click', async () => { try { await guard(`/announcements/${encodeURIComponent(el.dataset.a)}`, { method: 'DELETE' }); toast('Removed', 1500); refreshInbox(); if (isCurrent()) adminAnnounce(body, isCurrent); } catch (e) { toast(e.message, 4000); } }));
+  }
+
+  async function adminSupport(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Support');
+    let d;
+    try { d = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Support</h2><p class="live-result bad">${guardTooOld(e, 'Support')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const tickets = [...d.tickets].sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || b.updated - a.updated);
+    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
+    body.innerHTML = `<section class="admin-card"><h2>Support <small>Messages customers sent with Get help</small></h2><div class="admin-list">${tickets.map((t) => `<div class="admin-row support-row" data-t="${esc(t.id)}"><div class="admin-row-main">
+        <strong>${esc(t.name)}</strong> <span class="pill${t.status === 'open' ? ' warn' : ''}">${t.status === 'open' ? 'Open' : 'Solved'}</span>${t.reseller ? ` <span class="muted">via ${esc(t.reseller)}</span>` : ''}
+        <div class="help-thread">${t.messages.map((m) => `<div class="help-msg ${m.from === 'user' ? 'them' : 'me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(t.name) : esc(m.by || 'You')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
+        <div class="help-diag muted">${diag(t.diag)}</div>
+        <textarea class="st-note-input" data-reply rows="2" maxlength="1000" placeholder="Reply"></textarea>
+        <div class="m-actions"><button class="btn btn-white" data-send>Reply</button><button class="btn btn-gray" data-toggle>${t.status === 'open' ? 'Mark solved' : 'Reopen'}</button></div></div></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div></section>`;
+    $$('[data-t]', body).forEach((el) => {
+      const t = tickets.find((x) => x.id === el.dataset.t);
+      $('[data-send]', el).addEventListener('click', async () => {
+        const text = $('[data-reply]', el).value.trim();
+        if (!text) { toast('Write a reply first', 2000); return; }
+        try { await guard(`/support/${encodeURIComponent(t.id)}/reply`, { method: 'POST', body: { text } }); toast('Reply sent', 2000); refreshInbox(); if (isCurrent()) adminSupport(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+      $('[data-toggle]', el).addEventListener('click', async () => { try { await guard(`/support/${encodeURIComponent(t.id)}`, { method: 'PUT', body: { status: t.status === 'open' ? 'solved' : 'open' } }); refreshInbox(); if (isCurrent()) adminSupport(body, isCurrent); } catch (e) { toast(e.message, 4000); } });
+    });
+  }
+
+  // ----- The reseller's own panel (profile menu → Reseller panel) -----
+  async function renderReseller(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad reseller-page"><div class="page-head"><h1>Reseller panel</h1></div><div class="spinner"></div></div>';
+    const root = $('.reseller-page', page);
+    const head = '<div class="page-head"><h1>Reseller panel</h1></div>';
+    let d;
+    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.10.0 for the Reseller panel.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    if (!d.reseller) { location.replace('#/home'); return; }
+    if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
+    const welcomeText = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
+    const dayText = (c) => (c.daysLeft == null ? '<span class="pill">No end date</span>' : c.expired ? '<span class="pill bad">Expired</span>' : `<span class="pill${c.daysLeft <= 7 ? ' warn' : ''}">${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'}</span>`);
+    const cRow = (c) => `<div class="admin-row" data-c="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}${c.trial ? ' <span class="pill">Trial</span>' : ''}
+        <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-details>Details</button><button class="btn btn-gray" data-renew>Renew</button></div></div>`;
+    const lRow = (e) => `<div class="admin-row"><div class="admin-row-main">${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}<div class="muted">${esc(e.by)}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
+    const soon = d.customers.filter((c) => !c.expired && c.daysLeft != null && c.daysLeft <= 7).length, gone = d.customers.filter((c) => c.expired).length;
+    const need = d.customers.filter((c) => c.expired || (c.daysLeft != null && c.daysLeft <= 7));
+    root.innerHTML = `${head}
+      <div class="stat-grid">
+        ${statTile('Your credits', d.credits, d.low ? 'running low' : 'available', d.low ? 'bad' : '')}
+        ${statTile('Customers', d.customers.length, 'you created')}
+        ${statTile('Ending within 7 days', soon, '')}
+        ${statTile('Expired', gone, '')}
+      </div>
+      ${d.low ? '<section class="admin-card"><p><strong>Running low on credits.</strong> Ask your provider for more below.</p></section>' : ''}
+      ${d.report ? '' : '<section class="admin-card"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
+      <section class="admin-card${d.report ? '' : ' hidden'}"><h2>Credits <small>${esc(d.report?.month || '')}</small></h2>
+        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div>
+        ${d.request ? `<p class="muted">Your request for ${esc(creditsWord(d.request.amount))} is waiting for your provider.</p>` : '<div class="m-actions"><button class="btn btn-gray" data-ask>Request credits</button></div><div class="plan-form hidden" data-askform></div>'}</section>
+      ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
+        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}<div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
+        <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
+      <section class="admin-card"><h2>My customers</h2>
+        <div class="admin-list" data-list>${d.customers.map(cRow).join('') || '<p class="muted">No customers yet. Add your first one.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-new>New customer</button></div>
+        <div class="plan-form hidden" data-form></div></section>
+      <section class="admin-card"><h2>Credit history</h2><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+    const form = $('[data-form]', root);
+    const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
+    const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    const q = (k) => $(`[data-f="${k}"]`, form);
+    const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
+    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el.select(); toast('Select and copy the text', 3000); }); } catch { el.select(); toast('Select and copy the text', 3000); } };
+    const makePw = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; const r = (n) => Math.floor(Math.random() * n); return w[r(w.length)] + w[r(w.length)] + (10 + r(90)); };
+    const showWelcome = (c, pw, cost) => {
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} is ready</h3><p>${cost ? `${esc(creditsWord(cost))} used. ` : 'Free trial. '}Copy this and send it to your customer. The password is shown only now.</p>
+        <textarea class="st-note-input" data-welcome rows="9" readonly>${esc(welcomeText(c, pw))}</textarea>
+        <div class="m-actions"><button class="btn btn-white" data-copy>Copy</button><button class="btn btn-gray" data-done>Done</button></div>`;
+      $('[data-copy]', form).addEventListener('click', () => copyText($('[data-welcome]', form).value, $('[data-welcome]', form)));
+      $('[data-done]', form).addEventListener('click', reload);
+    };
+    const openNew = () => {
+      if (!d.plans.length) { toast('You have no plans to sell yet. Ask your provider.', 4000); return; }
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">New customer</h3><p class="muted">Only the username and plan are needed. The plan's cost comes out of your credits.</p>
+        <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" placeholder="e.g. Mike Turner"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Username *</span><input type="text" data-f="user" maxlength="32" autocapitalize="none" autocomplete="off" placeholder="mike_t"></label>
+          <label class="admin-field"><span>Password</span><input type="text" data-f="pw" maxlength="64" autocomplete="off" value="${esc(makePw())}"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" placeholder="optional"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" placeholder="optional"></label>
+        </div>
+        <label class="admin-field"><span>Plan *</span><select data-f="plan">${planOpts('')}</select></label>
+        <label class="admin-check"><input type="checkbox" data-f="trial"> Free 2-day trial instead (${d.trialsLeft} left today)</label>
+        <label class="admin-field"><span>Note (only you and the admin see this)</span><input type="text" data-f="note" maxlength="300" placeholder="e.g. Pays on the 1st"></label>
+        <p class="muted" data-sum></p>
+        <div class="m-actions"><button class="btn btn-red" data-save>Create customer</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      const cost = () => (q('trial').checked ? 0 : (d.plans.find((p) => p.id === q('plan').value)?.credits || 0));
+      const sum = () => { const c = cost(); $('[data-sum]', form).textContent = (q('trial').checked ? 'Free trial, ends in 2 days. ' : `Cost: ${creditsWord(c)}. `) + `Balance after: ${d.credits - c}${d.credits - c < 0 ? ' (not enough credits)' : ''}`; $('[data-save]', form).disabled = d.credits - c < 0 || (q('trial').checked && d.trialsLeft <= 0); };
+      sum(); q('plan').addEventListener('change', sum); q('trial').addEventListener('change', sum);
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        const btn = $('[data-save]', form), pw = q('pw').value;
+        btn.disabled = true; say('<div class="spinner"></div>');
+        try {
+          const r = await guard('/reseller/customers', { method: 'POST', params: { userId: state.userId }, body: { fullName: q('full').value, username: q('user').value, password: pw, email: q('email').value, phone: q('phone').value, note: q('note').value, planId: q('plan').value, trial: q('trial').checked } });
+          d.credits = r.credits;
+          toast(`${r.customer.full || r.customer.name} created`, 2500);
+          showWelcome(r.customer, r.password, cost());
+        } catch (e) { btn.disabled = false; say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl(q('full')); else form.scrollIntoView({ block: 'center' });
+    };
+    const openDetails = (c) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <small>${esc(c.name)} · ${esc(c.planName || 'No plan')}${c.expires ? ' · ends ' + esc(fmtDay(c.expires)) : ''}</small></h3>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" value="${esc(c.full)}"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" value="${esc(c.email)}"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" value="${esc(c.phone)}"></label>
+        </div>
+        <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-cancel>Close</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        try { await guard(`/reseller/customers/${encodeURIComponent(c.id)}`, { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
+        catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-pw]', form).addEventListener('click', async () => {
+        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once.', 'Reset password'))) return;
+        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/password`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(`New password for ${esc(c.name)}: <strong>${esc(x.password)}</strong> (shown only now)`, 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-out]', form).addEventListener('click', async () => {
+        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/signout`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    $('[data-new]', root).addEventListener('click', openNew);
+    $('[data-ask]', root)?.addEventListener('click', () => {
+      const af = $('[data-askform]', root); af.classList.remove('hidden');
+      af.innerHTML = `<div class="plan-grid"><label class="admin-field"><span>How many credits?</span><input type="number" data-f="amount" min="1" max="1000" step="1" inputmode="numeric" value="20"></label><label class="admin-field"><span>Note (optional)</span><input type="text" data-f="note" maxlength="200" placeholder="e.g. 12 renewals this week"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-sendreq>Send request</button><button class="btn btn-gray" data-cancelreq>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancelreq]', af).addEventListener('click', () => { af.classList.add('hidden'); af.innerHTML = ''; });
+      $('[data-sendreq]', af).addEventListener('click', async () => {
+        try { await guard('/reseller/credit-request', { method: 'POST', params: { userId: state.userId }, body: { amount: Number($('[data-f="amount"]', af).value), note: $('[data-f="note"]', af).value } }); toast('Request sent to your provider', 3000); reload(); }
+        catch (e) { const r = $('[data-result]', af); r.className = 'live-result bad'; r.textContent = e.message; }
+      });
+    });
+    const chosenIds = () => $$('[data-n]:checked', root).map((x) => x.dataset.n);
+    $('[data-bulk]', root)?.addEventListener('click', async () => {
+      const ids = chosenIds(), res = $('[data-bulkresult]', root);
+      if (!ids.length) { res.className = 'live-result bad'; res.textContent = 'Choose at least one customer.'; return; }
+      const cost = ids.reduce((n, id) => { const c = d.customers.find((x) => x.id === id); const p = d.plans.find((x) => x.id === c.planId) || d.plans[0]; return n + (p ? p.credits : 0); }, 0);
+      if (!(await confirmAction(`Renew ${ids.length} ${ids.length === 1 ? 'customer' : 'customers'}?`, `This uses ${creditsWord(cost)}. You have ${d.credits}.`, 'Renew'))) return;
+      try { const r = await guard('/reseller/renew-many', { method: 'POST', params: { userId: state.userId }, body: { ids } }); toast(`Renewed ${r.renewed} · ${creditsWord(r.spent)} used`, 3500); reload(); }
+      catch (e) { res.className = 'live-result bad'; res.textContent = e.message; }
+    });
+    $('[data-msgs]', root)?.addEventListener('click', () => {
+      const lines = chosenIds().map((id) => d.customers.find((x) => x.id === id)).filter(Boolean).map((c) => {
+        const first = (c.full || c.name).split(' ')[0];
+        return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
+      }).join('\n\n');
+      if (!lines) { toast('Choose at least one customer', 2500); return; }
+      try { navigator.clipboard.writeText(lines).then(() => toast('Messages copied', 2000), () => toast(lines, 8000)); } catch { toast(lines, 8000); }
+    });
+    $$('[data-c]', root).forEach((el) => {
+      const c = d.customers.find((x) => x.id === el.dataset.c);
+      $('[data-details]', el).addEventListener('click', () => openDetails(c));
+      $('[data-renew]', el).addEventListener('click', async () => {
+        const plan = d.plans.find((p) => p.id === c.planId) || d.plans[0];
+        if (!plan) { toast('You have no plans to sell yet.', 3000); return; }
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        try { const r = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/renew`, { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); }
+        catch (e) { toast(e.message, 5000); }
       });
     });
   }
@@ -6871,6 +7683,8 @@
           [['', "Customer's choice"], ['on', 'Required']], cfg.appLock)}
         ${sel('asIs', 'Play as they are', "Converting needs your server's ffmpeg to start in time; when it can't, a video never starts. 'Shows and movies' sends every file untouched (no converting, no limit; a customer on a slow line may buffer). 'Each device decides' plays shows as they are, and any device whose conversions fail twice stops asking for them for 6 hours. 'Let Aurora convert' is the old behaviour.",
           [['', 'Each device decides (shows as they are)'], ['all', 'Shows and movies as they are'], ['off', 'Let Aurora convert when it helps']], cfg.asIs || '')}
+        ${sel('downloads', 'Offline downloads (Android app)', 'Lets customers save movies and shows on their phone to watch without internet. Downloads use your server\'s upload bandwidth once per title. Off removes the Download button and deletes saved downloads the next time Aurora opens.',
+          [['', 'On'], ['off', 'Off']], cfg.downloads || '')}
         ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
           [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
         <div class="m-actions">
@@ -6893,7 +7707,7 @@
     };
     const pick = (id) => $(`[data-pb="${id}"]`, body).value;
     $('[data-save]', body).addEventListener('click', () => {
-      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), t: Date.now() };
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), downloads: pick('downloads'), t: Date.now() };
       save(value, 'Playback settings saved.');
     });
     $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
@@ -6988,12 +7802,29 @@
 
   async function adminServer(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Server health');
+    // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
+    const noteBox = document.createElement('div'), main = document.createElement('div');
+    body.append(noteBox, main);
+    (async () => {
+      let current = '';
+      try { current = (await guard('/service-status', { params: { userId: state.userId } })).note?.text || ''; } catch { return; }
+      if (!isCurrent()) return;
+      noteBox.innerHTML = `<section class="admin-card"><h2>Message on the Status page <small>Customers see it at the top of Settings → Status</small></h2>
+        <div class="admin-row"><input type="text" class="st-note-input" data-note maxlength="200" placeholder="For example: Maintenance tonight 2–3 AM" value="${esc(current)}"> <button class="btn btn-white" data-note-save>Save</button> <button class="btn btn-gray" data-note-clear>Clear</button></div>
+        <p class="muted" data-note-result></p></section>`;
+      const save = async (text) => {
+        try { await guard('/status-note', { method: 'PUT', body: { text } }); $('[data-note]', noteBox).value = text; $('[data-note-result]', noteBox).textContent = text ? 'Saved. Customers will see it now.' : 'Cleared.'; }
+        catch (e) { $('[data-note-result]', noteBox).textContent = e.status === 404 ? 'Update Aurora Guard to 1.9.0 to use this.' : e.message; }
+      };
+      $('[data-note-save]', noteBox).addEventListener('click', () => save($('[data-note]', noteBox).value.trim()));
+      $('[data-note-clear]', noteBox).addEventListener('click', () => save(''));
+    })();
     const draw = (s) => {
       const hot = (v, at) => (v != null && v >= at ? 'bad' : '');
       const disks = (s.disks || []).map((d) => d.error ? `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong><div class="muted">${esc(d.error)}</div></div></div>`
         : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> <span class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</span>
           <div class="usage-bar${d.freePct < 10 ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
-      body.innerHTML = `
+      main.innerHTML = `
         <div class="stat-grid">
           ${statTile('Processor', s.cpu == null ? '…' : s.cpu + '%', `${s.cores} cores`, hot(s.cpu, 85))}
           ${statTile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, hot(s.mem.pct, 90))}
@@ -7940,6 +8771,12 @@
 
   window.auroraVodClosed = async (r) => {
     store.del('ef.liveReturn');
+    if (offlinePlaying) { // a saved download: remember where they stopped; there is no server to tell
+      const id = offlinePlaying; offlinePlaying = null;
+      if (r && r.ended) store.del('ef.dl.pos.' + id); else if (r && r.positionMs > 5000) store.set('ef.dl.pos.' + id, String(Math.round(r.positionMs)));
+      if (!offlineMode && location.hash.startsWith('#/downloads')) route();
+      return;
+    }
     appLog.add('info', 'Aurora player closed: ' + (!r ? 'no answer from the player screen (it closed or crashed at once)'
       : r.error ? `${r.error} (${r.ready ? 'played, then stopped' : 'never started'})` : r.ready ? `played ${Math.round((r.watchedMs || 0) / 1000)} s` : 'never started'));
     const s = vodSession;
@@ -8468,6 +9305,7 @@
       const act = e.target.dataset.action;
       if (act === 'settings') location.hash = '#/settings';
       if (act === 'admin') location.hash = '#/admin';
+      if (act === 'reseller') location.hash = '#/reseller';
       if (act === 'switch') switchUser();
       if (act === 'signout') signOut();
     });
@@ -9222,7 +10060,7 @@
         removeAccount(state.userId);
         state.apiKey = ''; store.del('ef.apiKey');
         showSetup('Your sign-in has expired. Please sign in again.');
-      } else showSetup(connectionErrorMessage(e));
+      } else { showSetup(connectionErrorMessage(e)); offerOfflineDownloads(); }
     }
   }
 

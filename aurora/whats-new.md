@@ -1,4 +1,5 @@
-- Fixed: the Live TV Guide no longer jumps back to the top a few seconds after Aurora starts, just as you begin scrolling down.
-- Fixed: after watching a channel from the Guide, you land back on that channel, and the next Down carries on from there instead of starting at the top bar.
-- Fixed: holding Down in the Guide now loads more channels before you reach the end, so it never stalls or snaps back.
-- New in Live TV → Sports: live scores, favorite teams, spoiler-free mode and game reminders.
+- New: a notification bell with messages from your provider, plan reminders, new titles and support replies.
+- New: Settings → Get help sends your provider a message with the details they need attached.
+- New: Refer a friend (you both get free days) and Your Aurora, a summary of your week.
+- New for resellers: bulk renew, reminder messages, credit requests and a monthly report.
+- New (Android): Download movies and shows to watch without internet. Find them in Settings → Downloads.
