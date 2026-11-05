@@ -643,7 +643,7 @@ html.tv { font-size: 18px; }
 .stat-value { font-size: 2.2rem; font-weight: 700; margin: .2rem 0; font-variant-numeric: tabular-nums; }
 .stat-note { color: var(--dim); font-size: .8rem; line-height: 1.35; }
 .admin-card { background: var(--bg-2); border-radius: 10px; padding: 1.1rem 1.4rem; margin-bottom: 1.5rem; min-width: 0; }
-.admin-card h2 { font-size: 1.1rem; margin: 0 0 .8rem; display: flex; align-items: baseline; gap: .7rem; }
+.admin-card h2 { font-size: 1.1rem; margin: 0 0 .8rem; display: flex; align-items: baseline; gap: .1rem .7rem; flex-wrap: wrap; }
 .admin-card h2 small { font-size: .78rem; font-weight: 500; color: var(--dim); }
 .admin-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1.5rem; }
 .admin-sub { font-size: .95rem; margin: 1rem 0 .4rem; }
@@ -1606,3 +1606,6 @@ html { overflow-x: hidden; }
 .st-verdict.bad { background: rgba(239,90,95,.1); border-color: rgba(239,90,95,.4); }
 .st-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .8rem; }
 .st-note-input { flex: 1; min-width: 0; background: var(--bg, #0b0b10); color: inherit; border: 1px solid rgba(255,255,255,.2); border-radius: 8px; padding: .5rem .7rem; font: inherit; }
+
+/* Buttons and headings never break inside a word (the long-text safety rule above made narrow flex rows squeeze "Select" and "Save" onto two lines). */
+button, .btn, .pill, .admin-card h2, .settings-section h2, .stat-label { overflow-wrap: normal; word-break: normal; }
