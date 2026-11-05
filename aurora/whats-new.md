@@ -1,3 +1,2 @@
-- New: Settings → Status. See at a glance whether Aurora, Live TV and your connection are working, and press "Check now" to find out if a problem is just you or everyone.
-- New: if Live TV, the server or a channel is down, Aurora says so and can tell you when it is back.
-- New: your admin can post a message at the top of the Status page (for example about maintenance).
+- New: a Status page (Settings → Status) that checks whether Aurora, Live TV and your connection are working, and tells you if a problem is just you.
+- New for resellers: a Reseller panel where you use your credits to add and renew your own customers, with a ready-to-send welcome message.

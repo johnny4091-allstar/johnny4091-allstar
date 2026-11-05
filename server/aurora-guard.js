@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.9.0';
+const VERSION = '1.10.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -55,6 +55,9 @@ function loadConfig() {
     // Admin -> Server: drives to show free space for (blank = the drive the guard is on), and the free-space level that sends an alert.
     diskPaths: [],
     diskAlertPercent: 10,
+    // Resellers: a reseller is warned when their credits are at or under this, and can start this many free 2-day trials a day.
+    resellerLowCredits: 3,
+    resellerTrialsPerDay: 5,
     // Sports scores (Live TV -> Sports): ESPN's public scoreboard feed. It is not an official, documented API and ESPN can change or
     // stop it at any time. Set "scoresEnabled": false to switch it off, or "scoresBase" to point at another server with the same shape.
     scoresEnabled: true,
@@ -268,6 +271,59 @@ function recordAction(action) {
   store.actions = store.actions.slice(0, 300);
 }
 
+
+// ---------- Resellers ----------
+// A reseller is an Emby account (they sign in to Aurora as usual) that the admin has given credits. Credits pay for the plans they
+// create or renew customers on; they can see and change only the customers they made. Every change in credits is written to a ledger.
+const planCredits = (p) => (Number.isInteger(p.credits) && p.credits >= 0 ? p.credits : Math.max(1, p.connections * (p.unit === 'day' ? Math.ceil(p.length / 30) : p.length)));
+const resellerList = () => store.resellers || (store.resellers = {});
+const resellerOfUser = (userId) => Object.values(resellerList()).find((r) => r.userId === userId) || null;
+const resellerBusy = new Set();
+const cleanUserName = (v) => { const t = String(v || '').trim(); return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(t) ? t : null; };
+const cleanText = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
+function creditEntry(r, delta, why, by, extra) {
+  r.credits = Math.max(0, r.credits + delta);
+  const e = { id: crypto.randomBytes(5).toString('hex'), reseller: r.id, at: Date.now(), by: cleanText(by, 40), delta, balance: r.credits, why: cleanText(why, 80), ...(extra || {}) };
+  store.creditLog = [e, ...(store.creditLog || [])].slice(0, 3000);
+  return e;
+}
+function publicReseller(r) {
+  const customers = Object.values(store.users).filter((u) => u.reseller === r.id).length;
+  return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits };
+}
+function publicCustomer(id, rec, devices) {
+  const c = rec.contact || {};
+  return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
+    trial: !!rec.trial, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null };
+}
+// New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
+async function copyAppDefaults(newUserId) {
+  try {
+    const users = await emby('GET', '/Users');
+    const admin = (users || []).find((u) => u.Policy?.IsAdministrator);
+    if (!admin) return;
+    for (const id of ['aurora-livetv', 'aurora-requests', 'aurora-app', 'aurora-playback']) {
+      try {
+        const prefs = await emby('GET', `/DisplayPreferences/${id}`, { query: { userId: admin.Id, client: 'aurora' } });
+        const raw = prefs?.CustomPrefs?.config;
+        if (!raw) continue;
+        await emby('POST', `/DisplayPreferences/${id}`, { query: { userId: newUserId, client: 'aurora' }, body: { Id: id, Client: 'aurora', SortBy: 'SortName', SortOrder: 'Ascending', RememberIndexing: false, RememberSorting: false,
+          ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false, PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: raw } } });
+      } catch { /* that setting is not set up: skip it */ }
+    }
+  } catch (e) { log('Copying the Aurora settings to a new account failed:', e.message); }
+}
+async function newEmbyAccount(name, password) {
+  const u = await emby('POST', '/Users/New', { body: { Name: name } });
+  if (!u?.Id) throw new Error('Emby did not return the new account');
+  try {
+    await emby('POST', `/Users/${u.Id}/Password`, { body: { Id: u.Id, ResetPassword: true } });
+    await emby('POST', `/Users/${u.Id}/Password`, { body: { Id: u.Id, CurrentPw: '', NewPw: password } });
+  } catch (e) { await emby('DELETE', `/Users/${u.Id}`).catch(() => {}); throw new Error('Could not set the password: ' + e.message); }
+  return u;
+}
+const genPassword = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; return w[crypto.randomInt(w.length)] + w[crypto.randomInt(w.length)] + (10 + crypto.randomInt(90)); };
+
 // ---------- Plan details and extension requests ----------
 // A customer sees their own plan (devices allowed, in use now, the date access ends) and may ask for more time;
 // the admin approves or denies it in Admin -> Users. Approving moves the expiration date on (from today, or from the
@@ -310,7 +366,13 @@ function cleanPlan(b, id) {
     categories = [...new Set(b.categories.map((c) => String(c).slice(0, 160)))];
     if (!categories.length) return { error: 'Choose at least one Live TV category, or allow all of them.' };
   }
-  return { plan: { id, name, price, length, unit, connections, categories, active: b.active !== false } };
+  // What a reseller pays in credits for this plan (blank = connections x months, so 1 credit is one connection for one month).
+  let credits = null;
+  if (b.credits !== undefined && b.credits !== null && b.credits !== '') {
+    credits = Number(b.credits);
+    if (!Number.isInteger(credits) || credits < 0 || credits > 10000) return { error: 'The credit cost must be a whole number from 0 up, or blank.' };
+  }
+  return { plan: { id, name, price, length, unit, connections, categories, credits, active: b.active !== false } };
 }
 // Puts a plan on an account. mode "extend": time already left is kept and the plan's length added after it; "today": starts now.
 function applyPlan(userId, userName, plan, mode, priceOverride) {
@@ -650,6 +712,10 @@ function describeChange(req, url, subject) {
   }
   if (p === '/sports/settings' && m === 'PUT') return `Changed the sports scores settings (${(b.leagues || []).length} leagues${b.enabled === false ? ', switched off' : ''})`;
   if (p === '/sports/aliases' && m === 'PUT') return `Saved ${(b.aliases || []).length} sports name aliases`;
+  if (p === '/resellers' && m === 'POST') return `Added the reseller ${b.name || ''}${b.credits ? ` with ${b.credits} credits` : ''}`.trim();
+  if ((r = p.match(/^\/resellers\/([\w-]{1,32})$/)) && m === 'PUT') return `Changed the reseller ${(store.resellers || {})[r[1]]?.name || ''}${b.status ? ` (${b.status})` : ''}`.trim();
+  if ((r = p.match(/^\/resellers\/([\w-]{1,32})\/credits$/)) && m === 'POST') return `${b.mode === 'remove' ? 'Removed' : b.mode === 'set' ? 'Set to' : 'Added'} ${b.amount} credits for ${(store.resellers || {})[r[1]]?.name || 'a reseller'}${b.why ? ' (' + String(b.why).slice(0, 40) + ')' : ''}`;
+  if ((r = p.match(/^\/resellers\/([\w-]{1,32})\/password$/)) && m === 'POST') return `Reset the password of the reseller ${(store.resellers || {})[r[1]]?.name || ''}`.trim();
   if (p === '/status-note' && m === 'PUT') return b.text ? `Set the Status page message: "${String(b.text).slice(0, 60)}"` : 'Cleared the Status page message';
   if (p === '/sports/refresh') return '';
   if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
@@ -1262,6 +1328,107 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, request: publicRequest(entry) });
   }
 
+  // ----- Resellers (guard 1.10.0): the reseller's own panel. Everything is limited to the signed-in reseller and the customers they made. -----
+  if (url.pathname.startsWith('/reseller/')) {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const r = resellerOfUser(me.Id);
+    if (url.pathname === '/reseller/me' && req.method === 'GET') {
+      if (!r) return send(res, 200, { reseller: false });
+      if (r.status !== 'active') return send(res, 200, { reseller: true, suspended: true, name: r.name });
+      const devices = activeByUser(await sessionsShared());
+      const mine = Object.entries(store.users).filter(([, u]) => u.reseller === r.id).map(([id, u]) => publicCustomer(id, u, devices.get(id))).sort((a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999));
+      const today = localDay(new Date());
+      const trialsToday = Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length;
+      return send(res, 200, { reseller: true, name: r.name, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
+        plans: (store.plans || []).filter((p) => p.active !== false && (r.plans || []).includes(p.id)).map((p) => ({ id: p.id, name: p.name, connections: p.connections, length: p.length, unit: p.unit, credits: planCredits(p) })),
+        customers: mine, ledger: (store.creditLog || []).filter((e) => e.reseller === r.id).slice(0, 40) });
+    }
+    if (!r) return send(res, 403, { error: 'This account is not a reseller.' });
+    if (r.status !== 'active') return send(res, 403, { error: 'This reseller account is suspended. Contact your provider.' });
+    if (resellerBusy.has(r.id)) return send(res, 409, { error: 'Another change is in progress. Try again in a moment.' });
+    resellerBusy.add(r.id);
+    try {
+      const by = `${r.name} (reseller)`;
+      const sellable = (id) => (store.plans || []).find((p) => p.id === id && p.active !== false && (r.plans || []).includes(p.id));
+      const owns = (id) => store.users[id]?.reseller === r.id;
+      if (url.pathname === '/reseller/customers' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const username = cleanUserName(body.username);
+        if (!username) return send(res, 400, { error: 'The username must be 3 to 32 letters, numbers, dots, dashes or underscores, starting with a letter or number.' });
+        const password = body.password ? String(body.password) : genPassword();
+        if (password.length < 6 || password.length > 64) return send(res, 400, { error: 'The password must be 6 to 64 characters.' });
+        const plan = sellable(body.planId);
+        if (!plan) return send(res, 400, { error: 'Choose one of your plans.' });
+        const trial = !!body.trial, cost = trial ? 0 : planCredits(plan);
+        if (r.credits < cost) return send(res, 402, { error: `Not enough credits: this costs ${cost} and you have ${r.credits}.` });
+        const today = localDay(new Date());
+        if (trial && Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length >= cfg.resellerTrialsPerDay) return send(res, 429, { error: `You can start ${cfg.resellerTrialsPerDay} free trials a day. Try again tomorrow.` });
+        const existing = await emby('GET', '/Users');
+        if ((existing || []).some((u) => String(u.Name).toLowerCase() === username.toLowerCase())) return send(res, 409, { error: 'That username is taken. Try another.' });
+        let user;
+        try { user = await newEmbyAccount(username, password); } catch (e) { return send(res, 502, { error: e.message }); }
+        if (trial) {
+          store.users[user.Id] = { limit: plan.connections, expires: addDays(today, 2), categories: plan.categories ? [...plan.categories] : null, name: username, updated: Date.now(), plan: { id: plan.id, name: plan.name, price: 0, connections: plan.connections, length: 2, unit: 'day', categories: plan.categories || null, since: today } };
+        } else applyPlan(user.Id, username, plan, 'today');
+        const rec = store.users[user.Id];
+        rec.reseller = r.id; rec.trial = trial; rec.created = Date.now();
+        rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
+        creditEntry(r, -cost, trial ? 'Free trial' : plan.name, by, { customer: username });
+        recordAudit(by, `Created the customer ${username} on ${trial ? 'a free trial' : plan.name} (${cost} credits)`);
+        saveStore();
+        log('Reseller', r.name, 'created', username, trial ? '(trial)' : plan.name, '-', cost, 'credits');
+        copyAppDefaults(user.Id).catch(() => {});
+        try { await enforce(user.Id); } catch (e) { log('Applying', username, 'failed:', e.message); }
+        return send(res, 200, { ok: true, password, credits: r.credits, customer: publicCustomer(user.Id, rec) });
+      }
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout))?$/);
+      if (cm) {
+        const id = cm[1], act = cm[2];
+        if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
+        const rec = store.users[id];
+        let body = {};
+        if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+        if (!act && req.method === 'PUT') {
+          rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
+          rec.updated = Date.now(); saveStore();
+          return send(res, 200, { ok: true });
+        }
+        if (act === 'renew' && req.method === 'POST') {
+          const plan = sellable(body.planId || rec.plan?.id);
+          if (!plan) return send(res, 400, { error: 'Choose one of your plans.' });
+          const cost = planCredits(plan);
+          if (r.credits < cost) return send(res, 402, { error: `Not enough credits: this costs ${cost} and you have ${r.credits}.` });
+          applyPlan(id, rec.name, plan, 'extend');
+          rec.trial = false;
+          creditEntry(r, -cost, 'Renewed ' + plan.name, by, { customer: rec.name });
+          recordAudit(by, `Renewed ${rec.name} on ${plan.name} (${cost} credits)`);
+          saveStore();
+          try { await enforce(id); } catch (e) { log('Applying', rec.name, 'failed:', e.message); }
+          return send(res, 200, { ok: true, credits: r.credits, expires: rec.expires });
+        }
+        if (act === 'password' && req.method === 'POST') {
+          const password = body.password ? String(body.password) : genPassword();
+          if (password.length < 6 || password.length > 64) return send(res, 400, { error: 'The password must be 6 to 64 characters.' });
+          try {
+            await emby('POST', `/Users/${id}/Password`, { body: { Id: id, ResetPassword: true } });
+            await emby('POST', `/Users/${id}/Password`, { body: { Id: id, CurrentPw: '', NewPw: password } });
+          } catch (e) { return send(res, 502, { error: 'Could not change the password: ' + e.message }); }
+          recordAudit(by, `Reset the password of ${rec.name}`); saveStore();
+          return send(res, 200, { ok: true, password });
+        }
+        if (act === 'signout' && req.method === 'POST') {
+          const devices = activeByUser(await emby('GET', '/Sessions')).get(id);
+          let n = 0;
+          for (const d of devices ? devices.values() : []) { try { await signOutDevice({ Id: id, Name: rec.name }, d, 'Signed out by your reseller'); n++; } catch { /* next */ } }
+          return send(res, 200, { ok: true, signedOut: n });
+        }
+      }
+      return send(res, 404, { error: 'Not found' });
+    } finally { resellerBusy.delete(r.id); }
+  }
+
   // Everything else: Emby administrators only.
   if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
   let admin = false;
@@ -1316,6 +1483,74 @@ async function handle(req, res) {
       streams: { playing: health.playing, transcoding: health.transcoding, direct: health.direct, live: connections.inUse || 0 },
       disks: diskInfo(), emby: { online: embyReach.ok, error: embyReach.error }, history,
     });
+  }
+
+  // ----- Resellers (admin): add a reseller, change their details and plans, add or remove credits, see the ledger. -----
+  if (url.pathname === '/resellers' && req.method === 'GET') {
+    const list = Object.values(resellerList()).map(publicReseller);
+    return send(res, 200, { resellers: list, totalCredits: list.reduce((n, r) => n + r.credits, 0), lowCredits: cfg.resellerLowCredits, log: (store.creditLog || []).slice(0, 40).map((e) => ({ ...e, resellerName: resellerList()[e.reseller]?.name || '' })) });
+  }
+  if (url.pathname === '/resellers' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const name = cleanText(body.name, 60);
+    if (!name) return send(res, 400, { error: 'Give the reseller a name.' });
+    const userName = cleanUserName(body.userName);
+    if (!userName) return send(res, 400, { error: 'The login name must be 3 to 32 letters, numbers, dots, dashes or underscores.' });
+    const credits = body.credits === undefined || body.credits === '' ? 0 : Number(body.credits);
+    if (!Number.isInteger(credits) || credits < 0 || credits > 100000) return send(res, 400, { error: 'Starting credits must be a whole number from 0 up.' });
+    const planIds = (Array.isArray(body.plans) ? body.plans : []).filter((id) => (store.plans || []).some((p) => p.id === id));
+    const password = body.password ? String(body.password) : genPassword();
+    if (password.length < 6 || password.length > 64) return send(res, 400, { error: 'The password must be 6 to 64 characters.' });
+    const existing = await emby('GET', '/Users');
+    if ((existing || []).some((u) => String(u.Name).toLowerCase() === userName.toLowerCase())) return send(res, 409, { error: 'That login name is taken. Try another.' });
+    let user;
+    try { user = await newEmbyAccount(userName, password); } catch (e) { return send(res, 502, { error: e.message }); }
+    const id = crypto.randomBytes(4).toString('hex');
+    const r = { id, userId: user.Id, userName, name, contact: cleanText(body.contact, 100), credits: 0, status: 'active', plans: planIds, created: Date.now() };
+    resellerList()[id] = r;
+    if (credits) creditEntry(r, credits, 'Starting credits', auditBy);
+    saveStore();
+    log('Reseller added:', name, `(${userName}) with`, credits, 'credits');
+    copyAppDefaults(user.Id).catch(() => {});
+    return send(res, 200, { ok: true, password, reseller: publicReseller(r) });
+  }
+  const rm = url.pathname.match(/^\/resellers\/([\w-]{1,32})(?:\/(credits|log|password))?$/);
+  if (rm) {
+    const r = resellerList()[rm[1]];
+    if (!r) return send(res, 404, { error: 'No such reseller' });
+    if (rm[2] === 'log' && req.method === 'GET') return send(res, 200, { log: (store.creditLog || []).filter((e) => e.reseller === r.id).slice(0, 200) });
+    let body = {};
+    if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+    if (!rm[2] && req.method === 'PUT') {
+      if (body.name !== undefined) { const n = cleanText(body.name, 60); if (!n) return send(res, 400, { error: 'Give the reseller a name.' }); r.name = n; }
+      if (body.contact !== undefined) r.contact = cleanText(body.contact, 100);
+      if (Array.isArray(body.plans)) r.plans = body.plans.filter((id) => (store.plans || []).some((p) => p.id === id));
+      if (body.status === 'active' || body.status === 'suspended') r.status = body.status;
+      saveStore();
+      return send(res, 200, { ok: true, reseller: publicReseller(r) });
+    }
+    if (rm[2] === 'credits' && req.method === 'POST') {
+      const amount = Number(body.amount);
+      if (!Number.isInteger(amount) || amount < 0 || amount > 100000) return send(res, 400, { error: 'The credits must be a whole number from 0 up.' });
+      const mode = body.mode === 'remove' ? 'remove' : body.mode === 'set' ? 'set' : 'add';
+      const next = mode === 'add' ? r.credits + amount : mode === 'remove' ? Math.max(0, r.credits - amount) : amount;
+      const delta = next - r.credits;
+      if (!delta) return send(res, 200, { ok: true, reseller: publicReseller(r) });
+      creditEntry(r, delta, body.why || 'Credit change', auditBy);
+      saveStore();
+      log('Credits for', r.name, (delta > 0 ? '+' : '') + delta, '-> now', r.credits);
+      return send(res, 200, { ok: true, reseller: publicReseller(r) });
+    }
+    if (rm[2] === 'password' && req.method === 'POST') {
+      const password = body.password ? String(body.password) : genPassword();
+      if (password.length < 6 || password.length > 64) return send(res, 400, { error: 'The password must be 6 to 64 characters.' });
+      try {
+        await emby('POST', `/Users/${r.userId}/Password`, { body: { Id: r.userId, ResetPassword: true } });
+        await emby('POST', `/Users/${r.userId}/Password`, { body: { Id: r.userId, CurrentPw: '', NewPw: password } });
+      } catch (e) { return send(res, 502, { error: 'Could not change the password: ' + e.message }); }
+      return send(res, 200, { ok: true, password });
+    }
   }
 
   // The message at the top of every customer's Status page ("Maintenance tonight 2-3 AM"). Empty clears it.

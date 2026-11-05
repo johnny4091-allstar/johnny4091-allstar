@@ -250,6 +250,7 @@
     const st = $('#profile-dropdown [data-action="settings"]');
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
     $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isAdmin());
+    $('#profile-dropdown [data-action="reseller"]')?.classList.toggle('hidden', on || !state.isReseller);
   }
   // A number pad (works with a remote). Resolves with the digits, or null when cancelled.
   function pinPad(title, text, length = 4) {
@@ -970,6 +971,8 @@
     });
     updateRequestsLink();
     $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
+    state.isReseller = false;
+    if (guardEnabled && !isAdmin()) guard('/reseller/me', { params: { userId: state.userId }, quick: true }).then((r) => { state.isReseller = !!r.reseller; applyKidsUi(); }).catch(() => {});
     live.channelIds = [];
     // Measure the connection now, in the background, so the first Play doesn't wait for it.
     setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
@@ -1016,7 +1019,7 @@
 
     const isCurrent = () => token === routeToken;
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin'].includes(name)) { location.hash = '#/home'; return; }
+      if (['livetv', 'requests', 'admin', 'reseller'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1027,6 +1030,7 @@
       case 'livetv': return iptvOn() ? renderIptvLive(page, params.get('tab') || 'channels', isCurrent) : renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
       case 'settings': return renderSettings(page, isCurrent);
       case 'status': return renderStatus(page, isCurrent);
+      case 'reseller': return renderReseller(page, isCurrent);
       case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
       case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
       default: return renderHome(page, isCurrent);
@@ -4810,6 +4814,7 @@
       <div class="page-head"><h1>Settings</h1>
         <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
+      ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
       <section class="settings-section"><h2>Status</h2>
         ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
       </section>
@@ -5123,7 +5128,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -5163,7 +5168,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
@@ -5171,7 +5176,7 @@
   // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
   const ADMIN_GROUPS = [
     ['Dashboard', ['overview', 'problems', 'feedback']],
-    ['Customers', ['users', 'plans', 'devices', 'usage', 'sharing']],
+    ['Customers', ['users', 'plans', 'resellers', 'devices', 'usage', 'sharing']],
     ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
     ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
@@ -6247,6 +6252,8 @@
   const money = (n) => '$' + (Number.isInteger(Number(n)) ? Number(n) : Number(n).toFixed(2));
   const planLength = (p) => `${p.length} ${p.unit}${p.length === 1 ? '' : 's'}`;
   const planSummary = (p) => `${money(p.price)} · ${planLength(p)} · ${p.connections} ${p.connections === 1 ? 'connection' : 'connections'}`;
+  const planCreditCost = (p) => (Number.isInteger(p.credits) && p.credits >= 0 ? p.credits : Math.max(1, p.connections * (p.unit === 'day' ? Math.ceil(p.length / 30) : p.length)));
+  const creditsWord = (n) => `${n} ${n === 1 ? 'credit' : 'credits'}`;
   const planCatsText = (p) => (p.categories ? `${p.categories.length} Live TV ${p.categories.length === 1 ? 'category' : 'categories'}` : 'All Live TV categories');
   const planOptions = (plans, selected = '') => plans.filter((p) => p.active || p.id === selected)
     .map((p) => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name)} — ${esc(money(p.price))}${p.active ? '' : ' (hidden)'}</option>`).join('');
@@ -6304,7 +6311,9 @@
           <label class="admin-field"><span>Length</span><input type="number" data-p="length" min="1" step="1" inputmode="numeric" value="${esc(p.length)}"></label>
           <label class="admin-field"><span>&nbsp;</span><select data-p="unit"><option value="month"${p.unit === 'month' ? ' selected' : ''}>month(s)</option><option value="day"${p.unit === 'day' ? ' selected' : ''}>day(s)</option></select></label>
           <label class="admin-field"><span>Connections</span><input type="number" data-p="connections" min="1" max="50" step="1" inputmode="numeric" value="${esc(p.connections)}"></label>
+          <label class="admin-field"><span>Reseller credits</span><input type="number" data-p="credits" min="0" step="1" inputmode="numeric" value="${p.credits == null ? '' : esc(p.credits)}" placeholder="automatic"></label>
         </div>
+        <p class="muted">Credits a reseller pays for this plan. Blank means connections × months (1 credit is one connection for one month).</p>
         <label class="admin-check"><input type="checkbox" data-p="active"${p.active ? ' checked' : ''}> On offer (customers can ask for it, and it shows when you pick a plan)</label>
         <div class="cat-pick-wrap">
           <div class="cat-pick-head"><div><strong>Live TV categories</strong><div class="muted" data-cat-summary></div></div>
@@ -6344,7 +6353,7 @@
       $('[data-save]', form).addEventListener('click', async () => {
         const v = (n) => $(`[data-p="${n}"]`, form).value;
         const payload = { name: v('name').trim(), price: Number(v('price')), length: Number(v('length')), unit: v('unit'), connections: Number(v('connections')),
-          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null };
+          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null, credits: v('credits').trim() === '' ? null : Number(v('credits')) };
         if (v('price') === '' || Number.isNaN(payload.price)) return say('Enter the price.', 'bad');
         say('<div class="spinner"></div>');
         try {
@@ -6362,6 +6371,239 @@
       $('[data-del]', el).addEventListener('click', async () => {
         if (!(await confirmAction(`Delete "${p.name}"?`, 'Customers who already have it keep what they were given (their connections, end date and categories). It just disappears from the list.', 'Delete plan'))) return;
         try { await guard(`/plans/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast('Plan deleted', 2000); if (isCurrent()) adminPlans(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
+  // ----- Admin → Resellers (Aurora Guard 1.10.0) -----
+  // A reseller is an Emby account that has credits. They sign in to Aurora as usual and get a Reseller panel (profile menu) where credits
+  // pay for creating and renewing their own customers. Here the admin adds resellers, sets what they can sell and adds or removes credits.
+  async function adminResellers(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Resellers');
+    let d, plans;
+    try { [d, plans] = await Promise.all([guard('/resellers'), guard('/plans').then((x) => x.plans || [])]); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Resellers</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.10.0 to use resellers (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
+    const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
+        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>
+        <div class="muted">${esc(r.userName)}${r.contact ? ' · ' + esc(r.contact) : ''} · ${r.customers} ${r.customers === 1 ? 'customer' : 'customers'}${r.status === 'active' && r.low ? ' · low on credits' : ''}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-cr>Credits</button><button class="btn btn-gray" data-ed>Edit</button><button class="btn btn-gray" data-pw>New password</button><button class="btn btn-gray" data-su>${r.status === 'active' ? 'Suspend' : 'Restore'}</button></div></div>`;
+    const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
+        <div class="muted">${esc(e.by)} · balance ${e.balance}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
+    const viaResellers = d.resellers.reduce((n, r) => n + r.customers, 0);
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('Resellers', d.resellers.length, `${d.resellers.filter((r) => r.status === 'active').length} active`)}
+        ${statTile('Credits held', d.totalCredits, 'across all resellers')}
+        ${statTile('Customers', viaResellers, 'created by resellers')}
+        ${statTile('Low on credits', d.resellers.filter((r) => r.status === 'active' && r.low).length, `at ${d.lowCredits} or fewer`, d.resellers.some((r) => r.status === 'active' && r.low) ? 'bad' : '')}
+      </div>
+      <section class="admin-card"><h2>Resellers <small>They sign in to Aurora with the login you give them</small></h2>
+        <div class="admin-list" data-list>${d.resellers.map(row).join('') || '<p class="muted">No resellers yet. Add one below.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add>Add a reseller</button></div>
+        <div class="plan-form hidden" data-form></div></section>
+      <section class="admin-card"><h2>Recent credit changes <small>Newest first</small></h2>
+        <div class="admin-list">${d.log.map(logRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+    const form = $('[data-form]', body);
+    const reload = () => { if (isCurrent()) adminResellers(body, isCurrent); };
+    const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    const chosenPlans = () => $$('[data-plan]:checked', form).map((x) => x.dataset.plan);
+    const openAdd = () => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">New reseller</h3>
+        <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" placeholder="e.g. Dave Tech"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Login name</span><input type="text" data-f="login" maxlength="32" autocapitalize="none" autocomplete="off" placeholder="davetech"></label>
+          <label class="admin-field"><span>Password (blank = make one)</span><input type="text" data-f="pw" maxlength="64" autocomplete="off"></label>
+          <label class="admin-field"><span>Starting credits</span><input type="number" data-f="credits" min="0" step="1" inputmode="numeric" value="10"></label>
+        </div>
+        <label class="admin-field"><span>Contact (email or phone)</span><input type="text" data-f="contact" maxlength="100"></label>
+        <div class="admin-field"><span>Plans they can sell</span>${planChecks(plans.filter((p) => p.active).map((p) => p.id))}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save>Add reseller</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        const f = (n) => $(`[data-f="${n}"]`, form).value.trim();
+        say('<div class="spinner"></div>');
+        try {
+          const r = await guard('/resellers', { method: 'POST', body: { name: f('name'), userName: f('login'), password: f('pw') || undefined, credits: f('credits') === '' ? 0 : Number(f('credits')), contact: f('contact'), plans: chosenPlans() } });
+          toast(`${r.reseller.name} added`, 2500);
+          form.innerHTML = `<h3 class="admin-sub">${esc(r.reseller.name)} is ready</h3><p>Give them this to sign in to Aurora. The password is shown only now.</p>
+            <div class="live-result good"><strong>Login:</strong> ${esc(r.reseller.userName)}<br><strong>Password:</strong> ${esc(r.password)}</div>
+            <div class="m-actions"><button class="btn btn-white" data-done>Done</button></div>`;
+          $('[data-done]', form).addEventListener('click', reload);
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl($('[data-f="name"]', form)); else $('[data-f="name"]', form).scrollIntoView({ block: 'center' });
+    };
+    const openCredits = (r) => {
+      form.classList.remove('hidden');
+      let mode = 'add';
+      form.innerHTML = `<h3 class="admin-sub">Credits for ${esc(r.name)} <small>now ${esc(creditsWord(r.credits))}</small></h3>
+        <div class="seg-row">${[['add', 'Add'], ['remove', 'Remove'], ['set', 'Set to']].map(([m, l]) => `<label class="admin-check"><input type="radio" name="crmode" data-mode="${m}"${m === 'add' ? ' checked' : ''}> ${l}</label>`).join('')}</div>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Credits</span><input type="number" data-f="amount" min="0" step="1" inputmode="numeric" value="10"></label>
+          <label class="admin-field"><span>Reason (saved in the ledger)</span><select data-f="why">${['Payment received', 'Monthly top-up', 'Refund', 'Correction', 'Other'].map((x) => `<option>${x}</option>`).join('')}</select></label>
+        </div><p class="muted" data-sum></p>
+        <div class="m-actions"><button class="btn btn-red" data-save>Confirm</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      const calc = () => { const a = Number($('[data-f="amount"]', form).value) || 0; return mode === 'add' ? r.credits + a : mode === 'remove' ? Math.max(0, r.credits - a) : a; };
+      const sum = () => { const n = calc(), dlt = n - r.credits; $('[data-sum]', form).textContent = `New balance: ${creditsWord(n)} (${dlt >= 0 ? '+' : ''}${dlt})`; };
+      sum();
+      $$('[data-mode]', form).forEach((x) => x.addEventListener('change', () => { mode = x.dataset.mode; sum(); }));
+      $('[data-f="amount"]', form).addEventListener('input', sum);
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        say('<div class="spinner"></div>');
+        try {
+          await guard(`/resellers/${encodeURIComponent(r.id)}/credits`, { method: 'POST', body: { mode, amount: Number($('[data-f="amount"]', form).value), why: $('[data-f="why"]', form).value } });
+          toast(`${r.name}: now ${creditsWord(calc())}`, 2500); reload();
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    const openEdit = (r) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">Edit ${esc(r.name)}</h3>
+        <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" value="${esc(r.name)}"></label>
+        <label class="admin-field"><span>Contact</span><input type="text" data-f="contact" maxlength="100" value="${esc(r.contact)}"></label>
+        <div class="admin-field"><span>Plans they can sell</span>${planChecks(r.plans)}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { name: $('[data-f="name"]', form).value.trim(), contact: $('[data-f="contact"]', form).value.trim(), plans: chosenPlans() } }); toast('Saved', 2000); reload(); }
+        catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    $('[data-add]', body).addEventListener('click', openAdd);
+    $$('[data-r]', body).forEach((el) => {
+      const r = d.resellers.find((x) => x.id === el.dataset.r);
+      $('[data-cr]', el).addEventListener('click', () => openCredits(r));
+      $('[data-ed]', el).addEventListener('click', () => openEdit(r));
+      $('[data-su]', el).addEventListener('click', async () => {
+        const stop = r.status === 'active';
+        if (stop && !(await confirmAction(`Suspend ${r.name}?`, 'They can no longer create or renew customers or see the panel. Their customers keep working.', 'Suspend'))) return;
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { status: stop ? 'suspended' : 'active' } }); toast(stop ? 'Suspended' : 'Restored', 2000); reload(); } catch (e) { toast(e.message, 4000); }
+      });
+      $('[data-pw]', el).addEventListener('click', async () => {
+        if (!(await confirmAction(`New password for ${r.name}?`, 'Their old password stops working. The new one is shown once.', 'Make new password'))) return;
+        try { const x = await guard(`/resellers/${encodeURIComponent(r.id)}/password`, { method: 'POST', body: {} }); form.classList.remove('hidden'); form.innerHTML = `<h3 class="admin-sub">New password for ${esc(r.name)}</h3><div class="live-result good"><strong>Login:</strong> ${esc(r.userName)}<br><strong>Password:</strong> ${esc(x.password)}</div><p class="muted">Shown only now.</p>`; form.scrollIntoView({ block: 'center' }); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
+  // ----- The reseller's own panel (profile menu → Reseller panel) -----
+  async function renderReseller(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad reseller-page"><div class="page-head"><h1>Reseller panel</h1></div><div class="spinner"></div></div>';
+    const root = $('.reseller-page', page);
+    const head = '<div class="page-head"><h1>Reseller panel</h1></div>';
+    let d;
+    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.10.0 for the Reseller panel.' : esc(e.message)}</p>`; return; }
+    if (!isCurrent()) return;
+    if (!d.reseller) { location.replace('#/home'); return; }
+    if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
+    const welcomeText = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
+    const dayText = (c) => (c.daysLeft == null ? '<span class="pill">No end date</span>' : c.expired ? '<span class="pill bad">Expired</span>' : `<span class="pill${c.daysLeft <= 7 ? ' warn' : ''}">${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'}</span>`);
+    const cRow = (c) => `<div class="admin-row" data-c="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}${c.trial ? ' <span class="pill">Trial</span>' : ''}
+        <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-details>Details</button><button class="btn btn-gray" data-renew>Renew</button></div></div>`;
+    const lRow = (e) => `<div class="admin-row"><div class="admin-row-main">${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}<div class="muted">${esc(e.by)}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
+    const soon = d.customers.filter((c) => !c.expired && c.daysLeft != null && c.daysLeft <= 7).length, gone = d.customers.filter((c) => c.expired).length;
+    root.innerHTML = `${head}
+      <div class="stat-grid">
+        ${statTile('Your credits', d.credits, d.low ? 'running low' : 'available', d.low ? 'bad' : '')}
+        ${statTile('Customers', d.customers.length, 'you created')}
+        ${statTile('Ending within 7 days', soon, '')}
+        ${statTile('Expired', gone, '')}
+      </div>
+      ${d.low ? '<section class="admin-card"><p><strong>Running low on credits.</strong> Contact your provider to top up.</p></section>' : ''}
+      <section class="admin-card"><h2>My customers</h2>
+        <div class="admin-list" data-list>${d.customers.map(cRow).join('') || '<p class="muted">No customers yet. Add your first one.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-new>New customer</button></div>
+        <div class="plan-form hidden" data-form></div></section>
+      <section class="admin-card"><h2>Credit history</h2><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+    const form = $('[data-form]', root);
+    const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
+    const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    const q = (k) => $(`[data-f="${k}"]`, form);
+    const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
+    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el.select(); toast('Select and copy the text', 3000); }); } catch { el.select(); toast('Select and copy the text', 3000); } };
+    const makePw = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; const r = (n) => Math.floor(Math.random() * n); return w[r(w.length)] + w[r(w.length)] + (10 + r(90)); };
+    const showWelcome = (c, pw, cost) => {
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} is ready</h3><p>${cost ? `${esc(creditsWord(cost))} used. ` : 'Free trial. '}Copy this and send it to your customer. The password is shown only now.</p>
+        <textarea class="st-note-input" data-welcome rows="9" readonly>${esc(welcomeText(c, pw))}</textarea>
+        <div class="m-actions"><button class="btn btn-white" data-copy>Copy</button><button class="btn btn-gray" data-done>Done</button></div>`;
+      $('[data-copy]', form).addEventListener('click', () => copyText($('[data-welcome]', form).value, $('[data-welcome]', form)));
+      $('[data-done]', form).addEventListener('click', reload);
+    };
+    const openNew = () => {
+      if (!d.plans.length) { toast('You have no plans to sell yet. Ask your provider.', 4000); return; }
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">New customer</h3><p class="muted">Only the username and plan are needed. The plan's cost comes out of your credits.</p>
+        <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" placeholder="e.g. Mike Turner"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Username *</span><input type="text" data-f="user" maxlength="32" autocapitalize="none" autocomplete="off" placeholder="mike_t"></label>
+          <label class="admin-field"><span>Password</span><input type="text" data-f="pw" maxlength="64" autocomplete="off" value="${esc(makePw())}"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" placeholder="optional"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" placeholder="optional"></label>
+        </div>
+        <label class="admin-field"><span>Plan *</span><select data-f="plan">${planOpts('')}</select></label>
+        <label class="admin-check"><input type="checkbox" data-f="trial"> Free 2-day trial instead (${d.trialsLeft} left today)</label>
+        <label class="admin-field"><span>Note (only you and the admin see this)</span><input type="text" data-f="note" maxlength="300" placeholder="e.g. Pays on the 1st"></label>
+        <p class="muted" data-sum></p>
+        <div class="m-actions"><button class="btn btn-red" data-save>Create customer</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      const cost = () => (q('trial').checked ? 0 : (d.plans.find((p) => p.id === q('plan').value)?.credits || 0));
+      const sum = () => { const c = cost(); $('[data-sum]', form).textContent = (q('trial').checked ? 'Free trial, ends in 2 days. ' : `Cost: ${creditsWord(c)}. `) + `Balance after: ${d.credits - c}${d.credits - c < 0 ? ' (not enough credits)' : ''}`; $('[data-save]', form).disabled = d.credits - c < 0 || (q('trial').checked && d.trialsLeft <= 0); };
+      sum(); q('plan').addEventListener('change', sum); q('trial').addEventListener('change', sum);
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        const btn = $('[data-save]', form), pw = q('pw').value;
+        btn.disabled = true; say('<div class="spinner"></div>');
+        try {
+          const r = await guard('/reseller/customers', { method: 'POST', params: { userId: state.userId }, body: { fullName: q('full').value, username: q('user').value, password: pw, email: q('email').value, phone: q('phone').value, note: q('note').value, planId: q('plan').value, trial: q('trial').checked } });
+          d.credits = r.credits;
+          toast(`${r.customer.full || r.customer.name} created`, 2500);
+          showWelcome(r.customer, r.password, cost());
+        } catch (e) { btn.disabled = false; say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl(q('full')); else form.scrollIntoView({ block: 'center' });
+    };
+    const openDetails = (c) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <small>${esc(c.name)} · ${esc(c.planName || 'No plan')}${c.expires ? ' · ends ' + esc(fmtDay(c.expires)) : ''}</small></h3>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" value="${esc(c.full)}"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" value="${esc(c.email)}"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" value="${esc(c.phone)}"></label>
+        </div>
+        <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-cancel>Close</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        try { await guard(`/reseller/customers/${encodeURIComponent(c.id)}`, { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
+        catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-pw]', form).addEventListener('click', async () => {
+        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once.', 'Reset password'))) return;
+        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/password`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(`New password for ${esc(c.name)}: <strong>${esc(x.password)}</strong> (shown only now)`, 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-out]', form).addEventListener('click', async () => {
+        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/signout`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    $('[data-new]', root).addEventListener('click', openNew);
+    $$('[data-c]', root).forEach((el) => {
+      const c = d.customers.find((x) => x.id === el.dataset.c);
+      $('[data-details]', el).addEventListener('click', () => openDetails(c));
+      $('[data-renew]', el).addEventListener('click', async () => {
+        const plan = d.plans.find((p) => p.id === c.planId) || d.plans[0];
+        if (!plan) { toast('You have no plans to sell yet.', 3000); return; }
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        try { const r = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/renew`, { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); }
+        catch (e) { toast(e.message, 5000); }
       });
     });
   }
@@ -8669,6 +8911,7 @@
       const act = e.target.dataset.action;
       if (act === 'settings') location.hash = '#/settings';
       if (act === 'admin') location.hash = '#/admin';
+      if (act === 'reseller') location.hash = '#/reseller';
       if (act === 'switch') switchUser();
       if (act === 'signout') signOut();
     });

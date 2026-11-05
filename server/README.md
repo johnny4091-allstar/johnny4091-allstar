@@ -89,6 +89,8 @@ Administrator accounts are never limited or disabled.
 | `GET /connections`, `PUT /connections` | Emby administrators | TV provider streams in use now, today's peak, and `{limit, alertAt}` for the alerts. |
 | `GET /channel-status?userId=&channel=` | The signed-in user | How many *other* people reported that channel in the last hour (a number, no names), for the "is it just me?" line in the live player (guard 1.7.0). |
 | `GET /sports/games`, `GET /sports/teams?league=`, `GET /sports/aliases` | The signed-in user | Live scores and the day's games for the Sports tab, a league's teams (for the setup), and the admin's name aliases (guard 1.8.0). |
+| `GET /resellers`, `POST /resellers`, `PUT /resellers/{id}`, `POST /resellers/{id}/credits`, `GET /resellers/{id}/log`, `POST /resellers/{id}/password` | Emby administrators | Resellers (guard 1.10.0): list them with their credits, add one (this also creates their Emby login), change name, contact, plans they may sell or suspend them, add / remove / set credits with a reason, see the ledger, make a new password. |
+| `GET /reseller/me`, `POST /reseller/customers`, `PUT /reseller/customers/{id}`, `POST /reseller/customers/{id}/renew`, `/password`, `/signout` | The signed-in reseller, for customers they created | The reseller panel: credits, plans with their credit cost, customers; create a customer (an Emby account plus the plan, paid in credits, or a free 2-day trial), renew, edit details, reset the password, sign out devices. Nothing about any other account is reachable. |
 | `GET /service-status?userId=` | The signed-in user | The Status page (guard 1.9.0): whether the server answers, channels several other viewers reported in the last 15 minutes (counts and channel names only), the sports feed, the last 24 hours, recent outages and the admin's message. While the server is down it still answers, with the outage only. |
 | `PUT /status-note` | Emby administrators | The message shown at the top of every customer's Status page (empty clears it). |
 | `GET /sports/status`, `PUT /sports/settings`, `PUT /sports/aliases`, `POST /sports/refresh` | Emby administrators | What the scores feed is doing, which leagues are on, the aliases, and "ask the feed again now" (guard 1.8.0). |
@@ -278,3 +280,18 @@ Disable-ScheduledTask -TaskName 'Aurora Guard'
 While it is stopped nothing is enforced: no device limits and no expiration dates. Accounts it disabled for
 expiry stay disabled until you enable them in Emby (or in Aurora → Admin → Users). Devices it signed out have
 to sign in again. To start it again: `Enable-ScheduledTask -TaskName 'Aurora Guard'; Start-ScheduledTask -TaskName 'Aurora Guard'`.
+
+
+## Resellers (guard 1.10.0)
+
+A reseller is an Emby account (non-administrator) that you have given credits. They sign in to Aurora as usual and open **Reseller panel**
+in the profile menu. Credits pay for the plans they sell: **a plan costs its "Reseller credits" (Admin → Plans), or, if that is left blank,
+connections × months** (one credit = one connection for one month). A free 2-day trial costs nothing (up to `resellerTrialsPerDay`, default 5, a day).
+
+- **Add one:** Admin → Resellers → Add a reseller (name, login, optional password, starting credits, plans they may sell). The login is created in Emby.
+- **Credits:** Admin → Resellers → Credits: Add, Remove or Set to, with a reason. Every change is in the ledger and in Admin → Audit log.
+- **What a reseller can do:** create customers (username, password, name, email, phone, note), renew them, edit details, reset a password, sign devices out.
+  They can only touch customers they created; they cannot open any other admin page or see other resellers. A suspended reseller can do nothing; their customers keep working.
+- **Safety:** one change at a time per reseller (no double-spending), the balance can't go below zero, usernames are checked, the Emby password is set before credits are taken.
+- **Config (optional, in config.json):** `"resellerLowCredits": 3` (warn at or under this), `"resellerTrialsPerDay": 5`.
+- New customers also get the Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
