@@ -1212,7 +1212,13 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => { size += c.length; if (size > 64 * 1024) { reject(new Error('too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { try { req.parsedBody = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; resolve(req.parsedBody); } catch { reject(new Error('bad JSON')); } });
+    req.on('end', () => {
+      try {
+        let v = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+        if (v === null || typeof v !== 'object') v = {}; // a body of "null", a number or a string is not a request: treat it as an empty one instead of failing later
+        req.parsedBody = v; resolve(v);
+      } catch { reject(new Error('bad JSON')); }
+    });
     req.on('error', reject);
   });
 }
@@ -1632,6 +1638,7 @@ async function handle(req, res) {
     if (mine.referredBy) return send(res, 409, { error: 'You have already used a code.' });
     const refId = Object.keys(store.users).find((id) => store.users[id].refCode === code);
     if (!refId || refId === me.Id) return send(res, 404, { error: 'That code was not found.' });
+    if (store.users[refId].referredBy === me.Id) return send(res, 409, { error: 'That friend already used your code, so you can\'t use theirs.' });
     const seen = Math.min(mine.created || Infinity, ...Object.values(store.firstSeen[me.Id] || {}));
     if (Number.isFinite(seen) && Date.now() - seen > 14 * 86400000) return send(res, 409, { error: 'Codes can be used in the first 14 days of an account.' });
     const yearAgo = Date.now() - 365 * 86400000;
@@ -1833,7 +1840,7 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, reseller: publicReseller(r) });
     }
     if (rm[2] === 'credits' && req.method === 'POST') {
-      const amount = Number(body.amount);
+      const amount = body.amount === undefined || body.amount === null || body.amount === '' ? NaN : Number(body.amount);
       if (!Number.isInteger(amount) || amount < 0 || amount > 100000) return send(res, 400, { error: 'The credits must be a whole number from 0 up.' });
       const mode = body.mode === 'remove' ? 'remove' : body.mode === 'set' ? 'set' : 'add';
       const next = mode === 'add' ? r.credits + amount : mode === 'remove' ? Math.max(0, r.credits - amount) : amount;

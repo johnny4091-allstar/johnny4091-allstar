@@ -2341,6 +2341,7 @@
 
   // Opens the native player with the list the channel came from, so up/down flips through it.
   let iptvPlaying = null;
+  let lastLive = null; // the channel last started, for Help & support
   function playIptv(list, index, groupName) {
     if (!list[index]) return;
     if (maintOn('livetv')) { toast(maintText('livetv'), 8000); return; }
@@ -2361,6 +2362,7 @@
     const near = (i) => Math.abs(i - (index - from)) <= 150;
     guidePrefetch(slice.filter((c, i) => near(i)));
     iptvPlaying = { list: slice, offset: from, group: groupName };
+    lastLive = { name: ch.name, t: Date.now() };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
       ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c), ...nowNextFields(c), fav: isIptvFav(c) }
@@ -4852,11 +4854,11 @@
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
       ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
       ${dlSupported() && downloadsAllowed() ? `<section class="settings-section"><h2>Downloads</h2>${settingRow('Watch without internet', 'Movies and shows saved on this phone or tablet.', '<a class="btn btn-gray" href="#/downloads">Open Downloads</a>')}</section>` : ''}
-      <section class="settings-section"><h2>Help &amp; more</h2>
+      ${inboxState.ok ? `<section class="settings-section"><h2>Help &amp; more</h2>
         ${settingRow('Get help', 'Send a message to your provider with the details they need attached.', '<a class="btn btn-gray" href="#/help">Help &amp; support</a>')}
         ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
         ${settingRow('Your Aurora', 'What you watched this week.', '<a class="btn btn-gray" href="#/stats">See my week</a>')}
-      </section>
+      </section>` : ''}
       <section class="settings-section"><h2>Status</h2>
         ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
       </section>
@@ -6544,17 +6546,19 @@
   const downloadsAllowed = () => playbackCfg.downloads !== 'off';
   const dlWifi = () => store.get('ef.dlWifi') !== '0';
   let offlinePlaying = null, offlineMode = false;
-  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]'); } catch { return []; } };
+  // Downloads belong to the account that saved them (their key starts with its id), so another account on the same phone doesn't see or play them.
+  const dlKey = (itemId) => `${state.userId}_${itemId}`;
+  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]').filter((d) => !String(d.itemId).includes('_') || String(d.itemId).startsWith(state.userId + '_')); } catch { return []; } }; // (an id with no prefix is from an earlier version: it is shown to whoever is signed in)
   const dlStorage = () => { try { return JSON.parse(nativeApp.downloadsStorage() || '{}'); } catch { return {}; } };
   const offlineLicenseOk = () => { const e = store.get('ef.dl.expires'); return !e || Date.now() <= new Date(e + 'T23:59:59').getTime(); };
   async function syncDownloadLicense() {
     if (!dlSupported()) return;
-    if (!downloadsAllowed()) { if (dlItems().length) nativeApp.removeAllDownloads(); return; }
+    if (!downloadsAllowed()) { dlItems().forEach((d) => nativeApp.removeDownload(d.itemId)); return; }
     if (!guardEnabled || isAdmin()) return;
     try {
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
       if (a.admin) return;
-      if (a.expired || a.disabled) { nativeApp.removeAllDownloads(); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
+      if (a.expired || a.disabled) { dlItems().forEach((d) => nativeApp.removeDownload(d.itemId)); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
     } catch { /* offline or an older guard: keep what is saved */ }
   }
   async function startItemDownload(item) {
@@ -6566,7 +6570,7 @@
       if (!(await confirmAction(`Download "${itemTitle(full)}"?`, `${size ? size + '. ' : ''}${dlWifi() ? 'It downloads on Wi-Fi only. ' : ''}You can watch it without internet while your plan is active.`, 'Download'))) return;
       const ext = String(source.Container || 'mp4').split(',')[0].replace(/[^a-z0-9]/gi, '') || 'mp4';
       const url = `${state.server}/emby/Items/${full.Id}/Download?MediaSourceId=${encodeURIComponent(source.Id)}`;
-      const err = nativeApp.startDownload(full.Id, url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
+      const err = nativeApp.startDownload(dlKey(full.Id), url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
       if (err) toast(err, 5000); else { toast('Download started. You can follow it in Settings → Downloads.', 4500); appLog.add('info', 'Download started: ' + itemTitle(full)); }
     } catch (e) { toast(e.message || "Couldn't start the download", 4000); }
   }
@@ -6724,6 +6728,7 @@
   // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
   let inboxState = { items: [], unread: 0, banners: [], ok: false };
   let inboxTimer = null;
+  const annTimers = new Map();
   const dismissedAnn = () => { try { return new Set(JSON.parse(store.get('ef.annDismissed') || '[]')); } catch { return new Set(); } };
   function paintBell() {
     const b = $('#bell-btn'), badge = $('#bell-badge');
@@ -6741,7 +6746,9 @@
     // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
     const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
     const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
-    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, 2);
+    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : 2);
+    // A remote can't press the ✕, so on a TV an info notice goes by itself after a while (warnings and outages stay).
+    if (nav.tv) for (const a of list) if (!sticky(a) && !annTimers.has(a.id)) annTimers.set(a.id, setTimeout(() => { const g = dismissedAnn(); g.add(a.id); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }, 20000));
     el.classList.toggle('hidden', !list.length || kidsOn() || resellerOnly());
     el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span>${sticky(a) ? '' : `<button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button>`}</div>`).join('');
     document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
@@ -6763,7 +6770,7 @@
     const root = $('.inbox-page', page);
     const head = '<div class="page-head"><h1>Notifications</h1></div>';
     let d;
-    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for notifications.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'notifications')}</p>`; return; }
     if (!isCurrent()) return;
     const now = Date.now();
     const local = (sportsPrefs.reminders || []).filter((r) => r.start > now && r.start < now + 36 * 3600000).map((r) => ({ id: 'rem:' + r.id, type: 'reminder', level: 'info', title: r.title, text: `Reminder · ${new Date(r.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${r.chan ? ' · ' + r.chan : ''}`, at: r.start, action: 'sports', unread: false }));
@@ -6782,14 +6789,17 @@
     }));
   }
 
+  // An older Aurora Guard doesn't know these addresses (it answers 404, or "Emby administrators only" to a customer). Customers just hear it isn't ready;
+  // admins and resellers are told what to update.
+  const guardMissing = (e) => e.status === 404 || (e.status === 403 && /administrators only/i.test(e.message || ''));
+  const notReady = (e, what) => (guardMissing(e) ? (isAdmin() || state.isReseller ? `Aurora Guard needs updating to 1.11.0 for ${what}.` : "This isn't available yet. Please check back soon.") : esc(e.message));
   // Help & support: a message to the provider with the details they would otherwise have to ask for.
   function helpDiag() {
-    const cur = iptvPlaying?.list?.[iptvPlaying.index || 0];
     return {
       app: nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
       device: nativeApp?.getDeviceName?.() || navigator.userAgent.slice(0, 80),
       connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
-      playing: cur?.name ? `Live: ${cur.name}` : '',
+      playing: lastLive && Date.now() - lastLive.t < 30 * 60000 ? `Live: ${lastLive.name}` : '',
       status: lastStatusVerdict,
       errors: appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100)),
     };
@@ -6799,7 +6809,7 @@
     const root = $('.help-page', page);
     const head = '<div class="page-head"><h1>Help &amp; support</h1></div>';
     let t = null;
-    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Help &amp; support.' : esc(e.message)}</p>`; return; }
+    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Help &amp; support')}</p>`; return; }
     if (!isCurrent()) return;
     const open = t && t.status === 'open';
     const dg = helpDiag();
@@ -6829,7 +6839,7 @@
     const root = $('.refer-page', page);
     const head = '<div class="page-head"><h1>Refer a friend</h1></div>';
     let d;
-    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Refer a friend.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Refer a friend')}</p>`; return; }
     if (!isCurrent()) return;
     if (!d.enabled) { root.innerHTML = `${head}<p class="empty-msg">Referrals are not on right now.</p>`; return; }
     const msg = `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
@@ -6856,7 +6866,7 @@
     const root = $('.stats-page', page);
     const head = '<div class="page-head"><h1>Your Aurora</h1></div>';
     let d;
-    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for this page.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'this page')}</p>`; return; }
     if (!isCurrent()) return;
     const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
     const diff = d.thisWeek - d.lastWeek;
@@ -6952,7 +6962,7 @@
     const root = $('.reseller-page', page);
     const head = '<div class="page-head"><h1>Reseller panel</h1></div>';
     let d;
-    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.10.0 for the Reseller panel.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'the Reseller panel')}</p>`; return; }
     if (!isCurrent()) return;
     if (!d.reseller) { location.replace('#/home'); return; }
     if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }

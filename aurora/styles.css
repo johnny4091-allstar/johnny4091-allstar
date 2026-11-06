@@ -1620,7 +1620,7 @@ button, .btn, .pill, .admin-card h2, .settings-section h2, .stat-label { overflo
 .ann.bad { border-color: rgba(239,90,95,.6); background: rgba(52,16,18,.96); }
 .ann-tx { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .ann-x { background: none; border: 0; color: inherit; font-size: 1.4rem; line-height: 1; padding: 0 .3rem; cursor: pointer; opacity: .7; }
-html:not(.tv) .page-pad { padding-top: calc(100px + var(--ann-h, 0px)); }
+html .page-pad { padding-top: calc(100px + var(--ann-h, 0px)); }
 .inbox-list { display: flex; flex-direction: column; gap: .6rem; margin-bottom: 1rem; }
 .inbox-item { display: flex; gap: .9rem; align-items: flex-start; background: var(--bg-2); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; padding: .8rem 1rem; }
 .inbox-item.unread { border-color: rgba(124,140,255,.55); background: rgba(124,140,255,.08); }
