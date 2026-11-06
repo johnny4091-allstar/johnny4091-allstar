@@ -6738,9 +6738,12 @@
     const el = $('#announce');
     if (!el) return;
     const gone = dismissedAnn();
-    const list = (inboxState.banners || []).filter((a) => !gone.has(a.id)).slice(0, 2);
+    // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
+    const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
+    const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
+    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, 2);
     el.classList.toggle('hidden', !list.length || kidsOn() || resellerOnly());
-    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span><button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button></div>`).join('');
+    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span>${sticky(a) ? '' : `<button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button>`}</div>`).join('');
     document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
     $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
   }
@@ -6903,7 +6906,7 @@
       <section class="admin-card"><h2>New announcement <small>Customers see it as a banner and in their notifications</small></h2>
         <label class="admin-field"><span>Message</span><input type="text" data-f="text" maxlength="200" placeholder="e.g. Maintenance tonight 2–3 AM"></label>
         <div class="plan-grid">
-          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info</option><option value="warn">Warning</option><option value="bad">Outage</option></select></label>
+          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info (customers can dismiss it)</option><option value="warn">Warning (stays until it expires)</option><option value="bad">Outage (stays until it expires)</option></select></label>
           <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
           <label class="admin-field"><span>Disappears after</span><select data-f="hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
         </div>

@@ -309,7 +309,7 @@ connections × months** (one credit = one connection for one month). A free 2-da
 
 - **Bell:** every customer gets an inbox: announcements you send, "your plan ends in 7 / 3 / 1 days" with an **Ask for more time** button (this is the
   existing extension request), new titles added in the last week, and replies from support. Admins see their Admin inbox count on the bell instead.
-- **Announcements:** Admin → Customers → Announcements. A banner at the top of the app (customers can dismiss it) and an entry in the bell.
+- **Announcements:** Admin → Customers → Announcements. A banner at the top of the app and an entry in the bell. **Info** notices can be dismissed; **Warnings and Outages stay** until they expire or you remove them (customers can't dismiss them; admins can).
   Send to everyone, one plan or one reseller's customers; it disappears after the time you choose.
 - **Help & support:** Settings → Help & support. The customer's message arrives in Admin → Support with the diagnostics attached.
 - **Refer a friend:** each customer has a code. Config keys (optional): `"referralDays": 7` (0 switches it off) and `"referralMaxPerYear": 10`.

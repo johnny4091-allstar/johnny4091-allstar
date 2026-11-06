@@ -1,1 +1,2 @@
 - New: when a part of Aurora is being worked on, you'll see a friendly "We'll be right back!" page there instead of an error. The rest of the app keeps working.
+- New: important notices from your provider (warnings and outages) now stay at the top of the screen until the problem is over.
