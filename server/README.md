@@ -99,6 +99,7 @@ Administrator accounts are never limited or disabled.
 | `GET/POST /announcements`, `DELETE /announcements/{id}` | Emby administrators | Messages for customers: everyone, one plan or one reseller's customers; they expire by themselves. |
 | `GET /support`, `POST /support/{id}/reply`, `PUT /support/{id}` | Emby administrators | The support inbox: all conversations with their diagnostics, reply, mark solved or reopen. |
 | `GET /credit-requests`, `PUT /credit-requests/{id}`, `GET /admin-inbox` | Emby administrators | Reseller credit requests (approve adds the credits, deny closes it) and one summary of everything waiting for the admin. |
+| `GET /maintenance`, `PUT /maintenance` | The signed-in user (read), Emby administrators (write) | Maintenance mode (guard 1.12.0): which parts of Aurora (movies, tv, favorites, livetv, sports, requests, downloads) are switched off for customers, the message and an optional "back around" note. |
 | `GET /service-status?userId=` | The signed-in user | The Status page (guard 1.9.0): whether the server answers, channels several other viewers reported in the last 15 minutes (counts and channel names only), the sports feed, the last 24 hours, recent outages and the admin's message. While the server is down it still answers, with the outage only. |
 | `PUT /status-note` | Emby administrators | The message shown at the top of every customer's Status page (empty clears it). |
 | `GET /sports/status`, `PUT /sports/settings`, `PUT /sports/aliases`, `POST /sports/refresh` | Emby administrators | What the scores feed is doing, which leagues are on, the aliases, and "ask the feed again now" (guard 1.8.0). |
@@ -315,3 +316,10 @@ connections × months** (one credit = one connection for one month). A free 2-da
   Free days are added to both end dates; accounts with no end date get nothing to add.
 - **Resellers:** Needs renewing list with bulk renew and copyable reminder messages, a monthly report, and **Request credits**
   (approve in Admin → Inbox).
+
+## Maintenance mode (guard 1.12.0)
+
+Admin → Server → **Maintenance mode**: tick the parts you are working on (Movies, TV Shows, Favorites, Live TV, Sports, Requests, Downloads), write a message (blank uses
+a friendly default) and an optional "back around" note, and Save. Customers see a "We'll be right back!" page there, can't open the titles or channels inside, and a
+wrench marks the tab. You (administrators) always keep full access. It reaches open apps within about two minutes and applies at once when Aurora opens.
+This is done by the Aurora app: another Emby app talking to the server directly is not stopped by it.

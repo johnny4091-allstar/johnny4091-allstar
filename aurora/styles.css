@@ -1656,3 +1656,18 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .plan-actions { flex-wrap: wrap; max-width: 100%; }
 .admin-row > .btn, .admin-row > a.btn { flex: none; }
 .admin-card .m-actions, .settings-section .m-actions { flex-wrap: wrap; }
+
+/* ---------- Maintenance mode ---------- */
+.nav-links a.in-maint::after, .mobile-tabs a.in-maint::after { content: " 🔧"; font-size: .8em; }
+.nav-links a.in-maint, .mobile-tabs a.in-maint { opacity: .75; }
+.maint-page { display: grid; place-items: center; min-height: 70vh; }
+.maint-card { max-width: 34rem; text-align: center; background: var(--bg-2); border: 1px solid rgba(255,255,255,.1); border-radius: 20px; padding: 2rem 1.6rem; }
+.maint-card h1, .maint-card h3 { margin: .3rem 0 .6rem; }
+.maint-ic { font-size: 3rem; }
+.maint-msg { color: var(--text, #fff); font-size: 1.1rem; overflow-wrap: anywhere; }
+.maint-back { color: var(--dim); }
+.maint-card .m-actions { justify-content: center; }
+.maint-row { cursor: pointer; align-items: center; }
+.maint-switch { width: 1.4rem; height: 1.4rem; flex: none; }
+.maint-preview { max-width: none; }
+.maint-what { color: var(--dim); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: .2rem 0 0; }

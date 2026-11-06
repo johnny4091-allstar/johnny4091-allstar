@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.11.0';
+const VERSION = '1.12.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -412,6 +412,17 @@ function giveDays(userId, days, why) {
   recordAction({ type: 'extended', userId, name: rec.name, why: `${why}: +${days} days, now ends ${rec.expires}` });
   return true;
 }
+
+// ---------- Maintenance mode (guard 1.12.0) ----------
+// The admin can put parts of Aurora in maintenance: customers get a friendly "taking a short break" page there instead. The admin still
+// has full access. (This is the app's doing: another Emby app that talks to the server directly is not stopped by it.)
+const MAINT_KEYS = ['movies', 'tv', 'favorites', 'livetv', 'sports', 'requests', 'downloads'];
+const maintenancePublic = () => {
+  const m = store.maintenance || {};
+  const tabs = {};
+  for (const k of MAINT_KEYS) if (m.tabs && m.tabs[k]) tabs[k] = true;
+  return { tabs, message: m.message || '', back: m.back || '', at: m.at || 0 };
+};
 
 // ---------- Plan details and extension requests ----------
 // A customer sees their own plan (devices allowed, in use now, the date access ends) and may ask for more time;
@@ -809,6 +820,7 @@ function describeChange(req, url, subject) {
   if (/^\/announcements\//.test(p) && m === 'DELETE') return 'Removed an announcement';
   if (/^\/credit-requests\//.test(p) && m === 'PUT') return `${b.action === 'approve' ? 'Approved' : 'Declined'} a credit request`;
   if (/^\/support\//.test(p)) return '';
+  if (p === '/maintenance' && m === 'PUT') { const on = MAINT_KEYS.filter((k) => b.tabs && b.tabs[k]); return on.length ? `Put in maintenance mode: ${on.join(', ')}` : 'Turned maintenance mode off'; }
   if (p === '/status-note' && m === 'PUT') return b.text ? `Set the Status page message: "${String(b.text).slice(0, 60)}"` : 'Cleared the Status page message';
   if (p === '/sports/refresh') return '';
   if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
@@ -1421,6 +1433,11 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, request: publicRequest(entry) });
   }
 
+  if (url.pathname === '/maintenance' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, maintenancePublic());
+  }
   // ----- Resellers (guard 1.10.0): the reseller's own panel. Everything is limited to the signed-in reseller and the customers they made. -----
   if (url.pathname.startsWith('/reseller/')) {
     const me = await userOfToken(token, url.searchParams.get('userId'));
@@ -1838,6 +1855,16 @@ async function handle(req, res) {
     }
   }
 
+  if (url.pathname === '/maintenance' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const tabs = {};
+    for (const k of MAINT_KEYS) if (body.tabs && body.tabs[k]) tabs[k] = true;
+    store.maintenance = { tabs, message: cleanText(body.message, 240), back: cleanText(body.back, 60), at: Date.now(), by: auditBy };
+    saveStore();
+    log('Maintenance mode:', Object.keys(tabs).join(', ') || 'off');
+    return send(res, 200, { ok: true, ...maintenancePublic() });
+  }
   // The message at the top of every customer's Status page ("Maintenance tonight 2-3 AM"). Empty clears it.
   if (url.pathname === '/status-note' && req.method === 'PUT') {
     let body;

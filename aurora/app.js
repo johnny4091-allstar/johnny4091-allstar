@@ -989,6 +989,8 @@
     }
     applyKidsUi();
     if (!resellerOnly()) syncDownloadLicense();
+    refreshMaintenance();
+    clearInterval(maintTimer); maintTimer = setInterval(() => { if (!document.hidden) refreshMaintenance(); }, 2 * 60000);
     refreshInbox();
     clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
     live.channelIds = [];
@@ -1026,6 +1028,7 @@
     const token = ++routeToken;
 
     $$('[data-route]').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
+    paintMaintNav();
     window.scrollTo(0, 0);
     const page = $('#page');
     page.innerHTML = '';
@@ -1037,6 +1040,8 @@
 
     const isCurrent = () => token === routeToken;
     if (resellerOnly() && name !== 'reseller') { location.replace('#/reseller'); return; }
+    const mkey = maintKeyOfRoute(name, params);
+    if (mkey && maintOn(mkey)) return renderMaintenance(page, mkey);
     if (kidsOn()) {
       if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
@@ -1322,6 +1327,8 @@
   }
 
   function openItem(item) {
+    const mk = maintKeyOfItem(item);
+    if (mk && maintOn(mk)) return toast(maintText(mk), 8000);
     if (item.Type === 'TvChannel') return playItem(item);
     if (item.Type === 'Program') return openProgram(item.Id);
     // hint: what the card showed, so a title that has since been replaced on the server can be found again by name.
@@ -2336,6 +2343,7 @@
   let iptvPlaying = null;
   function playIptv(list, index, groupName) {
     if (!list[index]) return;
+    if (maintOn('livetv')) { toast(maintText('livetv'), 8000); return; }
     whenAllowed(() => startIptv(list, index, groupName));
   }
   const nowNextFields = (c) => { const n = nowNext(c); return n ? { nowStart: n.start || 0, nowEnd: n.end || 0, next: n.next || '' } : {}; };
@@ -5162,7 +5170,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support'], ['maintenance', 'Maintenance mode']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -5202,7 +5210,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport, maintenance: adminMaintenance })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
@@ -5212,7 +5220,7 @@
     ['Dashboard', ['inbox', 'overview', 'support', 'problems', 'feedback']],
     ['Customers', ['users', 'plans', 'resellers', 'announce', 'devices', 'usage', 'sharing']],
     ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
-    ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
+    ['Server', ['maintenance', 'server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
   function adminMenuHtml(tab) {
     const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
@@ -6621,6 +6629,96 @@
     modal.classList.remove('hidden');
     $$('[data-dl]', content).forEach((el) => $('[data-play]', el).addEventListener('click', () => playDownload(list.find((x) => x.itemId === el.dataset.dl))));
     autoFocus($('[data-play]', content));
+  }
+
+  // ---------- Maintenance mode (Aurora Guard 1.12.0) ----------
+  // The admin switches parts of Aurora into maintenance (Admin → Maintenance mode). Customers see a friendly page there and cannot open the
+  // tab, the titles in it or its channels; the admin always keeps full access. Kept on the device so it applies at once when Aurora opens.
+  const MAINT_TABS = [['movies', 'Movies', 'Movies'], ['tv', 'TV Shows', 'TV Shows'], ['favorites', 'Favorites', 'Favorites'], ['livetv', 'Live TV', 'Live TV'], ['sports', 'Sports', 'Sports (inside Live TV)'], ['requests', 'Requests', 'Requests'], ['downloads', 'Downloads', 'Downloads (Android)']];
+  const MAINT_DEFAULT = "We're giving this part of Aurora some love. Please try again a little later. Thank you for your patience! 💙";
+  let maint = (() => { try { return JSON.parse(store.get('ef.maint') || '{}') || {}; } catch { return {}; } })();
+  let maintTimer = null;
+  const maintOn = (key) => !isAdmin() && !!maint.tabs?.[key];
+  const maintLabel = (key) => (MAINT_TABS.find((t) => t[0] === key) || [])[1] || 'This part of Aurora';
+  const maintText = (key) => `The ${maintLabel(key)} section is in maintenance mode. ${maint.message || MAINT_DEFAULT}${maint.back ? ' We expect to be back ' + maint.back + '.' : ''}`;
+  function maintKeyOfRoute(name, params) {
+    if (name === 'movies') return 'movies';
+    if (name === 'tv') return 'tv';
+    if (name === 'mylist' || name === 'favorites') return 'favorites';
+    if (name === 'requests') return 'requests';
+    if (name === 'downloads') return 'downloads';
+    if (name === 'livetv') return params.get('tab') === 'sports' && maintOn('sports') ? 'sports' : 'livetv';
+    return null;
+  }
+  function maintKeyOfItem(item) {
+    const t = item?.Type;
+    if (t === 'Movie') return 'movies';
+    if (t === 'Series' || t === 'Season' || t === 'Episode') return 'tv';
+    if (t === 'TvChannel' || t === 'Program') return 'livetv';
+    return null;
+  }
+  function paintMaintNav() {
+    const map = { home: null, tv: 'tv', movies: 'movies', mylist: 'favorites', livetv: 'livetv', requests: 'requests' };
+    $$('[data-route]').forEach((a) => {
+      const key = map[a.dataset.route];
+      const on = !!key && !!maint.tabs?.[key];
+      a.classList.toggle('in-maint', on);
+      a.title = on ? (isAdmin() ? 'In maintenance for customers' : 'In maintenance') : '';
+    });
+  }
+  function renderMaintenance(page, key) {
+    page.innerHTML = `<div class="page-pad maint-page"><div class="maint-card"><div class="maint-ic">🔧</div>
+      <p class="maint-what">${esc(maintLabel(key))} · maintenance mode</p>
+      <h1>We'll be right back!</h1>
+      <p class="maint-msg">${esc(maint.message || MAINT_DEFAULT)}</p>
+      ${maint.back ? `<p class="maint-back">We expect to be back ${esc(maint.back)}.</p>` : ''}
+      <div class="m-actions"><a class="btn btn-white" href="#/home">Back to Home</a></div></div></div>`;
+    autoFocus($('.maint-card .btn', page));
+  }
+  async function refreshMaintenance() {
+    if (!guardEnabled || !state.userId) return;
+    let d;
+    try { d = await guard('/maintenance', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    const before = JSON.stringify(maint);
+    maint = { tabs: d.tabs || {}, message: d.message || '', back: d.back || '' };
+    store.set('ef.maint', JSON.stringify(maint));
+    paintMaintNav();
+    // The page being looked at just changed state (turned on or off): redraw it, unless something is playing.
+    if (JSON.stringify(maint) !== before && !isPlayerOpen() && $('#modal').classList.contains('hidden')) {
+      const hash = location.hash.replace(/^#\/?/, ''), [path, q] = hash.split('?');
+      const key = maintKeyOfRoute(path || 'home', new URLSearchParams(q || ''));
+      if (key && ($('#page .maint-page') || maintOn(key))) route();
+    }
+  }
+
+  // ----- Admin → Maintenance mode -----
+  async function adminMaintenance(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Maintenance mode');
+    let d;
+    try { d = await guard('/maintenance', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Maintenance mode</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.12.0 to use Maintenance mode (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const onCount = Object.keys(d.tabs).length;
+    body.innerHTML = `
+      <section class="admin-card"><h2>Maintenance mode <small>While you work on something, customers see a friendly message instead</small></h2>
+        <p class="muted">Switch on the parts you are working on. Customers can't open them (or the titles and channels inside), and see the message below. <strong>You can always open everything</strong>, and a wrench marks what's in maintenance. Switching it off opens it again within about two minutes.</p>
+        <div class="admin-list" data-tabs>${MAINT_TABS.map(([k, , label]) => `<label class="admin-row maint-row"><div class="admin-row-main"><strong>${esc(label)}</strong> ${d.tabs[k] ? '<span class="pill warn">In maintenance</span>' : '<span class="pill">Open</span>'}</div>
+          <input type="checkbox" class="maint-switch" data-k="${k}"${d.tabs[k] ? ' checked' : ''} aria-label="${esc(label)} in maintenance"></label>`).join('')}</div>
+        <label class="admin-field"><span>Message customers see</span><textarea class="st-note-input" data-msg rows="3" maxlength="240" placeholder="${esc(MAINT_DEFAULT)}">${esc(d.message)}</textarea></label>
+        <label class="admin-field"><span>Back around (optional)</span><input type="text" class="st-note-input" data-back maxlength="60" placeholder="e.g. around 3 PM, or tomorrow morning" value="${esc(d.back)}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-off>Open everything</button></div><div class="live-result" data-result></div></section>
+      <section class="admin-card"><h2>What customers see</h2><div class="maint-card maint-preview"><div class="maint-ic">🔧</div><p class="maint-what" data-pw></p><h3 data-ph>…</h3><p data-pm></p><p class="maint-back" data-pb></p></div></section>`;
+    const msg = $('[data-msg]', body), back = $('[data-back]', body), result = $('[data-result]', body);
+    const preview = () => { const k = $('[data-k]:checked', body)?.dataset.k || 'livetv'; $('[data-ph]', body).textContent = "We'll be right back!"; $('[data-pw]', body).textContent = `${maintLabel(k)} · maintenance mode`; $('[data-pm]', body).textContent = msg.value.trim() || MAINT_DEFAULT; $('[data-pb]', body).textContent = back.value.trim() ? `We expect to be back ${back.value.trim()}.` : ''; };
+    preview();
+    msg.addEventListener('input', preview); back.addEventListener('input', preview); $$('[data-k]', body).forEach((c) => c.addEventListener('change', preview));
+    const save = async (tabs, done) => {
+      result.className = 'live-result'; result.innerHTML = '<div class="spinner"></div>';
+      try { await guard('/maintenance', { method: 'PUT', body: { tabs, message: msg.value.trim(), back: back.value.trim() } }); toast(done, 2500); refreshMaintenance(); if (isCurrent()) adminMaintenance(body, isCurrent); }
+      catch (e) { result.className = 'live-result bad'; result.textContent = e.message; }
+    };
+    $('[data-save]', body).addEventListener('click', () => { const tabs = {}; $$('[data-k]:checked', body).forEach((c) => { tabs[c.dataset.k] = true; }); save(tabs, Object.keys(tabs).length ? 'Saved. Customers see the message now.' : 'Everything is open'); });
+    $('[data-off]', body).addEventListener('click', () => save({}, 'Everything is open'));
+    if (onCount) $('[data-save]', body).textContent = 'Save changes';
   }
 
   // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
@@ -8422,6 +8520,8 @@
 
   // audioIndex / subtitleIndex / forceTranscode are passed when the viewer changes tracks or quality.
   async function playItem(rawItem, opts = {}) {
+    const mk = maintKeyOfItem(rawItem);
+    if (mk && maintOn(mk)) { toast(maintText(mk), 8000); return; }
     // Changing tracks or quality, or the next episode on the same device, isn't a new device starting to play.
     if (opts.audioIndex != null || opts.subtitleIndex != null || opts.forceTranscode || opts.auto) return startPlayItem(rawItem, opts);
     return whenAllowed(() => startPlayItem(rawItem, opts));

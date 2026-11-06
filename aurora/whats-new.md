@@ -1,5 +1,1 @@
-- New: a notification bell with messages from your provider, plan reminders, new titles and support replies.
-- New: Settings → Get help sends your provider a message with the details they need attached.
-- New: Refer a friend (you both get free days) and Your Aurora, a summary of your week.
-- New for resellers: bulk renew, reminder messages, credit requests and a monthly report.
-- New (Android): Download movies and shows to watch without internet. Find them in Settings → Downloads.
+- New: when a part of Aurora is being worked on, you'll see a friendly "We'll be right back!" page there instead of an error. The rest of the app keeps working.
