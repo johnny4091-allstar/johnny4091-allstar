@@ -7892,7 +7892,7 @@
     const current = fromAdmin ? Number(cfg.forceUpdateAfter) : forceUpdateAfter;
     const latest = codes?.[0] || 0;
     const behindBy = (code) => (codes ? codes.filter((c) => c > code).length : 0);
-    const aurora = (devices?.error ? [] : (devices.Items || devices || []))
+    const aurora = (devices?.error ? [] : (devices?.Items || devices || []))
       .filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY)
       .map((d) => ({ d, code: auroraVersionCode(d.AppVersion) }))
       .filter((x) => x.code && latest && x.code < latest)
@@ -8304,7 +8304,7 @@
     ]);
     if (!isCurrent()) return;
     if (devices?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(devices.error))}</p>`; return; }
-    const all = (devices.Items || devices || []).slice().sort((a, b) => new Date(b.DateLastActivity) - new Date(a.DateLastActivity));
+    const all = (devices?.Items || devices || []).slice().sort((a, b) => new Date(b.DateLastActivity) - new Date(a.DateLastActivity));
     const isAurora = (d) => /aurora|embyflix/i.test(d.AppName || '');
     const aurora = all.filter(isAurora);
     const versions = new Map();
