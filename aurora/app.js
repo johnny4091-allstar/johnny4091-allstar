@@ -6744,8 +6744,7 @@
     if (!el) return;
     const gone = dismissedAnn();
     // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
-    // On the reseller panel nothing can be dismissed at all.
-    const sticky = (a) => resellerOnly() || ((a.level === 'warn' || a.level === 'bad') && !isAdmin());
+    const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
     const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
     const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : resellerOnly() ? 4 : 2); // (a reseller has no bell to see the rest in)
     // A remote can't press the ✕, so on a TV an info notice goes by itself after a while (warnings and outages stay).
