@@ -329,5 +329,5 @@ This is done by the Aurora app: another Emby app talking to the server directly 
 - **Customer list:** search (name, username, email, phone, note, plan), filter (Active, Ending soon, Expired, Trial, On hold), sort, and export (copy / .csv).
 - **Renew with any plan** the reseller may sell; **reset password** shows a welcome message to send; **hold** switches a customer's sign-in off (devices are signed
   out, the end date keeps running, and a renewal does not release it); **delete** removes the customer's Emby account (credits are not refunded).
-- **Announcements** now reach resellers too, on their panel (Warnings and Outages stick, Info can be dismissed). New audiences: **All resellers**, and a
+- **Announcements** now reach resellers too, on their panel (nothing on the reseller panel can be dismissed). New audiences: **All resellers**, and a
   reseller also sees what is sent to "one reseller's customers" for their own customers.
