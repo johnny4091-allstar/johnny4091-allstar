@@ -1648,7 +1648,7 @@ html .page-pad { padding-top: calc(100px + var(--ann-h, 0px)); }
 .need-row input { width: 1.2rem; height: 1.2rem; flex: none; }
 
 /* A reseller account sees only the Reseller panel. */
-html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-only .mobile-tabs, html.reseller-only #bell-btn, html.reseller-only #announce { display: none !important; }
+html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-only .mobile-tabs, html.reseller-only #bell-btn { display: none !important; }
 
 /* Rows with several buttons (Credits / Edit / New password / Suspend) wrap under the text on a narrow screen instead of squeezing it to one letter wide. */
 .admin-row { flex-wrap: wrap; }
@@ -1671,3 +1671,41 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .maint-switch { width: 1.4rem; height: 1.4rem; flex: none; }
 .maint-preview { max-width: none; }
 .maint-what { color: var(--dim); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: .2rem 0 0; }
+
+/* ---------- Reseller panel (polish) ---------- */
+.res-hero { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; padding: 1.2rem 1.4rem; border-radius: 18px; margin-bottom: 1rem; border: 1px solid rgba(124,140,255,.35); background: linear-gradient(135deg, rgba(94,234,212,.14), rgba(124,140,255,.18) 55%, rgba(192,132,252,.16)); }
+.res-credits { display: flex; flex-direction: column; min-width: 0; }
+.res-label { color: var(--dim); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; }
+.res-big { font-size: 3rem; font-weight: 800; line-height: 1.05; letter-spacing: -.03em; }
+.res-sub { color: var(--dim); }
+.res-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.res-warn { border-color: rgba(245,184,75,.5); }
+.res-tools { display: flex; flex-wrap: wrap; gap: .6rem; margin-bottom: .7rem; }
+.res-tools input { flex: 1 1 14rem; min-width: 0; }
+.res-tools select { flex: 0 1 14rem; }
+.res-chips { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: .8rem; }
+.chip { background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.14); color: inherit; border-radius: 99px; padding: .35rem .85rem; font: inherit; font-size: .9rem; cursor: pointer; }
+.chip.on { background: #fff; color: #06080f; border-color: #fff; font-weight: 700; }
+.chip span { opacity: .65; font-size: .85em; }
+.res-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: .5rem 1rem; align-items: center; padding: .7rem 0; border-top: 1px solid rgba(255,255,255,.07); }
+.res-row:first-child { border-top: 0; }
+.res-av { width: 2.5rem; height: 2.5rem; border-radius: 50%; display: grid; place-items: center; font-weight: 800; background: rgba(255,255,255,.1); }
+.res-av.good { background: rgba(47,191,113,.22); color: #7ee2a8; } .res-av.warn { background: rgba(245,184,75,.22); color: #f5b84b; } .res-av.bad { background: rgba(239,90,95,.22); color: #ff8a8e; }
+.res-main { min-width: 0; overflow-wrap: anywhere; }
+.res-end { text-align: right; white-space: nowrap; font-weight: 600; }
+.res-end small { display: block; color: var(--dim); font-weight: 400; font-size: .78rem; }
+@media (max-width: 700px) {
+  .res-row { grid-template-columns: auto minmax(0, 1fr); }
+  .res-end { grid-column: 2; text-align: left; }
+  .res-row .plan-actions { grid-column: 1 / -1; }
+}
+.res-export { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; margin-top: .8rem; }
+.res-fold summary { cursor: pointer; font-weight: 700; font-size: 1.05rem; }
+.res-fold[open] summary { margin-bottom: .8rem; }
+.res-renew { display: flex; gap: .7rem; align-items: flex-end; flex-wrap: wrap; margin-bottom: .6rem; }
+.res-renew .admin-field { flex: 1 1 14rem; margin: 0; }
+.res-danger { margin-top: .4rem; }
+.res-danger .btn { color: #ff8a8e; }
+.res-low { color: #ff8a8e; font-weight: 600; }
+.m-actions { flex-wrap: wrap; }
+.plan-form { min-width: 0; }

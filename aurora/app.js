@@ -6746,16 +6746,15 @@
     // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
     const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
     const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
-    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : 2);
+    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : resellerOnly() ? 4 : 2); // (a reseller has no bell to see the rest in)
     // A remote can't press the ✕, so on a TV an info notice goes by itself after a while (warnings and outages stay).
     if (nav.tv) for (const a of list) if (!sticky(a) && !annTimers.has(a.id)) annTimers.set(a.id, setTimeout(() => { const g = dismissedAnn(); g.add(a.id); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }, 20000));
-    el.classList.toggle('hidden', !list.length || kidsOn() || resellerOnly());
+    el.classList.toggle('hidden', !list.length || kidsOn());
     el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span>${sticky(a) ? '' : `<button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button>`}</div>`).join('');
     document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
     $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
   }
   async function refreshInbox() {
-    if (resellerOnly()) { inboxState.ok = false; paintBell(); paintBanners(); return; }
     if (!guardEnabled || !state.userId) { inboxState.ok = false; paintBell(); return; }
     try {
       const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });
@@ -6917,12 +6916,12 @@
         <label class="admin-field"><span>Message</span><input type="text" data-f="text" maxlength="200" placeholder="e.g. Maintenance tonight 2–3 AM"></label>
         <div class="plan-grid">
           <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info (customers can dismiss it)</option><option value="warn">Warning (stays until it expires)</option><option value="bad">Outage (stays until it expires)</option></select></label>
-          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
+          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option><option value="resellers">All resellers</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
           <label class="admin-field"><span>Disappears after</span><select data-f="hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
         </div>
         <div class="m-actions"><button class="btn btn-red" data-send>Send now</button></div><div class="live-result" data-result></div></section>
       <section class="admin-card"><h2>Showing now</h2><div class="admin-list">${list.announcements.map((a) => `<div class="admin-row" data-a="${esc(a.id)}"><div class="admin-row-main"><span class="pill${a.level === 'bad' ? ' bad' : a.level === 'warn' ? ' warn' : ''}">${levelName[a.level] || 'Info'}</span> <strong>${esc(a.text)}</strong>
-          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
+          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : a.audience?.type === 'resellers' ? 'All resellers' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
     const f = (k) => $(`[data-f="${k}"]`, body);
     $('[data-send]', body).addEventListener('click', async () => {
       const [type, id] = f('aud').value.split(':'), r = $('[data-result]', body);
@@ -6967,46 +6966,57 @@
     if (!d.reseller) { location.replace('#/home'); return; }
     if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
     const welcomeText = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
-    const dayText = (c) => (c.daysLeft == null ? '<span class="pill">No end date</span>' : c.expired ? '<span class="pill bad">Expired</span>' : `<span class="pill${c.daysLeft <= 7 ? ' warn' : ''}">${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'}</span>`);
-    const cRow = (c) => `<div class="admin-row" data-c="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}${c.trial ? ' <span class="pill">Trial</span>' : ''}
-        <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
-        <div class="plan-actions"><button class="btn btn-gray" data-details>Details</button><button class="btn btn-gray" data-renew>Renew</button></div></div>`;
+    // One clear status for each customer.
+    const statusOf = (c) => (c.hold ? { k: 'hold', label: 'On hold', cls: 'bad' } : c.expired ? { k: 'expired', label: 'Expired', cls: 'bad' } : c.trial ? { k: 'trial', label: 'Trial', cls: '' }
+      : c.daysLeft != null && c.daysLeft <= 7 ? { k: 'soon', label: 'Ending soon', cls: 'warn' } : { k: 'active', label: 'Active', cls: 'good' });
+    const leftText = (c) => (c.daysLeft == null ? 'No end date' : c.expired ? `Ended ${c.expires ? fmtDay(c.expires) : ''}`.trim() : c.daysLeft === 0 ? 'Ends today' : `${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'} left`);
     const lRow = (e) => `<div class="admin-row"><div class="admin-row-main">${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}<div class="muted">${esc(e.by)}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
-    const soon = d.customers.filter((c) => !c.expired && c.daysLeft != null && c.daysLeft <= 7).length, gone = d.customers.filter((c) => c.expired).length;
-    const need = d.customers.filter((c) => c.expired || (c.daysLeft != null && c.daysLeft <= 7));
+    const cnt = (k) => d.customers.filter((c) => statusOf(c).k === k).length;
+    const soon = cnt('soon'), gone = cnt('expired'), held = cnt('hold');
+    const need = d.customers.filter((c) => !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)));
+    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold']];
+    const view = (() => { try { return { q: '', filter: 'all', sort: 'days', shown: 25, ...(JSON.parse(store.get('ef.resView') || '{}') || {}), q: '', shown: 25 }; } catch { return { q: '', filter: 'all', sort: 'days', shown: 25 }; } })();
     root.innerHTML = `${head}
-      <div class="stat-grid">
-        ${statTile('Your credits', d.credits, d.low ? 'running low' : 'available', d.low ? 'bad' : '')}
-        ${statTile('Customers', d.customers.length, 'you created')}
-        ${statTile('Ending within 7 days', soon, '')}
-        ${statTile('Expired', gone, '')}
-      </div>
-      ${d.low ? '<section class="admin-card"><p><strong>Running low on credits.</strong> Ask your provider for more below.</p></section>' : ''}
+      <section class="res-hero"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
+        <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
+      <div class="plan-form hidden" data-askform></div>
       ${d.report ? '' : '<section class="admin-card"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
-      <section class="admin-card${d.report ? '' : ' hidden'}"><h2>Credits <small>${esc(d.report?.month || '')}</small></h2>
-        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div>
-        ${d.request ? `<p class="muted">Your request for ${esc(creditsWord(d.request.amount))} is waiting for your provider.</p>` : '<div class="m-actions"><button class="btn btn-gray" data-ask>Request credits</button></div><div class="plan-form hidden" data-askform></div>'}</section>
+      <div class="stat-grid">
+        ${statTile('Customers', d.customers.length, 'you created')}
+        ${statTile('Active', d.customers.filter((c) => ['active', 'trial'].includes(statusOf(c).k)).length, 'signed up and running')}
+        ${statTile('Ending within 7 days', soon, '')}
+        ${statTile('Expired', gone, held ? `${held} on hold` : '')}
+      </div>
+      <div class="plan-form hidden" data-form></div>
       ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
-        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}<div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
+        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
         <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
-      <section class="admin-card"><h2>My customers</h2>
-        <div class="admin-list" data-list>${d.customers.map(cRow).join('') || '<p class="muted">No customers yet. Add your first one.</p>'}</div>
-        <div class="m-actions"><button class="btn btn-white" data-new>New customer</button></div>
-        <div class="plan-form hidden" data-form></div></section>
-      <section class="admin-card"><h2>Credit history</h2><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+      <section class="admin-card"><h2>My customers <small data-count></small></h2>
+        <div class="res-tools"><input type="search" class="st-note-input" data-search placeholder="Search name, username, email, phone, note" autocomplete="off">
+          <select class="st-note-input" data-sort aria-label="Sort"><option value="days">Ending soonest first</option><option value="name">Name A–Z</option><option value="new">Newest first</option><option value="plan">Plan</option></select></div>
+        <div class="res-chips" data-chips>${FILTERS.map(([k, l]) => `<button class="chip${view.filter === k ? ' on' : ''}" data-filter="${k}">${l} <span data-n-${k}></span></button>`).join('')}</div>
+        <div class="admin-list res-list" data-list></div>
+        <div class="m-actions"><button class="btn btn-gray hidden" data-more>Show more</button></div>
+        <div class="res-export"><span class="muted">Export this list:</span><button class="btn btn-gray" data-copycsv>Copy</button><button class="btn btn-gray" data-dlcsv>Download .csv</button></div></section>
+      <details class="admin-card res-fold"><summary>This month${d.report ? ' · ' + esc(d.report.month) : ''}</summary>
+        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div></details>
+      <details class="admin-card res-fold"><summary>Credit history · ${d.ledger.length}</summary><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></details>`;
     const form = $('[data-form]', root);
     const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
     const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
     const q = (k) => $(`[data-f="${k}"]`, form);
     const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
-    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el.select(); toast('Select and copy the text', 3000); }); } catch { el.select(); toast('Select and copy the text', 3000); } };
+    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el?.select(); toast('Select and copy the text', 3000); }); } catch { el?.select(); toast('Select and copy the text', 3000); } };
     const makePw = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; const r = (n) => Math.floor(Math.random() * n); return w[r(w.length)] + w[r(w.length)] + (10 + r(90)); };
-    const showWelcome = (c, pw, cost) => {
-      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} is ready</h3><p>${cost ? `${esc(creditsWord(cost))} used. ` : 'Free trial. '}Copy this and send it to your customer. The password is shown only now.</p>
+    const closeForm = () => { form.classList.add('hidden'); form.innerHTML = ''; };
+    const showWelcome = (c, pw, headline, note) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">${esc(headline)}</h3><p>${esc(note)} Copy this and send it to your customer. The password is shown only now.</p>
         <textarea class="st-note-input" data-welcome rows="9" readonly>${esc(welcomeText(c, pw))}</textarea>
         <div class="m-actions"><button class="btn btn-white" data-copy>Copy</button><button class="btn btn-gray" data-done>Done</button></div>`;
       $('[data-copy]', form).addEventListener('click', () => copyText($('[data-welcome]', form).value, $('[data-welcome]', form)));
       $('[data-done]', form).addEventListener('click', reload);
+      form.scrollIntoView({ block: 'center' });
     };
     const openNew = () => {
       if (!d.plans.length) { toast('You have no plans to sell yet. Ask your provider.', 4000); return; }
@@ -7027,7 +7037,7 @@
       const cost = () => (q('trial').checked ? 0 : (d.plans.find((p) => p.id === q('plan').value)?.credits || 0));
       const sum = () => { const c = cost(); $('[data-sum]', form).textContent = (q('trial').checked ? 'Free trial, ends in 2 days. ' : `Cost: ${creditsWord(c)}. `) + `Balance after: ${d.credits - c}${d.credits - c < 0 ? ' (not enough credits)' : ''}`; $('[data-save]', form).disabled = d.credits - c < 0 || (q('trial').checked && d.trialsLeft <= 0); };
       sum(); q('plan').addEventListener('change', sum); q('trial').addEventListener('change', sum);
-      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-cancel]', form).addEventListener('click', closeForm);
       $('[data-save]', form).addEventListener('click', async () => {
         const btn = $('[data-save]', form), pw = q('pw').value;
         btn.disabled = true; say('<div class="spinner"></div>');
@@ -7035,32 +7045,51 @@
           const r = await guard('/reseller/customers', { method: 'POST', params: { userId: state.userId }, body: { fullName: q('full').value, username: q('user').value, password: pw, email: q('email').value, phone: q('phone').value, note: q('note').value, planId: q('plan').value, trial: q('trial').checked } });
           d.credits = r.credits;
           toast(`${r.customer.full || r.customer.name} created`, 2500);
-          showWelcome(r.customer, r.password, cost());
+          showWelcome(r.customer, r.password, `${r.customer.full || r.customer.name} is ready`, cost() ? `${creditsWord(cost())} used.` : 'Free trial.');
         } catch (e) { btn.disabled = false; say(esc(e.message), 'bad'); }
       });
       if (nav.on) focusEl(q('full')); else form.scrollIntoView({ block: 'center' });
     };
     const openDetails = (c) => {
+      const st = statusOf(c);
       form.classList.remove('hidden');
-      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <small>${esc(c.name)} · ${esc(c.planName || 'No plan')}${c.expires ? ' · ends ' + esc(fmtDay(c.expires)) : ''}</small></h3>
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <span class="pill ${st.cls}">${esc(st.label)}</span></h3>
+        <p class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${esc(leftText(c))}${c.expires ? ' (' + esc(fmtDay(c.expires)) + ')' : ''} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use${c.created ? ' · added ' + esc(fmtDay(new Date(c.created).toISOString().slice(0, 10))) : ''}</p>
+        ${d.plans.length ? `<div class="res-renew"><label class="admin-field"><span>Renew with</span><select data-f="rplan">${planOpts(c.planId)}</select></label><button class="btn btn-white" data-dren>Renew</button></div>${c.hold ? '<p class="muted">This customer is on hold: renewing adds time but they stay on hold until you release them.</p>' : ''}` : ''}
         <div class="plan-grid">
           <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" value="${esc(c.full)}"></label>
           <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" value="${esc(c.email)}"></label>
           <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" value="${esc(c.phone)}"></label>
         </div>
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
-        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-cancel>Close</button></div><div class="live-result" data-result></div>`;
-      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
+        <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', closeForm);
+      const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
+      $('[data-dren]', form)?.addEventListener('click', async () => {
+        const plan = d.plans.find((p) => p.id === q('rplan').value);
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        try { const r = await guard(path('/renew'), { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
       $('[data-save]', form).addEventListener('click', async () => {
-        try { await guard(`/reseller/customers/${encodeURIComponent(c.id)}`, { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
+        try { await guard(path(), { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
         catch (e) { say(esc(e.message), 'bad'); }
       });
       $('[data-pw]', form).addEventListener('click', async () => {
-        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once.', 'Reset password'))) return;
-        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/password`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(`New password for ${esc(c.name)}: <strong>${esc(x.password)}</strong> (shown only now)`, 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once, with a welcome message you can send.', 'Reset password'))) return;
+        try { const x = await guard(path('/password'), { method: 'POST', params: { userId: state.userId }, body: {} }); showWelcome(c, x.password, `New password for ${c.full || c.name}`, 'Their old password no longer works.'); } catch (e) { say(esc(e.message), 'bad'); }
       });
       $('[data-out]', form).addEventListener('click', async () => {
-        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/signout`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+        try { const x = await guard(path('/signout'), { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-hold]', form).addEventListener('click', async () => {
+        const putOn = !c.hold;
+        if (putOn && !(await confirmAction(`Put ${c.full || c.name} on hold?`, 'They are signed out and can\'t sign in until you release them. Their end date keeps running.', 'Put on hold'))) return;
+        try { await guard(path('/hold'), { method: 'POST', params: { userId: state.userId }, body: { hold: putOn } }); toast(putOn ? 'On hold' : 'Released', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-del]', form).addEventListener('click', async () => {
+        if (!(await confirmAction(`Delete ${c.full || c.name} for good?`, `The account ${c.name} and their watch history are removed. Credits are not refunded. This can't be undone.`, 'Delete customer'))) return;
+        try { await guard(path(), { method: 'DELETE', params: { userId: state.userId } }); toast('Customer deleted', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
       });
       form.scrollIntoView({ block: 'center' });
     };
@@ -7090,19 +7119,68 @@
         return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
       }).join('\n\n');
       if (!lines) { toast('Choose at least one customer', 2500); return; }
-      try { navigator.clipboard.writeText(lines).then(() => toast('Messages copied', 2000), () => toast(lines, 8000)); } catch { toast(lines, 8000); }
+      copyText(lines);
     });
-    $$('[data-c]', root).forEach((el) => {
-      const c = d.customers.find((x) => x.id === el.dataset.c);
-      $('[data-details]', el).addEventListener('click', () => openDetails(c));
-      $('[data-renew]', el).addEventListener('click', async () => {
+
+    // ----- the customer list: search, filter, sort -----
+    const listEl = $('[data-list]', root), moreBtn = $('[data-more]', root);
+    const saveView = () => store.set('ef.resView', JSON.stringify({ filter: view.filter, sort: view.sort }));
+    const matches = (c) => {
+      const t = view.q.trim().toLowerCase();
+      if (t && ![c.name, c.full, c.email, c.phone, c.note, c.planName].some((x) => String(x || '').toLowerCase().includes(t))) return false;
+      const k = statusOf(c).k;
+      return view.filter === 'all' || k === view.filter || (view.filter === 'active' && k === 'soon') ;
+    };
+    const sorters = { days: (a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999), name: (a, b) => (a.full || a.name).localeCompare(b.full || b.name), new: (a, b) => (b.created || 0) - (a.created || 0), plan: (a, b) => (a.planName || '').localeCompare(b.planName || '') || (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999) };
+    const visible = () => d.customers.filter(matches).sort(sorters[view.sort] || sorters.days);
+    const cRow = (c) => {
+      const st = statusOf(c), cost = (d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits;
+      return `<div class="res-row" data-c="${esc(c.id)}"><div class="res-av ${st.cls}">${esc((c.full || c.name).trim().charAt(0).toUpperCase() || '?')}</div>
+        <div class="res-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${st.cls}">${esc(st.label)}</span>
+          <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
+        <div class="res-end">${esc(leftText(c))}${c.expires && !c.expired ? `<small>${esc(fmtDay(c.expires))}</small>` : ''}</div>
+        <div class="plan-actions"><button class="btn btn-gray" data-renew>Renew${cost != null ? ' · ' + cost : ''}</button><button class="btn btn-gray" data-details>Details</button></div></div>`;
+    };
+    const paintList = () => {
+      const all = visible(), shown = all.slice(0, view.shown);
+      listEl.innerHTML = shown.map(cRow).join('') || `<p class="muted">${d.customers.length ? 'No customers match.' : 'No customers yet. Add your first one.'}</p>`;
+      $('[data-count]', root).textContent = all.length === d.customers.length ? `${d.customers.length}` : `${all.length} of ${d.customers.length}`;
+      moreBtn.classList.toggle('hidden', all.length <= shown.length);
+      moreBtn.textContent = `Show more (${all.length - shown.length} left)`;
+      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : cnt(k); });
+    };
+    $('[data-sort]', root).value = view.sort;
+    $('[data-search]', root).addEventListener('input', (e) => { view.q = e.target.value; view.shown = 25; paintList(); });
+    $('[data-sort]', root).addEventListener('change', (e) => { view.sort = e.target.value; saveView(); paintList(); });
+    $$('[data-filter]', root).forEach((b) => b.addEventListener('click', () => { view.filter = b.dataset.filter; view.shown = 25; saveView(); $$('[data-filter]', root).forEach((x) => x.classList.toggle('on', x === b)); paintList(); }));
+    moreBtn.addEventListener('click', () => { view.shown += 25; paintList(); });
+    listEl.addEventListener('click', async (e) => {
+      const el = e.target.closest('[data-c]'); if (!el) return;
+      const c = d.customers.find((x) => x.id === el.dataset.c); if (!c) return;
+      if (e.target.closest('[data-details]')) return openDetails(c);
+      if (e.target.closest('[data-renew]')) {
         const plan = d.plans.find((p) => p.id === c.planId) || d.plans[0];
         if (!plan) { toast('You have no plans to sell yet.', 3000); return; }
-        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.${c.hold ? ' They are on hold, so they stay on hold until you release them.' : ''}`, 'Renew'))) return;
         try { const r = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/renew`, { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); }
-        catch (e) { toast(e.message, 5000); }
-      });
+        catch (err) { toast(err.message, 5000); }
+      }
     });
+    // Export the customers on screen (after search and filter) as a spreadsheet file.
+    const csvText = () => {
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const rows = [['Name', 'Username', 'Email', 'Phone', 'Plan', 'Status', 'Ends', 'Note'], ...visible().map((c) => [c.full, c.name, c.email, c.phone, c.planName, statusOf(c).label, c.expires || '', c.note])];
+      return rows.map((r) => r.map(cell).join(',')).join('\r\n');
+    };
+    $('[data-copycsv]', root).addEventListener('click', () => copyText(csvText()));
+    $('[data-dlcsv]', root).addEventListener('click', () => {
+      try {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob(['﻿' + csvText()], { type: 'text/csv' })); a.download = 'aurora-customers.csv';
+        document.body.appendChild(a); a.click(); a.remove(); toast('Downloading…', 2000);
+      } catch { copyText(csvText()); }
+    });
+    paintList();
   }
 
   // ----- Extension requests (Admin -> Users) -----

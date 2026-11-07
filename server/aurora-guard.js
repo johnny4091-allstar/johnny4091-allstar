@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.12.0';
+const VERSION = '1.13.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -298,7 +298,7 @@ function publicReseller(r) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null };
+    trial: !!rec.trial, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
 async function copyAppDefaults(newUserId) {
@@ -338,7 +338,8 @@ const genPassword = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud
 const audienceOk = (a, userId) => {
   const au = a.audience || { type: 'all' }, rec = store.users[userId];
   if (au.type === 'plan') return rec?.plan?.id === au.id;
-  if (au.type === 'reseller') return rec?.reseller === au.id;
+  if (au.type === 'reseller') return rec?.reseller === au.id || resellerOfUser(userId)?.id === au.id; // that reseller's customers, and the reseller
+  if (au.type === 'resellers') return !!resellerOfUser(userId); // every reseller
   return true;
 };
 let newTitlesCache = { at: 0, text: '', n: 0 };
@@ -366,7 +367,8 @@ async function inboxFor(me) {
     if (d < 0) items.push({ id: `plan:${rec.expires}:x`, type: 'plan', level: 'bad', title: 'Your access has ended', text: 'Ask for more time to keep watching.', at: end, action: 'renew' });
     else { const b = d <= 1 ? 1 : d <= 3 ? 3 : d <= 7 ? 7 : 0; if (b) items.push({ id: `plan:${rec.expires}:${b}`, type: 'plan', level: b <= 3 ? 'warn' : 'info', title: d <= 1 ? 'Your plan ends today or tomorrow' : `Your plan ends in ${d} days`, text: `${rec.plan?.name ? rec.plan.name + ' · ' : ''}ends ${rec.expires}`, at: end - b * 86400000, action: 'renew' }); }
   }
-  const nt = await newTitlesNote();
+  const isReseller = !!resellerOfUser(me.Id);
+  const nt = isReseller ? { n: 0 } : await newTitlesNote();
   if (nt.n) items.push({ id: 'new:' + dayKey(nt.newest), type: 'new', level: 'info', title: `New this week: ${nt.text}${nt.n > 3 ? ` and ${nt.n - 3} more` : ''}`, text: 'Added to Aurora', at: nt.newest || now, action: 'browse' });
   const t = (store.tickets || []).find((x) => x.userId === me.Id && x.status === 'open');
   const lastAdmin = t && [...t.messages].reverse().find((m) => m.from !== 'user');
@@ -1534,13 +1536,39 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
         const rec = store.users[id];
         let body = {};
         if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+        // Put a customer on hold (sign-in is switched off and their devices are signed out; the end date keeps running), or release them.
+        if (act === 'hold' && req.method === 'POST') {
+          let user;
+          try { user = await emby('GET', `/Users/${id}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'That account no longer exists.' : e.message }); }
+          if (user.Policy?.IsAdministrator) return send(res, 400, { error: 'That account can\'t be put on hold.' });
+          const hold = !!body.hold;
+          try { await setDisabled(user, hold); } catch (e) { return send(res, 502, { error: 'Could not change the account: ' + e.message }); }
+          if (hold) {
+            rec.hold = true; delete store.disabledByGuard[id]; // a renewal must not switch it back on by itself
+            const devices = activeByUser(await emby('GET', '/Sessions')).get(id);
+            for (const dv of devices ? devices.values() : []) { try { await signOutDevice({ Id: id, Name: rec.name }, dv, 'Your access is on hold. Please contact your reseller.'); } catch { /* next */ } }
+          } else delete rec.hold;
+          rec.updated = Date.now();
+          recordAudit(by, `${hold ? 'Put on hold' : 'Released'} ${rec.name}`); saveStore();
+          if (!hold) { try { await enforce(id); } catch { /* applied at the next check */ } }
+          return send(res, 200, { ok: true, hold });
+        }
+        // Delete a customer's account for good (their credits are not refunded).
+        if (!act && req.method === 'DELETE') {
+          try { await emby('DELETE', `/Users/${id}`); } catch (e) { if (e.status !== 404) return send(res, 502, { error: 'Could not delete the account: ' + e.message }); }
+          const name = rec.name;
+          delete store.users[id]; delete store.disabledByGuard[id]; delete store.firstSeen[id];
+          recordAudit(by, `Deleted the customer ${name}`); saveStore();
+          log('Reseller', r.name, 'deleted', name);
+          return send(res, 200, { ok: true });
+        }
         if (!act && req.method === 'PUT') {
           rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
           rec.updated = Date.now(); saveStore();
@@ -1727,7 +1755,7 @@ async function handle(req, res) {
     if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30) return send(res, 400, { error: 'It must last between 1 hour and 30 days.' });
     let audience = { type: 'all' };
     if (body.audience && body.audience.type && body.audience.type !== 'all') {
-      const ok = (body.audience.type === 'plan' && (store.plans || []).some((p) => p.id === body.audience.id)) || (body.audience.type === 'reseller' && resellerList()[body.audience.id]);
+      const ok = (body.audience.type === 'plan' && (store.plans || []).some((p) => p.id === body.audience.id)) || (body.audience.type === 'reseller' && resellerList()[body.audience.id]) || body.audience.type === 'resellers';
       if (!ok) return send(res, 400, { error: 'Choose who should get it: everyone, a plan, or a reseller that exists.' });
       audience = { type: body.audience.type, id: body.audience.id };
     }

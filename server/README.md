@@ -90,7 +90,7 @@ Administrator accounts are never limited or disabled.
 | `GET /channel-status?userId=&channel=` | The signed-in user | How many *other* people reported that channel in the last hour (a number, no names), for the "is it just me?" line in the live player (guard 1.7.0). |
 | `GET /sports/games`, `GET /sports/teams?league=`, `GET /sports/aliases` | The signed-in user | Live scores and the day's games for the Sports tab, a league's teams (for the setup), and the admin's name aliases (guard 1.8.0). |
 | `GET /resellers`, `POST /resellers`, `PUT /resellers/{id}`, `POST /resellers/{id}/credits`, `GET /resellers/{id}/log`, `POST /resellers/{id}/password` | Emby administrators | Resellers (guard 1.10.0): list them with their credits, add one (this also creates their Emby login), change name, contact, plans they may sell or suspend them, add / remove / set credits with a reason, see the ledger, make a new password. |
-| `GET /reseller/me`, `POST /reseller/customers`, `PUT /reseller/customers/{id}`, `POST /reseller/customers/{id}/renew`, `/password`, `/signout` | The signed-in reseller, for customers they created | The reseller panel: credits, plans with their credit cost, customers; create a customer (an Emby account plus the plan, paid in credits, or a free 2-day trial), renew, edit details, reset the password, sign out devices. Nothing about any other account is reachable. |
+| `GET /reseller/me`, `POST /reseller/customers`, `PUT`/`DELETE /reseller/customers/{id}`, `POST /reseller/customers/{id}/renew`, `/password`, `/signout`, `/hold` | The signed-in reseller, for customers they created | The reseller panel: credits, plans with their credit cost, customers; create a customer (an Emby account plus the plan, paid in credits, or a free 2-day trial), renew, edit details, reset the password, sign out devices. Nothing about any other account is reachable. |
 | `GET /inbox`, `POST /inbox/read` | The signed-in user | The notification bell (guard 1.11.0): announcements for them, plan-ending notices (7 / 3 / 1 days, ended), new titles this week, replies from support, and the unread count. |
 | `GET /support`, `POST /support` (with `userId`) | The signed-in user | Their Get help conversation; sending adds the details Aurora attaches (version, device, connection, what was playing, recent problems). 10 messages an hour. |
 | `GET /referral`, `POST /referral/redeem` | The signed-in user | Their referral code and friends; using a friend's code (first 14 days of an account, once) gives both people `referralDays` free days. |
@@ -323,3 +323,11 @@ Admin → Server → **Maintenance mode**: tick the parts you are working on (Mo
 a friendly default) and an optional "back around" note, and Save. Customers see a "We'll be right back!" page there, can't open the titles or channels inside, and a
 wrench marks the tab. You (administrators) always keep full access. It reaches open apps within about two minutes and applies at once when Aurora opens.
 This is done by the Aurora app: another Emby app talking to the server directly is not stopped by it.
+
+## Reseller panel updates (guard 1.13.0)
+
+- **Customer list:** search (name, username, email, phone, note, plan), filter (Active, Ending soon, Expired, Trial, On hold), sort, and export (copy / .csv).
+- **Renew with any plan** the reseller may sell; **reset password** shows a welcome message to send; **hold** switches a customer's sign-in off (devices are signed
+  out, the end date keeps running, and a renewal does not release it); **delete** removes the customer's Emby account (credits are not refunded).
+- **Announcements** now reach resellers too, on their panel (Warnings and Outages stick, Info can be dismissed). New audiences: **All resellers**, and a
+  reseller also sees what is sent to "one reseller's customers" for their own customers.
