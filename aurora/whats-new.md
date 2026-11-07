@@ -1,1 +1,1 @@
-- New for resellers: a cleaner panel with search, filters and export, renew on any plan, put a customer on hold, reset a password with a welcome message, and delete a customer. Announcements from your provider now show on the panel too.
+- New: Settings → Speed test. Check your ping, download and upload, see whether your connection can handle Live TV, 1080p and 4K, and pick the right video quality in one tap. You can send the result to your provider.

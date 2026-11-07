@@ -1043,7 +1043,7 @@
     const mkey = maintKeyOfRoute(name, params);
     if (mkey && maintOn(mkey)) return renderMaintenance(page, mkey);
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads'].includes(name)) { location.hash = '#/home'; return; }
+      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1057,6 +1057,7 @@
       case 'reseller': return renderReseller(page, isCurrent);
       case 'inbox': return renderInbox(page, isCurrent);
       case 'downloads': return renderDownloads(page, isCurrent);
+      case 'speedtest': return renderSpeedTest(page, isCurrent);
       case 'help': return renderHelp(page, isCurrent);
       case 'refer': return renderRefer(page, isCurrent);
       case 'stats': return renderStats(page, isCurrent);
@@ -4734,7 +4735,7 @@
     }
     if (live && live.state === 'bad') return { level: 'warn', title: 'Not just you: Live TV is having problems', text: 'Several channels are failing for other viewers too. Movies and shows still work.', actions: ['watch', 'notify', 'again'], others: live.reporters };
     if (live && live.channels.length) { const c = live.channels[0]; return { level: 'warn', title: `Not just you: ${c.name} has problems`, text: 'Other channels work. Try another channel, or the same game on a different one.', actions: ['notify', 'again'], others: c.reports }; }
-    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or lower the video quality in Settings.', actions: ['again'] };
+    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or run a speed test to see which video quality to use.', actions: ['speed', 'again'] };
     return { level: 'ok', title: 'Everything looks fine from here', text: "If something still won't play, try a different title or restart Aurora.", actions: ['again'] };
   }
 
@@ -4798,7 +4799,7 @@
     };
     const paintVerdict = (r) => {
       const v = r.verdict;
-      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead' };
+      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead', speed: 'Run a speed test' };
       q('[data-st-verdict]').innerHTML = `<div class="st-verdict ${v.level}"><h3>${esc(v.title)}</h3><p>${esc(v.text)}</p>
         ${v.others ? `<p class="st-others">${v.others} other ${v.others === 1 ? 'viewer' : 'viewers'} reported this</p>` : ''}
         <div class="st-actions">${v.actions.map((a) => `<button class="btn btn-gray" data-st-act="${a}">${labels[a]}</button>`).join('')}</div></div>`;
@@ -4830,6 +4831,7 @@
       if (a === 'again') check();
       else if (a === 'notify') startStatusWatch();
       else if (a === 'watch') location.hash = '#/movies';
+      else if (a === 'speed') location.hash = '#/speedtest';
     });
     // Look again quietly every minute while the page is open (not while a check is running).
     const timer = setInterval(async () => {
@@ -4859,6 +4861,9 @@
         ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
         ${settingRow('Your Aurora', 'What you watched this week.', '<a class="btn btn-gray" href="#/stats">See my week</a>')}
       </section>` : ''}
+      <section class="settings-section"><h2>Speed test</h2>
+        ${settingRow('Check my connection', 'See whether your connection is good enough for Aurora, and which video quality to use.', '<a class="btn btn-gray" href="#/speedtest">Start speed test</a>')}
+      </section>
       <section class="settings-section"><h2>Status</h2>
         ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
       </section>
@@ -6538,6 +6543,186 @@
     });
   }
 
+  // ---------- Speed test (Settings → Speed test) ----------
+  // Measures the connection to the Aurora server, which is what streaming depends on: ping (and lost replies) with small requests, download
+  // with the server's own bitrate-test address, upload with a few seconds of data sent to Aurora Guard (which throws it away).
+  const SPD_HIST = 'ef.speed.hist';
+  const spdHist = () => { try { return JSON.parse(store.get(SPD_HIST) || '[]'); } catch { return []; } };
+  // Speed in Mbps from {t: ms, b: bytes} samples: over the last second while running, and for the result from after the first
+  // moments (slow start) to the end, so a short test is not dragged down by the ramp-up.
+  const spdLive = (samples) => {
+    const last = samples[samples.length - 1];
+    const from = samples.find((x) => x.t >= last.t - 1000) || samples[0];
+    const dt = last.t - from.t;
+    return dt > 150 ? ((last.b - from.b) * 8) / 1e6 / (dt / 1000) : 0;
+  };
+  const spdFinal = (samples) => {
+    const last = samples[samples.length - 1];
+    const from = last.t > 2200 ? (samples.find((x) => x.t >= 800) || samples[0]) : samples[0];
+    const dt = last.t - from.t;
+    return dt > 0 ? ((last.b - from.b) * 8) / 1e6 / (dt / 1000) : 0;
+  };
+  async function spdPing(ctl, onTick) {
+    const times = []; let lost = 0;
+    for (let i = 0; i < 10; i++) {
+      if (ctl.stopped) throw new Error('stopped');
+      const t0 = performance.now();
+      try {
+        const res = await fetch(state.server + '/emby/System/Info/Public?x=' + Date.now(), { cache: 'no-store', signal: timeoutSignal(3000) });
+        if (!res.ok) throw new Error('bad');
+        times.push(performance.now() - t0); onTick(times[times.length - 1]);
+      } catch { lost++; }
+    }
+    if (!times.length) throw new Error("Couldn't reach the Aurora server.");
+    const sorted = [...times].sort((a, b) => a - b);
+    const body = times.length > 2 ? sorted.slice(0, Math.ceil(sorted.length * 0.8)) : sorted; // the slowest few are usually the first connection
+    const ping = Math.round(sorted[Math.floor(sorted.length / 2)]);
+    const jitter = Math.round(times.slice(1).reduce((n, t, i) => n + Math.abs(t - times[i]), 0) / Math.max(1, times.length - 1));
+    return { ping, jitter, loss: Math.round((lost / 10) * 100), samples: body.length };
+  }
+  async function spdDown(ctl, onTick) {
+    const ac = new AbortController(); ctl.abort = () => ac.abort();
+    const samples = [{ t: 0, b: 0 }];
+    const t0 = performance.now(); let bytes = 0;
+    const timer = setTimeout(() => ac.abort(), 7000);
+    try {
+      let res = await fetch(apiUrl('/Playback/BitrateTest', { Size: 60000000 }), { cache: 'no-store', signal: ac.signal });
+      if (!res.ok) res = await fetch(apiUrl('/Playback/BitrateTest', { Size: 10000000 }), { cache: 'no-store', signal: ac.signal });
+      if (!res.ok) throw new Error('The server did not answer the speed test.');
+      const reader = res.body?.getReader?.();
+      if (!reader) { bytes = (await res.arrayBuffer()).byteLength; samples.push({ t: performance.now() - t0, b: bytes }); }
+      else for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        samples.push({ t: performance.now() - t0, b: bytes });
+        onTick(spdLive(samples));
+      }
+    } catch (e) {
+      if (ctl.stopped) throw new Error('stopped');
+      if (e.name !== 'AbortError' && samples.length < 3) throw e; // an abort at the time limit is the normal end
+    } finally { clearTimeout(timer); }
+    if (samples.length < 2) throw new Error('No data came back from the server.');
+    return spdFinal(samples);
+  }
+  // Returns Mbps, or null when this Guard can't take uploads (older, or switched off).
+  function spdUp(ctl, onTick) {
+    return new Promise((resolve, reject) => {
+      if (!guardEnabled) return resolve(null);
+      const block = new Uint8Array(1 << 20);
+      for (let i = 0; i < block.length; i += 65536) crypto.getRandomValues(block.subarray(i, i + 65536));
+      const payload = new Blob(Array(32).fill(block), { type: 'application/octet-stream' });
+      const xhr = new XMLHttpRequest();
+      const samples = [{ t: 0, b: 0 }];
+      const t0 = performance.now();
+      let ended = false, timer = null;
+      const finish = () => { if (ended) return; ended = true; clearTimeout(timer); resolve(samples.length > 2 ? spdFinal(samples) : null); };
+      ctl.abort = () => xhr.abort();
+      xhr.open('POST', `${guardUrl.replace(/\/+$/, '')}/speedtest/up?userId=${encodeURIComponent(state.userId)}`);
+      xhr.setRequestHeader('X-Emby-Token', state.apiKey);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => { samples.push({ t: performance.now() - t0, b: e.loaded }); onTick(spdLive(samples)); };
+      xhr.onload = () => {
+        if (xhr.status === 429) { ended = true; clearTimeout(timer); return reject(new Error('That is a lot of speed tests. Please try again in a little while.')); }
+        if (xhr.status === 200) return finish();
+        ended = true; clearTimeout(timer); resolve(null);
+      };
+      xhr.onerror = () => { if (samples.length > 3) finish(); else { ended = true; clearTimeout(timer); resolve(null); } };
+      xhr.onabort = () => { if (ctl.stopped) { ended = true; clearTimeout(timer); reject(new Error('stopped')); } else finish(); };
+      timer = setTimeout(() => xhr.abort(), 6000);
+      xhr.send(payload);
+    });
+  }
+  const spdAnswer = (r) => {
+    const d = r.down, rough = r.loss >= 3 || r.jitter > 60;
+    const can = [
+      ['Live TV', d >= 6 ? 'ok' : d >= 3 ? 'warn' : 'bad', d >= 6 ? '' : 'may buffer'],
+      ['Movies and shows in 1080p', d >= 12 ? 'ok' : d >= 6 ? 'warn' : 'bad', d >= 12 ? '' : 'use a lower quality'],
+      ['4K video', d >= 40 ? 'ok' : d >= 25 ? 'warn' : 'bad', d >= 40 ? '' : d >= 25 ? 'borderline' : 'needs about 40 Mbps'],
+    ];
+    let level, title, text;
+    if (d >= 40 && r.ping < 80) { level = 'ok'; title = 'Your connection is great'; text = 'Everything on Aurora should play smoothly, including 4K.'; }
+    else if (d >= 12 && r.ping < 150) { level = 'ok'; title = 'Your connection is good'; text = 'Live TV and 1080p will play well. 4K may stop to buffer.'; }
+    else if (d >= 4) { level = 'warn'; title = 'Your connection is a bit slow'; text = "Live TV should work. For movies, choose a lower quality so they don't keep stopping."; }
+    else { level = 'bad'; title = 'Your connection is too slow right now'; text = 'Videos will keep stopping. Try the tips below, then test again.'; }
+    if (rough && level === 'ok') { level = 'warn'; title = 'The speed is fine, but the connection is unsteady'; text = 'Some data is arriving late or going missing. That can make video freeze even when the speed looks good.'; }
+    // The best quality that fits in about 80% of the measured speed (Auto when it is fast enough for anything).
+    const fit = QUALITY_OPTIONS.slice(1).find((q) => q.bitrate <= d * 0.8 * 1e6 && (!qualityCap() || q.bitrate <= qualityCap())) || QUALITY_OPTIONS[QUALITY_OPTIONS.length - 1];
+    const quality = d >= 40 ? QUALITY_OPTIONS[0] : fit;
+    return { level, title, text, can, quality };
+  }
+  async function renderSpeedTest(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad spd-page"><div class="page-head"><h1>Speed test</h1></div><div data-body></div></div>';
+    const root = $('[data-body]', page);
+    let state_ = 'idle', ctl = null, res = null, live = 0, phase = '', lastPaint = 0;
+    const tick = (v) => { live = v; const n = performance.now(); if (n - lastPaint > 120) { lastPaint = n; paint(); } };
+    const gauge = (pct) => { const r = 96, c = 2 * Math.PI * r, arc = c * 0.75; return `<svg viewBox="0 0 230 230"><defs><linearGradient id="spdg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset=".6" stop-color="#7c8cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs><circle class="spd-trk" cx="115" cy="115" r="${r}" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="${arc} ${c}"/><circle class="spd-val" cx="115" cy="115" r="${r}" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="${arc} ${c}" stroke-dashoffset="${arc * (1 - Math.min(1, Math.max(0, pct)))}"/></svg>`; };
+    const resultText = (r) => `Speed test: ${r.down.toFixed(1)} Mbps down, ${r.up == null ? 'upload not tested' : r.up.toFixed(1) + ' Mbps up'}, ${r.ping} ms ping${r.loss ? ', ' + r.loss + '% of replies lost' : ''}.`;
+    const num = (v) => (v == null ? '–' : v >= 100 ? Math.round(v) : (Math.round(v * 10) / 10));
+    const paint = () => {
+      if (!isCurrent()) return;
+      const hist = spdHist();
+      if (state_ === 'idle') {
+        root.innerHTML = `<p class="muted">Check how well your connection works with Aurora. It takes about 20 seconds and uses roughly 30 to 60 MB of data.</p>
+          <section class="settings-section spd-card"><div class="spd-gauge">${gauge(0)}<div class="spd-gv"><b>0</b><small>Mbps</small></div></div><button class="btn btn-white" data-go data-autofocus>Start test</button><p class="muted">It measures the connection to the Aurora server. Close other apps for the best result.</p></section>
+          <div class="live-result bad hidden" data-err></div>
+          ${hist.length ? `<section class="settings-section"><h2>Your last tests</h2>${hist.map((h) => `<div class="admin-row"><div class="admin-row-main">${esc(timeAgo(h.t))}</div><div class="admin-row-time"><strong>${esc(String(h.d))} Mbps</strong> down${h.u != null ? ` · ${esc(String(h.u))} up` : ''} · ${esc(String(h.p))} ms</div></div>`).join('')}</section>` : ''}`;
+        $('[data-go]', root).addEventListener('click', start);
+        autoFocus($('[data-go]', root));
+      } else if (state_ === 'running') {
+        const label = { ping: 'Checking the connection', down: 'Download', up: 'Upload' }[phase] || '';
+        const pct = phase === 'ping' ? live / 300 : Math.log10(1 + live) / Math.log10(201);
+        root.innerHTML = `<section class="settings-section spd-card"><div class="spd-gauge">${gauge(pct)}<div class="spd-gv"><span class="spd-ph">${esc(label)}</span><b>${esc(String(num(live)))}</b><small>${phase === 'ping' ? 'ms' : 'Mbps'}</small></div></div><button class="btn btn-gray" data-stop>Stop</button></section>
+          <div class="spd-three"><div class="spd-m"><small>Ping</small><b>${res.ping ?? '–'}</b><i>ms</i></div><div class="spd-m"><small>Download</small><b>${num(res.down)}</b><i>Mbps</i></div><div class="spd-m"><small>Upload</small><b>${num(res.up)}</b><i>Mbps</i></div></div>`;
+        $('[data-stop]', root).addEventListener('click', () => { if (ctl) { ctl.stopped = true; ctl.abort?.(); } });
+      } else {
+        const a = spdAnswer(res), icon = { ok: '✓', warn: '!', bad: '✕' };
+        root.innerHTML = `<div class="spd-verdict ${a.level}"><h3>${esc(a.title)}</h3><p>${esc(a.text)}</p></div>
+          <div class="spd-three"><div class="spd-m"><small>Ping</small><b>${res.ping}</b><i>ms${res.jitter ? ' · ±' + res.jitter : ''}</i></div><div class="spd-m"><small>Download</small><b>${num(res.down)}</b><i>Mbps</i></div><div class="spd-m"><small>Upload</small><b>${num(res.up)}</b><i>${res.up == null ? 'not tested' : 'Mbps'}</i></div></div>
+          <section class="settings-section"><h2>What this means for you</h2><div class="spd-can">${a.can.map((c) => `<div><span class="spd-i ${c[1]}">${icon[c[1]]}</span>${esc(c[0])}<small>${esc(c[2])}</small></div>`).join('')}</div></section>
+          <section class="settings-section"><h2>Suggested</h2>
+            <div class="admin-row"><div class="admin-row-main"><strong>Video quality: ${esc(a.quality.label)}</strong><div class="muted">The best that should play without stopping on this connection.</div></div><button class="btn btn-gray" data-apply>Use it</button></div>
+            ${res.down < 12 ? '<div class="admin-row"><div class="admin-row-main"><strong>Tips</strong><div class="muted">Move closer to your router, switch between Wi-Fi and mobile data, or ask others at home to pause downloads and streaming, then test again.</div></div></div>' : ''}
+            ${res.loss > 0 ? `<div class="admin-row"><div class="admin-row-main"><strong>${res.loss}% of replies were lost</strong><div class="muted">Your connection is dropping some data. That causes freezing even when the speed looks fine.</div></div></div>` : ''}</section>
+          <div class="m-actions"><button class="btn btn-white" data-again>Test again</button><button class="btn btn-gray" data-send>Send to support</button><button class="btn btn-gray" data-copy>Copy</button></div><div class="live-result" data-result></div>`;
+        $('[data-again]', root).addEventListener('click', () => { state_ = 'idle'; paint(); });
+        $('[data-apply]', root).addEventListener('click', () => { store.set('ef.maxBitrate', String(a.quality.bitrate)); toast(`Video quality set to ${a.quality.label}`, 3000); });
+        $('[data-copy]', root).addEventListener('click', () => { try { navigator.clipboard.writeText(resultText(res)).then(() => toast('Copied', 1500), () => toast(resultText(res), 7000)); } catch { toast(resultText(res), 7000); } });
+        $('[data-send]', root).addEventListener('click', async () => {
+          const out = $('[data-result]', root), btn = $('[data-send]', root);
+          if (!guardEnabled) { out.className = 'live-result bad'; out.textContent = 'Messages to your provider are not available right now.'; return; }
+          btn.disabled = true;
+          try { await guard('/support', { method: 'POST', params: { userId: state.userId }, body: { text: 'I ran a speed test. ' + resultText(res), diag: { ...helpDiag(), speed: resultText(res) } } }); toast('Sent to your provider', 3000); out.className = 'live-result good'; out.textContent = 'Sent. Your provider will answer under Help & support.'; }
+          catch (e) { btn.disabled = false; out.className = 'live-result bad'; out.textContent = guardMissing(e) ? "This isn't available yet. Please check back soon." : e.message; }
+        });
+        autoFocus($('[data-again]', root));
+      }
+    };
+    async function start() {
+      if (navigator.connection?.type === 'cellular' && !(await confirmAction('Test on mobile data?', 'The test uses roughly 30 to 60 MB of your mobile data.', 'Start the test'))) return;
+      ctl = { stopped: false, abort: null };
+      res = { ping: null, down: null, up: null, jitter: 0, loss: 0 };
+      state_ = 'running'; phase = 'ping'; live = 0; paint();
+      try {
+        const p = await spdPing(ctl, tick);
+        Object.assign(res, p); res.ping = p.ping; phase = 'down'; live = 0; paint();
+        res.down = await spdDown(ctl, tick);
+        phase = 'up'; live = 0; paint();
+        try { res.up = await spdUp(ctl, tick); } catch (e) { if (e.message === 'stopped' || /lot of speed tests/.test(e.message)) throw e; res.up = null; }
+        const h = spdHist(); h.unshift({ t: Date.now(), d: Math.round(res.down * 10) / 10, u: res.up == null ? null : Math.round(res.up * 10) / 10, p: res.ping });
+        store.set(SPD_HIST, JSON.stringify(h.slice(0, 5)));
+        measuredBitrate = { bps: Math.max(700000, Math.round(res.down * 1e6 * 0.7)), t: Date.now() }; // Auto quality uses what was just measured
+        appLog.add(res.down < 4 ? 'warn' : 'info', resultText(res));
+        state_ = 'done'; paint();
+      } catch (e) {
+        state_ = 'idle'; paint();
+        if (e.message !== 'stopped') { const err = $('[data-err]', root); if (err) { err.textContent = /lot of speed tests/.test(e.message) ? e.message : (e.message || "The test couldn't finish.") + ' Check your connection and try again.'; err.classList.remove('hidden'); } }
+        else toast('Test stopped', 1800);
+      }
+    }
+    paint();
+  }
+
   // ---------- Offline downloads (Android app) ----------
   // The Android side (Downloads.java) saves the file with the system DownloadManager; this page asks Emby for the file, lists progress
   // and plays a finished one through the normal player. Downloads stop working when the account ends (checked online with the guard and
@@ -6937,7 +7122,7 @@
     try { d = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Support</h2><p class="live-result bad">${guardTooOld(e, 'Support')}</p></section>`; return; }
     if (!isCurrent()) return;
     const tickets = [...d.tickets].sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || b.updated - a.updated);
-    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
+    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Speed test': g.speed, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
     body.innerHTML = `<section class="admin-card"><h2>Support <small>Messages customers sent with Get help</small></h2><div class="admin-list">${tickets.map((t) => `<div class="admin-row support-row" data-t="${esc(t.id)}"><div class="admin-row-main">
         <strong>${esc(t.name)}</strong> <span class="pill${t.status === 'open' ? ' warn' : ''}">${t.status === 'open' ? 'Open' : 'Solved'}</span>${t.reseller ? ` <span class="muted">via ${esc(t.reseller)}</span>` : ''}
         <div class="help-thread">${t.messages.map((m) => `<div class="help-msg ${m.from === 'user' ? 'them' : 'me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(t.name) : esc(m.by || 'You')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
@@ -6975,7 +7160,8 @@
     const soon = cnt('soon'), gone = cnt('expired'), held = cnt('hold');
     const need = d.customers.filter((c) => !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)));
     const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold']];
-    const view = (() => { try { return { q: '', filter: 'all', sort: 'days', shown: 25, ...(JSON.parse(store.get('ef.resView') || '{}') || {}), q: '', shown: 25 }; } catch { return { q: '', filter: 'all', sort: 'days', shown: 25 }; } })();
+    const savedView = (() => { try { return JSON.parse(store.get('ef.resView') || '{}') || {}; } catch { return {}; } })();
+    const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25 };
     root.innerHTML = `${head}
       <section class="res-hero"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
         <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>

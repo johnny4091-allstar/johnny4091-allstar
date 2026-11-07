@@ -1709,3 +1709,29 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .res-low { color: #ff8a8e; font-weight: 600; }
 .m-actions { flex-wrap: wrap; }
 .plan-form { min-width: 0; }
+
+/* ---------- Speed test ---------- */
+.spd-card { text-align: center; }
+.spd-gauge { position: relative; width: 230px; max-width: 100%; aspect-ratio: 1; margin: .4rem auto; }
+.spd-gauge svg { width: 100%; height: 100%; transform: rotate(135deg); pointer-events: none; }
+.spd-trk { stroke: rgba(255,255,255,.1); }
+.spd-val { stroke: url(#spdg); transition: stroke-dashoffset .25s; }
+.spd-gv { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.spd-gv b { font-size: 2.9rem; letter-spacing: -.04em; line-height: 1; }
+.spd-gv small { color: var(--dim); }
+.spd-ph { color: #5eead4; font-size: .75rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; margin-bottom: .25rem; }
+.spd-three { display: grid; grid-template-columns: repeat(3, 1fr); gap: .6rem; margin: .8rem 0; }
+.spd-m { background: var(--bg-2); border: 1px solid rgba(255,255,255,.09); border-radius: 14px; padding: .7rem .4rem; text-align: center; }
+.spd-m small { display: block; color: var(--dim); font-size: .75rem; }
+.spd-m b { font-size: 1.4rem; letter-spacing: -.02em; }
+.spd-m i { font-style: normal; color: var(--dim); font-size: .72rem; display: block; }
+.spd-verdict { border-radius: 16px; padding: 1rem 1.1rem; margin-bottom: 1rem; border: 1px solid; }
+.spd-verdict h3 { margin: 0 0 .25rem; font-size: 1.1rem; } .spd-verdict p { margin: 0; color: var(--dim); }
+.spd-verdict.ok { background: rgba(47,191,113,.1); border-color: rgba(47,191,113,.45); }
+.spd-verdict.warn { background: rgba(245,184,75,.1); border-color: rgba(245,184,75,.45); }
+.spd-verdict.bad { background: rgba(239,90,95,.1); border-color: rgba(239,90,95,.45); }
+.spd-can { display: flex; flex-direction: column; gap: .55rem; }
+.spd-can > div { display: flex; align-items: center; gap: .7rem; }
+.spd-can small { margin-left: auto; color: var(--dim); }
+.spd-i { width: 1.4rem; height: 1.4rem; border-radius: 50%; display: grid; place-items: center; font-size: .8rem; font-weight: 800; flex: none; }
+.spd-i.ok { background: #2fbf71; color: #052317; } .spd-i.warn { background: #f5b84b; color: #2a1d00; } .spd-i.bad { background: #ef5a5f; color: #2a0507; }

@@ -100,6 +100,7 @@ Administrator accounts are never limited or disabled.
 | `GET /support`, `POST /support/{id}/reply`, `PUT /support/{id}` | Emby administrators | The support inbox: all conversations with their diagnostics, reply, mark solved or reopen. |
 | `GET /credit-requests`, `PUT /credit-requests/{id}`, `GET /admin-inbox` | Emby administrators | Reseller credit requests (approve adds the credits, deny closes it) and one summary of everything waiting for the admin. |
 | `GET /maintenance`, `PUT /maintenance` | The signed-in user (read), Emby administrators (write) | Maintenance mode (guard 1.12.0): which parts of Aurora (movies, tv, favorites, livetv, sports, requests, downloads) are switched off for customers, the message and an optional "back around" note. |
+| `POST /speedtest/up?userId=` | The signed-in user | The upload half of Settings → Speed test (guard 1.14.0): the app sends a few seconds of data (up to 48 MB accepted, then thrown away) and times it itself. 12 tests an hour per customer. |
 | `GET /service-status?userId=` | The signed-in user | The Status page (guard 1.9.0): whether the server answers, channels several other viewers reported in the last 15 minutes (counts and channel names only), the sports feed, the last 24 hours, recent outages and the admin's message. While the server is down it still answers, with the outage only. |
 | `PUT /status-note` | Emby administrators | The message shown at the top of every customer's Status page (empty clears it). |
 | `GET /sports/status`, `PUT /sports/settings`, `PUT /sports/aliases`, `POST /sports/refresh` | Emby administrators | What the scores feed is doing, which leagues are on, the aliases, and "ask the feed again now" (guard 1.8.0). |
@@ -331,3 +332,10 @@ This is done by the Aurora app: another Emby app talking to the server directly 
   out, the end date keeps running, and a renewal does not release it); **delete** removes the customer's Emby account (credits are not refunded).
 - **Announcements** now reach resellers too, on their panel (Warnings and Outages stick, Info can be dismissed). New audiences: **All resellers**, and a
   reseller also sees what is sent to "one reseller's customers" for their own customers.
+
+## Speed test (guard 1.14.0)
+
+Settings → **Speed test** measures the connection to the Aurora server: ping (10 small requests, with lost replies counted), download (the server's own
+bitrate-test address, about 7 seconds) and upload (about 6 seconds of data sent to the guard). It says in plain words what the connection can handle (Live TV,
+1080p, 4K), suggests a video quality (**Use it** sets Streaming quality), keeps the last 5 results on the device, and can send the result to support, where it
+shows in Admin → Support. Auto quality also starts from what was just measured. About 30 to 60 MB of data is used. With an older guard the upload part is skipped.

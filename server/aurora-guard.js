@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.13.0';
+const VERSION = '1.14.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -283,6 +283,7 @@ const resellerList = () => store.resellers || (store.resellers = {});
 const resellerOfUser = (userId) => Object.values(resellerList()).find((r) => r.userId === userId) || null;
 const resellerBusy = new Set();
 const supportCount = new Map();
+const speedCount = new Map();
 const cleanUserName = (v) => { const t = String(v || '').trim(); return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(t) ? t : null; };
 const cleanText = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 function creditEntry(r, delta, why, by, extra) {
@@ -381,7 +382,7 @@ async function inboxFor(me) {
 const ticketPublic = (t) => ({ id: t.id, userId: t.userId, name: t.name, status: t.status, at: t.at, updated: t.updated, diag: t.diag || null, reseller: t.resellerName || '', messages: t.messages });
 const cleanDiag = (d) => {
   const o = {}; if (!d || typeof d !== 'object') return o;
-  for (const k of ['app', 'device', 'connection', 'playing', 'status', 'errors']) if (d[k] !== undefined) o[k] = cleanText(Array.isArray(d[k]) ? d[k].join(' | ') : d[k], 400);
+  for (const k of ['app', 'device', 'connection', 'playing', 'status', 'errors', 'speed']) if (d[k] !== undefined) o[k] = cleanText(Array.isArray(d[k]) ? d[k].join(' | ') : d[k], 400);
   return o;
 };
 function statsFor(userId) {
@@ -1608,6 +1609,21 @@ async function handle(req, res) {
     } finally { resellerBusy.delete(r.id); }
   }
 
+  // ----- Speed test, upload half (guard 1.14.0): the app sends a few seconds of data and times it itself. The data is thrown away. -----
+  if (url.pathname === '/speedtest/up' && req.method === 'POST') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) { req.resume(); return send(res, 401, { error: 'Not signed in' }); }
+    const c = speedCount.get(me.Id);
+    if (!c || Date.now() - c.since > 3600000) speedCount.set(me.Id, { n: 1, since: Date.now() });
+    else if (++c.n > 12) { req.resume(); return send(res, 429, { error: 'That is a lot of speed tests. Please try again in a little while.' }); }
+    let size = 0, done = false;
+    const cap = 48 * 1024 * 1024;
+    const finish = () => { if (done) return; done = true; send(res, 200, { ok: true, bytes: size }); };
+    req.on('data', (chunk) => { size += chunk.length; if (size > cap) { finish(); req.destroy(); } });
+    req.on('end', finish);
+    req.on('error', () => { /* the app stopped sending: nothing to answer */ });
+    return;
+  }
   // ----- Notifications, support, referrals and stats: the signed-in customer's own (guard 1.11.0) -----
   if (url.pathname === '/inbox' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
