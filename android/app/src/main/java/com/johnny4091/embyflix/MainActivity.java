@@ -280,6 +280,11 @@ public class MainActivity extends Activity {
                         .put("buffer", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_BUFFER)))
                         .put("favs", new org.json.JSONArray(data.getStringExtra(LivePlayerActivity.RESULT_FAVS) == null ? "[]" : data.getStringExtra(LivePlayerActivity.RESULT_FAVS)))
                         .put("visited", new org.json.JSONArray(data.getStringExtra(LivePlayerActivity.RESULT_VISITED) == null ? "[]" : data.getStringExtra(LivePlayerActivity.RESULT_VISITED)))
+                        .put("starts", data.getIntExtra(LivePlayerActivity.RESULT_STARTS, 0))
+                        .put("startAvg", data.getIntExtra(LivePlayerActivity.RESULT_START_AVG, 0))
+                        .put("startMax", data.getIntExtra(LivePlayerActivity.RESULT_START_MAX, 0))
+                        .put("startSlow", data.getIntExtra(LivePlayerActivity.RESULT_START_SLOW, 0))
+                        .put("startKbps", data.getIntExtra(LivePlayerActivity.RESULT_START_KBPS, 0))
                         .put("failed", data.getIntExtra(LivePlayerActivity.RESULT_FAILED, 0))
                         .put("failedName", String.valueOf(data.getStringExtra(LivePlayerActivity.RESULT_FAILED_NAME)))
                         .put("failedCode", data.getIntExtra(LivePlayerActivity.RESULT_FAILED_CODE, 0)).toString();

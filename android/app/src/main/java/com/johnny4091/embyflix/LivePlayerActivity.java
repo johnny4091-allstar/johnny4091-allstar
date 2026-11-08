@@ -77,6 +77,8 @@ public class LivePlayerActivity extends Activity {
     static final String EXTRA_REPORT = "report";       // Emby details for telling the admin what's playing
     static final String RESULT_INDEX = "index";
     static final String RESULT_STALLS = "stalls", RESULT_MINUTES = "minutes", RESULT_BUFFER = "buffer";
+    /** How fast channels started while open: how many starts, the average and slowest (ms), how many took over 8 s, and the stream speed (kbit/s). */
+    static final String RESULT_STARTS = "starts", RESULT_START_AVG = "startAvg", RESULT_START_MAX = "startMax", RESULT_START_SLOW = "startSlow", RESULT_START_KBPS = "startKbps";
     /** Channels that stopped working while open (for Admin → Playback problems): how many, the last one, and why. */
     static final String RESULT_FAVS = "favs"; // JSON [{index, fav}] for channels the viewer starred or un-starred
     static final String RESULT_VISITED = "visited"; // JSON [index, ...]: channels the viewer settled on for a few seconds, oldest first
@@ -111,6 +113,10 @@ public class LivePlayerActivity extends Activity {
     private boolean softwareDecoders = true;
     private boolean wasReady;
     private int stalls;
+    // Time from choosing a channel to the first picture, kept so the viewer is told when starts are slow and why.
+    private long tunedAt, startSumMs, startMaxMs, lastBps;
+    private boolean awaitingStart, slowStartToldOnce;
+    private int starts, slowStarts;
     private final long openedAt = System.currentTimeMillis();
 
     private ExoPlayer player;
@@ -245,6 +251,12 @@ public class LivePlayerActivity extends Activity {
                         new DefaultExtractorsFactory().setTsExtractorFlags(DefaultTsPayloadReaderFactory.FLAG_ALLOW_NON_IDR_KEYFRAMES
                                 | DefaultTsPayloadReaderFactory.FLAG_DETECT_ACCESS_UNITS)))
                 .build();
+        player.addAnalyticsListener(new androidx.media3.exoplayer.analytics.AnalyticsListener() {
+            @Override
+            public void onBandwidthEstimate(androidx.media3.exoplayer.analytics.AnalyticsListener.EventTime eventTime, int totalLoadTimeMs, long totalBytesLoaded, long bitrateEstimate) {
+                lastBps = bitrateEstimate;
+            }
+        });
         player.addListener(new Player.Listener() {
             @Override
             public void onPlaybackStateChanged(int state) {
@@ -252,6 +264,7 @@ public class LivePlayerActivity extends Activity {
                 if (state == Player.STATE_BUFFERING && wasReady) stalls++;
                 wasReady = state == Player.STATE_READY;
                 if (state == Player.STATE_READY) {
+                    if (awaitingStart) { awaitingStart = false; recordStart(android.os.SystemClock.elapsedRealtime() - tunedAt); }
                     retries = 0;
                     failed = false;
                     failureCounted = false;
@@ -282,6 +295,22 @@ public class LivePlayerActivity extends Activity {
         player = null;
     }
 
+    /** A channel's first picture arrived {ms} after it was chosen. */
+    private void recordStart(long ms) {
+        starts++;
+        startSumMs += ms;
+        if (ms > startMaxMs) startMaxMs = ms;
+        android.util.Log.i("AuroraLive", "Channel started in " + ms + " ms (stream " + (lastBps / 1000) + " kbit/s, buffer " + bufferLevel + ")");
+        if (ms <= 8000) return;
+        slowStarts++;
+        if (slowStartToldOnce || isFinishing()) return;
+        slowStartToldOnce = true;
+        String why = "small".equals(bufferLevel)
+                ? "Your TV provider is slow to answer; Aurora can't speed that up."
+                : "For faster starts: Settings \u2192 Playback \u2192 Live TV buffer \u2192 Small.";
+        android.widget.Toast.makeText(this, "That channel took " + Math.round(ms / 1000f) + " seconds to start. " + why, android.widget.Toast.LENGTH_LONG).show();
+    }
+
     private void tune(int i) {
         if (channels.isEmpty() || player == null) return;
         int target = (i + channels.size()) % channels.size();
@@ -297,6 +326,8 @@ public class LivePlayerActivity extends Activity {
         status.setVisibility(View.GONE);
         Channel c = channels.get(index);
         wasReady = false; // a new channel loading isn't a stall
+        tunedAt = android.os.SystemClock.elapsedRealtime();
+        awaitingStart = true;
         player.setMediaItem(mediaItem(c.url));
         player.prepare();
         player.setPlayWhenReady(true);
@@ -1035,6 +1066,11 @@ public class LivePlayerActivity extends Activity {
         } catch (Exception ignored) {
             // Favorites are saved on the next visit instead.
         }
+        result.putExtra(RESULT_STARTS, starts);
+        result.putExtra(RESULT_START_AVG, starts == 0 ? 0 : (int) (startSumMs / starts));
+        result.putExtra(RESULT_START_MAX, (int) startMaxMs);
+        result.putExtra(RESULT_START_SLOW, slowStarts);
+        result.putExtra(RESULT_START_KBPS, (int) (lastBps / 1000));
         result.putExtra(RESULT_FAILED, failedChannels);
         result.putExtra(RESULT_FAILED_NAME, failedName);
         result.putExtra(RESULT_FAILED_CODE, failedCode);

@@ -2557,6 +2557,13 @@
         toast('Live TV kept stopping to buffer. A bigger buffer can help: Settings → Playback → Live TV buffer → Large.', 9000);
       }
     }
+    // How quickly channels started this time: kept in the app log (it reaches the admins with the automatic reports and Help).
+    if (stats?.starts > 0) {
+      const sec = (ms) => (ms / 1000).toFixed(1);
+      const line = `Live TV: ${stats.starts} channel ${stats.starts === 1 ? 'start' : 'starts'}, average ${sec(stats.startAvg)} s, slowest ${sec(stats.startMax)} s${stats.startKbps ? `, stream ${(stats.startKbps / 1000).toFixed(1)} Mbit/s` : ''}, buffer ${stats.buffer}`;
+      appLog.add(stats.startAvg > 8000 ? 'warn' : 'info', line);
+      if (stats.startSlow >= 2 || stats.startAvg > 8000) playLog.add({ kind: 'live-slow-start', title: ch?.name || '', seconds: Math.round(stats.startAvg / 1000), buffer: stats.buffer, count: stats.startSlow });
+    }
     if (ch && stats?.stalls >= 3) reportChannel(ch, 'Buffering', { auto: true, group: p.group });
     if (stats?.stalls >= 3) playLog.add({ kind: 'live-stalling', title: ch?.name || '', stalls: stats.stalls, watchedMin: stats.minutes, buffer: stats.buffer });
     if (stats?.failed > 0) {
@@ -5507,7 +5514,7 @@
   // see playLog). Read here from every account, so a problem shows up before a customer calls.
   const PROBLEM_KINDS = {
     failed: ['Would not play', 'bad'], converted: ['Had to convert', 'warn'], stalling: ['Kept buffering', 'warn'],
-    'live-failed': ['Live channel failed', 'bad'], 'live-stalling': ['Live TV kept buffering', 'warn'],
+    'live-failed': ['Live channel failed', 'bad'], 'live-stalling': ['Live TV kept buffering', 'warn'], 'live-slow-start': ['Channels slow to start', 'warn'],
   };
   async function playProblems(users, days) {
     const since = Date.now() - days * DAY;
@@ -5519,6 +5526,7 @@
     const mbps = e.bitrate ? `limit ${Math.round(e.bitrate / 1e6)} Mbps` : '';
     if (e.kind === 'stalling') return [`${e.stalls} stalls, ${e.stalledSec} s buffering (${e.pct}%) in ${e.watchedMin} min`, e.method, mbps].filter(Boolean).join(' · ');
     if (e.kind === 'live-stalling') return `${e.stalls} stalls in ${e.watchedMin} min · buffer ${e.buffer || 'normal'}`;
+    if (e.kind === 'live-slow-start') return `Channels took about ${e.seconds} s to start${e.count > 1 ? ' (' + e.count + ' slow starts)' : ''} · buffer ${e.buffer || 'normal'}`;
     const err = String(e.error || '');
     const why = /StartTimeout/.test(err) ? 'never started (the server sent nothing)'
       : err.startsWith('unplayable:') ? `this device couldn't play the file as it is (${err.slice(11)}), so the server converted it`
@@ -5562,7 +5570,7 @@
         ${statTile('Problems', events.length, events.length ? `${new Set(events.map((e) => e.user)).size} customers affected` : 'Nothing went wrong', events.length ? '' : 'good')}
         ${statTile('Would not play', n('failed'), n('converted') ? `${n('converted')} more played after converting` : '')}
         ${statTile('Kept buffering', n('stalling'), vod.length ? `${transcoded} of ${vod.length} on-demand problems were converting (transcode)` : '')}
-        ${statTile('Live TV', n('live-failed', 'live-stalling'), `${n('live-failed')} channel failures · ${n('live-stalling')} buffering`)}
+        ${statTile('Live TV', n('live-failed', 'live-stalling', 'live-slow-start'), `${n('live-failed')} channel failures · ${n('live-stalling')} buffering · ${n('live-slow-start')} slow starts`)}
       </div>
       ${titles.length || people.length ? `<section class="admin-card">
         <h2>Repeat problems <small>Worth a look</small></h2>
