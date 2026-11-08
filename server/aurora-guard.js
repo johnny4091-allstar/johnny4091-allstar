@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.11.0';
+const VERSION = '1.14.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -283,6 +283,7 @@ const resellerList = () => store.resellers || (store.resellers = {});
 const resellerOfUser = (userId) => Object.values(resellerList()).find((r) => r.userId === userId) || null;
 const resellerBusy = new Set();
 const supportCount = new Map();
+const speedCount = new Map();
 const cleanUserName = (v) => { const t = String(v || '').trim(); return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(t) ? t : null; };
 const cleanText = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 function creditEntry(r, delta, why, by, extra) {
@@ -298,7 +299,7 @@ function publicReseller(r) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null };
+    trial: !!rec.trial, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
 async function copyAppDefaults(newUserId) {
@@ -338,7 +339,8 @@ const genPassword = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud
 const audienceOk = (a, userId) => {
   const au = a.audience || { type: 'all' }, rec = store.users[userId];
   if (au.type === 'plan') return rec?.plan?.id === au.id;
-  if (au.type === 'reseller') return rec?.reseller === au.id;
+  if (au.type === 'reseller') return rec?.reseller === au.id || resellerOfUser(userId)?.id === au.id; // that reseller's customers, and the reseller
+  if (au.type === 'resellers') return !!resellerOfUser(userId); // every reseller
   return true;
 };
 let newTitlesCache = { at: 0, text: '', n: 0 };
@@ -366,7 +368,8 @@ async function inboxFor(me) {
     if (d < 0) items.push({ id: `plan:${rec.expires}:x`, type: 'plan', level: 'bad', title: 'Your access has ended', text: 'Ask for more time to keep watching.', at: end, action: 'renew' });
     else { const b = d <= 1 ? 1 : d <= 3 ? 3 : d <= 7 ? 7 : 0; if (b) items.push({ id: `plan:${rec.expires}:${b}`, type: 'plan', level: b <= 3 ? 'warn' : 'info', title: d <= 1 ? 'Your plan ends today or tomorrow' : `Your plan ends in ${d} days`, text: `${rec.plan?.name ? rec.plan.name + ' · ' : ''}ends ${rec.expires}`, at: end - b * 86400000, action: 'renew' }); }
   }
-  const nt = await newTitlesNote();
+  const isReseller = !!resellerOfUser(me.Id);
+  const nt = isReseller ? { n: 0 } : await newTitlesNote();
   if (nt.n) items.push({ id: 'new:' + dayKey(nt.newest), type: 'new', level: 'info', title: `New this week: ${nt.text}${nt.n > 3 ? ` and ${nt.n - 3} more` : ''}`, text: 'Added to Aurora', at: nt.newest || now, action: 'browse' });
   const t = (store.tickets || []).find((x) => x.userId === me.Id && x.status === 'open');
   const lastAdmin = t && [...t.messages].reverse().find((m) => m.from !== 'user');
@@ -379,7 +382,7 @@ async function inboxFor(me) {
 const ticketPublic = (t) => ({ id: t.id, userId: t.userId, name: t.name, status: t.status, at: t.at, updated: t.updated, diag: t.diag || null, reseller: t.resellerName || '', messages: t.messages });
 const cleanDiag = (d) => {
   const o = {}; if (!d || typeof d !== 'object') return o;
-  for (const k of ['app', 'device', 'connection', 'playing', 'status', 'errors']) if (d[k] !== undefined) o[k] = cleanText(Array.isArray(d[k]) ? d[k].join(' | ') : d[k], 400);
+  for (const k of ['app', 'device', 'connection', 'playing', 'status', 'errors', 'speed']) if (d[k] !== undefined) o[k] = cleanText(Array.isArray(d[k]) ? d[k].join(' | ') : d[k], 400);
   return o;
 };
 function statsFor(userId) {
@@ -412,6 +415,17 @@ function giveDays(userId, days, why) {
   recordAction({ type: 'extended', userId, name: rec.name, why: `${why}: +${days} days, now ends ${rec.expires}` });
   return true;
 }
+
+// ---------- Maintenance mode (guard 1.12.0) ----------
+// The admin can put parts of Aurora in maintenance: customers get a friendly "taking a short break" page there instead. The admin still
+// has full access. (This is the app's doing: another Emby app that talks to the server directly is not stopped by it.)
+const MAINT_KEYS = ['movies', 'tv', 'favorites', 'livetv', 'sports', 'requests', 'downloads'];
+const maintenancePublic = () => {
+  const m = store.maintenance || {};
+  const tabs = {};
+  for (const k of MAINT_KEYS) if (m.tabs && m.tabs[k]) tabs[k] = true;
+  return { tabs, message: m.message || '', back: m.back || '', at: m.at || 0 };
+};
 
 // ---------- Plan details and extension requests ----------
 // A customer sees their own plan (devices allowed, in use now, the date access ends) and may ask for more time;
@@ -809,6 +823,7 @@ function describeChange(req, url, subject) {
   if (/^\/announcements\//.test(p) && m === 'DELETE') return 'Removed an announcement';
   if (/^\/credit-requests\//.test(p) && m === 'PUT') return `${b.action === 'approve' ? 'Approved' : 'Declined'} a credit request`;
   if (/^\/support\//.test(p)) return '';
+  if (p === '/maintenance' && m === 'PUT') { const on = MAINT_KEYS.filter((k) => b.tabs && b.tabs[k]); return on.length ? `Put in maintenance mode: ${on.join(', ')}` : 'Turned maintenance mode off'; }
   if (p === '/status-note' && m === 'PUT') return b.text ? `Set the Status page message: "${String(b.text).slice(0, 60)}"` : 'Cleared the Status page message';
   if (p === '/sports/refresh') return '';
   if (p === '/connections' && m === 'PUT') return `Set the TV provider connection limit to ${b.limit}${b.alertAt ? `, warn at ${b.alertAt}` : ''}`;
@@ -1200,7 +1215,13 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', (c) => { size += c.length; if (size > 64 * 1024) { reject(new Error('too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { try { req.parsedBody = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {}; resolve(req.parsedBody); } catch { reject(new Error('bad JSON')); } });
+    req.on('end', () => {
+      try {
+        let v = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+        if (v === null || typeof v !== 'object') v = {}; // a body of "null", a number or a string is not a request: treat it as an empty one instead of failing later
+        req.parsedBody = v; resolve(v);
+      } catch { reject(new Error('bad JSON')); }
+    });
     req.on('error', reject);
   });
 }
@@ -1421,6 +1442,11 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, request: publicRequest(entry) });
   }
 
+  if (url.pathname === '/maintenance' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, maintenancePublic());
+  }
   // ----- Resellers (guard 1.10.0): the reseller's own panel. Everything is limited to the signed-in reseller and the customers they made. -----
   if (url.pathname.startsWith('/reseller/')) {
     const me = await userOfToken(token, url.searchParams.get('userId'));
@@ -1511,13 +1537,39 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
         const rec = store.users[id];
         let body = {};
         if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+        // Put a customer on hold (sign-in is switched off and their devices are signed out; the end date keeps running), or release them.
+        if (act === 'hold' && req.method === 'POST') {
+          let user;
+          try { user = await emby('GET', `/Users/${id}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'That account no longer exists.' : e.message }); }
+          if (user.Policy?.IsAdministrator) return send(res, 400, { error: 'That account can\'t be put on hold.' });
+          const hold = !!body.hold;
+          try { await setDisabled(user, hold); } catch (e) { return send(res, 502, { error: 'Could not change the account: ' + e.message }); }
+          if (hold) {
+            rec.hold = true; delete store.disabledByGuard[id]; // a renewal must not switch it back on by itself
+            const devices = activeByUser(await emby('GET', '/Sessions')).get(id);
+            for (const dv of devices ? devices.values() : []) { try { await signOutDevice({ Id: id, Name: rec.name }, dv, 'Your access is on hold. Please contact your reseller.'); } catch { /* next */ } }
+          } else delete rec.hold;
+          rec.updated = Date.now();
+          recordAudit(by, `${hold ? 'Put on hold' : 'Released'} ${rec.name}`); saveStore();
+          if (!hold) { try { await enforce(id); } catch { /* applied at the next check */ } }
+          return send(res, 200, { ok: true, hold });
+        }
+        // Delete a customer's account for good (their credits are not refunded).
+        if (!act && req.method === 'DELETE') {
+          try { await emby('DELETE', `/Users/${id}`); } catch (e) { if (e.status !== 404) return send(res, 502, { error: 'Could not delete the account: ' + e.message }); }
+          const name = rec.name;
+          delete store.users[id]; delete store.disabledByGuard[id]; delete store.firstSeen[id];
+          recordAudit(by, `Deleted the customer ${name}`); saveStore();
+          log('Reseller', r.name, 'deleted', name);
+          return send(res, 200, { ok: true });
+        }
         if (!act && req.method === 'PUT') {
           rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
           rec.updated = Date.now(); saveStore();
@@ -1557,6 +1609,21 @@ async function handle(req, res) {
     } finally { resellerBusy.delete(r.id); }
   }
 
+  // ----- Speed test, upload half (guard 1.14.0): the app sends a few seconds of data and times it itself. The data is thrown away. -----
+  if (url.pathname === '/speedtest/up' && req.method === 'POST') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) { req.resume(); return send(res, 401, { error: 'Not signed in' }); }
+    const c = speedCount.get(me.Id);
+    if (!c || Date.now() - c.since > 3600000) speedCount.set(me.Id, { n: 1, since: Date.now() });
+    else if (++c.n > 12) { req.resume(); return send(res, 429, { error: 'That is a lot of speed tests. Please try again in a little while.' }); }
+    let size = 0, done = false;
+    const cap = 48 * 1024 * 1024;
+    const finish = () => { if (done) return; done = true; send(res, 200, { ok: true, bytes: size }); };
+    req.on('data', (chunk) => { size += chunk.length; if (size > cap) { finish(); req.destroy(); } });
+    req.on('end', finish);
+    req.on('error', () => { /* the app stopped sending: nothing to answer */ });
+    return;
+  }
   // ----- Notifications, support, referrals and stats: the signed-in customer's own (guard 1.11.0) -----
   if (url.pathname === '/inbox' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
@@ -1615,6 +1682,7 @@ async function handle(req, res) {
     if (mine.referredBy) return send(res, 409, { error: 'You have already used a code.' });
     const refId = Object.keys(store.users).find((id) => store.users[id].refCode === code);
     if (!refId || refId === me.Id) return send(res, 404, { error: 'That code was not found.' });
+    if (store.users[refId].referredBy === me.Id) return send(res, 409, { error: 'That friend already used your code, so you can\'t use theirs.' });
     const seen = Math.min(mine.created || Infinity, ...Object.values(store.firstSeen[me.Id] || {}));
     if (Number.isFinite(seen) && Date.now() - seen > 14 * 86400000) return send(res, 409, { error: 'Codes can be used in the first 14 days of an account.' });
     const yearAgo = Date.now() - 365 * 86400000;
@@ -1703,7 +1771,7 @@ async function handle(req, res) {
     if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 30) return send(res, 400, { error: 'It must last between 1 hour and 30 days.' });
     let audience = { type: 'all' };
     if (body.audience && body.audience.type && body.audience.type !== 'all') {
-      const ok = (body.audience.type === 'plan' && (store.plans || []).some((p) => p.id === body.audience.id)) || (body.audience.type === 'reseller' && resellerList()[body.audience.id]);
+      const ok = (body.audience.type === 'plan' && (store.plans || []).some((p) => p.id === body.audience.id)) || (body.audience.type === 'reseller' && resellerList()[body.audience.id]) || body.audience.type === 'resellers';
       if (!ok) return send(res, 400, { error: 'Choose who should get it: everyone, a plan, or a reseller that exists.' });
       audience = { type: body.audience.type, id: body.audience.id };
     }
@@ -1816,7 +1884,7 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, reseller: publicReseller(r) });
     }
     if (rm[2] === 'credits' && req.method === 'POST') {
-      const amount = Number(body.amount);
+      const amount = body.amount === undefined || body.amount === null || body.amount === '' ? NaN : Number(body.amount);
       if (!Number.isInteger(amount) || amount < 0 || amount > 100000) return send(res, 400, { error: 'The credits must be a whole number from 0 up.' });
       const mode = body.mode === 'remove' ? 'remove' : body.mode === 'set' ? 'set' : 'add';
       const next = mode === 'add' ? r.credits + amount : mode === 'remove' ? Math.max(0, r.credits - amount) : amount;
@@ -1838,6 +1906,16 @@ async function handle(req, res) {
     }
   }
 
+  if (url.pathname === '/maintenance' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const tabs = {};
+    for (const k of MAINT_KEYS) if (body.tabs && body.tabs[k]) tabs[k] = true;
+    store.maintenance = { tabs, message: cleanText(body.message, 240), back: cleanText(body.back, 60), at: Date.now(), by: auditBy };
+    saveStore();
+    log('Maintenance mode:', Object.keys(tabs).join(', ') || 'off');
+    return send(res, 200, { ok: true, ...maintenancePublic() });
+  }
   // The message at the top of every customer's Status page ("Maintenance tonight 2-3 AM"). Empty clears it.
   if (url.pathname === '/status-note' && req.method === 'PUT') {
     let body;

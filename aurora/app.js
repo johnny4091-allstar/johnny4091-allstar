@@ -989,6 +989,8 @@
     }
     applyKidsUi();
     if (!resellerOnly()) syncDownloadLicense();
+    refreshMaintenance();
+    clearInterval(maintTimer); maintTimer = setInterval(() => { if (!document.hidden) refreshMaintenance(); }, 2 * 60000);
     refreshInbox();
     clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
     live.channelIds = [];
@@ -1026,6 +1028,7 @@
     const token = ++routeToken;
 
     $$('[data-route]').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
+    paintMaintNav();
     window.scrollTo(0, 0);
     const page = $('#page');
     page.innerHTML = '';
@@ -1037,8 +1040,10 @@
 
     const isCurrent = () => token === routeToken;
     if (resellerOnly() && name !== 'reseller') { location.replace('#/reseller'); return; }
+    const mkey = maintKeyOfRoute(name, params);
+    if (mkey && maintOn(mkey)) return renderMaintenance(page, mkey);
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads'].includes(name)) { location.hash = '#/home'; return; }
+      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1052,6 +1057,7 @@
       case 'reseller': return renderReseller(page, isCurrent);
       case 'inbox': return renderInbox(page, isCurrent);
       case 'downloads': return renderDownloads(page, isCurrent);
+      case 'speedtest': return renderSpeedTest(page, isCurrent);
       case 'help': return renderHelp(page, isCurrent);
       case 'refer': return renderRefer(page, isCurrent);
       case 'stats': return renderStats(page, isCurrent);
@@ -1322,6 +1328,8 @@
   }
 
   function openItem(item) {
+    const mk = maintKeyOfItem(item);
+    if (mk && maintOn(mk)) return toast(maintText(mk), 8000);
     if (item.Type === 'TvChannel') return playItem(item);
     if (item.Type === 'Program') return openProgram(item.Id);
     // hint: what the card showed, so a title that has since been replaced on the server can be found again by name.
@@ -2334,8 +2342,10 @@
 
   // Opens the native player with the list the channel came from, so up/down flips through it.
   let iptvPlaying = null;
+  let lastLive = null; // the channel last started, for Help & support
   function playIptv(list, index, groupName) {
     if (!list[index]) return;
+    if (maintOn('livetv')) { toast(maintText('livetv'), 8000); return; }
     whenAllowed(() => startIptv(list, index, groupName));
   }
   const nowNextFields = (c) => { const n = nowNext(c); return n ? { nowStart: n.start || 0, nowEnd: n.end || 0, next: n.next || '' } : {}; };
@@ -2353,6 +2363,7 @@
     const near = (i) => Math.abs(i - (index - from)) <= 150;
     guidePrefetch(slice.filter((c, i) => near(i)));
     iptvPlaying = { list: slice, offset: from, group: groupName };
+    lastLive = { name: ch.name, t: Date.now() };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
       ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c), ...nowNextFields(c), fav: isIptvFav(c) }
@@ -4724,7 +4735,7 @@
     }
     if (live && live.state === 'bad') return { level: 'warn', title: 'Not just you: Live TV is having problems', text: 'Several channels are failing for other viewers too. Movies and shows still work.', actions: ['watch', 'notify', 'again'], others: live.reporters };
     if (live && live.channels.length) { const c = live.channels[0]; return { level: 'warn', title: `Not just you: ${c.name} has problems`, text: 'Other channels work. Try another channel, or the same game on a different one.', actions: ['notify', 'again'], others: c.reports }; }
-    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or lower the video quality in Settings.', actions: ['again'] };
+    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or run a speed test to see which video quality to use.', actions: ['speed', 'again'] };
     return { level: 'ok', title: 'Everything looks fine from here', text: "If something still won't play, try a different title or restart Aurora.", actions: ['again'] };
   }
 
@@ -4788,7 +4799,7 @@
     };
     const paintVerdict = (r) => {
       const v = r.verdict;
-      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead' };
+      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead', speed: 'Run a speed test' };
       q('[data-st-verdict]').innerHTML = `<div class="st-verdict ${v.level}"><h3>${esc(v.title)}</h3><p>${esc(v.text)}</p>
         ${v.others ? `<p class="st-others">${v.others} other ${v.others === 1 ? 'viewer' : 'viewers'} reported this</p>` : ''}
         <div class="st-actions">${v.actions.map((a) => `<button class="btn btn-gray" data-st-act="${a}">${labels[a]}</button>`).join('')}</div></div>`;
@@ -4820,6 +4831,7 @@
       if (a === 'again') check();
       else if (a === 'notify') startStatusWatch();
       else if (a === 'watch') location.hash = '#/movies';
+      else if (a === 'speed') location.hash = '#/speedtest';
     });
     // Look again quietly every minute while the page is open (not while a check is running).
     const timer = setInterval(async () => {
@@ -4836,7 +4848,7 @@
     if (!isCurrent()) return;
     const cfg = user?.Configuration || {};
     const langs = (value) => (value && !LANGUAGES.some(([v]) => v === value) ? [...LANGUAGES, [value, value]] : LANGUAGES);
-    const version = nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
+    const version = nativeApp?.getVersionName ? `Aurora V${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
 
     $('.settings-page', page).innerHTML = `
       <div class="page-head"><h1>Settings</h1>
@@ -4844,10 +4856,13 @@
       <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
       ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
       ${dlSupported() && downloadsAllowed() ? `<section class="settings-section"><h2>Downloads</h2>${settingRow('Watch without internet', 'Movies and shows saved on this phone or tablet.', '<a class="btn btn-gray" href="#/downloads">Open Downloads</a>')}</section>` : ''}
-      <section class="settings-section"><h2>Help &amp; more</h2>
+      ${inboxState.ok ? `<section class="settings-section"><h2>Help &amp; more</h2>
         ${settingRow('Get help', 'Send a message to your provider with the details they need attached.', '<a class="btn btn-gray" href="#/help">Help &amp; support</a>')}
         ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
         ${settingRow('Your Aurora', 'What you watched this week.', '<a class="btn btn-gray" href="#/stats">See my week</a>')}
+      </section>` : ''}
+      <section class="settings-section"><h2>Speed test</h2>
+        ${settingRow('Check my connection', 'See whether your connection is good enough for Aurora, and which video quality to use.', '<a class="btn btn-gray" href="#/speedtest">Start speed test</a>')}
       </section>
       <section class="settings-section"><h2>Status</h2>
         ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
@@ -5162,7 +5177,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support'], ['maintenance', 'Maintenance mode']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -5202,7 +5217,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport })[tab](body, isCurrent);
+    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport, maintenance: adminMaintenance })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
@@ -5212,7 +5227,7 @@
     ['Dashboard', ['inbox', 'overview', 'support', 'problems', 'feedback']],
     ['Customers', ['users', 'plans', 'resellers', 'announce', 'devices', 'usage', 'sharing']],
     ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
-    ['Server', ['server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
+    ['Server', ['maintenance', 'server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
   function adminMenuHtml(tab) {
     const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
@@ -5673,7 +5688,7 @@
           <h2>Aurora app</h2>
           <dl class="admin-dl">
             <dt>Latest version</dt><dd>${release ? `${esc(release.name)} <span class="muted">(${esc(timeAgo(release.date))})</span>` : "Couldn't check GitHub"}</dd>
-            <dt>This device</dt><dd>${esc(nativeApp?.getVersionName ? 'Aurora ' + nativeApp.getVersionName() : 'Web browser')}</dd>
+            <dt>This device</dt><dd>${esc(nativeApp?.getVersionName ? 'Aurora V' + nativeApp.getVersionName() : 'Web browser')}</dd>
             <dt>Devices behind</dt><dd>${outdated.length ? `<a href="#/admin?tab=devices">${outdated.length} on an older version</a>` : 'None'}</dd>
             <dt>Requests tab</dt><dd>${state.requestsEnabled && state.requestsServer ? `On · ${esc(state.requestsServer)}` : 'Coming soon (off)'}</dd>
           </dl>
@@ -6083,7 +6098,13 @@
   }
 
   // Aurora reports its version as 1.2.<build>; the build number orders versions.
-  const auroraVersionCode = (v) => Number(String(v || '').match(/^\d+\.\d+\.(\d+)$/)?.[1] || 0);
+  // Versions read V2.5.4: the build number N is shown as 2.(N div 50).(N mod 50). Older "2.0.N" / "1.2.N" names still map to N.
+  const auroraVersionCode = (v) => {
+    const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) return 0;
+    return m[1] === '2' && m[2] !== '0' ? Number(m[2]) * 50 + Number(m[3]) : Number(m[3]);
+  };
+  const auroraVersionName = (code) => `2.${Math.floor(code / 50)}.${code % 50}`;
 
   // Why Emby had to convert (re-encode) a stream, in plain words.
   const TRANSCODE_REASONS = {
@@ -6528,6 +6549,186 @@
     });
   }
 
+  // ---------- Speed test (Settings → Speed test) ----------
+  // Measures the connection to the Aurora server, which is what streaming depends on: ping (and lost replies) with small requests, download
+  // with the server's own bitrate-test address, upload with a few seconds of data sent to Aurora Guard (which throws it away).
+  const SPD_HIST = 'ef.speed.hist';
+  const spdHist = () => { try { return JSON.parse(store.get(SPD_HIST) || '[]'); } catch { return []; } };
+  // Speed in Mbps from {t: ms, b: bytes} samples: over the last second while running, and for the result from after the first
+  // moments (slow start) to the end, so a short test is not dragged down by the ramp-up.
+  const spdLive = (samples) => {
+    const last = samples[samples.length - 1];
+    const from = samples.find((x) => x.t >= last.t - 1000) || samples[0];
+    const dt = last.t - from.t;
+    return dt > 150 ? ((last.b - from.b) * 8) / 1e6 / (dt / 1000) : 0;
+  };
+  const spdFinal = (samples) => {
+    const last = samples[samples.length - 1];
+    const from = last.t > 2200 ? (samples.find((x) => x.t >= 800) || samples[0]) : samples[0];
+    const dt = last.t - from.t;
+    return dt > 0 ? ((last.b - from.b) * 8) / 1e6 / (dt / 1000) : 0;
+  };
+  async function spdPing(ctl, onTick) {
+    const times = []; let lost = 0;
+    for (let i = 0; i < 10; i++) {
+      if (ctl.stopped) throw new Error('stopped');
+      const t0 = performance.now();
+      try {
+        const res = await fetch(state.server + '/emby/System/Info/Public?x=' + Date.now(), { cache: 'no-store', signal: timeoutSignal(3000) });
+        if (!res.ok) throw new Error('bad');
+        times.push(performance.now() - t0); onTick(times[times.length - 1]);
+      } catch { lost++; }
+    }
+    if (!times.length) throw new Error("Couldn't reach the Aurora server.");
+    const sorted = [...times].sort((a, b) => a - b);
+    const body = times.length > 2 ? sorted.slice(0, Math.ceil(sorted.length * 0.8)) : sorted; // the slowest few are usually the first connection
+    const ping = Math.round(sorted[Math.floor(sorted.length / 2)]);
+    const jitter = Math.round(times.slice(1).reduce((n, t, i) => n + Math.abs(t - times[i]), 0) / Math.max(1, times.length - 1));
+    return { ping, jitter, loss: Math.round((lost / 10) * 100), samples: body.length };
+  }
+  async function spdDown(ctl, onTick) {
+    const ac = new AbortController(); ctl.abort = () => ac.abort();
+    const samples = [{ t: 0, b: 0 }];
+    const t0 = performance.now(); let bytes = 0;
+    const timer = setTimeout(() => ac.abort(), 7000);
+    try {
+      let res = await fetch(apiUrl('/Playback/BitrateTest', { Size: 60000000 }), { cache: 'no-store', signal: ac.signal });
+      if (!res.ok) res = await fetch(apiUrl('/Playback/BitrateTest', { Size: 10000000 }), { cache: 'no-store', signal: ac.signal });
+      if (!res.ok) throw new Error('The server did not answer the speed test.');
+      const reader = res.body?.getReader?.();
+      if (!reader) { bytes = (await res.arrayBuffer()).byteLength; samples.push({ t: performance.now() - t0, b: bytes }); }
+      else for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        samples.push({ t: performance.now() - t0, b: bytes });
+        onTick(spdLive(samples));
+      }
+    } catch (e) {
+      if (ctl.stopped) throw new Error('stopped');
+      if (e.name !== 'AbortError' && samples.length < 3) throw e; // an abort at the time limit is the normal end
+    } finally { clearTimeout(timer); }
+    if (samples.length < 2) throw new Error('No data came back from the server.');
+    return spdFinal(samples);
+  }
+  // Returns Mbps, or null when this Guard can't take uploads (older, or switched off).
+  function spdUp(ctl, onTick) {
+    return new Promise((resolve, reject) => {
+      if (!guardEnabled) return resolve(null);
+      const block = new Uint8Array(1 << 20);
+      for (let i = 0; i < block.length; i += 65536) crypto.getRandomValues(block.subarray(i, i + 65536));
+      const payload = new Blob(Array(32).fill(block), { type: 'application/octet-stream' });
+      const xhr = new XMLHttpRequest();
+      const samples = [{ t: 0, b: 0 }];
+      const t0 = performance.now();
+      let ended = false, timer = null;
+      const finish = () => { if (ended) return; ended = true; clearTimeout(timer); resolve(samples.length > 2 ? spdFinal(samples) : null); };
+      ctl.abort = () => xhr.abort();
+      xhr.open('POST', `${guardUrl.replace(/\/+$/, '')}/speedtest/up?userId=${encodeURIComponent(state.userId)}`);
+      xhr.setRequestHeader('X-Emby-Token', state.apiKey);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => { samples.push({ t: performance.now() - t0, b: e.loaded }); onTick(spdLive(samples)); };
+      xhr.onload = () => {
+        if (xhr.status === 429) { ended = true; clearTimeout(timer); return reject(new Error('That is a lot of speed tests. Please try again in a little while.')); }
+        if (xhr.status === 200) return finish();
+        ended = true; clearTimeout(timer); resolve(null);
+      };
+      xhr.onerror = () => { if (samples.length > 3) finish(); else { ended = true; clearTimeout(timer); resolve(null); } };
+      xhr.onabort = () => { if (ctl.stopped) { ended = true; clearTimeout(timer); reject(new Error('stopped')); } else finish(); };
+      timer = setTimeout(() => xhr.abort(), 6000);
+      xhr.send(payload);
+    });
+  }
+  const spdAnswer = (r) => {
+    const d = r.down, rough = r.loss >= 3 || r.jitter > 60;
+    const can = [
+      ['Live TV', d >= 6 ? 'ok' : d >= 3 ? 'warn' : 'bad', d >= 6 ? '' : 'may buffer'],
+      ['Movies and shows in 1080p', d >= 12 ? 'ok' : d >= 6 ? 'warn' : 'bad', d >= 12 ? '' : 'use a lower quality'],
+      ['4K video', d >= 40 ? 'ok' : d >= 25 ? 'warn' : 'bad', d >= 40 ? '' : d >= 25 ? 'borderline' : 'needs about 40 Mbps'],
+    ];
+    let level, title, text;
+    if (d >= 40 && r.ping < 80) { level = 'ok'; title = 'Your connection is great'; text = 'Everything on Aurora should play smoothly, including 4K.'; }
+    else if (d >= 12 && r.ping < 150) { level = 'ok'; title = 'Your connection is good'; text = 'Live TV and 1080p will play well. 4K may stop to buffer.'; }
+    else if (d >= 4) { level = 'warn'; title = 'Your connection is a bit slow'; text = "Live TV should work. For movies, choose a lower quality so they don't keep stopping."; }
+    else { level = 'bad'; title = 'Your connection is too slow right now'; text = 'Videos will keep stopping. Try the tips below, then test again.'; }
+    if (rough && level === 'ok') { level = 'warn'; title = 'The speed is fine, but the connection is unsteady'; text = 'Some data is arriving late or going missing. That can make video freeze even when the speed looks good.'; }
+    // The best quality that fits in about 80% of the measured speed (Auto when it is fast enough for anything).
+    const fit = QUALITY_OPTIONS.slice(1).find((q) => q.bitrate <= d * 0.8 * 1e6 && (!qualityCap() || q.bitrate <= qualityCap())) || QUALITY_OPTIONS[QUALITY_OPTIONS.length - 1];
+    const quality = d >= 40 ? QUALITY_OPTIONS[0] : fit;
+    return { level, title, text, can, quality };
+  }
+  async function renderSpeedTest(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad spd-page"><div class="page-head"><h1>Speed test</h1></div><div data-body></div></div>';
+    const root = $('[data-body]', page);
+    let state_ = 'idle', ctl = null, res = null, live = 0, phase = '', lastPaint = 0;
+    const tick = (v) => { live = v; const n = performance.now(); if (n - lastPaint > 120) { lastPaint = n; paint(); } };
+    const gauge = (pct) => { const r = 96, c = 2 * Math.PI * r, arc = c * 0.75; return `<svg viewBox="0 0 230 230"><defs><linearGradient id="spdg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset=".6" stop-color="#7c8cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs><circle class="spd-trk" cx="115" cy="115" r="${r}" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="${arc} ${c}"/><circle class="spd-val" cx="115" cy="115" r="${r}" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="${arc} ${c}" stroke-dashoffset="${arc * (1 - Math.min(1, Math.max(0, pct)))}"/></svg>`; };
+    const resultText = (r) => `Speed test: ${r.down.toFixed(1)} Mbps down, ${r.up == null ? 'upload not tested' : r.up.toFixed(1) + ' Mbps up'}, ${r.ping} ms ping${r.loss ? ', ' + r.loss + '% of replies lost' : ''}.`;
+    const num = (v) => (v == null ? '–' : v >= 100 ? Math.round(v) : (Math.round(v * 10) / 10));
+    const paint = () => {
+      if (!isCurrent()) return;
+      const hist = spdHist();
+      if (state_ === 'idle') {
+        root.innerHTML = `<p class="muted">Check how well your connection works with Aurora. It takes about 20 seconds and uses roughly 30 to 60 MB of data.</p>
+          <section class="settings-section spd-card"><div class="spd-gauge">${gauge(0)}<div class="spd-gv"><b>0</b><small>Mbps</small></div></div><button class="btn btn-white" data-go data-autofocus>Start test</button><p class="muted">It measures the connection to the Aurora server. Close other apps for the best result.</p></section>
+          <div class="live-result bad hidden" data-err></div>
+          ${hist.length ? `<section class="settings-section"><h2>Your last tests</h2>${hist.map((h) => `<div class="admin-row"><div class="admin-row-main">${esc(timeAgo(h.t))}</div><div class="admin-row-time"><strong>${esc(String(h.d))} Mbps</strong> down${h.u != null ? ` · ${esc(String(h.u))} up` : ''} · ${esc(String(h.p))} ms</div></div>`).join('')}</section>` : ''}`;
+        $('[data-go]', root).addEventListener('click', start);
+        autoFocus($('[data-go]', root));
+      } else if (state_ === 'running') {
+        const label = { ping: 'Checking the connection', down: 'Download', up: 'Upload' }[phase] || '';
+        const pct = phase === 'ping' ? live / 300 : Math.log10(1 + live) / Math.log10(201);
+        root.innerHTML = `<section class="settings-section spd-card"><div class="spd-gauge">${gauge(pct)}<div class="spd-gv"><span class="spd-ph">${esc(label)}</span><b>${esc(String(num(live)))}</b><small>${phase === 'ping' ? 'ms' : 'Mbps'}</small></div></div><button class="btn btn-gray" data-stop>Stop</button></section>
+          <div class="spd-three"><div class="spd-m"><small>Ping</small><b>${res.ping ?? '–'}</b><i>ms</i></div><div class="spd-m"><small>Download</small><b>${num(res.down)}</b><i>Mbps</i></div><div class="spd-m"><small>Upload</small><b>${num(res.up)}</b><i>Mbps</i></div></div>`;
+        $('[data-stop]', root).addEventListener('click', () => { if (ctl) { ctl.stopped = true; ctl.abort?.(); } });
+      } else {
+        const a = spdAnswer(res), icon = { ok: '✓', warn: '!', bad: '✕' };
+        root.innerHTML = `<div class="spd-verdict ${a.level}"><h3>${esc(a.title)}</h3><p>${esc(a.text)}</p></div>
+          <div class="spd-three"><div class="spd-m"><small>Ping</small><b>${res.ping}</b><i>ms${res.jitter ? ' · ±' + res.jitter : ''}</i></div><div class="spd-m"><small>Download</small><b>${num(res.down)}</b><i>Mbps</i></div><div class="spd-m"><small>Upload</small><b>${num(res.up)}</b><i>${res.up == null ? 'not tested' : 'Mbps'}</i></div></div>
+          <section class="settings-section"><h2>What this means for you</h2><div class="spd-can">${a.can.map((c) => `<div><span class="spd-i ${c[1]}">${icon[c[1]]}</span>${esc(c[0])}<small>${esc(c[2])}</small></div>`).join('')}</div></section>
+          <section class="settings-section"><h2>Suggested</h2>
+            <div class="admin-row"><div class="admin-row-main"><strong>Video quality: ${esc(a.quality.label)}</strong><div class="muted">The best that should play without stopping on this connection.</div></div><button class="btn btn-gray" data-apply>Use it</button></div>
+            ${res.down < 12 ? '<div class="admin-row"><div class="admin-row-main"><strong>Tips</strong><div class="muted">Move closer to your router, switch between Wi-Fi and mobile data, or ask others at home to pause downloads and streaming, then test again.</div></div></div>' : ''}
+            ${res.loss > 0 ? `<div class="admin-row"><div class="admin-row-main"><strong>${res.loss}% of replies were lost</strong><div class="muted">Your connection is dropping some data. That causes freezing even when the speed looks fine.</div></div></div>` : ''}</section>
+          <div class="m-actions"><button class="btn btn-white" data-again>Test again</button><button class="btn btn-gray" data-send>Send to support</button><button class="btn btn-gray" data-copy>Copy</button></div><div class="live-result" data-result></div>`;
+        $('[data-again]', root).addEventListener('click', () => { state_ = 'idle'; paint(); });
+        $('[data-apply]', root).addEventListener('click', () => { store.set('ef.maxBitrate', String(a.quality.bitrate)); toast(`Video quality set to ${a.quality.label}`, 3000); });
+        $('[data-copy]', root).addEventListener('click', () => { try { navigator.clipboard.writeText(resultText(res)).then(() => toast('Copied', 1500), () => toast(resultText(res), 7000)); } catch { toast(resultText(res), 7000); } });
+        $('[data-send]', root).addEventListener('click', async () => {
+          const out = $('[data-result]', root), btn = $('[data-send]', root);
+          if (!guardEnabled) { out.className = 'live-result bad'; out.textContent = 'Messages to your provider are not available right now.'; return; }
+          btn.disabled = true;
+          try { await guard('/support', { method: 'POST', params: { userId: state.userId }, body: { text: 'I ran a speed test. ' + resultText(res), diag: { ...helpDiag(), speed: resultText(res) } } }); toast('Sent to your provider', 3000); out.className = 'live-result good'; out.textContent = 'Sent. Your provider will answer under Help & support.'; }
+          catch (e) { btn.disabled = false; out.className = 'live-result bad'; out.textContent = guardMissing(e) ? "This isn't available yet. Please check back soon." : e.message; }
+        });
+        autoFocus($('[data-again]', root));
+      }
+    };
+    async function start() {
+      if (navigator.connection?.type === 'cellular' && !(await confirmAction('Test on mobile data?', 'The test uses roughly 30 to 60 MB of your mobile data.', 'Start the test'))) return;
+      ctl = { stopped: false, abort: null };
+      res = { ping: null, down: null, up: null, jitter: 0, loss: 0 };
+      state_ = 'running'; phase = 'ping'; live = 0; paint();
+      try {
+        const p = await spdPing(ctl, tick);
+        Object.assign(res, p); res.ping = p.ping; phase = 'down'; live = 0; paint();
+        res.down = await spdDown(ctl, tick);
+        phase = 'up'; live = 0; paint();
+        try { res.up = await spdUp(ctl, tick); } catch (e) { if (e.message === 'stopped' || /lot of speed tests/.test(e.message)) throw e; res.up = null; }
+        const h = spdHist(); h.unshift({ t: Date.now(), d: Math.round(res.down * 10) / 10, u: res.up == null ? null : Math.round(res.up * 10) / 10, p: res.ping });
+        store.set(SPD_HIST, JSON.stringify(h.slice(0, 5)));
+        measuredBitrate = { bps: Math.max(700000, Math.round(res.down * 1e6 * 0.7)), t: Date.now() }; // Auto quality uses what was just measured
+        appLog.add(res.down < 4 ? 'warn' : 'info', resultText(res));
+        state_ = 'done'; paint();
+      } catch (e) {
+        state_ = 'idle'; paint();
+        if (e.message !== 'stopped') { const err = $('[data-err]', root); if (err) { err.textContent = /lot of speed tests/.test(e.message) ? e.message : (e.message || "The test couldn't finish.") + ' Check your connection and try again.'; err.classList.remove('hidden'); } }
+        else toast('Test stopped', 1800);
+      }
+    }
+    paint();
+  }
+
   // ---------- Offline downloads (Android app) ----------
   // The Android side (Downloads.java) saves the file with the system DownloadManager; this page asks Emby for the file, lists progress
   // and plays a finished one through the normal player. Downloads stop working when the account ends (checked online with the guard and
@@ -6536,17 +6737,19 @@
   const downloadsAllowed = () => playbackCfg.downloads !== 'off';
   const dlWifi = () => store.get('ef.dlWifi') !== '0';
   let offlinePlaying = null, offlineMode = false;
-  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]'); } catch { return []; } };
+  // Downloads belong to the account that saved them (their key starts with its id), so another account on the same phone doesn't see or play them.
+  const dlKey = (itemId) => `${state.userId}_${itemId}`;
+  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]').filter((d) => !String(d.itemId).includes('_') || String(d.itemId).startsWith(state.userId + '_')); } catch { return []; } }; // (an id with no prefix is from an earlier version: it is shown to whoever is signed in)
   const dlStorage = () => { try { return JSON.parse(nativeApp.downloadsStorage() || '{}'); } catch { return {}; } };
   const offlineLicenseOk = () => { const e = store.get('ef.dl.expires'); return !e || Date.now() <= new Date(e + 'T23:59:59').getTime(); };
   async function syncDownloadLicense() {
     if (!dlSupported()) return;
-    if (!downloadsAllowed()) { if (dlItems().length) nativeApp.removeAllDownloads(); return; }
+    if (!downloadsAllowed()) { dlItems().forEach((d) => nativeApp.removeDownload(d.itemId)); return; }
     if (!guardEnabled || isAdmin()) return;
     try {
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
       if (a.admin) return;
-      if (a.expired || a.disabled) { nativeApp.removeAllDownloads(); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
+      if (a.expired || a.disabled) { dlItems().forEach((d) => nativeApp.removeDownload(d.itemId)); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
     } catch { /* offline or an older guard: keep what is saved */ }
   }
   async function startItemDownload(item) {
@@ -6558,7 +6761,7 @@
       if (!(await confirmAction(`Download "${itemTitle(full)}"?`, `${size ? size + '. ' : ''}${dlWifi() ? 'It downloads on Wi-Fi only. ' : ''}You can watch it without internet while your plan is active.`, 'Download'))) return;
       const ext = String(source.Container || 'mp4').split(',')[0].replace(/[^a-z0-9]/gi, '') || 'mp4';
       const url = `${state.server}/emby/Items/${full.Id}/Download?MediaSourceId=${encodeURIComponent(source.Id)}`;
-      const err = nativeApp.startDownload(full.Id, url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
+      const err = nativeApp.startDownload(dlKey(full.Id), url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
       if (err) toast(err, 5000); else { toast('Download started. You can follow it in Settings → Downloads.', 4500); appLog.add('info', 'Download started: ' + itemTitle(full)); }
     } catch (e) { toast(e.message || "Couldn't start the download", 4000); }
   }
@@ -6623,9 +6826,100 @@
     autoFocus($('[data-play]', content));
   }
 
+  // ---------- Maintenance mode (Aurora Guard 1.12.0) ----------
+  // The admin switches parts of Aurora into maintenance (Admin → Maintenance mode). Customers see a friendly page there and cannot open the
+  // tab, the titles in it or its channels; the admin always keeps full access. Kept on the device so it applies at once when Aurora opens.
+  const MAINT_TABS = [['movies', 'Movies', 'Movies'], ['tv', 'TV Shows', 'TV Shows'], ['favorites', 'Favorites', 'Favorites'], ['livetv', 'Live TV', 'Live TV'], ['sports', 'Sports', 'Sports (inside Live TV)'], ['requests', 'Requests', 'Requests'], ['downloads', 'Downloads', 'Downloads (Android)']];
+  const MAINT_DEFAULT = "We're giving this part of Aurora some love. Please try again a little later. Thank you for your patience! 💙";
+  let maint = (() => { try { return JSON.parse(store.get('ef.maint') || '{}') || {}; } catch { return {}; } })();
+  let maintTimer = null;
+  const maintOn = (key) => !isAdmin() && !!maint.tabs?.[key];
+  const maintLabel = (key) => (MAINT_TABS.find((t) => t[0] === key) || [])[1] || 'This part of Aurora';
+  const maintText = (key) => `The ${maintLabel(key)} section is in maintenance mode. ${maint.message || MAINT_DEFAULT}${maint.back ? ' We expect to be back ' + maint.back + '.' : ''}`;
+  function maintKeyOfRoute(name, params) {
+    if (name === 'movies') return 'movies';
+    if (name === 'tv') return 'tv';
+    if (name === 'mylist' || name === 'favorites') return 'favorites';
+    if (name === 'requests') return 'requests';
+    if (name === 'downloads') return 'downloads';
+    if (name === 'livetv') return params.get('tab') === 'sports' && maintOn('sports') ? 'sports' : 'livetv';
+    return null;
+  }
+  function maintKeyOfItem(item) {
+    const t = item?.Type;
+    if (t === 'Movie') return 'movies';
+    if (t === 'Series' || t === 'Season' || t === 'Episode') return 'tv';
+    if (t === 'TvChannel' || t === 'Program') return 'livetv';
+    return null;
+  }
+  function paintMaintNav() {
+    const map = { home: null, tv: 'tv', movies: 'movies', mylist: 'favorites', livetv: 'livetv', requests: 'requests' };
+    $$('[data-route]').forEach((a) => {
+      const key = map[a.dataset.route];
+      const on = !!key && !!maint.tabs?.[key];
+      a.classList.toggle('in-maint', on);
+      a.title = on ? (isAdmin() ? 'In maintenance for customers' : 'In maintenance') : '';
+    });
+  }
+  function renderMaintenance(page, key) {
+    page.innerHTML = `<div class="page-pad maint-page"><div class="maint-card"><div class="maint-ic">🔧</div>
+      <p class="maint-what">${esc(maintLabel(key))} · maintenance mode</p>
+      <h1>We'll be right back!</h1>
+      <p class="maint-msg">${esc(maint.message || MAINT_DEFAULT)}</p>
+      ${maint.back ? `<p class="maint-back">We expect to be back ${esc(maint.back)}.</p>` : ''}
+      <div class="m-actions"><a class="btn btn-white" href="#/home">Back to Home</a></div></div></div>`;
+    autoFocus($('.maint-card .btn', page));
+  }
+  async function refreshMaintenance() {
+    if (!guardEnabled || !state.userId) return;
+    let d;
+    try { d = await guard('/maintenance', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    const before = JSON.stringify(maint);
+    maint = { tabs: d.tabs || {}, message: d.message || '', back: d.back || '' };
+    store.set('ef.maint', JSON.stringify(maint));
+    paintMaintNav();
+    // The page being looked at just changed state (turned on or off): redraw it, unless something is playing.
+    if (JSON.stringify(maint) !== before && !isPlayerOpen() && $('#modal').classList.contains('hidden')) {
+      const hash = location.hash.replace(/^#\/?/, ''), [path, q] = hash.split('?');
+      const key = maintKeyOfRoute(path || 'home', new URLSearchParams(q || ''));
+      if (key && ($('#page .maint-page') || maintOn(key))) route();
+    }
+  }
+
+  // ----- Admin → Maintenance mode -----
+  async function adminMaintenance(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Maintenance mode');
+    let d;
+    try { d = await guard('/maintenance', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Maintenance mode</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.12.0 to use Maintenance mode (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const onCount = Object.keys(d.tabs).length;
+    body.innerHTML = `
+      <section class="admin-card"><h2>Maintenance mode <small>While you work on something, customers see a friendly message instead</small></h2>
+        <p class="muted">Switch on the parts you are working on. Customers can't open them (or the titles and channels inside), and see the message below. <strong>You can always open everything</strong>, and a wrench marks what's in maintenance. Switching it off opens it again within about two minutes.</p>
+        <div class="admin-list" data-tabs>${MAINT_TABS.map(([k, , label]) => `<label class="admin-row maint-row"><div class="admin-row-main"><strong>${esc(label)}</strong> ${d.tabs[k] ? '<span class="pill warn">In maintenance</span>' : '<span class="pill">Open</span>'}</div>
+          <input type="checkbox" class="maint-switch" data-k="${k}"${d.tabs[k] ? ' checked' : ''} aria-label="${esc(label)} in maintenance"></label>`).join('')}</div>
+        <label class="admin-field"><span>Message customers see</span><textarea class="st-note-input" data-msg rows="3" maxlength="240" placeholder="${esc(MAINT_DEFAULT)}">${esc(d.message)}</textarea></label>
+        <label class="admin-field"><span>Back around (optional)</span><input type="text" class="st-note-input" data-back maxlength="60" placeholder="e.g. around 3 PM, or tomorrow morning" value="${esc(d.back)}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-off>Open everything</button></div><div class="live-result" data-result></div></section>
+      <section class="admin-card"><h2>What customers see</h2><div class="maint-card maint-preview"><div class="maint-ic">🔧</div><p class="maint-what" data-pw></p><h3 data-ph>…</h3><p data-pm></p><p class="maint-back" data-pb></p></div></section>`;
+    const msg = $('[data-msg]', body), back = $('[data-back]', body), result = $('[data-result]', body);
+    const preview = () => { const k = $('[data-k]:checked', body)?.dataset.k || 'livetv'; $('[data-ph]', body).textContent = "We'll be right back!"; $('[data-pw]', body).textContent = `${maintLabel(k)} · maintenance mode`; $('[data-pm]', body).textContent = msg.value.trim() || MAINT_DEFAULT; $('[data-pb]', body).textContent = back.value.trim() ? `We expect to be back ${back.value.trim()}.` : ''; };
+    preview();
+    msg.addEventListener('input', preview); back.addEventListener('input', preview); $$('[data-k]', body).forEach((c) => c.addEventListener('change', preview));
+    const save = async (tabs, done) => {
+      result.className = 'live-result'; result.innerHTML = '<div class="spinner"></div>';
+      try { await guard('/maintenance', { method: 'PUT', body: { tabs, message: msg.value.trim(), back: back.value.trim() } }); toast(done, 2500); refreshMaintenance(); if (isCurrent()) adminMaintenance(body, isCurrent); }
+      catch (e) { result.className = 'live-result bad'; result.textContent = e.message; }
+    };
+    $('[data-save]', body).addEventListener('click', () => { const tabs = {}; $$('[data-k]:checked', body).forEach((c) => { tabs[c.dataset.k] = true; }); save(tabs, Object.keys(tabs).length ? 'Saved. Customers see the message now.' : 'Everything is open'); });
+    $('[data-off]', body).addEventListener('click', () => save({}, 'Everything is open'));
+    if (onCount) $('[data-save]', body).textContent = 'Save changes';
+  }
+
   // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
   let inboxState = { items: [], unread: 0, banners: [], ok: false };
   let inboxTimer = null;
+  const annTimers = new Map();
   const dismissedAnn = () => { try { return new Set(JSON.parse(store.get('ef.annDismissed') || '[]')); } catch { return new Set(); } };
   function paintBell() {
     const b = $('#bell-btn'), badge = $('#bell-badge');
@@ -6640,14 +6934,18 @@
     const el = $('#announce');
     if (!el) return;
     const gone = dismissedAnn();
-    const list = (inboxState.banners || []).filter((a) => !gone.has(a.id)).slice(0, 2);
-    el.classList.toggle('hidden', !list.length || kidsOn() || resellerOnly());
-    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span><button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button></div>`).join('');
+    // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
+    const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
+    const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
+    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : resellerOnly() ? 4 : 2); // (a reseller has no bell to see the rest in)
+    // A remote can't press the ✕, so on a TV an info notice goes by itself after a while (warnings and outages stay).
+    if (nav.tv) for (const a of list) if (!sticky(a) && !annTimers.has(a.id)) annTimers.set(a.id, setTimeout(() => { const g = dismissedAnn(); g.add(a.id); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }, 20000));
+    el.classList.toggle('hidden', !list.length || kidsOn());
+    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span>${sticky(a) ? '' : `<button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button>`}</div>`).join('');
     document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
     $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
   }
   async function refreshInbox() {
-    if (resellerOnly()) { inboxState.ok = false; paintBell(); paintBanners(); return; }
     if (!guardEnabled || !state.userId) { inboxState.ok = false; paintBell(); return; }
     try {
       const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });
@@ -6662,7 +6960,7 @@
     const root = $('.inbox-page', page);
     const head = '<div class="page-head"><h1>Notifications</h1></div>';
     let d;
-    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for notifications.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'notifications')}</p>`; return; }
     if (!isCurrent()) return;
     const now = Date.now();
     const local = (sportsPrefs.reminders || []).filter((r) => r.start > now && r.start < now + 36 * 3600000).map((r) => ({ id: 'rem:' + r.id, type: 'reminder', level: 'info', title: r.title, text: `Reminder · ${new Date(r.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${r.chan ? ' · ' + r.chan : ''}`, at: r.start, action: 'sports', unread: false }));
@@ -6681,14 +6979,17 @@
     }));
   }
 
+  // An older Aurora Guard doesn't know these addresses (it answers 404, or "Emby administrators only" to a customer). Customers just hear it isn't ready;
+  // admins and resellers are told what to update.
+  const guardMissing = (e) => e.status === 404 || (e.status === 403 && /administrators only/i.test(e.message || ''));
+  const notReady = (e, what) => (guardMissing(e) ? (isAdmin() || state.isReseller ? `Aurora Guard needs updating to 1.11.0 for ${what}.` : "This isn't available yet. Please check back soon.") : esc(e.message));
   // Help & support: a message to the provider with the details they would otherwise have to ask for.
   function helpDiag() {
-    const cur = iptvPlaying?.list?.[iptvPlaying.index || 0];
     return {
-      app: nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
+      app: nativeApp?.getVersionName ? `Aurora V${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
       device: nativeApp?.getDeviceName?.() || navigator.userAgent.slice(0, 80),
       connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
-      playing: cur?.name ? `Live: ${cur.name}` : '',
+      playing: lastLive && Date.now() - lastLive.t < 30 * 60000 ? `Live: ${lastLive.name}` : '',
       status: lastStatusVerdict,
       errors: appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100)),
     };
@@ -6698,7 +6999,7 @@
     const root = $('.help-page', page);
     const head = '<div class="page-head"><h1>Help &amp; support</h1></div>';
     let t = null;
-    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Help &amp; support.' : esc(e.message)}</p>`; return; }
+    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Help &amp; support')}</p>`; return; }
     if (!isCurrent()) return;
     const open = t && t.status === 'open';
     const dg = helpDiag();
@@ -6728,7 +7029,7 @@
     const root = $('.refer-page', page);
     const head = '<div class="page-head"><h1>Refer a friend</h1></div>';
     let d;
-    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for Refer a friend.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Refer a friend')}</p>`; return; }
     if (!isCurrent()) return;
     if (!d.enabled) { root.innerHTML = `${head}<p class="empty-msg">Referrals are not on right now.</p>`; return; }
     const msg = `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
@@ -6755,7 +7056,7 @@
     const root = $('.stats-page', page);
     const head = '<div class="page-head"><h1>Your Aurora</h1></div>';
     let d;
-    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.11.0 for this page.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'this page')}</p>`; return; }
     if (!isCurrent()) return;
     const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
     const diff = d.thisWeek - d.lastWeek;
@@ -6805,13 +7106,13 @@
       <section class="admin-card"><h2>New announcement <small>Customers see it as a banner and in their notifications</small></h2>
         <label class="admin-field"><span>Message</span><input type="text" data-f="text" maxlength="200" placeholder="e.g. Maintenance tonight 2–3 AM"></label>
         <div class="plan-grid">
-          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info</option><option value="warn">Warning</option><option value="bad">Outage</option></select></label>
-          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
+          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info (customers can dismiss it)</option><option value="warn">Warning (stays until it expires)</option><option value="bad">Outage (stays until it expires)</option></select></label>
+          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option><option value="resellers">All resellers</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
           <label class="admin-field"><span>Disappears after</span><select data-f="hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
         </div>
         <div class="m-actions"><button class="btn btn-red" data-send>Send now</button></div><div class="live-result" data-result></div></section>
       <section class="admin-card"><h2>Showing now</h2><div class="admin-list">${list.announcements.map((a) => `<div class="admin-row" data-a="${esc(a.id)}"><div class="admin-row-main"><span class="pill${a.level === 'bad' ? ' bad' : a.level === 'warn' ? ' warn' : ''}">${levelName[a.level] || 'Info'}</span> <strong>${esc(a.text)}</strong>
-          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
+          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : a.audience?.type === 'resellers' ? 'All resellers' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
     const f = (k) => $(`[data-f="${k}"]`, body);
     $('[data-send]', body).addEventListener('click', async () => {
       const [type, id] = f('aud').value.split(':'), r = $('[data-result]', body);
@@ -6827,7 +7128,7 @@
     try { d = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Support</h2><p class="live-result bad">${guardTooOld(e, 'Support')}</p></section>`; return; }
     if (!isCurrent()) return;
     const tickets = [...d.tickets].sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || b.updated - a.updated);
-    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
+    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Speed test': g.speed, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
     body.innerHTML = `<section class="admin-card"><h2>Support <small>Messages customers sent with Get help</small></h2><div class="admin-list">${tickets.map((t) => `<div class="admin-row support-row" data-t="${esc(t.id)}"><div class="admin-row-main">
         <strong>${esc(t.name)}</strong> <span class="pill${t.status === 'open' ? ' warn' : ''}">${t.status === 'open' ? 'Open' : 'Solved'}</span>${t.reseller ? ` <span class="muted">via ${esc(t.reseller)}</span>` : ''}
         <div class="help-thread">${t.messages.map((m) => `<div class="help-msg ${m.from === 'user' ? 'them' : 'me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(t.name) : esc(m.by || 'You')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
@@ -6851,51 +7152,63 @@
     const root = $('.reseller-page', page);
     const head = '<div class="page-head"><h1>Reseller panel</h1></div>';
     let d;
-    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${e.status === 404 ? 'Aurora Guard needs updating to 1.10.0 for the Reseller panel.' : esc(e.message)}</p>`; return; }
+    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'the Reseller panel')}</p>`; return; }
     if (!isCurrent()) return;
     if (!d.reseller) { location.replace('#/home'); return; }
     if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
     const welcomeText = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
-    const dayText = (c) => (c.daysLeft == null ? '<span class="pill">No end date</span>' : c.expired ? '<span class="pill bad">Expired</span>' : `<span class="pill${c.daysLeft <= 7 ? ' warn' : ''}">${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'}</span>`);
-    const cRow = (c) => `<div class="admin-row" data-c="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}${c.trial ? ' <span class="pill">Trial</span>' : ''}
-        <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
-        <div class="plan-actions"><button class="btn btn-gray" data-details>Details</button><button class="btn btn-gray" data-renew>Renew</button></div></div>`;
+    // One clear status for each customer.
+    const statusOf = (c) => (c.hold ? { k: 'hold', label: 'On hold', cls: 'bad' } : c.expired ? { k: 'expired', label: 'Expired', cls: 'bad' } : c.trial ? { k: 'trial', label: 'Trial', cls: '' }
+      : c.daysLeft != null && c.daysLeft <= 7 ? { k: 'soon', label: 'Ending soon', cls: 'warn' } : { k: 'active', label: 'Active', cls: 'good' });
+    const leftText = (c) => (c.daysLeft == null ? 'No end date' : c.expired ? `Ended ${c.expires ? fmtDay(c.expires) : ''}`.trim() : c.daysLeft === 0 ? 'Ends today' : `${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'} left`);
     const lRow = (e) => `<div class="admin-row"><div class="admin-row-main">${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}<div class="muted">${esc(e.by)}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
-    const soon = d.customers.filter((c) => !c.expired && c.daysLeft != null && c.daysLeft <= 7).length, gone = d.customers.filter((c) => c.expired).length;
-    const need = d.customers.filter((c) => c.expired || (c.daysLeft != null && c.daysLeft <= 7));
+    const cnt = (k) => d.customers.filter((c) => statusOf(c).k === k).length;
+    const soon = cnt('soon'), gone = cnt('expired'), held = cnt('hold');
+    const need = d.customers.filter((c) => !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)));
+    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold']];
+    const savedView = (() => { try { return JSON.parse(store.get('ef.resView') || '{}') || {}; } catch { return {}; } })();
+    const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25 };
     root.innerHTML = `${head}
-      <div class="stat-grid">
-        ${statTile('Your credits', d.credits, d.low ? 'running low' : 'available', d.low ? 'bad' : '')}
-        ${statTile('Customers', d.customers.length, 'you created')}
-        ${statTile('Ending within 7 days', soon, '')}
-        ${statTile('Expired', gone, '')}
-      </div>
-      ${d.low ? '<section class="admin-card"><p><strong>Running low on credits.</strong> Ask your provider for more below.</p></section>' : ''}
+      <section class="res-hero"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
+        <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
+      <div class="plan-form hidden" data-askform></div>
       ${d.report ? '' : '<section class="admin-card"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
-      <section class="admin-card${d.report ? '' : ' hidden'}"><h2>Credits <small>${esc(d.report?.month || '')}</small></h2>
-        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div>
-        ${d.request ? `<p class="muted">Your request for ${esc(creditsWord(d.request.amount))} is waiting for your provider.</p>` : '<div class="m-actions"><button class="btn btn-gray" data-ask>Request credits</button></div><div class="plan-form hidden" data-askform></div>'}</section>
+      <div class="stat-grid">
+        ${statTile('Customers', d.customers.length, 'you created')}
+        ${statTile('Active', d.customers.filter((c) => ['active', 'trial'].includes(statusOf(c).k)).length, 'signed up and running')}
+        ${statTile('Ending within 7 days', soon, '')}
+        ${statTile('Expired', gone, held ? `${held} on hold` : '')}
+      </div>
+      <div class="plan-form hidden" data-form></div>
       ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
-        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${dayText(c)}<div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
+        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
         <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
-      <section class="admin-card"><h2>My customers</h2>
-        <div class="admin-list" data-list>${d.customers.map(cRow).join('') || '<p class="muted">No customers yet. Add your first one.</p>'}</div>
-        <div class="m-actions"><button class="btn btn-white" data-new>New customer</button></div>
-        <div class="plan-form hidden" data-form></div></section>
-      <section class="admin-card"><h2>Credit history</h2><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+      <section class="admin-card"><h2>My customers <small data-count></small></h2>
+        <div class="res-tools"><input type="search" class="st-note-input" data-search placeholder="Search name, username, email, phone, note" autocomplete="off">
+          <select class="st-note-input" data-sort aria-label="Sort"><option value="days">Ending soonest first</option><option value="name">Name A–Z</option><option value="new">Newest first</option><option value="plan">Plan</option></select></div>
+        <div class="res-chips" data-chips>${FILTERS.map(([k, l]) => `<button class="chip${view.filter === k ? ' on' : ''}" data-filter="${k}">${l} <span data-n-${k}></span></button>`).join('')}</div>
+        <div class="admin-list res-list" data-list></div>
+        <div class="m-actions"><button class="btn btn-gray hidden" data-more>Show more</button></div>
+        <div class="res-export"><span class="muted">Export this list:</span><button class="btn btn-gray" data-copycsv>Copy</button><button class="btn btn-gray" data-dlcsv>Download .csv</button></div></section>
+      <details class="admin-card res-fold"><summary>This month${d.report ? ' · ' + esc(d.report.month) : ''}</summary>
+        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div></details>
+      <details class="admin-card res-fold"><summary>Credit history · ${d.ledger.length}</summary><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></details>`;
     const form = $('[data-form]', root);
     const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
     const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
     const q = (k) => $(`[data-f="${k}"]`, form);
     const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
-    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el.select(); toast('Select and copy the text', 3000); }); } catch { el.select(); toast('Select and copy the text', 3000); } };
+    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el?.select(); toast('Select and copy the text', 3000); }); } catch { el?.select(); toast('Select and copy the text', 3000); } };
     const makePw = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; const r = (n) => Math.floor(Math.random() * n); return w[r(w.length)] + w[r(w.length)] + (10 + r(90)); };
-    const showWelcome = (c, pw, cost) => {
-      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} is ready</h3><p>${cost ? `${esc(creditsWord(cost))} used. ` : 'Free trial. '}Copy this and send it to your customer. The password is shown only now.</p>
+    const closeForm = () => { form.classList.add('hidden'); form.innerHTML = ''; };
+    const showWelcome = (c, pw, headline, note) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">${esc(headline)}</h3><p>${esc(note)} Copy this and send it to your customer. The password is shown only now.</p>
         <textarea class="st-note-input" data-welcome rows="9" readonly>${esc(welcomeText(c, pw))}</textarea>
         <div class="m-actions"><button class="btn btn-white" data-copy>Copy</button><button class="btn btn-gray" data-done>Done</button></div>`;
       $('[data-copy]', form).addEventListener('click', () => copyText($('[data-welcome]', form).value, $('[data-welcome]', form)));
       $('[data-done]', form).addEventListener('click', reload);
+      form.scrollIntoView({ block: 'center' });
     };
     const openNew = () => {
       if (!d.plans.length) { toast('You have no plans to sell yet. Ask your provider.', 4000); return; }
@@ -6916,7 +7229,7 @@
       const cost = () => (q('trial').checked ? 0 : (d.plans.find((p) => p.id === q('plan').value)?.credits || 0));
       const sum = () => { const c = cost(); $('[data-sum]', form).textContent = (q('trial').checked ? 'Free trial, ends in 2 days. ' : `Cost: ${creditsWord(c)}. `) + `Balance after: ${d.credits - c}${d.credits - c < 0 ? ' (not enough credits)' : ''}`; $('[data-save]', form).disabled = d.credits - c < 0 || (q('trial').checked && d.trialsLeft <= 0); };
       sum(); q('plan').addEventListener('change', sum); q('trial').addEventListener('change', sum);
-      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-cancel]', form).addEventListener('click', closeForm);
       $('[data-save]', form).addEventListener('click', async () => {
         const btn = $('[data-save]', form), pw = q('pw').value;
         btn.disabled = true; say('<div class="spinner"></div>');
@@ -6924,32 +7237,51 @@
           const r = await guard('/reseller/customers', { method: 'POST', params: { userId: state.userId }, body: { fullName: q('full').value, username: q('user').value, password: pw, email: q('email').value, phone: q('phone').value, note: q('note').value, planId: q('plan').value, trial: q('trial').checked } });
           d.credits = r.credits;
           toast(`${r.customer.full || r.customer.name} created`, 2500);
-          showWelcome(r.customer, r.password, cost());
+          showWelcome(r.customer, r.password, `${r.customer.full || r.customer.name} is ready`, cost() ? `${creditsWord(cost())} used.` : 'Free trial.');
         } catch (e) { btn.disabled = false; say(esc(e.message), 'bad'); }
       });
       if (nav.on) focusEl(q('full')); else form.scrollIntoView({ block: 'center' });
     };
     const openDetails = (c) => {
+      const st = statusOf(c);
       form.classList.remove('hidden');
-      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <small>${esc(c.name)} · ${esc(c.planName || 'No plan')}${c.expires ? ' · ends ' + esc(fmtDay(c.expires)) : ''}</small></h3>
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <span class="pill ${st.cls}">${esc(st.label)}</span></h3>
+        <p class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${esc(leftText(c))}${c.expires ? ' (' + esc(fmtDay(c.expires)) + ')' : ''} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use${c.created ? ' · added ' + esc(fmtDay(new Date(c.created).toISOString().slice(0, 10))) : ''}</p>
+        ${d.plans.length ? `<div class="res-renew"><label class="admin-field"><span>Renew with</span><select data-f="rplan">${planOpts(c.planId)}</select></label><button class="btn btn-white" data-dren>Renew</button></div>${c.hold ? '<p class="muted">This customer is on hold: renewing adds time but they stay on hold until you release them.</p>' : ''}` : ''}
         <div class="plan-grid">
           <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" value="${esc(c.full)}"></label>
           <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" value="${esc(c.email)}"></label>
           <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" value="${esc(c.phone)}"></label>
         </div>
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
-        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-cancel>Close</button></div><div class="live-result" data-result></div>`;
-      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
+        <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', closeForm);
+      const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
+      $('[data-dren]', form)?.addEventListener('click', async () => {
+        const plan = d.plans.find((p) => p.id === q('rplan').value);
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        try { const r = await guard(path('/renew'), { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
       $('[data-save]', form).addEventListener('click', async () => {
-        try { await guard(`/reseller/customers/${encodeURIComponent(c.id)}`, { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
+        try { await guard(path(), { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
         catch (e) { say(esc(e.message), 'bad'); }
       });
       $('[data-pw]', form).addEventListener('click', async () => {
-        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once.', 'Reset password'))) return;
-        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/password`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(`New password for ${esc(c.name)}: <strong>${esc(x.password)}</strong> (shown only now)`, 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once, with a welcome message you can send.', 'Reset password'))) return;
+        try { const x = await guard(path('/password'), { method: 'POST', params: { userId: state.userId }, body: {} }); showWelcome(c, x.password, `New password for ${c.full || c.name}`, 'Their old password no longer works.'); } catch (e) { say(esc(e.message), 'bad'); }
       });
       $('[data-out]', form).addEventListener('click', async () => {
-        try { const x = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/signout`, { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+        try { const x = await guard(path('/signout'), { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-hold]', form).addEventListener('click', async () => {
+        const putOn = !c.hold;
+        if (putOn && !(await confirmAction(`Put ${c.full || c.name} on hold?`, 'They are signed out and can\'t sign in until you release them. Their end date keeps running.', 'Put on hold'))) return;
+        try { await guard(path('/hold'), { method: 'POST', params: { userId: state.userId }, body: { hold: putOn } }); toast(putOn ? 'On hold' : 'Released', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-del]', form).addEventListener('click', async () => {
+        if (!(await confirmAction(`Delete ${c.full || c.name} for good?`, `The account ${c.name} and their watch history are removed. Credits are not refunded. This can't be undone.`, 'Delete customer'))) return;
+        try { await guard(path(), { method: 'DELETE', params: { userId: state.userId } }); toast('Customer deleted', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
       });
       form.scrollIntoView({ block: 'center' });
     };
@@ -6979,19 +7311,68 @@
         return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
       }).join('\n\n');
       if (!lines) { toast('Choose at least one customer', 2500); return; }
-      try { navigator.clipboard.writeText(lines).then(() => toast('Messages copied', 2000), () => toast(lines, 8000)); } catch { toast(lines, 8000); }
+      copyText(lines);
     });
-    $$('[data-c]', root).forEach((el) => {
-      const c = d.customers.find((x) => x.id === el.dataset.c);
-      $('[data-details]', el).addEventListener('click', () => openDetails(c));
-      $('[data-renew]', el).addEventListener('click', async () => {
+
+    // ----- the customer list: search, filter, sort -----
+    const listEl = $('[data-list]', root), moreBtn = $('[data-more]', root);
+    const saveView = () => store.set('ef.resView', JSON.stringify({ filter: view.filter, sort: view.sort }));
+    const matches = (c) => {
+      const t = view.q.trim().toLowerCase();
+      if (t && ![c.name, c.full, c.email, c.phone, c.note, c.planName].some((x) => String(x || '').toLowerCase().includes(t))) return false;
+      const k = statusOf(c).k;
+      return view.filter === 'all' || k === view.filter || (view.filter === 'active' && k === 'soon') ;
+    };
+    const sorters = { days: (a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999), name: (a, b) => (a.full || a.name).localeCompare(b.full || b.name), new: (a, b) => (b.created || 0) - (a.created || 0), plan: (a, b) => (a.planName || '').localeCompare(b.planName || '') || (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999) };
+    const visible = () => d.customers.filter(matches).sort(sorters[view.sort] || sorters.days);
+    const cRow = (c) => {
+      const st = statusOf(c), cost = (d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits;
+      return `<div class="res-row" data-c="${esc(c.id)}"><div class="res-av ${st.cls}">${esc((c.full || c.name).trim().charAt(0).toUpperCase() || '?')}</div>
+        <div class="res-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${st.cls}">${esc(st.label)}</span>
+          <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
+        <div class="res-end">${esc(leftText(c))}${c.expires && !c.expired ? `<small>${esc(fmtDay(c.expires))}</small>` : ''}</div>
+        <div class="plan-actions"><button class="btn btn-gray" data-renew>Renew${cost != null ? ' · ' + cost : ''}</button><button class="btn btn-gray" data-details>Details</button></div></div>`;
+    };
+    const paintList = () => {
+      const all = visible(), shown = all.slice(0, view.shown);
+      listEl.innerHTML = shown.map(cRow).join('') || `<p class="muted">${d.customers.length ? 'No customers match.' : 'No customers yet. Add your first one.'}</p>`;
+      $('[data-count]', root).textContent = all.length === d.customers.length ? `${d.customers.length}` : `${all.length} of ${d.customers.length}`;
+      moreBtn.classList.toggle('hidden', all.length <= shown.length);
+      moreBtn.textContent = `Show more (${all.length - shown.length} left)`;
+      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : cnt(k); });
+    };
+    $('[data-sort]', root).value = view.sort;
+    $('[data-search]', root).addEventListener('input', (e) => { view.q = e.target.value; view.shown = 25; paintList(); });
+    $('[data-sort]', root).addEventListener('change', (e) => { view.sort = e.target.value; saveView(); paintList(); });
+    $$('[data-filter]', root).forEach((b) => b.addEventListener('click', () => { view.filter = b.dataset.filter; view.shown = 25; saveView(); $$('[data-filter]', root).forEach((x) => x.classList.toggle('on', x === b)); paintList(); }));
+    moreBtn.addEventListener('click', () => { view.shown += 25; paintList(); });
+    listEl.addEventListener('click', async (e) => {
+      const el = e.target.closest('[data-c]'); if (!el) return;
+      const c = d.customers.find((x) => x.id === el.dataset.c); if (!c) return;
+      if (e.target.closest('[data-details]')) return openDetails(c);
+      if (e.target.closest('[data-renew]')) {
         const plan = d.plans.find((p) => p.id === c.planId) || d.plans[0];
         if (!plan) { toast('You have no plans to sell yet.', 3000); return; }
-        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.${c.hold ? ' They are on hold, so they stay on hold until you release them.' : ''}`, 'Renew'))) return;
         try { const r = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/renew`, { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); }
-        catch (e) { toast(e.message, 5000); }
-      });
+        catch (err) { toast(err.message, 5000); }
+      }
     });
+    // Export the customers on screen (after search and filter) as a spreadsheet file.
+    const csvText = () => {
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const rows = [['Name', 'Username', 'Email', 'Phone', 'Plan', 'Status', 'Ends', 'Note'], ...visible().map((c) => [c.full, c.name, c.email, c.phone, c.planName, statusOf(c).label, c.expires || '', c.note])];
+      return rows.map((r) => r.map(cell).join(',')).join('\r\n');
+    };
+    $('[data-copycsv]', root).addEventListener('click', () => copyText(csvText()));
+    $('[data-dlcsv]', root).addEventListener('click', () => {
+      try {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob(['﻿' + csvText()], { type: 'text/csv' })); a.download = 'aurora-customers.csv';
+        document.body.appendChild(a); a.click(); a.remove(); toast('Downloading…', 2000);
+      } catch { copyText(csvText()); }
+    });
+    paintList();
   }
 
   // ----- Extension requests (Admin -> Users) -----
@@ -7517,7 +7898,7 @@
     const current = fromAdmin ? Number(cfg.forceUpdateAfter) : forceUpdateAfter;
     const latest = codes?.[0] || 0;
     const behindBy = (code) => (codes ? codes.filter((c) => c > code).length : 0);
-    const aurora = (devices?.error ? [] : (devices.Items || devices || []))
+    const aurora = (devices?.error ? [] : (devices?.Items || devices || []))
       .filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY)
       .map((d) => ({ d, code: auroraVersionCode(d.AppVersion) }))
       .filter((x) => x.code && latest && x.code < latest)
@@ -7528,7 +7909,7 @@
       const n = behindBy(code), tooOld = code < 139, locked = !tooOld && current && n >= current;
       return `<div class="admin-row" tabindex="-1">
         <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
-          <div class="muted">Aurora ${esc(d.AppVersion || '')} · ${n} ${n === 1 ? 'update' : 'updates'} behind
+          <div class="muted">Aurora V${esc(d.AppVersion || '')} · ${n} ${n === 1 ? 'update' : 'updates'} behind
           ${tooOld ? ' <span class="pill warn">Too old to lock: needs updating by hand</span>' : locked ? ' <span class="pill bad">Locked until updated</span>' : current && n === current - 1 ? ' <span class="pill warn">Locks at the next update</span>' : ''}</div></div>
         <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div></div>`;
     };
@@ -7549,7 +7930,7 @@
         <div class="live-result" data-result></div>
       </section>
       <section class="admin-card">
-        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 2.0.${latest}` : ''}</small></h2>
+        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is V${auroraVersionName(latest)}` : ''}</small></h2>
         ${codes ? '' : '<p class="muted">Couldn\'t reach GitHub to count releases.</p>'}
         <div class="admin-list">${aurora.map(row).join('') || '<p class="muted">Every device is up to date.</p>'}</div>
       </section>`;
@@ -7929,7 +8310,7 @@
     ]);
     if (!isCurrent()) return;
     if (devices?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(devices.error))}</p>`; return; }
-    const all = (devices.Items || devices || []).slice().sort((a, b) => new Date(b.DateLastActivity) - new Date(a.DateLastActivity));
+    const all = (devices?.Items || devices || []).slice().sort((a, b) => new Date(b.DateLastActivity) - new Date(a.DateLastActivity));
     const isAurora = (d) => /aurora|embyflix/i.test(d.AppName || '');
     const aurora = all.filter(isAurora);
     const versions = new Map();
@@ -7939,7 +8320,7 @@
       const behind = isAurora(d) && release?.code && code && code < release.code;
       return `<div class="admin-row" tabindex="-1">
         <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
-          <div class="muted">${esc(d.AppName || '')} ${esc(d.AppVersion || '')}${behind ? ' <span class="pill warn">Needs update</span>' : ''}</div></div>
+          <div class="muted">${esc(d.AppName || '')} V${esc(d.AppVersion || '')}${behind ? ' <span class="pill warn">Needs update</span>' : ''}</div></div>
         <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div>
       </div>`;
     };
@@ -7947,7 +8328,7 @@
     body.innerHTML = `
       <section class="admin-card">
         <h2>Aurora versions in use</h2>
-        ${versions.size ? `<div class="chip-row static">${[...versions.entries()].sort().reverse().map(([v, c]) => `<span class="chip${release && auroraVersionCode(v) >= release.code ? ' active' : ''}">${esc(v)} · ${c} device${c === 1 ? '' : 's'}</span>`).join('')}</div>` : '<p class="muted">No Aurora devices yet.</p>'}
+        ${versions.size ? `<div class="chip-row static">${[...versions.entries()].sort().reverse().map(([v, c]) => `<span class="chip${release && auroraVersionCode(v) >= release.code ? ' active' : ''}">V${esc(v)} · ${c} device${c === 1 ? '' : 's'}</span>`).join('')}</div>` : '<p class="muted">No Aurora devices yet.</p>'}
         ${release ? `<p class="muted">Latest is ${esc(release.name)}. Older copies are offered the update when they open.</p>` : ''}
       </section>
       <div class="admin-cols">
@@ -8029,7 +8410,7 @@
     const entries = appLog.read().slice().reverse();
     body.innerHTML = `
       <section class="admin-card">
-        <h2>App log <small>Aurora on this device · ${esc(nativeApp?.getVersionName ? 'Aurora ' + nativeApp.getVersionName() : 'web')}</small></h2>
+        <h2>App log <small>Aurora on this device · ${esc(nativeApp?.getVersionName ? 'Aurora V' + nativeApp.getVersionName() : 'web')}</small></h2>
         <p class="muted">Errors and events Aurora recorded on this device: playback problems, failed requests, updates and crashes. Each device keeps its own.</p>
         <div class="log-tools"><span class="osd-spacer"></span><button class="btn btn-gray" data-clear-log>Clear</button></div>
         <div class="admin-list">${entries.map((e) => `<div class="admin-row" tabindex="-1">
@@ -8084,7 +8465,7 @@
       const apk = latest.rel.assets.find((a) => /\.apk$/i.test(a.name));
       // Newest first, without repeating a line that appears in more than one version.
       const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 30);
-      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes, behind: newer.length };
+      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, size: apk.size || 0, notes, behind: newer.length };
     } catch {
       return { status: 'error' };
     }
@@ -8148,26 +8529,28 @@
       const m = String(n).match(/^(New|Fixed|Improved|Changed)(?:\s+(?:in|for|on)\s+([^:]+))?:\s*([\s\S]*)$/i);
       return m ? { kind: m[1].toLowerCase(), tag: m[2] || '', text: m[3].charAt(0).toUpperCase() + m[3].slice(1) } : { kind: 'info', tag: '', text: String(n) };
     };
+    const kindIcon = { new: '✦', fixed: '✔', improved: '↑', changed: '↻', info: '•' };
     const kindLabel = { new: 'New', fixed: 'Fixed', improved: 'Improved', changed: 'Changed', info: 'Update' };
     $('#modal .modal-box')?.classList.add('upd-box');
     content.innerHTML = `
       <div class="m-body update-body upd${required ? ' required' : ''}">
+        <div class="upd-aur" aria-hidden="true"></div><div class="upd-grab" aria-hidden="true"></div>
         <div class="upd-hero">
-          <div class="upd-orb" aria-hidden="true"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg></div>
-          <div class="upd-hd">
-            <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
-            <h2>${esc(update.version)}</h2>
-            <p>${required
-              ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
-              : 'Ready to install. You stay signed in.'}</p>
-          </div>
+          <div class="upd-emb" aria-hidden="true"><i class="halo"></i><i class="ring"></i><span class="core"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v3.2A2.8 2.8 0 0 0 7.8 20h8.4a2.8 2.8 0 0 0 2.8-2.8V14"/></svg></span><i class="spark s1"></i><i class="spark s2"></i><i class="spark s3"></i></div>
+          <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
+          <h2>${esc(update.version)}</h2>
+          ${nativeApp?.getVersionName?.() ? `<div class="upd-path"><b>V${esc(nativeApp.getVersionName())}</b><svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 5h13M10 1l4 4-4 4"/></svg><b>${esc(String(update.version).replace(/^Aurora\s+/i, ''))}</b></div>` : ''}
+          <p>${required
+            ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
+            : 'Ready to install. You stay signed in.'}</p>
+          ${update.size ? `<div class="upd-meta"><span>About ${Math.max(1, Math.round(update.size / 1048576))} MB</span></div>` : ''}
         </div>
         ${update.notes?.length ? `<div class="upd-notes-title">What's new <small>${update.notes.length} ${update.notes.length === 1 ? 'change' : 'changes'}</small></div>
         <ul class="update-notes upd-list">${update.notes.map((n) => { const x = noteParts(n);
-          return `<li><span class="upd-kind ${x.kind}">${kindLabel[x.kind]}</span><span class="upd-text">${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
+          return `<li><span class="upd-ic ${x.kind}" aria-hidden="true">${kindIcon[x.kind]}</span><span class="upd-text"><b class="upd-kind ${x.kind}">${kindLabel[x.kind]}</b>${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
         <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
         <div class="m-actions update-actions">
-          <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>
+          <button class="btn btn-red" data-act="install" data-autofocus><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>Update now</button>
           ${required ? '' : '<button class="btn btn-gray" data-act="later">Later</button>'}
         </div>
       </div>`;
@@ -8422,6 +8805,8 @@
 
   // audioIndex / subtitleIndex / forceTranscode are passed when the viewer changes tracks or quality.
   async function playItem(rawItem, opts = {}) {
+    const mk = maintKeyOfItem(rawItem);
+    if (mk && maintOn(mk)) { toast(maintText(mk), 8000); return; }
     // Changing tracks or quality, or the next episode on the same device, isn't a new device starting to play.
     if (opts.audioIndex != null || opts.subtitleIndex != null || opts.forceTranscode || opts.auto) return startPlayItem(rawItem, opts);
     return whenAllowed(() => startPlayItem(rawItem, opts));
