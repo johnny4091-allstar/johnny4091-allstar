@@ -1016,6 +1016,10 @@
 
   // ---------- Router ----------
   let routeToken = 0;
+  // Timers a page starts to keep itself fresh. They stop as soon as the viewer leaves the page (not at their next tick, which
+  // left every page visited in the last minute alive in memory).
+  const routeTimers = [];
+  const routeInterval = (fn, ms) => { const id = setInterval(fn, ms); routeTimers.push(id); return id; };
 
   let lastRouteAt = Date.now();
   function route() {
@@ -1026,6 +1030,7 @@
     const params = new URLSearchParams(query || '');
     const name = path || 'home';
     const token = ++routeToken;
+    routeTimers.splice(0).forEach(clearInterval);
 
     $$('[data-route]').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
     paintMaintNav();
@@ -2835,7 +2840,7 @@
       });
       if (shownInfo) showInfo(shownInfo.ch, shownInfo.p);
     };
-    const timer = setInterval(tick, 30000);
+    const timer = routeInterval(tick, 30000);
 
     // ----- Rows -----
     // Fills (or refills) one channel's line of programmes.
@@ -3394,6 +3399,7 @@
     const setFollow = (c, patch) => {
       sportsPrefs.follow = { ...(sportsPrefs.follow || {}) };
       sportsPrefs.follow[c.key] = { ...followOf(c), ...patch, start: c.start };
+      for (const k of Object.keys(sportsPrefs.follow)) if ((sportsPrefs.follow[k].start || 0) < Date.now() - 86400000) delete sportsPrefs.follow[k]; // old games
       saveSportsPrefs(); startSportsAlerts();
     };
     const statBar = (a, b) => { const x = parseFloat(String(a).replace(/[^0-9.-]/g, '')), y = parseFloat(String(b).replace(/[^0-9.-]/g, '')); if (!isFinite(x) || !isFinite(y) || x < 0 || y < 0 || x + y === 0) return ''; return `<div class="sp-sbar"><i style="width:${Math.round(100 * x / (x + y))}%"></i></div>`; };
@@ -3520,7 +3526,7 @@
     draw();
     // Keep "live now / starting soon", scores and progress true while the page is open.
     let tick = 0;
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       if (!body.isConnected || !isCurrent()) { clearInterval(timer); if (sheet && !sheetOpen()) sheet = null; return; }
       if (document.hidden || isPlayerOpen()) return;
       if (++tick % 2 === 0 && guardEnabled && S.feed) { const f = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null); if (f?.enabled) S.feed = f; }
@@ -4806,7 +4812,7 @@
       el.lastElementChild.textContent = online ? 'Aurora: Online' : 'Aurora: Offline';
     };
     update();
-    const timer = setInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
+    const timer = routeInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
   }
 
   // "My account": the plan (how many devices at once, how many in use), the date access ends, and a way to ask for more
@@ -5037,7 +5043,7 @@
       else if (a === 'speed') location.hash = '#/speedtest';
     });
     // Look again quietly every minute while the page is open (not while a check is running).
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       if (!isCurrent() || !page.isConnected) { clearInterval(timer); return; }
       if (document.hidden || runBtn.disabled) return;
       try { const r = await statusGather(); if (isCurrent() && !runBtn.disabled) paint(r); } catch { /* keep what is shown */ }
@@ -5454,11 +5460,15 @@
     const btn = $('[data-admin-menu]', page);
     btn.addEventListener('click', (e) => { e.stopPropagation(); setAdminMenu(!adminMenuOpen()); });
     // Tapping anywhere else closes it; choosing a section changes the page, which closes it too.
-    document.addEventListener('click', function close(e) {
+    // Only one of these listens at a time: each visit used to leave its own behind, keeping the old page in memory.
+    if (adminMenuClose) document.removeEventListener('click', adminMenuClose);
+    adminMenuClose = function close(e) {
       if (!btn.isConnected) { document.removeEventListener('click', close); return; }
       if (adminMenuOpen() && !e.target.closest('.admin-menu')) setAdminMenu(false);
-    });
+    };
+    document.addEventListener('click', adminMenuClose);
   }
+  let adminMenuClose = null;
 
   const statTile = (label, value, note = '', cls = '') =>
     `<div class="stat-tile ${cls}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(String(value))}</div>${note ? `<div class="stat-note">${note}</div>` : ''}</div>`;
@@ -5495,7 +5505,7 @@
 
   // Keeps the "Watching now" list current while the Overview is open.
   function refreshWatching(body, isCurrent, users) {
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       const el = $('[data-watching]', body);
       if (!isCurrent() || !el) { clearInterval(timer); return; }
       try {
@@ -5919,7 +5929,7 @@
     });
     const connEl = $('[data-conn]', body);
     renderConnections(connEl, isCurrent, userList).catch((e) => { connEl.innerHTML = `<p class="muted">${esc(adminError(e))}</p>`; });
-    const connTimer = setInterval(() => {
+    const connTimer = routeInterval(() => {
       if (!isCurrent() || !connEl.isConnected) { clearInterval(connTimer); return; }
       renderConnections(connEl, isCurrent, userList).catch(() => {});
     }, 30000);
@@ -6081,7 +6091,7 @@
         return isCurrent() && box.isConnected;
       };
       if (!(await paint())) return;
-      const timer = setInterval(async () => { if (!(await paint())) clearInterval(timer); }, 30000);
+      const timer = routeInterval(async () => { if (!(await paint())) clearInterval(timer); }, 30000);
     })();
 
     let type = cfg.type || 'emby';
@@ -7008,7 +7018,7 @@
       });
     };
     paint();
-    const timer = setInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
+    const timer = routeInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
   }
   // No connection when Aurora opens: let people reach what they saved.
   function offerOfflineDownloads() {
@@ -7729,7 +7739,7 @@
     clearInterval(body.__usersTimer); // a redraw (after a bulk change) must not leave the old refresh running
     if (live) {
       let failures = 0;
-      const timer = body.__usersTimer = setInterval(async () => {
+      const timer = body.__usersTimer = routeInterval(async () => {
         if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
         if (document.hidden) return;
         try {
@@ -8437,7 +8447,7 @@
     if (!isCurrent()) return;
     draw(s);
     // Refresh every 15 s while the page is open.
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
       if (document.hidden) return;
       try { const fresh = await guard('/server'); if (isCurrent()) draw(fresh); } catch { /* keep the last numbers */ }

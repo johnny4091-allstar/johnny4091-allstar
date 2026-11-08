@@ -1170,10 +1170,17 @@ function sportsGames() {
 }
 // Later days (the day strip), one game's detail (stats and plays) and standings: asked on demand and kept briefly, so a busy
 // evening is still only a few calls to the feed. All written defensively, since the feed is unofficial.
-const sportsExtra = { days: {}, games: {}, standings: {} };
+const sportsExtra = { days: {}, games: {}, standings: {}, inflight: {} };
+// Several customers asking for the same thing at once share one call to the feed.
+function shared(key, make) {
+  if (sportsExtra.inflight[key]) return sportsExtra.inflight[key];
+  const p = make().finally(() => { delete sportsExtra.inflight[key]; });
+  return (sportsExtra.inflight[key] = p);
+}
 const sportsBase = () => cfg.scoresBase.replace(/\/+$/, '');
 const trim = (v, n) => String(v == null ? '' : v).slice(0, n);
-async function sportsDay(dateStr) {
+function sportsDay(dateStr) { return shared('day:' + dateStr, () => sportsDayLoad(dateStr)); }
+async function sportsDayLoad(dateStr) {
   const c = sportsCfg(), now = Date.now(), out = [];
   const hit = sportsExtra.days[dateStr];
   if (hit && now - hit.at < 10 * 60000) return hit.games;
@@ -1193,7 +1200,8 @@ async function sportsDay(dateStr) {
   const old = Object.keys(sportsExtra.days); if (old.length > 14) delete sportsExtra.days[old[0]];
   return out;
 }
-async function sportsGame(key, id) {
+function sportsGame(key, id) { return shared('game:' + key + ':' + id, () => sportsGameLoad(key, id)); }
+async function sportsGameLoad(key, id) {
   const L = SPORTS_LEAGUES[key];
   const ck = key + ':' + id, hit = sportsExtra.games[ck];
   if (hit && Date.now() - hit.at < 25000) return hit.data;
@@ -1224,7 +1232,8 @@ async function sportsGame(key, id) {
   const old = Object.keys(sportsExtra.games); if (old.length > 60) delete sportsExtra.games[old[0]];
   return data;
 }
-async function sportsStandings(key) {
+function sportsStandings(key) { return shared('std:' + key, () => sportsStandingsLoad(key)); }
+async function sportsStandingsLoad(key) {
   const L = SPORTS_LEAGUES[key];
   const hit = sportsExtra.standings[key];
   if (hit && Date.now() - hit.at < 15 * 60000) return hit.data;
