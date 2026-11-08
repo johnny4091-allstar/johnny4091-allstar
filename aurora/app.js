@@ -8465,7 +8465,7 @@
       const apk = latest.rel.assets.find((a) => /\.apk$/i.test(a.name));
       // Newest first, without repeating a line that appears in more than one version.
       const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 30);
-      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, notes, behind: newer.length };
+      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, size: apk.size || 0, notes, behind: newer.length };
     } catch {
       return { status: 'error' };
     }
@@ -8529,26 +8529,28 @@
       const m = String(n).match(/^(New|Fixed|Improved|Changed)(?:\s+(?:in|for|on)\s+([^:]+))?:\s*([\s\S]*)$/i);
       return m ? { kind: m[1].toLowerCase(), tag: m[2] || '', text: m[3].charAt(0).toUpperCase() + m[3].slice(1) } : { kind: 'info', tag: '', text: String(n) };
     };
+    const kindIcon = { new: '✦', fixed: '✔', improved: '↑', changed: '↻', info: '•' };
     const kindLabel = { new: 'New', fixed: 'Fixed', improved: 'Improved', changed: 'Changed', info: 'Update' };
     $('#modal .modal-box')?.classList.add('upd-box');
     content.innerHTML = `
       <div class="m-body update-body upd${required ? ' required' : ''}">
+        <div class="upd-aur" aria-hidden="true"></div><div class="upd-grab" aria-hidden="true"></div>
         <div class="upd-hero">
-          <div class="upd-orb" aria-hidden="true"><svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 11l6-6 6 6"/></svg></div>
-          <div class="upd-hd">
-            <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
-            <h2>${esc(update.version)}</h2>
-            <p>${required
-              ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
-              : 'Ready to install. You stay signed in.'}</p>
-          </div>
+          <div class="upd-emb" aria-hidden="true"><i class="halo"></i><i class="ring"></i><span class="core"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v3.2A2.8 2.8 0 0 0 7.8 20h8.4a2.8 2.8 0 0 0 2.8-2.8V14"/></svg></span><i class="spark s1"></i><i class="spark s2"></i><i class="spark s3"></i></div>
+          <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
+          <h2>${esc(update.version)}</h2>
+          ${nativeApp?.getVersionName?.() ? `<div class="upd-path"><b>V${esc(nativeApp.getVersionName())}</b><svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 5h13M10 1l4 4-4 4"/></svg><b>${esc(String(update.version).replace(/^Aurora\s+/i, ''))}</b></div>` : ''}
+          <p>${required
+            ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
+            : 'Ready to install. You stay signed in.'}</p>
+          ${update.size ? `<div class="upd-meta"><span>About ${Math.max(1, Math.round(update.size / 1048576))} MB</span></div>` : ''}
         </div>
         ${update.notes?.length ? `<div class="upd-notes-title">What's new <small>${update.notes.length} ${update.notes.length === 1 ? 'change' : 'changes'}</small></div>
         <ul class="update-notes upd-list">${update.notes.map((n) => { const x = noteParts(n);
-          return `<li><span class="upd-kind ${x.kind}">${kindLabel[x.kind]}</span><span class="upd-text">${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
+          return `<li><span class="upd-ic ${x.kind}" aria-hidden="true">${kindIcon[x.kind]}</span><span class="upd-text"><b class="upd-kind ${x.kind}">${kindLabel[x.kind]}</b>${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
         <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
         <div class="m-actions update-actions">
-          <button class="btn btn-red" data-act="install" data-autofocus>Update now</button>
+          <button class="btn btn-red" data-act="install" data-autofocus><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>Update now</button>
           ${required ? '' : '<button class="btn btn-gray" data-act="later">Later</button>'}
         </div>
       </div>`;
