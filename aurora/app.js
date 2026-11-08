@@ -4848,7 +4848,7 @@
     if (!isCurrent()) return;
     const cfg = user?.Configuration || {};
     const langs = (value) => (value && !LANGUAGES.some(([v]) => v === value) ? [...LANGUAGES, [value, value]] : LANGUAGES);
-    const version = nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
+    const version = nativeApp?.getVersionName ? `Aurora V${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
 
     $('.settings-page', page).innerHTML = `
       <div class="page-head"><h1>Settings</h1>
@@ -5688,7 +5688,7 @@
           <h2>Aurora app</h2>
           <dl class="admin-dl">
             <dt>Latest version</dt><dd>${release ? `${esc(release.name)} <span class="muted">(${esc(timeAgo(release.date))})</span>` : "Couldn't check GitHub"}</dd>
-            <dt>This device</dt><dd>${esc(nativeApp?.getVersionName ? 'Aurora ' + nativeApp.getVersionName() : 'Web browser')}</dd>
+            <dt>This device</dt><dd>${esc(nativeApp?.getVersionName ? 'Aurora V' + nativeApp.getVersionName() : 'Web browser')}</dd>
             <dt>Devices behind</dt><dd>${outdated.length ? `<a href="#/admin?tab=devices">${outdated.length} on an older version</a>` : 'None'}</dd>
             <dt>Requests tab</dt><dd>${state.requestsEnabled && state.requestsServer ? `On · ${esc(state.requestsServer)}` : 'Coming soon (off)'}</dd>
           </dl>
@@ -6098,7 +6098,13 @@
   }
 
   // Aurora reports its version as 1.2.<build>; the build number orders versions.
-  const auroraVersionCode = (v) => Number(String(v || '').match(/^\d+\.\d+\.(\d+)$/)?.[1] || 0);
+  // Versions read V2.5.4: the build number N is shown as 2.(N div 50).(N mod 50). Older "2.0.N" / "1.2.N" names still map to N.
+  const auroraVersionCode = (v) => {
+    const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) return 0;
+    return m[1] === '2' && m[2] !== '0' ? Number(m[2]) * 50 + Number(m[3]) : Number(m[3]);
+  };
+  const auroraVersionName = (code) => `2.${Math.floor(code / 50)}.${code % 50}`;
 
   // Why Emby had to convert (re-encode) a stream, in plain words.
   const TRANSCODE_REASONS = {
@@ -6980,7 +6986,7 @@
   // Help & support: a message to the provider with the details they would otherwise have to ask for.
   function helpDiag() {
     return {
-      app: nativeApp?.getVersionName ? `Aurora ${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
+      app: nativeApp?.getVersionName ? `Aurora V${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
       device: nativeApp?.getDeviceName?.() || navigator.userAgent.slice(0, 80),
       connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
       playing: lastLive && Date.now() - lastLive.t < 30 * 60000 ? `Live: ${lastLive.name}` : '',
@@ -7903,7 +7909,7 @@
       const n = behindBy(code), tooOld = code < 139, locked = !tooOld && current && n >= current;
       return `<div class="admin-row" tabindex="-1">
         <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
-          <div class="muted">Aurora ${esc(d.AppVersion || '')} · ${n} ${n === 1 ? 'update' : 'updates'} behind
+          <div class="muted">Aurora V${esc(d.AppVersion || '')} · ${n} ${n === 1 ? 'update' : 'updates'} behind
           ${tooOld ? ' <span class="pill warn">Too old to lock: needs updating by hand</span>' : locked ? ' <span class="pill bad">Locked until updated</span>' : current && n === current - 1 ? ' <span class="pill warn">Locks at the next update</span>' : ''}</div></div>
         <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div></div>`;
     };
@@ -7924,7 +7930,7 @@
         <div class="live-result" data-result></div>
       </section>
       <section class="admin-card">
-        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is 2.0.${latest}` : ''}</small></h2>
+        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is V${auroraVersionName(latest)}` : ''}</small></h2>
         ${codes ? '' : '<p class="muted">Couldn\'t reach GitHub to count releases.</p>'}
         <div class="admin-list">${aurora.map(row).join('') || '<p class="muted">Every device is up to date.</p>'}</div>
       </section>`;
@@ -8314,7 +8320,7 @@
       const behind = isAurora(d) && release?.code && code && code < release.code;
       return `<div class="admin-row" tabindex="-1">
         <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
-          <div class="muted">${esc(d.AppName || '')} ${esc(d.AppVersion || '')}${behind ? ' <span class="pill warn">Needs update</span>' : ''}</div></div>
+          <div class="muted">${esc(d.AppName || '')} V${esc(d.AppVersion || '')}${behind ? ' <span class="pill warn">Needs update</span>' : ''}</div></div>
         <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div>
       </div>`;
     };
@@ -8322,7 +8328,7 @@
     body.innerHTML = `
       <section class="admin-card">
         <h2>Aurora versions in use</h2>
-        ${versions.size ? `<div class="chip-row static">${[...versions.entries()].sort().reverse().map(([v, c]) => `<span class="chip${release && auroraVersionCode(v) >= release.code ? ' active' : ''}">${esc(v)} · ${c} device${c === 1 ? '' : 's'}</span>`).join('')}</div>` : '<p class="muted">No Aurora devices yet.</p>'}
+        ${versions.size ? `<div class="chip-row static">${[...versions.entries()].sort().reverse().map(([v, c]) => `<span class="chip${release && auroraVersionCode(v) >= release.code ? ' active' : ''}">V${esc(v)} · ${c} device${c === 1 ? '' : 's'}</span>`).join('')}</div>` : '<p class="muted">No Aurora devices yet.</p>'}
         ${release ? `<p class="muted">Latest is ${esc(release.name)}. Older copies are offered the update when they open.</p>` : ''}
       </section>
       <div class="admin-cols">
@@ -8404,7 +8410,7 @@
     const entries = appLog.read().slice().reverse();
     body.innerHTML = `
       <section class="admin-card">
-        <h2>App log <small>Aurora on this device · ${esc(nativeApp?.getVersionName ? 'Aurora ' + nativeApp.getVersionName() : 'web')}</small></h2>
+        <h2>App log <small>Aurora on this device · ${esc(nativeApp?.getVersionName ? 'Aurora V' + nativeApp.getVersionName() : 'web')}</small></h2>
         <p class="muted">Errors and events Aurora recorded on this device: playback problems, failed requests, updates and crashes. Each device keeps its own.</p>
         <div class="log-tools"><span class="osd-spacer"></span><button class="btn btn-gray" data-clear-log>Clear</button></div>
         <div class="admin-list">${entries.map((e) => `<div class="admin-row" tabindex="-1">

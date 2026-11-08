@@ -33,7 +33,9 @@ jobs:
       # Offset keeps version codes above the EmbyFlix builds (1-4) so installed copies can update.
       # The release tag ends in the version code; the app compares it to its own to find updates.
       - name: Set version
-        run: echo "VERSION_CODE=$((${{ github.run_number }} + 100))" >> "$GITHUB_ENV"
+        run: CODE=$((${{ github.run_number }} + 100))
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=2.$((CODE / 50)).$((CODE % 50))" >> "$GITHUB_ENV"
 
       # The signing key lives only in GitHub secrets (Settings → Secrets and variables → Actions), never in the repo.
       # See android/SIGNING.md. Without them the build stops here, so nothing is ever signed with another key.
@@ -130,8 +132,8 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: aurora-v2.0.${{ env.VERSION_CODE }}
-          name: Aurora 2.0.${{ env.VERSION_CODE }}
+          tag_name: aurora-v${{ env.VERSION_NAME }}-b${{ env.VERSION_CODE }}
+          name: Aurora V${{ env.VERSION_NAME }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           files: Aurora.apk

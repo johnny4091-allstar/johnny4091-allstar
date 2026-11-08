@@ -4,7 +4,7 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 
 ## Features
 
-Versions are `2.0.N` (the release is tagged `aurora-v2.0.N`): `N` is the build number, which is what the Android app compares to decide an update is newer, so it must keep rising. Devices on `1.2.N` update to `2.0.N` normally.
+Versions read `V2.5.4`. The CI build number N becomes `2.(N div 50).(N mod 50)` (build 254 is V2.5.4). The release is tagged `aurora-v2.5.4-b254`; the trailing build number is what the Android app compares to decide an update is newer, so it must keep rising, and older `2.0.N` installs still update normally.
 
 
 - Sign in with your Emby username and password; everyone who signs in on a device gets a "Who's watching?" tile
