@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.14.0';
+const VERSION = '1.15.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1168,6 +1168,84 @@ function sportsGames() {
   }
   return out.sort((a, b) => a.start - b.start);
 }
+// Later days (the day strip), one game's detail (stats and plays) and standings: asked on demand and kept briefly, so a busy
+// evening is still only a few calls to the feed. All written defensively, since the feed is unofficial.
+const sportsExtra = { days: {}, games: {}, standings: {} };
+const sportsBase = () => cfg.scoresBase.replace(/\/+$/, '');
+const trim = (v, n) => String(v == null ? '' : v).slice(0, n);
+async function sportsDay(dateStr) {
+  const c = sportsCfg(), now = Date.now(), out = [];
+  const hit = sportsExtra.days[dateStr];
+  if (hit && now - hit.at < 10 * 60000) return hit.games;
+  const keys = c.leagues.slice();
+  const work = async () => {
+    while (keys.length) {
+      const key = keys.shift(), L = SPORTS_LEAGUES[key];
+      try {
+        const data = await getJson(`${sportsBase()}/apis/site/v2/sports/${L.path}/scoreboard?dates=${dateStr}`);
+        for (const ev of Array.isArray(data.events) ? data.events : []) { const g = normalizeSportsEvent(ev, key); if (g.start) out.push(g); }
+      } catch { /* that league has nothing for the day */ }
+    }
+  };
+  await Promise.all([work(), work(), work(), work()]);
+  out.sort((a, b) => a.start - b.start);
+  sportsExtra.days[dateStr] = { at: now, games: out };
+  const old = Object.keys(sportsExtra.days); if (old.length > 14) delete sportsExtra.days[old[0]];
+  return out;
+}
+async function sportsGame(key, id) {
+  const L = SPORTS_LEAGUES[key];
+  const ck = key + ':' + id, hit = sportsExtra.games[ck];
+  if (hit && Date.now() - hit.at < 25000) return hit.data;
+  const raw = await getJson(`${sportsBase()}/apis/site/v2/sports/${L.path}/summary?event=${encodeURIComponent(id)}`);
+  const teams = (raw.boxscore && Array.isArray(raw.boxscore.teams)) ? raw.boxscore.teams : [];
+  const comp = ((raw.header && raw.header.competitions) || [])[0] || {};
+  const homeId = String(((comp.competitors || []).find((x) => x.homeAway === 'home') || {}).id || '');
+  const sideOf = (t) => String((t.team && t.team.id) || '');
+  const home = teams.find((t) => sideOf(t) === homeId) || teams.find((t) => t.homeAway === 'home') || teams[1];
+  const away = teams.find((t) => t !== home) || teams[0];
+  const stats = [];
+  if (home && away) {
+    const hs = Array.isArray(home.statistics) ? home.statistics : [], as = Array.isArray(away.statistics) ? away.statistics : [];
+    for (const a of as.slice(0, 14)) {
+      const h = hs.find((x) => x.name === a.name);
+      if (h && (a.displayValue || a.displayValue === 0) && (h.displayValue || h.displayValue === 0)) stats.push({ label: trim(a.label || a.name, 28), away: trim(a.displayValue, 12), home: trim(h.displayValue, 12) });
+    }
+  }
+  const plays = [];
+  const rawPlays = Array.isArray(raw.plays) ? raw.plays : Array.isArray(raw.scoringPlays) ? raw.scoringPlays : [];
+  for (const p of rawPlays.slice(-14).reverse()) {
+    const txt = trim(p.text || p.shortText, 160); if (!txt) continue;
+    plays.push({ time: trim((p.clock && p.clock.displayValue) || (p.period && p.period.displayValue) || (p.period && p.period.number ? 'P' + p.period.number : ''), 10), text: txt, scoring: !!p.scoringPlay });
+  }
+  const gi = raw.gameInfo || {};
+  const data = { id: ck, venue: trim(gi.venue && gi.venue.fullName, 60), city: trim(gi.venue && gi.venue.address && gi.venue.address.city, 40), attendance: gi.attendance || 0, stats, plays };
+  sportsExtra.games[ck] = { at: Date.now(), data };
+  const old = Object.keys(sportsExtra.games); if (old.length > 60) delete sportsExtra.games[old[0]];
+  return data;
+}
+async function sportsStandings(key) {
+  const L = SPORTS_LEAGUES[key];
+  const hit = sportsExtra.standings[key];
+  if (hit && Date.now() - hit.at < 15 * 60000) return hit.data;
+  const raw = await getJson(`${sportsBase()}/apis/v2/sports/${L.path}/standings`);
+  const groups = [];
+  const walk = (node, depth) => {
+    if (!node || depth > 4) return;
+    const entries = node.standings && Array.isArray(node.standings.entries) ? node.standings.entries : null;
+    if (entries) {
+      const stat = (e, ...names) => { for (const n of names) { const x = (e.stats || []).find((y) => y.name === n || y.abbreviation === n); if (x && x.displayValue != null) return trim(x.displayValue, 8); } return ''; };
+      const rows = entries.slice(0, 20).map((e) => ({ id: trim(e.team && e.team.id, 12), name: trim((e.team && (e.team.shortDisplayName || e.team.displayName)) || '', 40), abbr: trim(e.team && e.team.abbreviation, 6),
+        w: stat(e, 'wins', 'W'), l: stat(e, 'losses', 'L'), d: stat(e, 'ties', 'draws', 'D'), pct: stat(e, 'winPercent', 'PCT'), pts: stat(e, 'points', 'PTS'), gp: stat(e, 'gamesPlayed', 'GP') }));
+      if (rows.length) groups.push({ name: trim(node.name || node.abbreviation || L.name, 40), rows });
+    }
+    for (const ch of Array.isArray(node.children) ? node.children : []) walk(ch, depth + 1);
+  };
+  walk(raw, 0);
+  const data = { league: key, name: L.name, groups: groups.slice(0, 8) };
+  sportsExtra.standings[key] = { at: Date.now(), data };
+  return data;
+}
 async function sportsTeams(key) {
   const L = SPORTS_LEAGUES[key];
   if (!L) return null;
@@ -1409,6 +1487,33 @@ async function handle(req, res) {
     const key = String(url.searchParams.get('league') || '');
     if (!SPORTS_LEAGUES[key]) return send(res, 404, { error: 'No such league' });
     try { return send(res, 200, { league: key, name: SPORTS_LEAGUES[key].name, group: SPORTS_LEAGUES[key].group, teams: await sportsTeams(key) }); } catch (e) { return send(res, 502, { error: `Can't load the teams: ${e.message}` }); }
+  }
+  if (url.pathname === '/sports/day' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const d = String(url.searchParams.get('date') || '');
+    if (!/^20\d{6}$/.test(d)) return send(res, 400, { error: 'Give the date as YYYYMMDD' });
+    const diff = (Date.UTC(+d.slice(0, 4), +d.slice(4, 6) - 1, +d.slice(6, 8)) - Date.now()) / 86400000;
+    if (diff < -2 || diff > 10) return send(res, 400, { error: 'That day is out of range' });
+    const c = sportsCfg();
+    if (!c.enabled) return send(res, 200, { enabled: false, games: [] });
+    try { return send(res, 200, { enabled: true, date: d, games: await sportsDay(d) }); } catch (e) { return send(res, 502, { error: `Can't load that day: ${e.message}` }); }
+  }
+  if (url.pathname === '/sports/game' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const key = String(url.searchParams.get('league') || ''), id = String(url.searchParams.get('id') || '');
+    if (!SPORTS_LEAGUES[key] || !/^[\w-]{1,24}$/.test(id)) return send(res, 400, { error: 'Unknown game' });
+    if (!sportsCfg().enabled) return send(res, 200, { stats: [], plays: [] });
+    try { return send(res, 200, await sportsGame(key, id)); } catch (e) { return send(res, 502, { error: `Can't load the game: ${e.message}` }); }
+  }
+  if (url.pathname === '/sports/standings' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const key = String(url.searchParams.get('league') || '');
+    if (!SPORTS_LEAGUES[key]) return send(res, 404, { error: 'No such league' });
+    if (!sportsCfg().enabled) return send(res, 200, { league: key, groups: [] });
+    try { return send(res, 200, await sportsStandings(key)); } catch (e) { return send(res, 502, { error: `Can't load the standings: ${e.message}` }); }
   }
   if (url.pathname === '/sports/aliases' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
