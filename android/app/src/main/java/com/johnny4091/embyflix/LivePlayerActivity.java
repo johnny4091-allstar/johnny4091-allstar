@@ -121,6 +121,7 @@ public class LivePlayerActivity extends Activity {
 
     private ExoPlayer player;
     private PlayerView playerView;
+    private AuroraLoader loader;
     private LinearLayout banner;
     private ImageView bannerLogo;
     private TextView bannerTitle, bannerNow, bannerGroup, status, numberEntry;
@@ -261,8 +262,11 @@ public class LivePlayerActivity extends Activity {
             @Override
             public void onPlaybackStateChanged(int state) {
                 // Count stalls while watching (not the start of a channel), for the app log.
+                boolean midPlay = wasReady;
                 if (state == Player.STATE_BUFFERING && wasReady) stalls++;
                 wasReady = state == Player.STATE_READY;
+                if (state == Player.STATE_BUFFERING && status.getVisibility() != View.VISIBLE) showLoader(midPlay);
+                else if (state != Player.STATE_BUFFERING) loader.hide();
                 if (state == Player.STATE_READY) {
                     if (awaitingStart) { awaitingStart = false; recordStart(android.os.SystemClock.elapsedRealtime() - tunedAt); }
                     retries = 0;
@@ -293,6 +297,15 @@ public class LivePlayerActivity extends Activity {
         if (playerView != null) playerView.setPlayer(null);
         player.release();
         player = null;
+    }
+
+    /** The Aurora loading screen: "Tuning to ..." for a channel that is starting, "Buffering..." when a running one stalls. */
+    private void showLoader(boolean midPlay) {
+        if (loader == null || channels.isEmpty()) return;
+        String hint = "small".equals(bufferLevel)
+                ? "Your TV provider is slow to answer. Aurora can't speed that up."
+                : "Slow internet or a busy TV provider. Settings \u2192 Playback \u2192 Live TV buffer \u2192 Small starts channels faster.";
+        loader.show(midPlay ? "Buffering\u2026" : "Tuning to " + channels.get(index).name + "\u2026", hint);
     }
 
     /** A channel's first picture arrived {ms} after it was chosen. */
@@ -331,6 +344,8 @@ public class LivePlayerActivity extends Activity {
         player.setMediaItem(mediaItem(c.url));
         player.prepare();
         player.setPlayWhenReady(true);
+        loader.hide(); // so the words and the "taking longer" timer start afresh for this channel
+        showLoader(false);
         handler.removeCallbacks(watchdog);
         handler.postDelayed(watchdog, WATCHDOG_MS);
         // Report the channel once the viewer settles on it (not every channel while flicking through).
@@ -426,6 +441,7 @@ public class LivePlayerActivity extends Activity {
     private void retryAfterError(PlaybackException error) {
         if (player == null) return;
         retries++;
+        if (loader != null) loader.hide(); // the message below takes the middle of the screen
         bufferingSince = 0;
         int code = error == null ? 0 : httpCode(error);
         String hint = providerHint(code);
@@ -557,10 +573,12 @@ public class LivePlayerActivity extends Activity {
 
         playerView = new PlayerView(this);
         playerView.setUseController(false);
-        playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS);
+        playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); // the Aurora loader below replaces the built-in circle
         playerView.setKeepScreenOn(true);
         playerView.setOnClickListener(v -> toggleList());
         root.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        loader = new AuroraLoader(this);
+        root.addView(loader, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
 
         // Channel banner along the bottom.
         banner = new LinearLayout(this);

@@ -2378,6 +2378,10 @@
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
         device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), guardUrl: guardEnabled ? guardUrl : undefined, buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
   }
+  // The Aurora loading screen of the video player: a glowing ring around the name, with words under it.
+  function auroraLoaderHtml(words, hint = '') {
+    return `<div class="al${hint ? ' slow' : ''}" role="status" aria-live="polite"><div class="al-logo" aria-hidden="true"><i class="al-halo"></i><i class="al-ring"></i><span>AURORA</span></div><div class="al-msg">${esc(words)}</div>${hint ? `<div class="al-sub">${esc(hint)}</div>` : ''}</div>`;
+  }
   // ----- Favorites -----
   // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
   // Emby, so they're kept per account in the viewer's display preferences ("aurora-favorites"): the same list on every
@@ -9039,13 +9043,14 @@
     const el = $('#player'), video = $('#video'), status = $('#player-status');
     el.classList.remove('hidden');
     nativeApp?.setPlayerMode(true);
-    status.innerHTML = '<div class="spinner"></div>';
+    status.innerHTML = auroraLoaderHtml('Starting…');
+    delete status.dataset.buf;
     status.classList.remove('hidden');
     // A bare spinner for a long time looks like a hang: after a while say what it is waiting for.
     clearTimeout(player.slowTimer);
     player.slowTimer = setTimeout(() => {
-      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.spinner')) return;
-      status.innerHTML = '<div class="spinner"></div><p>Still waiting for the server…<br><small>If this keeps going, check your connection, or tell the admin.</small></p>';
+      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.al')) return;
+      status.innerHTML = auroraLoaderHtml('This is taking longer than usual…', 'Slow internet or a busy server. If this keeps going, check your connection, or tell the admin.');
     }, 10000);
     $('#player-next').classList.add('hidden');
     $('#skip-intro').classList.add('hidden');
@@ -9835,6 +9840,20 @@
     ['timeupdate', 'play', 'pause', 'durationchange', 'volumechange'].forEach((ev) => video.addEventListener(ev, updateOsd));
     video.addEventListener('loadedmetadata', () => { if (video.playbackRate !== player.speed) applySpeed(); });
     video.addEventListener('playing', () => { if (video.playbackRate !== player.speed) applySpeed(); });
+    // A running video that stalls shows the same loading screen (after a moment, so a quick hiccup doesn't flash it).
+    let bufTimer = null;
+    const bufStatus = $('#player-status');
+    const endBuffering = () => { clearTimeout(bufTimer); if (bufStatus.dataset.buf) { delete bufStatus.dataset.buf; bufStatus.classList.add('hidden'); } };
+    video.addEventListener('waiting', () => {
+      clearTimeout(bufTimer);
+      bufTimer = setTimeout(() => {
+        if (!bufStatus.classList.contains('hidden') || video.paused || video.ended || video.readyState >= 3 || !$('#player') || $('#player').classList.contains('hidden')) return;
+        bufStatus.dataset.buf = '1';
+        bufStatus.innerHTML = auroraLoaderHtml('Buffering…');
+        bufStatus.classList.remove('hidden');
+      }, 700);
+    });
+    ['playing', 'canplay', 'seeked', 'pause', 'ended', 'emptied'].forEach((ev) => video.addEventListener(ev, endBuffering));
     video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
     video.addEventListener('play', () => {
       if (player.suspended) resumeSuspended();
