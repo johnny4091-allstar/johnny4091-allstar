@@ -26,7 +26,7 @@ import android.widget.TextView;
 final class AuroraLoader extends LinearLayout {
     private static final long SLOW_MS = 8000;
     private final Logo logo;
-    private final TextView message, hint;
+    private TextView message, hint; // not final: the slowTask below is built before the constructor sets them
     private String slowHint = "";
     private boolean slow;
 
