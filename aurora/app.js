@@ -771,14 +771,16 @@
   // The intro sound, timed to the splash animation. Android lets it play without a tap; a normal browser may not.
   function playSplashSound() {
     if (store.get('ef.pref.splashSound') === 'off' || document.hidden) return;
-    // The sound is made in splash.js, lined up with its picture. The old recording is only a fallback.
-    if (window.AuroraSplash?.sound) { window.AuroraSplash.sound(); return; }
+    // A recording of "Aurora Pulse" plays through a normal audio element, which the TV's WebView lets through. If that is
+    // refused, splash.js makes the same sound itself.
     try {
-      const audio = new Audio('sounds/aurora-intro.mp3');
-      audio.volume = 0.7;
-      audio.play().catch(() => { /* blocked until the page is tapped; stay quiet */ });
+      const audio = new Audio('sounds/aurora-pulse.mp3');
+      audio.volume = 1;
+      const fallback = () => { try { window.AuroraSplash?.sound?.(); } catch { /* quiet */ } };
+      const pr = audio.play();
+      if (pr?.catch) pr.catch(fallback);
       document.addEventListener('visibilitychange', () => { if (document.hidden) audio.pause(); }, { once: true });
-    } catch { /* no audio support */ }
+    } catch { window.AuroraSplash?.sound?.(); }
   }
 
   function hideSplashWhenHomeReady() {
