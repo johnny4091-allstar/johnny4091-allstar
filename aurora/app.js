@@ -4544,6 +4544,12 @@
       });
     } catch (e) {
       if (quick) guardDownUntil = Date.now() + 5 * 60000;
+      // The browser's own words ("signal timed out", "Failed to fetch") mean nothing to anyone: say what happened and what to check.
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+        const t = new Error("Aurora Guard didn't answer in time, so nothing was saved. Check that the PC running it is on and online (and that the Aurora Guard task is running), then try again.");
+        t.timeout = true;
+        throw t;
+      }
       throw e;
     }
     guardDownUntil = 0;
