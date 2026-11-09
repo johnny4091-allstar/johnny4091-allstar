@@ -4,7 +4,7 @@ A Netflix-style web app for your own Emby media server. Plain HTML/CSS/JavaScrip
 
 ## Features
 
-- Opening screen (`splash.js`): a jump through space, a flash and shockwave, then the logo and "Where streaming is possible", drawn on a canvas (in a background worker where the device allows, so it stays smooth while the app starts) with the "Aurora Pulse" sound (`sounds/aurora-pulse.mp3`, rendered from the synthesiser in splash.js; Settings → Sound when Aurora opens turns it off). It stays up about 3.9 seconds (`SPLASH_MIN` in app.js). On a TV it draws fewer stars at a lower resolution; with reduced motion it shows the finished screen once.
+- Opening screen (`splash.js`): a jump through space, a flash and shockwave, then the logo and "Where streaming is possible", drawn on a canvas (in a background worker where the device allows, so it stays smooth while the app starts) with the "Aurora Pulse" sound (`sounds/aurora-pulse.mp3`, rendered from the synthesiser in splash.js; Settings → Sound when Aurora opens turns it off). It stays up 12 seconds (`SPLASH_MIN` in app.js). On a TV it draws fewer stars at a lower resolution; with reduced motion it shows the finished screen once.
 
 Versions read `V2.5.4`. The CI build number N becomes `2.(N div 50).(N mod 50)` (build 254 is V2.5.4). The release is tagged `aurora-v2.5.4-b254`; the trailing build number is what the Android app compares to decide an update is newer, so it must keep rising, and older `2.0.N` installs still update normally.
 

@@ -739,9 +739,9 @@
   }
 
   // ---------- Splash ----------
-  // The opening animation (splash.js) runs about 3.8 seconds; the screen stays up at least that long, then fades into the first screen.
+  // The opening animation (splash.js) animation plays in the first ~4 seconds, then the finished logo stays while the bar fills; the screen stays up at least 12 seconds, then fades into the first screen.
   // It never holds anyone for longer than SPLASH_MAX if the app is slow to load.
-  const SPLASH_MIN = 3900, SPLASH_MAX = 8000;
+  const SPLASH_MIN = 12000, SPLASH_MAX = 15000;
   let splashDone = false;
   // Android may stop the app's page to free memory while the native live TV player is in front, and the app
   // then loads it again. That's no time for the opening screen: go straight back to where the viewer was.

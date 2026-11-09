@@ -75,7 +75,7 @@
       ctx.restore();
     }
     function bar(t) {
-      var w = W * (W > H ? 0.30 : 0.46), h = Math.max(2, W * 0.004), x = L.cx - w / 2, y = H * 0.92, p = ease(t / 3.6);
+      var w = W * (W > H ? 0.30 : 0.46), h = Math.max(2, W * 0.004), x = L.cx - w / 2, y = H * 0.92, p = Math.min(1, t / 12);
       ctx.save(); ctx.fillStyle = 'rgba(255,255,255,.1)'; ctx.fillRect(x, y, w, h);
       var g = ctx.createLinearGradient(x, 0, x + w, 0); g.addColorStop(0, '#2ad4d0'); g.addColorStop(0.5, '#4f7bff'); g.addColorStop(1, '#9a6bff');
       ctx.fillStyle = g; ctx.fillRect(x, y, w * p, h); ctx.restore();
