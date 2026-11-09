@@ -339,3 +339,11 @@ Settings → **Speed test** measures the connection to the Aurora server: ping (
 bitrate-test address, about 7 seconds) and upload (about 6 seconds of data sent to the guard). It says in plain words what the connection can handle (Live TV,
 1080p, 4K), suggests a video quality (**Use it** sets Streaming quality), keeps the last 5 results on the device, and can send the result to support, where it
 shows in Admin → Support. Auto quality also starts from what was just measured. About 30 to 60 MB of data is used. With an older guard the upload part is skipped.
+
+## Hardening (guard 1.15.1)
+
+- A crash in one background job or request is logged and the guard carries on (`uncaughtException` / `unhandledRejection` handlers).
+- Connections that start a request and never finish it are closed after 15 seconds (headers) / 2 minutes (whole request); bad requests get a 400.
+- `/limits/__proto__`, `/limits/constructor` and similar special names are refused with 400 instead of being stored as accounts.
+- A request body over 64 KB now gets a clean 400 "too large" instead of a dropped connection.
+- Saving `limits.json` retries a few times when Windows (antivirus, backup) holds the file for a moment.

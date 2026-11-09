@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.15.0';
+const VERSION = '1.15.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -202,7 +202,13 @@ try { store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8
 function saveStore() {
   const tmp = STORE_FILE + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(store, null, 1));
-  fs.renameSync(tmp, STORE_FILE); // atomic, so a crash never leaves half a file
+  // Atomic, so a crash never leaves half a file. On Windows an antivirus or backup program can hold the file for a moment, so try again.
+  for (let i = 0; ; i++) {
+    try { fs.renameSync(tmp, STORE_FILE); return; } catch (e) {
+      if (i >= 4 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e;
+      const until = Date.now() + 60 * (i + 1); while (Date.now() < until) { /* wait briefly */ }
+    }
+  }
 }
 // ---------- Channel reports and the TV provider's API ----------
 // The provider's API key is set from Aurora's Admin screen and kept ONLY here (data/provider.json, readable by the
@@ -1301,7 +1307,7 @@ function send(res, status, body) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
-    req.on('data', (c) => { size += c.length; if (size > 64 * 1024) { reject(new Error('too large')); req.destroy(); } else chunks.push(c); });
+    req.on('data', (c) => { size += c.length; if (size > 64 * 1024) { if (!req.tooLarge) { req.tooLarge = true; reject(new Error('too large')); } req.resume(); chunks.length = 0; } else if (!req.tooLarge) chunks.push(c); });
     req.on('end', () => {
       try {
         let v = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
@@ -1332,6 +1338,8 @@ async function handle(req, res) {
   const url = new URL(req.url, 'http://x');
   const ip = req.socket.remoteAddress || '';
   if (req.method === 'OPTIONS') return send(res, 204);
+  // These names are special on every JavaScript object: as an account or record id they would change how the saved lists behave.
+  if (/(^|\/)(__proto__|constructor|prototype)(\/|$)/i.test(decodeURIComponent(url.pathname.replace(/%(?![0-9a-f]{2})/gi, '%25')))) return send(res, 400, { error: 'Not a valid id' });
   if (url.pathname === '/health' && req.method === 'GET') {
     return send(res, 200, { ok: true, service: 'aurora-guard', version: VERSION });
   }
@@ -2392,16 +2400,19 @@ function start() {
       setInterval(() => log('REMINDER: the https endpoint is still NOT running.', cert.error), 10 * 60000).unref();
     } else {
       log(`Certificate loaded${legacyProviderOn() ? ' (OpenSSL legacy provider on)' : ''}.`);
-      server = https.createServer({ pfx: cert.pfx, passphrase: cfg.pfxPassphrase || undefined }, handler);
+      server = https.createServer({ pfx: cert.pfx, passphrase: cfg.pfxPassphrase || undefined, connectionsCheckingInterval: 5000 }, handler);
     }
   } else {
     if (!isLocalHost() && !cfg.allowInsecureHttp) {
       console.error('No certificate configured. Admin tokens must not travel over plain http on the internet: set "pfxPath" (the same .pfx certificate Emby uses for https), or "host": "127.0.0.1" for local testing.');
       process.exit(1);
     }
-    server = http.createServer(handler);
+    server = http.createServer({ connectionsCheckingInterval: 5000 }, handler);
   }
   if (server) {
+    // Close connections that start a request and never finish it (a slow or broken client must not hold a socket for minutes).
+    server.headersTimeout = 15000; server.requestTimeout = 120000; server.keepAliveTimeout = 5000; server.maxHeadersCount = 60;
+    server.on('clientError', (e, socket) => { try { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); } catch { /* already closed */ } });
     server.on('error', (e) => {
       log(e.code === 'EADDRINUSE'
         ? `Port ${cfg.port} is already in use. Is another copy of the guard already running (Task Manager → node.exe), or another program on that port? Change "port" in config.json, or stop the other one.`
@@ -2427,6 +2438,10 @@ async function testAlert() {
   console.log(r.ok ? `OK: the webhook accepted it (${r.status}).` : `FAILED: ${r.status ? 'the webhook answered ' + r.status : r.error}`);
   process.exit(r.ok ? 0 : 1);
 }
+
+// A bug in one timer or request must never stop the service for everyone: log it and carry on.
+process.on('uncaughtException', (e) => { try { log('UNEXPECTED ERROR (carrying on):', (e && e.stack) || e); } catch { /* nothing more to do */ } });
+process.on('unhandledRejection', (e) => { try { log('UNEXPECTED ERROR in the background (carrying on):', (e && e.stack) || e); } catch { /* nothing more to do */ } });
 
 // Usage and sharing are saved every 5 minutes; save once more when the service is stopped.
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { saveStore(); } catch {} process.exit(0); });
