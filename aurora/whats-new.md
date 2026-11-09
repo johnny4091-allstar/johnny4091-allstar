@@ -1,1 +1,2 @@
-- New: Settings → Speed test. Check your ping, download and upload, see whether your connection can handle Live TV, 1080p and 4K, and pick the right video quality in one tap. You can send the result to your provider.
+- New in Live TV: the Sports tab has a fresh look. Pick any day this week, see your team's game at the top, and tap a game for stats, plays, standings and the best channel to watch it on. Turn on alerts for scoring plays and final scores.
+- New: A new loading screen for videos and Live TV channels: a glowing AURORA ring with words under it ("Starting…", "Buffering…", "Tuning to …"). If it takes more than 8 seconds it says so and tells you what can help.

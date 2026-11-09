@@ -1016,6 +1016,10 @@
 
   // ---------- Router ----------
   let routeToken = 0;
+  // Timers a page starts to keep itself fresh. They stop as soon as the viewer leaves the page (not at their next tick, which
+  // left every page visited in the last minute alive in memory).
+  const routeTimers = [];
+  const routeInterval = (fn, ms) => { const id = setInterval(fn, ms); routeTimers.push(id); return id; };
 
   let lastRouteAt = Date.now();
   function route() {
@@ -1026,6 +1030,7 @@
     const params = new URLSearchParams(query || '');
     const name = path || 'home';
     const token = ++routeToken;
+    routeTimers.splice(0).forEach(clearInterval);
 
     $$('[data-route]').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
     paintMaintNav();
@@ -1607,7 +1612,7 @@
     if ($('#modal').classList.contains('hidden')) return;
     $('#modal').classList.add('hidden');
     document.body.style.overflow = '';
-    $('#modal .modal-box')?.classList.remove('upd-box', 'su-box'); // the narrower, modern look of the update window and the setup
+    $('#modal .modal-box')?.classList.remove('upd-box', 'su-box', 'sp-box'); // the narrower, modern look of the update window and the setup
     restoreFocus('modal');
   }
 
@@ -2373,6 +2378,10 @@
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
         device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), guardUrl: guardEnabled ? guardUrl : undefined, buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
   }
+  // The Aurora loading screen of the video player: a glowing ring around the name, with words under it.
+  function auroraLoaderHtml(words, hint = '') {
+    return `<div class="al${hint ? ' slow' : ''}" role="status" aria-live="polite"><div class="al-logo" aria-hidden="true"><i class="al-halo"></i><i class="al-ring"></i><span>AURORA</span></div><div class="al-msg">${esc(words)}</div>${hint ? `<div class="al-sub">${esc(hint)}</div>` : ''}</div>`;
+  }
   // ----- Favorites -----
   // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
   // Emby, so they're kept per account in the viewer's display preferences ("aurora-favorites"): the same list on every
@@ -2556,6 +2565,13 @@
         store.set('ef.liveBufferTip', '1');
         toast('Live TV kept stopping to buffer. A bigger buffer can help: Settings → Playback → Live TV buffer → Large.', 9000);
       }
+    }
+    // How quickly channels started this time: kept in the app log (it reaches the admins with the automatic reports and Help).
+    if (stats?.starts > 0) {
+      const sec = (ms) => (ms / 1000).toFixed(1);
+      const line = `Live TV: ${stats.starts} channel ${stats.starts === 1 ? 'start' : 'starts'}, average ${sec(stats.startAvg)} s, slowest ${sec(stats.startMax)} s${stats.startKbps ? `, stream ${(stats.startKbps / 1000).toFixed(1)} Mbit/s` : ''}, buffer ${stats.buffer}`;
+      appLog.add(stats.startAvg > 8000 ? 'warn' : 'info', line);
+      if (stats.startSlow >= 2 || stats.startAvg > 8000) playLog.add({ kind: 'live-slow-start', title: ch?.name || '', seconds: Math.round(stats.startAvg / 1000), buffer: stats.buffer, count: stats.startSlow });
     }
     if (ch && stats?.stalls >= 3) reportChannel(ch, 'Buffering', { auto: true, group: p.group });
     if (stats?.stalls >= 3) playLog.add({ kind: 'live-stalling', title: ch?.name || '', stalls: stats.stalls, watchedMin: stats.minutes, buffer: stats.buffer });
@@ -2828,7 +2844,7 @@
       });
       if (shownInfo) showInfo(shownInfo.ch, shownInfo.p);
     };
-    const timer = setInterval(tick, 30000);
+    const timer = routeInterval(tick, 30000);
 
     // ----- Rows -----
     // Fills (or refills) one channel's line of programmes.
@@ -3092,6 +3108,7 @@
       if (p) { sportsPrefs = { spoilerFree: false, reminders: [], ...p }; store.set(sportsPrefsKey(), JSON.stringify(sportsPrefs)); }
     } catch { /* keep this device's copy */ }
     syncReminderAlarms();
+    startSportsAlerts();
   }
   // Hands the Android app every reminder still to come (it schedules a notification for each; asking again is harmless).
   function syncReminderAlarms() {
@@ -3122,6 +3139,32 @@
       syncReminderAlarms();
     } else toast("Reminder saved. You'll see it here while Aurora is open. Notifications need the Aurora app.", 4500);
     return true;
+  }
+  // Score and final-score alerts for games the customer follows (set in the game sheet). They show while Aurora is open.
+  let sportsAlertTimer = null;
+  const sportsSnap = new Map();
+  const followedNow = () => Object.entries(sportsPrefs.follow || {}).filter(([, f]) => (f.score || f.final) && f.start > Date.now() - 8 * 3600000);
+  function startSportsAlerts() {
+    if (!followedNow().length) { if (sportsAlertTimer) { clearInterval(sportsAlertTimer); sportsAlertTimer = null; } return; }
+    if (sportsAlertTimer) return;
+    const check = async () => {
+      if (!state.userId || !guardEnabled) return;
+      if (!followedNow().length) { startSportsAlerts(); return; }
+      if (document.hidden || isPlayerOpen()) return;
+      const feed = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null);
+      if (!feed?.enabled) return;
+      for (const g of feed.games || []) {
+        const f = (sportsPrefs.follow || {})[g.id]; if (!f || !g.home || !g.away) continue;
+        const cur = { a: Number(g.away.score) || 0, h: Number(g.home.score) || 0, state: g.state }, prev = sportsSnap.get(g.id);
+        sportsSnap.set(g.id, cur);
+        if (!prev) continue;
+        const an = g.away.abbr || g.away.short || g.away.name, hn = g.home.abbr || g.home.short || g.home.name;
+        if (f.final && prev.state !== 'post' && cur.state === 'post') toast(sportsPrefs.spoilerFree ? `${an} at ${hn} has finished` : `Final: ${an} ${cur.a}, ${hn} ${cur.h}`, 8000);
+        else if (f.score && !sportsPrefs.spoilerFree && cur.state === 'in' && (cur.a !== prev.a || cur.h !== prev.h)) toast(`${cur.a !== prev.a ? an : hn} scores. ${an} ${cur.a}, ${hn} ${cur.h}`, 7000);
+      }
+    };
+    sportsAlertTimer = setInterval(check, 60000);
+    check();
   }
   // While Aurora is open: a toast when a reminded game is about to start (the Android notification covers the closed app).
   const firedReminders = new Set();
@@ -3192,7 +3235,11 @@
       return [...out];
     };
     const has = (txt, toks) => toks.some((k) => txt.includes(' ' + k + ' '));
-    const chans = (list) => { const seen = new Set(); return list.filter((c) => { const k = (c.id || '') + '|' + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => hd(a) - hd(b)); };
+    // Best channel first: the one the customer picked before, a favourite, the broadcaster the league names, then HD over SD.
+    let picks = {}; try { picks = JSON.parse(store.get('ef.sports.picks') || '{}') || {}; } catch { /* ignore */ }
+    const netsOf = (g) => (g?.broadcasts || []).map((n) => sportNorm(sportAlias(n, aliases)).replace(/ /g, '')).filter((n) => n.length >= 3);
+    const rank = (ch, group, g) => (picks[group] === (ch.id || '') + '|' + ch.name ? -100 : 0) + (isIptvFav(ch) ? -20 : 0) + (netsOf(g).some((n) => sportNorm(ch.name).replace(/ /g, '').includes(n)) ? -30 : 0) + hd(ch) * 10;
+    const chans = (list, group, g) => { const seen = new Set(); return list.filter((c) => { const k = (c.id || '') + '|' + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => rank(a, group, g) - rank(b, group, g)); };
     // 1) the feed's games
     for (const g of S.feed?.games || []) {
       if (g.state === 'post' && g.start < now - 6 * 3600000) continue;
@@ -3210,14 +3257,14 @@
         for (const net of g.broadcasts) {
           const n = sportNorm(sportAlias(net, aliases)).replace(/ /g, '');
           if (n.length < 3) continue;
-          for (const ch of S.channels) if (sportNorm(ch.name).replace(/ /g, '').includes(n) && found.length < 3) found.push(ch);
+          for (const ch of S.channels) if (sportNorm(ch.name).replace(/ /g, '').includes(n) && found.length < 6) found.push(ch);
           if (found.length) { likely = true; break; }
         }
       }
       const hours = SPORT_HOURS[g.group] || 3;
       cards.push({ key: g.id, feed: g, kind: 'feed', league: g.group, leagueName: g.leagueName, title: g.home && g.away ? `${g.away.short || g.away.name} at ${g.home.short || g.home.name}` : g.name,
         start: g.start, end: g.state === 'in' ? Math.max(now + 600000, g.start + hours * 3600000) : g.start + hours * 3600000,
-        state: g.state, chans: chans(found), likely, teams: [g.home, g.away].filter(Boolean).map((t) => ({ lg: g.league, id: t.id, name: t.name })) });
+        state: g.state, chans: chans(found, g.group, g), likely, teams: [g.home, g.away].filter(Boolean).map((t) => ({ lg: g.league, id: t.id, name: t.name })) });
     }
     // 2) guide events the feed didn't explain (other leagues, events, or no feed): grouped across channels
     const groups = new Map();
@@ -3228,7 +3275,7 @@
       g.chans.push(e.ch);
       groups.set(key, g);
     });
-    for (const g of groups.values()) { if (g.end <= now) continue; g.chans = chans(g.chans); cards.push(g); }
+    for (const g of groups.values()) { if (g.end <= now) continue; g.chans = chans(g.chans, g.league, null); cards.push(g); }
     return cards.sort((a, b) => a.start - b.start);
   }
 
@@ -3245,11 +3292,19 @@
     const isMine = (c) => c.teams.some((t) => myTeams.some((m) => m.lg === t.lg && String(m.id) === String(t.id)));
     let league = store.get('ef.sports.league') || 'All';
     let cards = sportsCards(S);
+    let dayOff = 0;                      // 0 = today (guide + feed), 1..6 = a later day (feed only)
+    const dayCache = new Map();          // 'YYYYMMDD' -> games from Aurora Guard
+    let sheet = null;                    // the open game sheet: { key, tab, sel, data, std, loading }
+    const dayAt = (off) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + off); return d; };
+    const dayKey = (off) => { const d = dayAt(off); return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; };
+    const heroBg = (a, h) => `--h1:${/^#[0-9a-f]{6}$/i.test(a) ? a : '#3a4a8a'};--h2:${/^#[0-9a-f]{6}$/i.test(h) ? h : '#1d2a66'}`;
     const draw = () => {
       if (!body.isConnected || !isCurrent()) return false;
       const now = Date.now(), spoil = !!sportsPrefs.spoilerFree;
-      cards = sportsCards(S);
-      const visible = cards.filter((c) => c.state === 'post' ? c.start > now - 5 * 3600000 : c.end > now);
+      const dayGames = dayOff ? dayCache.get(dayKey(dayOff)) : null;
+      cards = dayOff ? sportsCards({ ...S, events: [], feed: { games: dayGames || [] } }) : sportsCards(S);
+      const target = dayAt(dayOff).toDateString();
+      const visible = dayOff ? cards.filter((c) => new Date(c.start).toDateString() === target) : cards.filter((c) => c.state === 'post' ? c.start > now - 5 * 3600000 : c.end > now);
       const counts = new Map();
       for (const c of visible) counts.set(c.league, (counts.get(c.league) || 0) + 1);
       const mineN = visible.filter(isMine).length, favN = visible.filter((c) => c.chans.some((ch) => isIptvFav(ch))).length;
@@ -3259,23 +3314,40 @@
       if (league === '__mine' && !mineN) league = 'All';
       if (league === '__fav' && !favN) league = 'All';
       const shown = visible.filter((c) => league === 'All' || (league === '__mine' ? isMine(c) : league === '__fav' ? c.chans.some((ch) => isIptvFav(ch)) : c.league === league));
-      const live = shown.filter((c) => c.state === 'in'), soon = shown.filter((c) => c.state === 'pre' && c.start < now + 14 * 3600000), done = shown.filter((c) => c.state === 'post');
+      // The big game at the top (today only): a live one of your teams, any live one, then your next one, then the next to start.
+      const scored = (c) => !!(c.feed && c.feed.home && c.feed.away);
+      const hero = dayOff ? null : shown.find((c) => c.state === 'in' && scored(c) && isMine(c)) || shown.find((c) => c.state === 'in' && scored(c)) || shown.find((c) => c.state === 'pre' && scored(c) && isMine(c) && c.start < now + 14 * 3600000) || shown.find((c) => c.state === 'pre' && scored(c) && c.start < now + 14 * 3600000) || null;
+      const rest = shown.filter((c) => c !== hero);
+      const live = rest.filter((c) => c.state === 'in'), soon = rest.filter((c) => c.state === 'pre' && (dayOff || c.start < now + 14 * 3600000)), done = rest.filter((c) => c.state === 'post');
       const chip = (id, label) => `<button class="chip${league === id ? ' active' : ''}" data-league="${esc(id)}">${esc(label)}</button>`;
       const crest = (t) => `<span class="sp-crest" style="background:${t.color || '#2b3566'}">${esc((t.abbr || t.short || t.name || '?').slice(0, 3))}</span>`;
       const side = (t, c) => `<div class="sp-row">${crest(t)}<span class="sp-tn">${esc(t.short || t.name)}</span>${c.state === 'pre' ? `<span class="sp-rec">${esc(t.record || '')}</span>` : spoil ? '<span class="sp-sc hide">–</span>' : `<span class="sp-sc${c.state === 'post' && t.winner ? ' win' : ''}">${esc(t.score || '0')}</span>`}</div>`;
+      const bestTag = (c) => c.chans.length ? `<span class="sp-best${c.likely ? ' likely' : ''}">${c.likely ? 'Likely' : 'Best match'}</span>` : '';
       const card = (c) => {
         const ci = cards.indexOf(c), g = c.feed, t = !g && sportTeams(c.title), pct = Math.max(0, Math.min(100, Math.round(100 * (now - c.start) / Math.max(1, c.end - c.start))));
-        const alt = c.chans.slice(1, 4), main = c.chans[0];
-        const status = c.state === 'in' ? `<span class="sp-live">LIVE${g && !spoil && g.detail ? ' · ' + esc(g.detail) : ''}</span>` : c.state === 'post' ? '<span class="sp-when">Final</span>' : `<span class="sp-when">${esc(clockTime(c.start))} · ${esc(untilText(c.start))}</span>`;
+        const main = c.chans[0], net = g && g.broadcasts && g.broadcasts[0];
+        const status = c.state === 'in' ? `<span class="sp-live">LIVE${g && !spoil && g.detail ? ' · ' + esc(g.detail) : ''}</span>` : c.state === 'post' ? '<span class="sp-when">Final</span>' : `<span class="sp-when">${dayOff ? '' : ''}${esc(clockTime(c.start))}${dayOff ? '' : ' · ' + esc(untilText(c.start))}</span>`;
         const teams = g && g.home && g.away ? side(g.away, c) + side(g.home, c) : t ? `<div class="sp-team">${esc(t[0])}</div><div class="sp-team">${esc(t[1])}</div>` : `<div class="sp-title">${esc(g ? g.name : c.title)}</div>`;
         const bell = c.state === 'pre' ? `<button class="sp-bell${hasReminder(c.key) ? ' on' : ''}" data-bell="${ci}" aria-label="Remind me" aria-pressed="${hasReminder(c.key)}">${hasReminder(c.key) ? '\u{1F514} Reminding' : '\u{1F514} Remind me'}</button>` : '';
-        return `<div class="sp-card ${c.state === 'in' ? 'is-live' : c.state === 'post' ? 'is-done' : ''}" role="button" tabindex="0" data-game="${ci}">
-          <div class="sp-top"><span class="sp-lg">${esc(g ? g.leagueName : c.league)}${isMine(c) ? ' ★' : ''}</span>${status}</div>
+        const col = (g && g.away && g.away.color) || '#4f7bff', col2 = (g && g.home && g.home.color) || '#9a6bff';
+        return `<div class="sp-card ${c.state === 'in' ? 'is-live' : c.state === 'post' ? 'is-done' : ''}" role="button" tabindex="0" data-game="${ci}" style="--t1:${/^#[0-9a-f]{6}$/i.test(col) ? col : '#4f7bff'};--t2:${/^#[0-9a-f]{6}$/i.test(col2) ? col2 : '#9a6bff'}">
+          <div class="sp-top"><span class="sp-lg">${esc(g ? g.leagueName : c.league)}${isMine(c) ? ' <b class="sp-star">★</b>' : ''}</span>${status}</div>
           ${teams}
           ${c.state === 'in' && !g ? `<div class="sp-prog"><span style="width:${pct}%"></span></div>` : ''}
-          <div class="sp-foot"><span class="sp-ch">${main ? `${main.num ? `<b>${esc(main.num)}</b> ` : ''}${esc(main.name)}${c.likely ? ' <i>(likely)</i>' : ''}` : '<i>No channel found</i>'}</span>${main && c.state !== 'post' ? '<span class="sp-watch">▶ Watch</span>' : ''}</div>
-          ${alt.length ? `<div class="sp-alt"><span>Also on</span>${alt.map((ch, i) => `<button class="sp-altb" data-game="${ci}" data-alt="${i + 1}">${esc(ch.name)}</button>`).join('')}</div>` : ''}
+          <div class="sp-foot"><span class="sp-ch">${main ? `${net && !c.likely ? `<i class="sp-net">${esc(net.slice(0, 6))}</i>` : ''}${main.num ? `<b>${esc(main.num)}</b> ` : ''}<span>${esc(main.name)}</span>` : '<i class="sp-none">Not on your channels</i>'}</span>${bestTag(c)}${main && c.state !== 'post' ? `<button class="sp-watch" data-watch="${ci}" aria-label="Watch now">▶</button>` : ''}</div>
           ${bell ? `<div class="sp-act">${bell}</div>` : ''}
+        </div>`;
+      };
+      const heroHtml = (c) => {
+        const g = c.feed, main = c.chans[0], ci = cards.indexOf(c);
+        const mid = c.state === 'pre' ? `<div class="sp-hsc">${esc(clockTime(c.start))}</div><div class="sp-hclock">${esc(untilText(c.start))}</div>`
+          : spoil ? '<div class="sp-hsc dim">Hidden</div><div class="sp-hclock">In progress</div>'
+          : `<div class="sp-hsc">${esc(g.away.score || '0')}<span>–</span>${esc(g.home.score || '0')}</div><div class="sp-hclock">${esc(g.detail || '')}</div>`;
+        const tm = (t) => `<div class="sp-htm">${crest(t).replace('sp-crest', 'sp-crest big')}<b>${esc(t.short || t.name)}</b><small>${esc(t.record || '')}${isMine({ teams: [{ lg: g.league, id: t.id }] }) ? ' ★ your team' : ''}</small></div>`;
+        return `<div class="sp-hero" role="button" tabindex="0" data-game="${ci}" style="${heroBg(g.away.color, g.home.color)}">
+          <div class="sp-hl">${c.state === 'in' ? '<span class="sp-livepill">Live</span>' : '<span class="sp-when">Up next</span>'}<span>${esc(g.leagueName)}</span></div>
+          <div class="sp-hb">${tm(g.away)}<div>${mid}</div>${tm(g.home)}</div>
+          <div class="sp-hw">${main ? `<button class="sp-hbtn" data-watch="${ci}">▶ Watch on ${esc(main.name)}</button>${c.chans.length > 1 ? `<button class="sp-hmore" data-sheet="${ci}" data-tab="channels">${c.chans.length - 1} more</button>` : ''}` : `<span class="sp-none">Not on your channels</span>`}</div>
         </div>`;
       };
       const teamRow = (m) => {
@@ -3284,48 +3356,189 @@
         const txt = !g ? 'No game soon' : g.state === 'in' ? (spoil || !g.feed ? 'Playing now' : `Playing now · ${g.feed.away?.abbr || ''} ${g.feed.away?.score || 0}, ${g.feed.home?.abbr || ''} ${g.feed.home?.score || 0}`) : `${new Date(g.start).toLocaleDateString([], { weekday: 'short' })} ${clockTime(g.start)}`;
         return `<span class="sp-tm"><span class="sp-crest" style="background:#2b3566">${esc((m.abbr || m.name).slice(0, 3))}</span>${esc(m.short || m.name)} · ${esc(txt)}</span>`;
       };
+      const anyLive = cards.some((c) => c.state === 'in');
+      const days = Array.from({ length: 7 }, (_, i) => { const d = dayAt(i); return `<button class="sp-day${i === dayOff ? ' on' : ''}" data-day="${i}"><small>${i ? esc(d.toLocaleDateString([], { weekday: 'short' })) : 'Today'}</small><b>${d.getDate()}</b>${i === 0 && anyLive ? '<i></i>' : ''}</button>`; }).join('');
+      const loadingDay = dayOff && !dayGames;
       body.innerHTML = `<div class="sp">
-        <div class="sp-bar"><div class="chip-row sp-chips">${chip('All', 'All')}${mineN ? chip('__mine', `★ My teams · ${mineN}`) : ''}${favN ? chip('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => chip(n, `${n} · ${counts.get(n)}`)).join('')}</div>
+        <div class="sp-bar">${S.feed ? `<div class="sp-days" role="group" aria-label="Day">${days}</div>` : ''}
           ${S.feed ? `<button class="sp-spoil" role="switch" aria-checked="${spoil}" data-spoiler><span>Spoiler-free</span><i class="sp-sw${spoil ? ' on' : ''}"><b></b></i></button>` : ''}</div>
-        ${league === 'All' && myTeams.length ? `<div class="sp-teams"><span class="sp-lab">Your teams</span>${myTeams.slice(0, 8).map(teamRow).join('')}</div>` : ''}
+        <div class="chip-row sp-chips">${chip('All', 'All')}${mineN ? chip('__mine', `★ My teams · ${mineN}`) : ''}${favN ? chip('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => chip(n, `${n} · ${counts.get(n)}`)).join('')}</div>
+        ${league === 'All' && !dayOff && myTeams.length ? `<div class="sp-teams"><span class="sp-lab">Your teams</span>${myTeams.slice(0, 8).map(teamRow).join('')}</div>` : ''}
+        ${hero ? heroHtml(hero) : ''}
+        ${loadingDay ? '<div class="spinner"></div>' : ''}
         ${live.length ? `<h2 class="sp-h"><span class="sp-dot"></span>Live now <small>${live.length} ${live.length === 1 ? 'game' : 'games'}</small></h2><div class="sp-grid">${live.map(card).join('')}</div>` : ''}
-        ${soon.length ? `<h2 class="sp-h">Starting soon <small>next 14 hours</small></h2><div class="sp-grid">${soon.map(card).join('')}</div>` : ''}
-        ${done.length ? `<h2 class="sp-h">Finished <small>last few hours</small></h2><div class="sp-grid">${done.map(card).join('')}</div>` : ''}
-        ${!live.length && !soon.length && !done.length ? `<p class="empty-msg">${S.guide || S.feed || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : 'Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link.'}</p>` : ''}
+        ${soon.length ? `<h2 class="sp-h">${dayOff ? esc(dayAt(dayOff).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })) : 'Starting soon'} <small>${dayOff ? soon.length + (soon.length === 1 ? ' game' : ' games') : 'next 14 hours'}</small></h2><div class="sp-grid">${soon.map(card).join('')}</div>` : ''}
+        ${done.length ? `<h2 class="sp-h">Finished <small>${dayOff ? 'that day' : 'last few hours'}</small></h2><div class="sp-grid">${done.map(card).join('')}</div>` : ''}
+        ${!loadingDay && !hero && !live.length && !soon.length && !done.length ? `<p class="empty-msg">${dayOff ? 'No games found for this day.' : S.guide || S.feed || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : 'Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link.'}</p>` : ''}
         <p class="muted sp-note">${S.feed ? 'Scores come from Aurora; channels are found in your TV guide, so names and times are only as good as the guide.' : S.guide ? 'Found in your channel guide, so names and times are only as good as the guide.' : "Showing what's on now. The full schedule needs the Aurora app and a TV guide."}</p>
       </div>`;
-      const first = $('.sp-card', body);
+      const first = $('.sp-hero, .sp-card', body);
       if (nav.on && first && !body.contains(document.activeElement)) focusEl(first);
       return true;
     };
+    // ---- Watching: the chosen channel is remembered for that kind of game ----
+    const chKey = (ch) => (ch.id || '') + '|' + ch.name;
+    const rememberPick = (c, ch) => { try { const m = JSON.parse(store.get('ef.sports.picks') || '{}'); m[c.league] = chKey(ch); store.set('ef.sports.picks', JSON.stringify(m)); } catch { /* ignore */ } };
     const watch = (ci, altIdx = 0) => {
-      const c = cards[ci];
+      const c = typeof ci === 'object' ? ci : cards[ci];
       const ch = c?.chans[altIdx] || c?.chans[0];
-      if (!ch) { if (c) toast('No channel found for this game yet. Try the Guide tab.', 3500); return; }
+      if (!ch) { if (c) toast('This game is not on your channels. Try the Guide tab.', 3500); return; }
+      if (altIdx) rememberPick(c, ch);
       const list = S.channels, at = list.findIndex((x) => x.id === ch.id && x.name === ch.name);
       playIptv(list, at < 0 ? 0 : at, 'Sports');
     };
-    body.addEventListener('click', (e) => {
+    // ---- The game sheet: Stats, Plays, Standings, Channels ----
+    const sheetCard = () => sheet && cards.find((c) => c.key === sheet.key);
+    const sheetOpen = () => !!sheet && sheet.tok === modalToken && !$('#modal').classList.contains('hidden');
+    const chanWhy = (ch, c) => {
+      const why = [], g = c.feed;
+      if (/\b(hd|fhd|4k|uhd)\b/i.test(ch.name)) why.push('HD');
+      const nets = (g?.broadcasts || []).map((n) => sportNorm(n).replace(/ /g, '')).filter((n) => n.length >= 3);
+      if (nets.some((n) => sportNorm(ch.name).replace(/ /g, '').includes(n))) why.push("matches the league's broadcaster");
+      if (isIptvFav(ch)) why.push('your favourite ★');
+      try { if (JSON.parse(store.get('ef.sports.picks') || '{}')[c.league] === chKey(ch)) why.push('you picked this before'); } catch { /* ignore */ }
+      return why.join(' · ');
+    };
+    const followOf = (c) => (sportsPrefs.follow || {})[c.key] || { score: false, final: false };
+    const setFollow = (c, patch) => {
+      sportsPrefs.follow = { ...(sportsPrefs.follow || {}) };
+      sportsPrefs.follow[c.key] = { ...followOf(c), ...patch, start: c.start };
+      for (const k of Object.keys(sportsPrefs.follow)) if ((sportsPrefs.follow[k].start || 0) < Date.now() - 86400000) delete sportsPrefs.follow[k]; // old games
+      saveSportsPrefs(); startSportsAlerts();
+    };
+    const statBar = (a, b) => { const x = parseFloat(String(a).replace(/[^0-9.-]/g, '')), y = parseFloat(String(b).replace(/[^0-9.-]/g, '')); if (!isFinite(x) || !isFinite(y) || x < 0 || y < 0 || x + y === 0) return ''; return `<div class="sp-sbar"><i style="width:${Math.round(100 * x / (x + y))}%"></i></div>`; };
+    const paintSheet = () => {
+      const c = sheetCard(); if (!c || !sheetOpen()) return;
+      const content = $('#modal-content'), g = c.feed, spoil = !!sportsPrefs.spoilerFree;
+      const selIdx = Math.max(0, sheet.pick ? c.chans.findIndex((x) => chKey(x) === sheet.pick) : 0);
+      const main = c.chans[selIdx];
+      const scoreMid = !g || !g.home ? `<div class="sp-hsc dim" style="font-size:1.1rem">${esc(c.title)}</div>`
+        : c.state === 'pre' ? `<div class="sp-hsc">${esc(clockTime(c.start))}</div><div class="sp-hclock">${esc(new Date(c.start).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</div>`
+        : spoil ? '<div class="sp-hsc dim">Hidden</div><div class="sp-hclock">Spoiler-free is on</div>'
+        : `<div class="sp-hsc">${esc(g.away.score || '0')}<span>–</span>${esc(g.home.score || '0')}</div><div class="sp-hclock">${c.state === 'post' ? 'Final' : esc(g.detail || '')}</div>`;
+      const tm = (t) => `<div class="sp-htm">${crest2(t)}<b>${esc(t.short || t.name)}</b><small>${esc(t.record || '')}</small></div>`;
+      const crest2 = (t) => `<span class="sp-crest big" style="background:${t.color || '#2b3566'}">${esc((t.abbr || t.short || t.name || '?').slice(0, 3))}</span>`;
+      const d = sheet.data;
+      let pane = '';
+      if (sheet.tab === 'stats') {
+        if (c.state === 'pre') pane = `<p class="sp-empty">Stats appear once the game starts.</p>${d?.venue ? `<p class="sp-venue">📍 ${esc(d.venue)}${d.city ? ', ' + esc(d.city) : ''}</p>` : ''}`;
+        else if (spoil) pane = '<p class="sp-empty">Stats are hidden while Spoiler-free is on.</p>';
+        else if (sheet.loading && !d) pane = '<div class="spinner"></div>';
+        else if (!d || !d.stats.length) pane = '<p class="sp-empty">No stats for this game yet.</p>';
+        else pane = d.stats.map((s) => `<div class="sp-stat"><div><b>${esc(s.away)}</b><span>${esc(s.label)}</span><b>${esc(s.home)}</b></div>${statBar(s.away, s.home)}</div>`).join('') + (d.venue ? `<p class="sp-venue">📍 ${esc(d.venue)}${d.city ? ', ' + esc(d.city) : ''}</p>` : '');
+      } else if (sheet.tab === 'plays') {
+        if (c.state === 'pre') pane = '<p class="sp-empty">Plays show up once the game starts.</p>';
+        else if (spoil) pane = '<p class="sp-empty">Plays are hidden while Spoiler-free is on.</p>';
+        else if (sheet.loading && !d) pane = '<div class="spinner"></div>';
+        else if (!d || !d.plays.length) pane = '<p class="sp-empty">No play-by-play for this game.</p>';
+        else pane = d.plays.map((p) => `<div class="sp-play${p.scoring ? ' sc' : ''}"><time>${esc(p.time)}</time><span>${esc(p.text)}</span></div>`).join('');
+      } else if (sheet.tab === 'standings') {
+        const st = sheet.std;
+        if (!st) pane = '<div class="spinner"></div>';
+        else if (st.error || !st.groups.length) pane = `<p class="sp-empty">${esc(st.error || 'Standings are not available for this league.')}</p>`;
+        else {
+          const ids = new Set([g?.home?.id, g?.away?.id].filter(Boolean).map(String));
+          const grp = st.groups.find((x) => x.rows.some((r) => ids.has(String(r.id)))) || st.groups[0];
+          const cols = [['w', 'W'], ['l', 'L'], ['d', 'D'], ['pct', 'PCT'], ['pts', 'PTS']].filter(([k]) => grp.rows.some((r) => r[k]));
+          pane = `<table class="sp-std"><tr><th>${esc(grp.name)}</th>${cols.map(([, h]) => `<th>${h}</th>`).join('')}</tr>${grp.rows.map((r) => {
+            const me = ids.has(String(r.id)) || myTeams.some((m) => String(m.id) === String(r.id));
+            return `<tr class="${me ? 'me' : ''}"><td>${esc(r.name)}${myTeams.some((m) => String(m.id) === String(r.id)) ? ' ★' : ''}</td>${cols.map(([k]) => `<td>${esc(r[k])}</td>`).join('')}</tr>`; }).join('')}</table>`;
+        }
+      } else {
+        const fo = followOf(c);
+        pane = (c.chans.length ? `<div class="sp-pick">${c.chans.slice(0, 6).map((ch, i) => `<button class="sp-opt${i === selIdx ? ' sel' : ''}" data-opt="${i}"><i class="sp-net">${esc(((g?.broadcasts || []).find((n) => sportNorm(ch.name).replace(/ /g, '').includes(sportNorm(n).replace(/ /g, ''))) || ch.name).slice(0, 6))}</i><span class="sp-optt">${esc(ch.name)}<small>${ch.num ? 'Channel ' + esc(ch.num) : ''}${chanWhy(ch, c) ? (ch.num ? ' · ' : '') + esc(chanWhy(ch, c)) : ''}</small></span>${i === 0 ? '<span class="sp-best">Best</span>' : ''}</button>`).join('')}</div><p class="sp-hint">Aurora remembers the channel you pick for next time.</p>`
+            : '<p class="sp-empty">This game is not on your channels. Try the Guide tab, or ask your provider.</p>')
+          + (c.state !== 'post' && g ? `<h3 class="sp-sub">Alerts for this game</h3><div class="sp-alerts">
+              <button class="sp-al" role="switch" aria-checked="${!!fo.score}" data-follow="score"><span>Scoring plays${spoil ? ' <small>(hidden while Spoiler-free is on)</small>' : ''}</span><i class="sp-sw${fo.score ? ' on' : ''}"><b></b></i></button>
+              <button class="sp-al" role="switch" aria-checked="${!!fo.final}" data-follow="final"><span>Final score</span><i class="sp-sw${fo.final ? ' on' : ''}"><b></b></i></button></div>
+              <p class="sp-hint">You'll see these in Aurora while it is open. Reminders before the game start also work when Aurora is closed.</p>` : '');
+      }
+      const tabs = [['stats', 'Stats'], ['plays', 'Plays'], ['standings', 'Standings'], ['channels', 'Channels']];
+      content.innerHTML = `<div class="m-body sp-sheet">
+        <div class="upd-grab" aria-hidden="true"></div>
+        <div class="sp-sh-hero" style="${g?.home ? heroBg(g.away.color, g.home.color) : ''}">
+          <div class="sp-hl">${c.state === 'in' ? '<span class="sp-livepill">Live</span>' : `<span class="sp-when">${c.state === 'post' ? 'Final' : 'Up next'}</span>`}<span>${esc(g ? g.leagueName : c.league)}${sheet.data?.venue ? ' · ' + esc(sheet.data.venue) : ''}</span></div>
+          ${g?.home ? `<div class="sp-hb">${tm(g.away)}<div>${scoreMid}</div>${tm(g.home)}</div>` : `<div class="sp-hb one">${scoreMid}</div>`}
+          <div class="sp-hw"><button class="sp-hbtn" data-sheet-watch${main ? '' : ' disabled'}>${main ? `▶ Watch on ${esc(main.name)}` : 'Not on your channels'}</button>${c.state === 'pre' ? `<button class="sp-hmore${hasReminder(c.key) ? ' on' : ''}" data-sheet-bell aria-label="Remind me">\u{1F514}${hasReminder(c.key) ? ' On' : ''}</button>` : ''}</div>
+        </div>
+        ${g ? `<div class="sp-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${sheet.tab === k}" class="${sheet.tab === k ? 'on' : ''}" data-stab="${k}">${l}</button>`).join('')}</div>` : ''}
+        <div class="sp-pane">${g ? pane : (c.chans.length ? pane : '')}</div>
+      </div>`;
+    };
+    const loadSheetData = async (c) => {
+      const g = c.feed; if (!g || !guardEnabled) return;
+      const key = sheet.key, id = String(g.id).split(':')[1];
+      if (c.state !== 'pre' && !sheet.loading) {
+        sheet.loading = true;
+        guard('/sports/game', { params: { userId: state.userId, league: g.league, id }, quick: true }).then((r) => { if (sheet?.key === key) sheet.data = r; }).catch(() => { if (sheet?.key === key) sheet.data = { stats: [], plays: [] }; }).finally(() => { if (sheet?.key === key) { sheet.loading = false; paintSheet(); } });
+      }
+    };
+    const loadStandings = (c) => {
+      const g = c.feed; if (!g || sheet.std || sheet.stdLoading || !guardEnabled) return;
+      sheet.stdLoading = true; const key = sheet.key;
+      guard('/sports/standings', { params: { userId: state.userId, league: g.league }, quick: true }).then((r) => { if (sheet?.key === key) sheet.std = r; }).catch((e) => { if (sheet?.key === key) sheet.std = { groups: [], error: "Couldn't load the standings: " + e.message }; }).finally(() => { if (sheet?.key === key) paintSheet(); });
+    };
+    const openSheet = (ci, tab) => {
+      const c = cards[ci]; if (!c) return;
+      if (!c.feed) { watch(ci); return; } // a game only found in the guide: nothing more to show, just watch it
+      const modal = $('#modal'), content = $('#modal-content');
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      modal.classList.remove('update-required');
+      $('#modal .modal-box')?.classList.add('upd-box', 'sp-box');
+      sheet = { tok: modalToken, key: c.key, tab: tab || (c.state === 'pre' ? 'channels' : 'stats'), pick: null, data: null, std: null, loading: false };
+      modal.classList.remove('hidden'); document.body.style.overflow = 'hidden';
+      paintSheet(); loadSheetData(c); if (sheet.tab === 'standings') loadStandings(c);
+      content.onclick = (e) => {
+        const cc = sheetCard(); if (!cc || !sheet) return;
+        const t = e.target.closest('[data-stab]');
+        if (t) { sheet.tab = t.dataset.stab; paintSheet(); if (sheet.tab === 'standings') loadStandings(cc); const b = $(`[data-stab="${sheet.tab}"]`, content); if (nav.on && b) focusEl(b); return; }
+        const o = e.target.closest('[data-opt]');
+        if (o) { const i = Number(o.dataset.opt); sheet.pick = chKey(cc.chans[i]); rememberPick(cc, cc.chans[i]); paintSheet(); const b = $(`[data-opt="${i}"]`, content); if (nav.on && b) focusEl(b); return; }
+        if (e.target.closest('[data-sheet-watch]')) { const i = Math.max(0, sheet.pick ? cc.chans.findIndex((x) => chKey(x) === sheet.pick) : 0); closeModal(); watch(cc, i); return; }
+        if (e.target.closest('[data-sheet-bell]')) { toggleReminder(cc); paintSheet(); const b = $('[data-sheet-bell]', content); if (nav.on && b) focusEl(b); return; }
+        const f = e.target.closest('[data-follow]');
+        if (f) { setFollow(cc, { [f.dataset.follow]: !followOf(cc)[f.dataset.follow] }); paintSheet(); const b = $(`[data-follow="${f.dataset.follow}"]`, content); if (nav.on && b) focusEl(b); }
+      };
+      const b = $('[data-sheet-watch]', content); if (nav.on && b) focusEl(b);
+    };
+    body.addEventListener('click', async (e) => {
       const lg = e.target.closest('[data-league]');
       if (lg) { league = lg.dataset.league; store.set('ef.sports.league', league); draw(); const b = $(`[data-league="${CSS.escape(league)}"]`, body); if (nav.on && b) focusEl(b); return; }
       if (e.target.closest('[data-spoiler]')) { sportsPrefs.spoilerFree = !sportsPrefs.spoilerFree; saveSportsPrefs(); draw(); const b = $('[data-spoiler]', body); if (nav.on && b) focusEl(b); return; }
+      const dy = e.target.closest('[data-day]');
+      if (dy) {
+        dayOff = Number(dy.dataset.day); draw();
+        let b = $(`[data-day="${dayOff}"]`, body); if (nav.on && b) focusEl(b);
+        const k = dayKey(dayOff);
+        if (dayOff && !dayCache.has(k) && guardEnabled) {
+          const at = dayOff;
+          try { const r = await guard('/sports/day', { params: { userId: state.userId, date: k }, quick: true }); dayCache.set(k, r.games || []); } catch { dayCache.set(k, []); }
+          if (dayOff === at && draw()) { b = $(`[data-day="${dayOff}"]`, body); if (nav.on && b) focusEl(b); }
+        }
+        return;
+      }
       const bell = e.target.closest('[data-bell]');
       if (bell) { const ci = Number(bell.dataset.bell); toggleReminder(cards[ci]); draw(); const b = $(`[data-bell="${ci}"]`, body); if (nav.on && b) focusEl(b); return; }
-      const alt = e.target.closest('[data-alt]');
-      if (alt) { watch(Number(alt.dataset.game), Number(alt.dataset.alt)); return; }
+      const w = e.target.closest('[data-watch]');
+      if (w) { watch(Number(w.dataset.watch)); return; }
+      const sh = e.target.closest('[data-sheet]');
+      if (sh) { openSheet(Number(sh.dataset.sheet), sh.dataset.tab); return; }
       const card = e.target.closest('[data-game]');
-      if (card) watch(Number(card.dataset.game));
+      if (card) openSheet(Number(card.dataset.game));
     });
     draw();
     // Keep "live now / starting soon", scores and progress true while the page is open.
     let tick = 0;
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
+      if (!body.isConnected || !isCurrent()) { clearInterval(timer); if (sheet && !sheetOpen()) sheet = null; return; }
       if (document.hidden || isPlayerOpen()) return;
-      if (!body.isConnected || !isCurrent()) { clearInterval(timer); return; }
       if (++tick % 2 === 0 && guardEnabled && S.feed) { const f = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null); if (f?.enabled) S.feed = f; }
       const focused = document.activeElement?.closest?.('[data-game]')?.dataset.game;
       if (!draw()) { clearInterval(timer); return; }
-      if (focused != null && nav.on) { const el = $(`.sp-card[data-game="${focused}"]`, body); if (el) focusEl(el); }
+      if (focused != null && nav.on && !sheetOpen()) { const el = $(`.sp-card[data-game="${focused}"], .sp-hero[data-game="${focused}"]`, body); if (el) focusEl(el); }
+      if (sheetOpen()) { const c = sheetCard(); if (c && c.state !== 'pre' && tick % 2 === 0 && !sheet.loading) { sheet.loading = false; const g = c.feed; if (g) guard('/sports/game', { params: { userId: state.userId, league: g.league, id: String(g.id).split(':')[1] }, quick: true }).then((r) => { if (sheet) { sheet.data = r; paintSheet(); } }).catch(() => {}); } else paintSheet(); }
+      else if (sheet) sheet = null;
     }, 30000);
   }
 
@@ -4331,6 +4544,12 @@
       });
     } catch (e) {
       if (quick) guardDownUntil = Date.now() + 5 * 60000;
+      // The browser's own words ("signal timed out", "Failed to fetch") mean nothing to anyone: say what happened and what to check.
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+        const t = new Error("Aurora Guard didn't answer in time, so nothing was saved. Check that the PC running it is on and online (and that the Aurora Guard task is running), then try again.");
+        t.timeout = true;
+        throw t;
+      }
       throw e;
     }
     guardDownUntil = 0;
@@ -4603,7 +4822,7 @@
       el.lastElementChild.textContent = online ? 'Aurora: Online' : 'Aurora: Offline';
     };
     update();
-    const timer = setInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
+    const timer = routeInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
   }
 
   // "My account": the plan (how many devices at once, how many in use), the date access ends, and a way to ask for more
@@ -4834,7 +5053,7 @@
       else if (a === 'speed') location.hash = '#/speedtest';
     });
     // Look again quietly every minute while the page is open (not while a check is running).
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       if (!isCurrent() || !page.isConnected) { clearInterval(timer); return; }
       if (document.hidden || runBtn.disabled) return;
       try { const r = await statusGather(); if (isCurrent() && !runBtn.disabled) paint(r); } catch { /* keep what is shown */ }
@@ -5251,11 +5470,15 @@
     const btn = $('[data-admin-menu]', page);
     btn.addEventListener('click', (e) => { e.stopPropagation(); setAdminMenu(!adminMenuOpen()); });
     // Tapping anywhere else closes it; choosing a section changes the page, which closes it too.
-    document.addEventListener('click', function close(e) {
+    // Only one of these listens at a time: each visit used to leave its own behind, keeping the old page in memory.
+    if (adminMenuClose) document.removeEventListener('click', adminMenuClose);
+    adminMenuClose = function close(e) {
       if (!btn.isConnected) { document.removeEventListener('click', close); return; }
       if (adminMenuOpen() && !e.target.closest('.admin-menu')) setAdminMenu(false);
-    });
+    };
+    document.addEventListener('click', adminMenuClose);
   }
+  let adminMenuClose = null;
 
   const statTile = (label, value, note = '', cls = '') =>
     `<div class="stat-tile ${cls}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(String(value))}</div>${note ? `<div class="stat-note">${note}</div>` : ''}</div>`;
@@ -5292,7 +5515,7 @@
 
   // Keeps the "Watching now" list current while the Overview is open.
   function refreshWatching(body, isCurrent, users) {
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       const el = $('[data-watching]', body);
       if (!isCurrent() || !el) { clearInterval(timer); return; }
       try {
@@ -5311,7 +5534,7 @@
   // see playLog). Read here from every account, so a problem shows up before a customer calls.
   const PROBLEM_KINDS = {
     failed: ['Would not play', 'bad'], converted: ['Had to convert', 'warn'], stalling: ['Kept buffering', 'warn'],
-    'live-failed': ['Live channel failed', 'bad'], 'live-stalling': ['Live TV kept buffering', 'warn'],
+    'live-failed': ['Live channel failed', 'bad'], 'live-stalling': ['Live TV kept buffering', 'warn'], 'live-slow-start': ['Channels slow to start', 'warn'],
   };
   async function playProblems(users, days) {
     const since = Date.now() - days * DAY;
@@ -5323,6 +5546,7 @@
     const mbps = e.bitrate ? `limit ${Math.round(e.bitrate / 1e6)} Mbps` : '';
     if (e.kind === 'stalling') return [`${e.stalls} stalls, ${e.stalledSec} s buffering (${e.pct}%) in ${e.watchedMin} min`, e.method, mbps].filter(Boolean).join(' · ');
     if (e.kind === 'live-stalling') return `${e.stalls} stalls in ${e.watchedMin} min · buffer ${e.buffer || 'normal'}`;
+    if (e.kind === 'live-slow-start') return `Channels took about ${e.seconds} s to start${e.count > 1 ? ' (' + e.count + ' slow starts)' : ''} · buffer ${e.buffer || 'normal'}`;
     const err = String(e.error || '');
     const why = /StartTimeout/.test(err) ? 'never started (the server sent nothing)'
       : err.startsWith('unplayable:') ? `this device couldn't play the file as it is (${err.slice(11)}), so the server converted it`
@@ -5366,7 +5590,7 @@
         ${statTile('Problems', events.length, events.length ? `${new Set(events.map((e) => e.user)).size} customers affected` : 'Nothing went wrong', events.length ? '' : 'good')}
         ${statTile('Would not play', n('failed'), n('converted') ? `${n('converted')} more played after converting` : '')}
         ${statTile('Kept buffering', n('stalling'), vod.length ? `${transcoded} of ${vod.length} on-demand problems were converting (transcode)` : '')}
-        ${statTile('Live TV', n('live-failed', 'live-stalling'), `${n('live-failed')} channel failures · ${n('live-stalling')} buffering`)}
+        ${statTile('Live TV', n('live-failed', 'live-stalling', 'live-slow-start'), `${n('live-failed')} channel failures · ${n('live-stalling')} buffering · ${n('live-slow-start')} slow starts`)}
       </div>
       ${titles.length || people.length ? `<section class="admin-card">
         <h2>Repeat problems <small>Worth a look</small></h2>
@@ -5715,7 +5939,7 @@
     });
     const connEl = $('[data-conn]', body);
     renderConnections(connEl, isCurrent, userList).catch((e) => { connEl.innerHTML = `<p class="muted">${esc(adminError(e))}</p>`; });
-    const connTimer = setInterval(() => {
+    const connTimer = routeInterval(() => {
       if (!isCurrent() || !connEl.isConnected) { clearInterval(connTimer); return; }
       renderConnections(connEl, isCurrent, userList).catch(() => {});
     }, 30000);
@@ -5877,7 +6101,7 @@
         return isCurrent() && box.isConnected;
       };
       if (!(await paint())) return;
-      const timer = setInterval(async () => { if (!(await paint())) clearInterval(timer); }, 30000);
+      const timer = routeInterval(async () => { if (!(await paint())) clearInterval(timer); }, 30000);
     })();
 
     let type = cfg.type || 'emby';
@@ -6804,7 +7028,7 @@
       });
     };
     paint();
-    const timer = setInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
+    const timer = routeInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
   }
   // No connection when Aurora opens: let people reach what they saved.
   function offerOfflineDownloads() {
@@ -7525,7 +7749,7 @@
     clearInterval(body.__usersTimer); // a redraw (after a bulk change) must not leave the old refresh running
     if (live) {
       let failures = 0;
-      const timer = body.__usersTimer = setInterval(async () => {
+      const timer = body.__usersTimer = routeInterval(async () => {
         if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
         if (document.hidden) return;
         try {
@@ -8233,7 +8457,7 @@
     if (!isCurrent()) return;
     draw(s);
     // Refresh every 15 s while the page is open.
-    const timer = setInterval(async () => {
+    const timer = routeInterval(async () => {
       if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
       if (document.hidden) return;
       try { const fresh = await guard('/server'); if (isCurrent()) draw(fresh); } catch { /* keep the last numbers */ }
@@ -8825,13 +9049,14 @@
     const el = $('#player'), video = $('#video'), status = $('#player-status');
     el.classList.remove('hidden');
     nativeApp?.setPlayerMode(true);
-    status.innerHTML = '<div class="spinner"></div>';
+    status.innerHTML = auroraLoaderHtml('Starting…');
+    delete status.dataset.buf;
     status.classList.remove('hidden');
     // A bare spinner for a long time looks like a hang: after a while say what it is waiting for.
     clearTimeout(player.slowTimer);
     player.slowTimer = setTimeout(() => {
-      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.spinner')) return;
-      status.innerHTML = '<div class="spinner"></div><p>Still waiting for the server…<br><small>If this keeps going, check your connection, or tell the admin.</small></p>';
+      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.al')) return;
+      status.innerHTML = auroraLoaderHtml('This is taking longer than usual…', 'Slow internet or a busy server. If this keeps going, check your connection, or tell the admin.');
     }, 10000);
     $('#player-next').classList.add('hidden');
     $('#skip-intro').classList.add('hidden');
@@ -9621,6 +9846,20 @@
     ['timeupdate', 'play', 'pause', 'durationchange', 'volumechange'].forEach((ev) => video.addEventListener(ev, updateOsd));
     video.addEventListener('loadedmetadata', () => { if (video.playbackRate !== player.speed) applySpeed(); });
     video.addEventListener('playing', () => { if (video.playbackRate !== player.speed) applySpeed(); });
+    // A running video that stalls shows the same loading screen (after a moment, so a quick hiccup doesn't flash it).
+    let bufTimer = null;
+    const bufStatus = $('#player-status');
+    const endBuffering = () => { clearTimeout(bufTimer); if (bufStatus.dataset.buf) { delete bufStatus.dataset.buf; bufStatus.classList.add('hidden'); } };
+    video.addEventListener('waiting', () => {
+      clearTimeout(bufTimer);
+      bufTimer = setTimeout(() => {
+        if (!bufStatus.classList.contains('hidden') || video.paused || video.ended || video.readyState >= 3 || !$('#player') || $('#player').classList.contains('hidden')) return;
+        bufStatus.dataset.buf = '1';
+        bufStatus.innerHTML = auroraLoaderHtml('Buffering…');
+        bufStatus.classList.remove('hidden');
+      }, 700);
+    });
+    ['playing', 'canplay', 'seeked', 'pause', 'ended', 'emptied'].forEach((ev) => video.addEventListener(ev, endBuffering));
     video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
     video.addEventListener('play', () => {
       if (player.suspended) resumeSuspended();

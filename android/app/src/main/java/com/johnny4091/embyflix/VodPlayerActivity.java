@@ -90,6 +90,7 @@ public class VodPlayerActivity extends Activity {
 
     private ExoPlayer player;
     private PlayerView playerView;
+    private AuroraLoader loader;
     private TextView status, skipIntro, nextButton;
 
     /** Where to start (again) when the player is (re)built. */
@@ -203,8 +204,11 @@ public class VodPlayerActivity extends Activity {
                 long nowMs = System.currentTimeMillis();
                 if (state == Player.STATE_BUFFERING && wasReady && !seeking) { stalls++; stallStart = nowMs; }
                 else if (state != Player.STATE_BUFFERING && stallStart != 0) { stalledMs += nowMs - stallStart; stallStart = 0; }
+                boolean midPlay = wasReady;
                 wasReady = state == Player.STATE_READY;
                 seeking = false;
+                if (state == Player.STATE_BUFFERING && status.getVisibility() != View.VISIBLE) showLoader(midPlay || everReady);
+                else if (state != Player.STATE_BUFFERING) loader.hide();
                 if (state == Player.STATE_READY) {
                     retries = 0;
                     status.setVisibility(View.GONE);
@@ -248,6 +252,7 @@ public class VodPlayerActivity extends Activity {
         player.setMediaItem(item.build(), resumeMs);
         player.prepare();
         player.setPlayWhenReady(true);
+        showLoader(false);
         handler.removeCallbacks(markers);
         handler.post(markers);
     }
@@ -310,6 +315,7 @@ public class VodPlayerActivity extends Activity {
         if (retries <= (everReady ? MAX_RETRIES : START_RETRIES)) {
             status.setText("Reconnecting…");
             status.setVisibility(View.VISIBLE);
+            loader.hide();
             handler.removeCallbacks(retry);
             handler.postDelayed(retry, 1500L * retries);
         } else {
@@ -397,9 +403,8 @@ public class VodPlayerActivity extends Activity {
                     // Say what is happening instead of a bare spinner (a converted video can take a while to get going).
                     long waited = waitedMs / 1000;
                     boolean converting = "Transcode".equals(playMethod);
-                    status.setText((waited > 20 ? "Still waiting for the server…" : converting ? "The server is getting this video ready…" : "Starting…") + "\n" + waited + " s"
+                    loader.setMessage((waited > 20 ? "Still waiting for the server…" : converting ? "The server is getting this video ready…" : "Starting…") + "  " + waited + " s"
                             + (retries > 0 ? "  ·  try " + (retries + 1) : ""));
-                    status.setVisibility(View.VISIBLE);
                 }
                 if (waitedMs > Math.max(40000L, stallMs)) {
                     loadingSince = 0;
@@ -421,6 +426,7 @@ public class VodPlayerActivity extends Activity {
                 close(!nextTitle.isEmpty());
                 return;
             }
+            if (status.getVisibility() == View.VISIBLE) loader.hide(); // a message (Reconnecting, an error) takes the middle of the screen
             handler.postDelayed(this, 1000);
         }
     };
@@ -554,12 +560,14 @@ public class VodPlayerActivity extends Activity {
         playerView.setUseController(true);
         playerView.setControllerShowTimeoutMs(4000);
         playerView.setControllerAutoShow(true);
-        playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS);
+        playerView.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER); // the Aurora loader below replaces the built-in circle
         playerView.setShowSubtitleButton(true);
         playerView.setShowNextButton(false);
         playerView.setShowPreviousButton(false);
         playerView.setKeepScreenOn(true);
         root.addView(playerView, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        loader = new AuroraLoader(this);
+        root.addView(loader, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
 
         // Title along the top, shown with the controls.
         LinearLayout top = new LinearLayout(this);
@@ -635,6 +643,14 @@ public class VodPlayerActivity extends Activity {
         root.addView(status, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
 
         setContentView(root);
+    }
+
+    /** The Aurora loading screen: "Starting..." for a video that is loading, "Buffering..." when a running one stalls. */
+    private void showLoader(boolean midPlay) {
+        if (loader == null) return;
+        loader.show(midPlay ? "Buffering\u2026" : "Starting\u2026", "Transcode".equals(playMethod)
+                ? "Your server is converting this video for your device. That can take a moment."
+                : "Slow internet or a busy server. In Settings \u2192 Playback, Streaming quality \u2192 Auto lets Aurora lower the quality for you.");
     }
 
     private void retryNow() {
