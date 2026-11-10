@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aurora Streaming: Where streaming is possible</title>
+<meta name="description" content="Aurora brings movies, TV shows, live TV and sports to your phone and TV. Start a free trial in a minute.">
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+<script src="config.js"></script>
+<style>
+/* Same look as the Aurora app: deep navy, the aurora photo glowing behind, a floating pill menu with a white active pill,
+   gradient buttons, bold row titles over picture-first cards. The app is dark only, so the site is too. */
+@font-face { font-family: 'Inter'; src: url('assets/fonts/inter-variable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+:root {
+  --bg: #070c1c; --bg-2: #0e1530; --bg-3: #1b2549; --text: #ffffff; --muted: #b3b3b3; --dim: #808080;
+  --line: #232f58; --accent: #2ad4d0; --accent-2: #7a5cff; --live: #e5384f; --green: #46d369;
+  --accent-grad: linear-gradient(100deg, #18b6d6 0%, #4f7bff 55%, #7a5cff 100%);
+  --font: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; --gutter: 4%;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 16px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+.wrap { max-width: 1180px; margin: 0 auto; padding-left: max(18px, env(safe-area-inset-left, 0px)); padding-right: max(18px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { margin: 0; line-height: 1.1; text-wrap: balance; }
+.logo-svg { height: 22px; width: auto; display: block; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+/* floating pill menu, as in the app */
+.navbar { position: fixed; top: 0; left: 0; right: 0; z-index: 50; padding: 14px max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px)); display: flex; justify-content: space-between; align-items: center; gap: 12px; pointer-events: none; }
+.nav-pill { pointer-events: auto; display: flex; align-items: center; gap: .15rem; padding: .3rem .4rem .3rem 1.1rem; border-radius: 999px; background: rgba(12,19,44,.76); border: 1px solid rgba(255,255,255,.09); box-shadow: 0 6px 24px rgba(0,0,0,.35); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+.nav-pill::-webkit-scrollbar { display: none; }
+.nav-pill .logo { margin-right: .8rem; display: inline-flex; line-height: 0; flex: none; }
+.nav-pill a.l { padding: .5rem .95rem; border-radius: 999px; font-size: .9rem; color: #e5e5e5; white-space: nowrap; transition: background .15s, color .15s; }
+.nav-pill a.l:hover { background: rgba(255,255,255,.1); color: #fff; }
+.nav-pill a.l.on { background: #fff; color: #0a1126; font-weight: 700; }
+.nav-cta { pointer-events: auto; flex: none; }
+
+/* buttons, as in the app */
+.btn { border: 0; border-radius: 4px; padding: .7rem 1.6rem; font: 700 1rem var(--font); display: inline-flex; align-items: center; justify-content: center; gap: .5rem; cursor: pointer; transition: filter .15s, background .15s; }
+.btn-red { background: var(--accent-grad); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.35); }
+.btn-red:hover { filter: brightness(1.1); }
+.btn-white { background: #fff; color: #000; }
+.btn-white:hover { background: rgba(255,255,255,.75); }
+.btn-gray { background: rgba(109,109,110,.7); color: #fff; }
+.btn-gray:hover { background: rgba(109,109,110,.45); }
+.btn-block { width: 100%; padding: .9rem; }
+.btn.sm { padding: .5rem 1.2rem; font-size: .9rem; }
+
+/* featured banner */
+.hero { position: relative; min-height: 640px; display: flex; align-items: flex-end; overflow: hidden; }
+.hero::before { content: ""; position: absolute; inset: 0; background: url('assets/img/aurora-bg.jpg') center top / cover no-repeat; }
+.hero::after { content: ""; position: absolute; inset: 0; background: linear-gradient(77deg, rgba(4,8,22,.85) 0%, rgba(4,8,22,.2) 62%), linear-gradient(to bottom, rgba(4,8,22,.1) 30%, var(--bg) 100%); }
+.hero-in { position: relative; z-index: 2; width: 100%; padding-block: 150px 70px; display: grid; grid-template-columns: 1.1fr .9fr; gap: 40px; align-items: end; }
+.hero h1 { font-size: clamp(2.2rem, 5vw, 4.2rem); font-weight: 800; text-shadow: 2px 2px 6px rgba(0,0,0,.5); }
+.hero h1 span { background: var(--accent-grad); -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: none; }
+.hero p.lead { font-size: clamp(1rem, 1.3vw, 1.2rem); max-width: 46ch; margin: 1rem 0 1.5rem; text-shadow: 2px 2px 4px rgba(0,0,0,.6); }
+.actions { display: flex; flex-wrap: wrap; gap: .8rem; }
+.devices { margin-top: 1.4rem; font-size: .85rem; color: #cfd6f5; display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.devices span::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 8px; vertical-align: middle; }
+
+/* mock of the app's home screen */
+.mock { background: rgba(10,16,40,.82); border: 1px solid rgba(255,255,255,.1); border-radius: 18px; padding: 14px; box-shadow: 0 30px 80px rgba(0,0,0,.55); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.mock .feat { height: 130px; border-radius: 12px; background: linear-gradient(120deg, #1c2a6b, #4f7bff 55%, #2ad4d0); position: relative; overflow: hidden; }
+.mock .feat::after { content: "Tonight's pick"; position: absolute; left: 14px; bottom: 12px; font-weight: 800; font-size: 1.05rem; }
+.rl { font-size: .78rem; font-weight: 700; color: #e5e5e5; margin: 14px 2px 8px; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tiles i { display: block; aspect-ratio: 2/3; border-radius: 8px; background: linear-gradient(160deg, #252d63, #121842); }
+.tiles i:nth-child(2) { background: linear-gradient(160deg, #3a2a7a, #151a45); } .tiles i:nth-child(3) { background: linear-gradient(160deg, #14506b, #101a40); } .tiles i:nth-child(4) { background: linear-gradient(160deg, #2b3f9a, #121842); }
+.live { display: flex; gap: 8px; }
+.live b { flex: 1; font-weight: 600; font-size: .72rem; padding: 8px 10px; border-radius: 8px; background: var(--bg-3); }
+.live b em { color: var(--live); font-style: normal; margin-right: 6px; font-weight: 800; }
+
+/* sections: a row title, then cards */
+section { padding-block: 56px; }
+.row-title { font-size: clamp(1.2rem, 2vw, 1.7rem); font-weight: 800; margin: 0 0 6px; }
+.sub { color: var(--muted); max-width: 60ch; margin: 0 0 26px; }
+.cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 22px; min-width: 0; }
+.card h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 8px; }
+.card p { margin: 0; color: var(--muted); font-size: .95rem; }
+.tag { display: inline-block; font-size: .7rem; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 700; margin-bottom: 10px; }
+.band { background: linear-gradient(180deg, var(--bg) 0%, #0a1126 12%, #0a1126 88%, var(--bg) 100%); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+.checks { list-style: none; padding: 0; margin: 18px 0 0; display: grid; gap: 12px; }
+.checks li { padding-left: 28px; position: relative; }
+.checks li::before { content: ""; position: absolute; left: 0; top: 7px; width: 14px; height: 8px; border-left: 2px solid var(--accent); border-bottom: 2px solid var(--accent); transform: rotate(-45deg); }
+.panel { background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; padding: 24px; min-width: 0; }
+.panel h3 { font-size: 1.2rem; font-weight: 800; margin-bottom: 14px; }
+.game { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; text-align: center; padding: 14px 0; border-top: 1px solid rgba(255,255,255,.07); }
+.game:first-of-type { border-top: 0; }
+.game strong { font-size: 1rem; }
+.game .score { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.game small { grid-column: 1 / -1; color: var(--muted); }
+.livepill { color: var(--live); font-weight: 800; font-size: .75rem; letter-spacing: .08em; }
+
+.plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; max-width: 780px; }
+.plan { background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; padding: 26px; display: flex; flex-direction: column; gap: 14px; }
+.plan.best { border-color: #4f7bff; box-shadow: 0 0 0 1px #4f7bff, 0 10px 40px rgba(79,123,255,.18); }
+.plan .name { font-size: 1.1rem; font-weight: 700; }
+.plan .price { font-size: 3rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.plan .price small { font-size: .95rem; color: var(--muted); font-weight: 500; }
+.plan ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; color: var(--muted); font-size: .95rem; }
+.pill { align-self: flex-start; font-size: .7rem; letter-spacing: .1em; text-transform: uppercase; background: var(--accent-grad); color: #fff; padding: 4px 10px; border-radius: 999px; font-weight: 700; }
+.note { color: var(--muted); font-size: .9rem; margin-top: 16px; max-width: 70ch; }
+
+form label { display: block; font-size: .8rem; font-weight: 700; margin: 14px 0 6px; color: #e5e5e5; }
+form input:not([type=checkbox]) { width: 100%; padding: 12px 14px; border-radius: 6px; border: 1px solid var(--line); background: #0a1126; color: #fff; font: inherit; }
+form input::placeholder { color: #6d78a6; }
+form label.ck { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; color: var(--muted); margin-top: 16px; }
+form label.ck input { margin-top: 4px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.two > div { min-width: 0; }
+.opt { font-weight: 400; color: var(--dim); }
+.applyrow { display: flex; gap: 8px; } .applyrow input { min-width: 0; } .applyrow .btn { margin-top: 0; flex: none; } form .applyrow .btn { margin-top: 0; }
+.ok { color: var(--green); font-size: .9rem; margin: 10px 0 0; }
+.hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+.closed { padding: 14px 16px; border-radius: 10px; background: rgba(255,212,121,.1); border: 1px solid rgba(255,212,121,.3); color: #ffd479; font-size: .92rem; margin-bottom: 8px; }
+.err { color: #ff8d9b; font-size: .9rem; margin: 12px 0 0; }
+.small { color: var(--dim); font-size: .8rem; margin: 12px 0 0; }
+form .btn { margin-top: 18px; }
+.steps { padding-left: 20px; color: var(--muted); display: grid; gap: 6px; font-size: .95rem; }
+.apps { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 16px; align-items: start; }
+.sub2 { color: var(--muted); font-size: .95rem; margin: 0 0 16px; }
+.codelabel { margin: 14px 0 6px; font-size: .8rem; color: var(--muted); }
+.code { font-weight: 800; font-size: clamp(2.4rem, 7vw, 3.4rem); letter-spacing: .12em; padding: 14px 18px; border-radius: 12px; text-align: center; font-variant-numeric: tabular-nums; margin-bottom: 18px; border: 1px solid var(--line); background: radial-gradient(70% 140% at 8% 0%, rgba(42,212,208,.18), transparent 70%), radial-gradient(60% 140% at 100% 0%, rgba(122,92,255,.28), transparent 70%), #0a1126; }
+
+.faq { max-width: 820px; display: grid; gap: 10px; }
+details { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 0 20px; }
+summary { cursor: pointer; padding: 17px 0; font-weight: 700; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "+"; color: var(--accent); font-size: 1.4rem; line-height: 1; }
+details[open] summary::after { content: "\2212"; }
+details p { margin: 0 0 18px; color: var(--muted); }
+
+.cta { text-align: center; border-radius: 18px; padding: 52px 22px; border: 1px solid var(--line); background: radial-gradient(70% 90% at 8% 0%, rgba(42,212,208,.18), transparent 70%), radial-gradient(60% 90% at 100% 0%, rgba(122,92,255,.28), transparent 70%), var(--bg-2); }
+.cta h2 { font-size: clamp(1.6rem, 3.4vw, 2.4rem); font-weight: 800; }
+.cta p { color: var(--muted); max-width: 52ch; margin: 12px auto 0; }
+footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; align-items: center; }
+
+@media (max-width: 900px) {
+  .hero-in, .split { grid-template-columns: 1fr; }
+  .hero { min-height: 0; } .hero-in { padding-top: 120px; }
+  .cards, .plans, .apps, .two { grid-template-columns: 1fr; }
+  .nav-cta { display: none; }
+  section { padding-block: 42px; }
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<div class="navbar">
+  <nav class="nav-pill" aria-label="Main">
+    <a class="logo" href="#top" aria-label="Aurora home"><svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg></a>
+    <a class="l on" href="#top">Home</a><a class="l" href="#features">Features</a><a class="l" href="#sports">Sports</a><a class="l" href="#prices">Prices</a><a class="l" href="#app">Get the app</a><a class="l" href="#faq">FAQ</a>
+  </nav>
+  <a class="btn btn-red sm nav-cta" href="#signup">Sign up</a>
+</div>
+
+<header class="hero" id="top">
+  <div class="wrap hero-in">
+    <div>
+      <h1>Where streaming <span>is possible</span></h1>
+      <p class="lead">Movies, shows and live TV in one app, made to feel like the best streaming services. Sign in on your phone, your TV or a web browser and pick up exactly where you stopped.</p>
+      <div class="actions"><a class="btn btn-red" href="#signup">Start free trial</a><a class="btn btn-gray" href="#app">Get the app</a></div>
+      <div class="devices"><span>Android phones</span><span>Android and Google TV</span><span>Web browser</span></div>
+    </div>
+    <div class="mock" aria-hidden="true">
+      <div class="feat"></div>
+      <div class="rl">Continue Watching</div>
+      <div class="tiles"><i></i><i></i><i></i><i></i></div>
+      <div class="rl">On Now</div>
+      <div class="live"><b><em>LIVE</em>Evening News</b><b><em>LIVE</em>Premier League</b></div>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2 class="row-title">Everything in one place</h2>
+    <p class="sub">Aurora brings your movies, shows and live channels together with a clean, fast design that works with a remote, a touchscreen or a keyboard.</p>
+    <div class="cards">
+      <div class="card"><span class="tag">Library</span><h3>Movies and TV shows</h3><p>A featured banner, rows for Continue Watching, Next Up and New This Week, and filters by genre. Cast, ratings, trailers and More Like This on every title.</p></div>
+      <div class="card"><span class="tag">Live</span><h3>Live TV with a guide</h3><p>A full TV guide, channel up and down, number keys on your remote, and a Last channel button. See what is on now and next at a glance.</p></div>
+      <div class="card"><span class="tag">Sports</span><h3>Live scores and games</h3><p>Pick any day this week, follow your team and get alerts when a game starts. Tap a game for stats and standings and the best channel to watch it on.</p></div>
+      <div class="card"><span class="tag">Everywhere</span><h3>Phone, TV and web</h3><p>One account on every screen. Each person gets a Who's watching profile, and the TV app is built for the remote from the first tap.</p></div>
+      <div class="card"><span class="tag">Offline</span><h3>Downloads on Android</h3><p>Save a movie or episode to your phone before a flight or a drive and watch with no signal. Playback resumes where you stopped.</p></div>
+      <div class="card"><span class="tag">Family</span><h3>Kids mode</h3><p>Limit a device to titles with a rating you choose. Live TV, Settings and Admin close, and a four-digit PIN is needed to leave.</p></div>
+      <div class="card"><span class="tag">Player</span><h3>A player that keeps up</h3><p>Audio tracks, subtitles with your own size and colour, Skip Intro, next-episode countdown, and quality you can change if your connection is slow.</p></div>
+      <div class="card"><span class="tag">Requests</span><h3>Ask for what is missing</h3><p>Browse what is trending and coming soon, and request a movie or season from the Android app. You can follow your requests as they are added.</p></div>
+      <div class="card"><span class="tag">Support</span><h3>Help when you need it</h3><p>A Status page that checks your connection and the service, a speed test, and Help and support that sends the details we need to fix a problem.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="sports" class="band">
+  <div class="wrap split">
+    <div>
+      <h2 class="row-title">Never miss the game</h2>
+      <p class="sub" style="margin-bottom:0">Live TV has a Sports tab built in.</p>
+      <ul class="checks">
+        <li>Live scores for the NFL, NBA, MLB, NHL, college football, soccer leagues, UFC and F1</li>
+        <li>Your favourite teams first, with a reminder when they kick off</li>
+        <li>Tap a game for stats, plays and standings</li>
+        <li>Aurora suggests the best channel carrying the game</li>
+      </ul>
+    </div>
+    <div class="panel" aria-label="Example of the Sports tab">
+      <h3>Today</h3>
+      <div class="game"><strong>Hawks</strong><span class="score">78 – 74</span><strong>Comets</strong><small><span class="livepill">LIVE</span> · 4th quarter · 3:12</small></div>
+      <div class="game"><strong>Rovers</strong><span class="score">2 – 2</span><strong>United</strong><small><span class="livepill">LIVE</span> · 71'</small></div>
+      <div class="game"><strong>Falcons</strong><span class="score">8:30 PM</span><strong>Bears</strong><small>Starting soon</small></div>
+    </div>
+  </div>
+</section>
+
+<section id="prices">
+  <div class="wrap">
+    <h2 class="row-title">Simple plans</h2>
+    <p class="sub">Pay for the time you want and the number of screens that can play at once. No contract.</p>
+    <div class="plans" id="plans">
+      <div class="plan">
+        <div class="name">1 Month</div>
+        <div class="price">$35 <small>/ month</small></div>
+        <ul><li>2 connections at the same time</li><li>Movies, shows, Live TV and Sports</li><li>Phone and TV</li></ul>
+        <a class="btn btn-red btn-block" href="#signup">Start free trial</a>
+      </div>
+      <div class="plan best">
+        <span class="pill">Best value</span>
+        <div class="name">2 Months</div>
+        <div class="price">$55 <small>/ 2 months</small></div>
+        <ul><li>4 connections at the same time</li><li>Movies, shows, Live TV and Sports</li><li>Phone and TV</li></ul>
+        <a class="btn btn-red btn-block" href="#signup">Start free trial</a>
+      </div>
+    </div>
+    <p class="note">A connection is one device playing at the same time. Refer a friend and you both get 7 free days.</p>
+  </div>
+</section>
+
+<section id="signup" class="band">
+  <div class="wrap split">
+    <div>
+      <h2 class="row-title">Make your account and watch in a minute</h2>
+      <ul class="checks">
+        <li>Pick a username and password. Your account is ready straight away.</li>
+        <li><span data-trial>2 free days</span>, with no card needed</li>
+        <li>Install the app with the Downloader code <span data-dl>2873179</span>, or sign in on the web</li>
+      </ul>
+    </div>
+    <div>
+      <form class="panel" id="su-form" novalidate>
+        <h3>Create your account</h3>
+        <p class="closed" id="su-closed" hidden>Sign-ups are closed right now. Please check back soon.</p>
+        <label for="su-user">Username</label>
+        <input id="su-user" name="username" autocomplete="username" maxlength="32" placeholder="e.g. sam_k">
+        <label for="su-email">Email</label>
+        <input id="su-email" name="email" type="email" autocomplete="email" placeholder="you@example.com">
+        <label for="su-pass">Password</label>
+        <input id="su-pass" name="password" type="password" autocomplete="new-password" placeholder="At least 8 characters">
+        <div class="two">
+          <div><label for="su-ref">Referral code <span class="opt">(optional)</span></label>
+          <input id="su-ref" name="referral" autocomplete="off" maxlength="24" placeholder="A friend's code"></div>
+          <div><label for="su-disc">Discount code <span class="opt">(optional)</span></label>
+          <div class="applyrow"><input id="su-disc" name="discount" autocomplete="off" maxlength="24" placeholder="Enter code"><button class="btn btn-gray sm" type="button" id="su-apply">Apply</button></div></div>
+        </div>
+        <p class="ok" id="su-disc-msg" role="status" hidden></p>
+        <p class="small" style="margin-top:8px">A referral code gives you and your friend 7 free days. A discount code takes money off your first paid plan.</p>
+        <label class="ck" for="su-ok"><input id="su-ok" type="checkbox"> I will only use Aurora for myself and not share my login.</label>
+        <div class="hp" aria-hidden="true"><label for="su-web">Leave this empty</label><input id="su-web" name="website" tabindex="-1" autocomplete="off"></div>
+        <p class="err" id="su-err" role="alert" hidden></p>
+        <button class="btn btn-red btn-block" type="submit" id="su-btn">Start my free trial</button>
+        <p class="small">One free trial per person.</p>
+      </form>
+      <div class="panel" id="su-done" hidden>
+        <h3>You are in</h3>
+        <p class="sub2" id="su-msg">Your account is ready. Sign in with the username and password you just chose.</p>
+        <ol class="steps"><li>Get the Aurora app below.</li><li>Open it and sign in.</li><li>Press play.</li></ol>
+        <div class="actions" style="margin-top:16px"><a class="btn btn-red" href="#app">Get the app</a></div>
+        <p class="small" id="su-extra"></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="app">
+  <div class="wrap">
+    <h2 class="row-title">Put Aurora on your screens</h2>
+    <p class="sub">Install it on your TV or phone in a minute. Then sign in with the account you made above.</p>
+    <div class="apps">
+      <div class="panel">
+        <span class="tag">Android TV and Google TV</span>
+        <h3>Install with the Downloader app</h3>
+        <p class="codelabel">Downloader code</p>
+        <div class="code" data-dl>2873179</div>
+        <ol class="steps">
+          <li>On your TV, install <strong>Downloader</strong> from the Play Store (the orange icon).</li>
+          <li>Open it, choose Home and type the code above, then select Go.</li>
+          <li>Choose Install, then Open, and sign in.</li>
+        </ol>
+        <p class="small">If the TV asks, allow Downloader to install apps in Settings.</p>
+      </div>
+      <div class="panel">
+        <span class="tag">Android phone and tablet</span>
+        <h3>Download the app</h3>
+        <p class="sub2">Tap Download on your phone. When it finishes, open the file and choose Install. Aurora then updates itself.</p>
+        <a class="btn btn-red" id="apk" href="https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk" rel="noopener" download>Download for Android</a>
+        <p class="small">Or use the Downloader code <span data-dl>2873179</span> on your phone too.</p>
+      </div>
+      <div class="panel" id="webcard" hidden>
+        <span class="tag">Web browser</span>
+        <h3>Watch on a computer</h3>
+        <p class="sub2">No install needed. Open Aurora in any modern browser and sign in.</p>
+        <a class="btn btn-gray" id="weblink" href="#app" rel="noopener">Open on the web</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="band">
+  <div class="wrap">
+    <h2 class="row-title">Questions people ask</h2>
+    <p class="sub">Quick answers to the things people ask most.</p>
+    <div class="faq">
+      <details><summary>What is Aurora?</summary><p>Aurora is a streaming app for movies, TV shows and live TV. It looks and feels like the big streaming services and runs on your phone, your Android or Google TV and a web browser.</p></details>
+      <details><summary>Which devices does it work on?</summary><p>Android phones and tablets, Android TV and Google TV, and any modern web browser. Offline downloads are on the Android app.</p></details>
+      <details><summary>How do I get an account?</summary><p>Use the Sign up form on this page. Pick a username and password and your account is ready straight away. Then sign in on any of your devices.</p></details>
+      <details><summary>How do I install Aurora on my TV?</summary><p>Install the Downloader app from the Play Store, open it, type the code <span data-dl>2873179</span> and select Go. Choose Install, then Open, and sign in.</p></details>
+      <details><summary>Where do I put a referral or discount code?</summary><p>Enter it in the optional boxes on the sign-up form. A referral code from a friend gives you both 7 free days.</p></details>
+      <details><summary>What is a connection?</summary><p>One device playing at the same time. With 2 connections, two devices can play together. If a third tries, Aurora tells you to stop playback on another one first.</p></details>
+      <details><summary>Is there a free trial?</summary><p>Yes. Every new account starts with <span data-trial>2 free days</span> and no card is needed.</p></details>
+      <details><summary>Can I watch live sports?</summary><p>Yes. Live TV has a Sports tab with scores, your teams and the best channel for each game. Scores come from a public sports feed and can be a minute behind.</p></details>
+      <details><summary>Can I watch without internet?</summary><p>On the Android app you can download movies and episodes over Wi-Fi and watch them offline. Downloads stop working when an account expires.</p></details>
+      <details><summary>A channel will not load. What now?</summary><p>Open Settings, then Status, to check your connection and the service. Use Report on the channel. If many people report it, we see it right away.</p></details>
+      <details><summary>Is there a kids mode?</summary><p>Yes. Turn it on for a device in Settings, choose the age group, and set a PIN. Only titles with an allowed rating show, and Live TV and Settings are closed.</p></details>
+      <details><summary>How do updates work?</summary><p>The Android app checks for a new version and offers to install it, so you always have the latest features.</p></details>
+      <details><summary>How do I renew or cancel?</summary><p>Renew any time before your plan ends. Nothing renews by itself, so there is nothing to cancel.</p></details>
+    </div>
+  </div>
+</section>
+
+<section id="get">
+  <div class="wrap">
+    <div class="cta" id="ask" hidden>
+      <h2>Questions before you start?</h2>
+      <p>Send us a message and we will help.</p>
+      <p style="margin-top:18px;font-size:.95rem" id="contact"></p>
+    </div>
+    <footer><span>AURORA · Where streaming is possible</span><span>For customers and invited guests</span></footer>
+  </div>
+</section>
+<script>
+(function () {
+  var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
+  function $(id) { return document.getElementById(id); }
+  function money(n) { return '$' + (Math.round(n * 100) / 100).toString(); }
+  var info = { signupEnabled: true, trialDays: 2, trialConnections: 1, plans: null };
+
+  // Things set in config.js
+  [].forEach.call(document.querySelectorAll('[data-dl]'), function (e) { if (C.downloaderCode) e.textContent = C.downloaderCode; });
+  var dl = document.querySelector('.code'); if (dl && C.downloaderCode) dl.setAttribute('aria-label', 'Downloader code ' + String(C.downloaderCode).split('').join(' '));
+  if (C.apkUrl) $('apk').href = C.apkUrl;
+  if (C.webAppUrl) { $('weblink').href = C.webAppUrl; $('webcard').hidden = false; }
+  if (C.contact) { $('ask').hidden = false; $('contact').textContent = 'Contact: ' + C.contact; }
+
+  function api(method, path, body) {
+    return fetch(G + path, { method: method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
+  }
+
+  // Prices come from the Guard, so they match what you set in Aurora's Admin. The page below already has the standard two as a fallback.
+  function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+  function drawPlans(plans) {
+    if (!plans || !plans.length) return;
+    var box = $('plans'), perMonth = function (p) { return p.price / (p.unit === 'day' ? p.length / 30 : p.length); };
+    var best = plans.length > 1 ? plans.reduce(function (a, b) { return perMonth(b) < perMonth(a) ? b : a; }) : null;
+    box.innerHTML = '';
+    plans.slice(0, 6).forEach(function (p) {
+      var d = document.createElement('div'); d.className = 'plan' + (best && p === best ? ' best' : '');
+      var h = '';
+      if (best && p === best) h += '<span class="pill">Best value</span>';
+      h += '<div class="name"></div><div class="price"></div><ul><li></li><li>Movies, shows, Live TV and Sports</li><li>Phone and TV</li></ul><a class="btn btn-red btn-block" href="#signup">Start free trial</a>';
+      d.innerHTML = h;
+      d.querySelector('.name').textContent = p.name.replace(/\s*·.*$/, '');
+      d.querySelector('.price').innerHTML = money(p.price) + ' <small>/ ' + (p.length === 1 ? p.unit : plural(p.length, p.unit)) + '</small>';
+      d.querySelector('li').textContent = plural(p.connections, 'connection') + ' at the same time';
+      box.appendChild(d);
+    });
+  }
+
+  if (G) api('GET', '/site/info').then(function (j) {
+    if (j.__status !== 200) return;
+    info = j; drawPlans(j.plans);
+    if (!j.signupEnabled) { $('su-closed').hidden = false; $('su-btn').disabled = true; }
+    var free = j.trialDays + ' free day' + (j.trialDays === 1 ? '' : 's');
+    [].forEach.call(document.querySelectorAll('[data-trial]'), function (e) { e.textContent = free; });
+  }).catch(function () { /* the Guard is not reachable: the page keeps its standard text */ });
+
+  // Discount code
+  var disc = { code: '', label: '' };
+  function msg(el, text, kind) { el.hidden = !text; el.textContent = text || ''; el.className = kind; }
+  $('su-apply').addEventListener('click', function () {
+    var code = $('su-disc').value.trim().toUpperCase(), out = $('su-disc-msg');
+    disc = { code: '', label: '' };
+    if (!code) return msg(out, 'Enter a code first.', 'err');
+    if (!G) return msg(out, 'Codes cannot be checked right now.', 'err');
+    this.disabled = true; var btn = this;
+    api('GET', '/discount/check?code=' + encodeURIComponent(code)).then(function (j) {
+      btn.disabled = false;
+      if (j.valid) { disc = { code: code, label: j.label }; msg(out, 'Code ' + code + ' applied: ' + j.label + ' your first paid plan.', 'ok'); }
+      else msg(out, j.message || j.error || 'That code is not valid.', 'err');
+    }).catch(function () { btn.disabled = false; msg(out, 'Could not check the code. Please try again.', 'err'); });
+  });
+  $('su-disc').addEventListener('input', function () { disc = { code: '', label: '' }; $('su-disc-msg').hidden = true; });
+
+  // Sign up
+  var f = $('su-form'), done = $('su-done'), err = $('su-err');
+  f.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var u = $('su-user').value.trim(), m = $('su-email').value.trim(), p = $('su-pass').value, text = '';
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(u)) text = 'Pick a username of 3 to 32 letters, numbers, dots, dashes or underscores.';
+    else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(m)) text = 'Enter a valid email address.';
+    else if (p.length < 8) text = 'Your password needs at least 8 characters.';
+    else if (!$('su-ok').checked) text = 'Please agree to not share your login.';
+    else if (!G) text = 'Sign-up is not available right now.';
+    msg(err, text, 'err'); if (text) return;
+    var btn = $('su-btn'); btn.disabled = true; btn.textContent = 'Making your account...';
+    api('POST', '/signup', { username: u, email: m, password: p, agree: true, referral: $('su-ref').value.trim(), discount: $('su-disc').value.trim(), website: $('su-web').value }).then(function (j) {
+      btn.disabled = false; btn.textContent = 'Start my free trial';
+      if (j.__status !== 200 || !j.ok) { msg(err, j.error || 'Something went wrong. Please try again.', 'err'); return; }
+      $('su-msg').textContent = 'Your username is ' + j.username + '. Your account works for ' + plural(j.days, 'day') + ' (until ' + j.expires + '). Sign in with the password you just chose.';
+      $('su-extra').textContent = j.discount ? 'Your discount code (' + j.discount + ') is saved and applies to your first paid plan.' : '';
+      f.hidden = true; done.hidden = false; $('app').scrollIntoView({ behavior: 'smooth' });
+    }).catch(function () { btn.disabled = false; btn.textContent = 'Start my free trial'; msg(err, 'Could not reach Aurora. Please check your connection and try again.', 'err'); });
+  });
+
+  // highlight the section in the menu
+  var links = [].slice.call(document.querySelectorAll('.nav-pill a.l')), ids = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  function spy() { var y = window.scrollY + 140, cur = 0; ids.forEach(function (s, i) { if (s && s.offsetTop <= y) cur = i; }); links.forEach(function (a, i) { a.classList.toggle('on', i === cur); }); }
+  window.addEventListener('scroll', spy, { passive: true }); spy();
+})();
+</script>
+
+</body>
+</html>
