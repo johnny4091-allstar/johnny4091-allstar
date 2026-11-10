@@ -347,3 +347,7 @@ shows in Admin → Support. Auto quality also starts from what was just measured
 - `/limits/__proto__`, `/limits/constructor` and similar special names are refused with 400 instead of being stored as accounts.
 - A request body over 64 KB now gets a clean 400 "too large" instead of a dropped connection.
 - Saving `limits.json` retries a few times when Windows (antivirus, backup) holds the file for a moment.
+
+## Website sign-up and discount codes (guard 1.16.0)
+
+Used by the `website/` folder. Public (no sign-in): `GET /site/info` (prices, whether sign-up is open), `GET /discount/check?code=`, `POST /signup`, `POST /admin-login` (an Emby administrator's username and password, answers with a token). Admin: `GET/POST /discounts`, `PUT/DELETE /discounts/CODE`. Sign-up is off until `"signupEnabled": true` is in `config.json` (also `signupTrialDays`, `signupTrialConnections`, `signupMaxPerDay`, `signupPerIpPerDay`). See `website/README.md`.

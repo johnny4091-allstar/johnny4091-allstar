@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.15.1';
+const VERSION = '1.16.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -61,6 +61,12 @@ function loadConfig() {
     // Refer a friend: free days for both people (0 switches it off), and the most friends one customer can bring a year.
     referralDays: 7,
     referralMaxPerYear: 10,
+    // Website sign-up (guard 1.16.0): anyone can make a free trial account from the Aurora website. OFF until you set "signupEnabled": true.
+    signupEnabled: false,
+    signupTrialDays: 2,
+    signupTrialConnections: 1,
+    signupMaxPerDay: 30,      // most new accounts in one day, in total
+    signupPerIpPerDay: 3,     // most from one internet address in one day
     // Sports scores (Live TV -> Sports): ESPN's public scoreboard feed. It is not an official, documented API and ESPN can change or
     // stop it at any time. Set "scoresEnabled": false to switch it off, or "scoresBase" to point at another server with the same shape.
     scoresEnabled: true,
@@ -194,7 +200,7 @@ const STARTER_PLANS = [
   { id: 'starter-1m-2c', name: '1 Month · 2 Connections', price: 35, length: 1, unit: 'month', connections: 2, categories: null, active: true },
   { id: 'starter-2m-4c', name: '2 Months · 4 Connections', price: 55, length: 2, unit: 'month', connections: 4, categories: null, active: true },
 ];
-function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], audit: [], usage: {}, sharing: {}, reports: [], extensions: [], plans: STARTER_PLANS.map((p) => ({ ...p })), subscriptions: [] }; }
+function emptyStore() { return { users: {}, disabledByGuard: {}, firstSeen: {}, actions: [], audit: [], usage: {}, sharing: {}, reports: [], extensions: [], plans: STARTER_PLANS.map((p) => ({ ...p })), subscriptions: [], discounts: [], signups: [] }; }
 let store = emptyStore();
 try { store = { ...emptyStore(), ...JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) }; } catch (e) {
   if (e.code !== 'ENOENT') { log('Could not read', STORE_FILE, '-', e.message, '(starting with an empty store; the old file is kept as limits.json.bad)'); try { fs.copyFileSync(STORE_FILE, STORE_FILE + '.bad'); } catch {} }
@@ -305,7 +311,8 @@ function publicReseller(r) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null };
+    trial: !!rec.trial, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
 async function copyAppDefaults(newUserId) {
@@ -422,6 +429,35 @@ function giveDays(userId, days, why) {
   return true;
 }
 
+// ---------- Website sign-up and discount codes (guard 1.16.0) ----------
+// Discount codes are made on the website's admin page and live here. A code has a kind ("pct" percent or "usd" dollars), an amount, the
+// plans it works on, an optional use limit and end date, and an on/off switch. Customers type one when they sign up; it is remembered
+// on their account and used on their first paid plan (see applyPlan).
+const discountLabel = (d) => (d.type === 'pct' ? `${d.value}% off` : `$${d.value} off`);
+const discountedPrice = (price, d) => Math.max(0, Math.round((d.type === 'pct' ? price * (1 - d.value / 100) : price - d.value) * 100) / 100);
+const findDiscount = (code) => (store.discounts || []).find((d) => d.code === String(code || '').trim().toUpperCase());
+// null when the code can be used now, otherwise why not (in words a customer can read).
+function discountProblem(d) {
+  if (!d) return 'That code is not valid.';
+  if (!d.on) return 'That code is not valid.';
+  if (d.ends && d.ends < localDay(new Date())) return 'That code has expired.';
+  if (d.max && d.used >= d.max) return 'That code has been used the most times it can be.';
+  return null;
+}
+function publicDiscount(d) {
+  const problem = discountProblem(d);
+  return { code: d.code, type: d.type, value: d.value, label: discountLabel(d), planIds: d.planIds || [], max: d.max || null, used: d.used || 0, ends: d.ends || '', on: !!d.on, note: d.note || '', created: d.created || 0,
+    status: !d.on ? 'off' : (d.ends && d.ends < localDay(new Date())) ? 'ended' : (d.max && d.used >= d.max) ? 'used' : 'working', problem };
+}
+const genDiscountCode = () => { const a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let c = ''; for (let i = 0; i < 8; i++) c += a[crypto.randomInt(a.length)]; return c; };
+const smallLimit = new Map(); // per internet address counters for the public website endpoints
+function overLimit(bucket, ip, max, windowMs) {
+  const k = bucket + '|' + ip, now = Date.now(), e = smallLimit.get(k);
+  if (!e || now - e.since > windowMs) { smallLimit.set(k, { n: 1, since: now }); if (smallLimit.size > 20000) smallLimit.delete(smallLimit.keys().next().value); return false; }
+  return ++e.n > max;
+}
+const emailOk = (v) => /^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,30}$/.test(v) && v.length <= 120;
+
 // ---------- Maintenance mode (guard 1.12.0) ----------
 // The admin can put parts of Aurora in maintenance: customers get a friendly "taking a short break" page there instead. The admin still
 // has full access. (This is the app's doing: another Emby app that talks to the server directly is not stopped by it.)
@@ -492,7 +528,13 @@ function applyPlan(userId, userName, plan, mode, priceOverride) {
   rec.expires = addPlanLength(from, plan);
   rec.categories = plan.categories ? [...plan.categories] : null;
   rec.name = userName; rec.updated = Date.now();
-  const price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number.isFinite(Number(priceOverride)) ? Math.max(0, Math.round(Number(priceOverride) * 100) / 100) : plan.price;
+  let price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number.isFinite(Number(priceOverride)) ? Math.max(0, Math.round(Number(priceOverride) * 100) / 100) : plan.price;
+  // A discount code the customer entered when signing up takes effect on their first paid plan it works on.
+  const dc = rec.discount;
+  if ((priceOverride === undefined || priceOverride === null || priceOverride === '') && dc && !dc.usedAt && (!dc.planIds || !dc.planIds.length || dc.planIds.includes(plan.id))) {
+    price = discountedPrice(plan.price, dc); dc.usedAt = today; dc.paid = price;
+    recordAudit('Discount', `${userName}: code ${dc.code} (${discountLabel(dc)}) applied to ${plan.name}: $${plan.price} became $${price}`);
+  }
   rec.plan = { id: plan.id, name: plan.name, price, connections: plan.connections, length: plan.length, unit: plan.unit, categories: rec.categories, since: today };
   const entry = { id: crypto.randomBytes(5).toString('hex'), at: Date.now(), userId, name: userName, planId: plan.id, planName: plan.name, price, length: plan.length, unit: plan.unit,
     connections: plan.connections, mode, from, expires: rec.expires };
@@ -814,6 +856,8 @@ function describeChange(req, url, subject) {
     const x = (store.extensions || []).find((e) => e.id === r[1]);
     return `${b.action === 'deny' ? 'Denied' : 'Approved'} an extension request from ${x ? x.name : 'a customer'}${b.action !== 'deny' && b.days ? ` (${plural(b.days, 'day')})` : ''}`;
   }
+  if (p === '/discounts' && m === 'POST') return `Made the discount code ${String(b.code || '').toUpperCase() || '(generated)'} (${b.type === 'usd' ? '$' + b.value : b.value + '%'} off)`;
+  if ((r = p.match(/^\/discounts\/([A-Za-z0-9]{3,20})$/))) return m === 'DELETE' ? `Deleted the discount code ${r[1].toUpperCase()}` : `Switched the discount code ${r[1].toUpperCase()} ${b.on ? 'on' : 'off'}`;
   if (p === '/plans' && m === 'POST') return `Added plan ${b.name || ''}`.trim();
   if ((r = p.match(/^\/plans\/([\w-]{1,40})$/))) {
     if (m === 'PUT') return `Changed plan ${b.name || ''}`.trim();
@@ -1537,6 +1581,82 @@ async function handle(req, res) {
     if (!me) return send(res, 401, { error: 'Not signed in' });
     return send(res, 200, { aliases: sportsCfg().aliases });
   }
+  // ----- The Aurora website (no sign-in): what to show, discount code check, free-trial sign-up, admin sign-in -----
+  if (url.pathname === '/site/info' && req.method === 'GET') {
+    return send(res, 200, { signupEnabled: !!cfg.signupEnabled, trialDays: cfg.signupTrialDays, trialConnections: cfg.signupTrialConnections, referralDays: cfg.referralDays > 0 ? cfg.referralDays : 0,
+      plans: (store.plans || []).filter((x) => x.active).map((x) => ({ id: x.id, name: x.name, price: x.price, length: x.length, unit: x.unit, connections: x.connections })) });
+  }
+  if (url.pathname === '/discount/check' && req.method === 'GET') {
+    if (overLimit('dcheck', ip, 30, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+    const d = findDiscount(url.searchParams.get('code')), problem = discountProblem(d);
+    if (problem) return send(res, 200, { valid: false, message: problem });
+    return send(res, 200, { valid: true, type: d.type, value: d.value, label: discountLabel(d), planIds: d.planIds || [] });
+  }
+  if (url.pathname === '/admin-login' && req.method === 'POST') {
+    if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const name = String(body.username || '').trim().slice(0, 64), pw = String(body.password || '').slice(0, 128);
+    if (!name || !pw) return send(res, 400, { error: 'Enter your username and password.' });
+    let r;
+    try { r = await emby('POST', '/Users/AuthenticateByName', { body: { Username: name, Pw: pw } }); } catch (e) {
+      if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); return send(res, 401, { error: 'That username or password is not right.' }); }
+      return send(res, 502, { error: `Can't reach Emby: ${e.message}` });
+    }
+    if (!r?.AccessToken || !r.User?.Policy?.IsAdministrator) { noteFailure(ip); return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
+    return send(res, 200, { token: r.AccessToken, userId: r.User.Id, name: r.User.Name });
+  }
+  if (url.pathname === '/signup' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (!cfg.signupEnabled) return send(res, 403, { error: 'Sign-ups are closed right now. Please try again later.' });
+    if (body.website) return send(res, 400, { error: 'Something went wrong. Please try again.' }); // hidden field only a robot fills in
+    const username = cleanUserName(body.username), email = String(body.email || '').trim().toLowerCase(), password = String(body.password || '');
+    if (!username) return send(res, 400, { error: 'Pick a username of 3 to 32 letters, numbers, dots, dashes or underscores.' });
+    if (!emailOk(email)) return send(res, 400, { error: 'Enter a valid email address.' });
+    if (password.length < 8 || password.length > 64) return send(res, 400, { error: 'Your password needs 8 to 64 characters.' });
+    if (body.agree !== true) return send(res, 400, { error: 'Please agree to not share your login.' });
+    const day = localDay(new Date());
+    if (overLimit('signup-try', ip, 40, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+    const made = smallLimit.get('signup|' + ip); // accounts made from this address today (counted only when one is really made)
+    if (made && Date.now() - made.since <= 86400000 && made.n >= cfg.signupPerIpPerDay) return send(res, 429, { error: 'Too many accounts were made from this connection today. Please try again tomorrow.' });
+    if ((store.signups || []).filter((x) => x.day === day).length >= cfg.signupMaxPerDay) {
+      if (store.signupFullDay !== day) { store.signupFullDay = day; sendAlert('Aurora: sign-ups full for today', `${cfg.signupMaxPerDay} accounts were made from the website today, so new sign-ups are paused until tomorrow.`, false); }
+      return send(res, 429, { error: 'Sign-ups are full for today. Please try again tomorrow.' });
+    }
+    if (Object.values(store.users).some((u) => (u.contact?.email || '').toLowerCase() === email) || (store.signups || []).some((x) => x.email === email)) return send(res, 409, { error: 'That email already has an account.' });
+    // Codes are checked before the account is made, so a wrong code never leaves a half-made account behind.
+    let dc = null, refId = null;
+    if (String(body.discount || '').trim()) { dc = findDiscount(body.discount); const pr = discountProblem(dc); if (pr) return send(res, 400, { error: pr }); }
+    if (String(body.referral || '').trim()) {
+      if (!(cfg.referralDays > 0)) return send(res, 400, { error: 'Referral codes are not being used right now.' });
+      const rc = String(body.referral).trim().toUpperCase();
+      refId = Object.keys(store.users).find((id) => store.users[id].refCode === rc);
+      if (!refId) return send(res, 400, { error: 'That referral code was not found.' });
+      const yearAgo = Date.now() - 365 * 86400000;
+      if (Object.values(store.users).filter((u) => u.referredBy === refId && (u.referredAt || 0) > yearAgo).length >= cfg.referralMaxPerYear) return send(res, 400, { error: 'That referral code has reached its limit.' });
+    }
+    let existing;
+    try { existing = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: 'Sign-up is not available right now. Please try again in a few minutes.' }); }
+    if ((existing || []).some((u) => String(u.Name).toLowerCase() === username.toLowerCase())) return send(res, 409, { error: 'That username is taken. Try another.' });
+    let user;
+    try { user = await newEmbyAccount(username, password); } catch (e) { log('Website sign-up could not make the account:', e.message); return send(res, 502, { error: 'Could not make your account. Please try again in a few minutes.' }); }
+    if (made && Date.now() - made.since <= 86400000) made.n++; else smallLimit.set('signup|' + ip, { n: 1, since: Date.now() });
+    const days = cfg.signupTrialDays, conns = cfg.signupTrialConnections;
+    const rec = store.users[user.Id] = { limit: conns, expires: addDays(day, days), categories: null, name: username, updated: Date.now(), trial: true, created: Date.now(), site: true, contact: { full: '', email, phone: '', note: 'Website sign-up' },
+      plan: { id: 'trial', name: 'Free trial', price: 0, connections: conns, length: days, unit: 'day', categories: null, since: day } };
+    if (dc) { dc.used = (dc.used || 0) + 1; rec.discount = { code: dc.code, type: dc.type, value: dc.value, planIds: dc.planIds || [], at: Date.now() }; }
+    let gave = 0;
+    if (refId) { rec.referredBy = refId; rec.referredAt = Date.now(); if (giveDays(user.Id, cfg.referralDays, 'referral code')) gave = cfg.referralDays; giveDays(refId, cfg.referralDays, `referral: ${username} joined`); }
+    store.signups = [{ at: Date.now(), day, email, user: username, discount: dc ? dc.code : '', referral: !!refId }, ...(store.signups || [])].slice(0, 2000);
+    recordAudit('Website', `Sign-up: ${username}${dc ? `, code ${dc.code}` : ''}${refId ? ', referral' : ''}`);
+    try { saveStore(); } catch (e) { log('Could not save after a website sign-up:', e.message); }
+    queueAlert(`New website sign-up: ${username}${dc ? ` (code ${dc.code})` : ''}`);
+    log('Website sign-up:', username);
+    copyAppDefaults(user.Id).catch(() => {});
+    try { await enforce(user.Id); if (refId) await enforce(refId); } catch (e) { log('Applying', username, 'failed:', e.message); }
+    return send(res, 200, { ok: true, username, days: days + gave, expires: rec.expires, connections: conns, discount: dc ? discountLabel(dc) : '' });
+  }
   if (url.pathname === '/plans/public' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
     if (!me) return send(res, 401, { error: 'Not signed in' });
@@ -1846,6 +1966,44 @@ async function handle(req, res) {
       const text = describeChange(req, url, subject);
       if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
     });
+  }
+  // Discount codes for the website (admin).
+  if (url.pathname === '/discounts' && req.method === 'GET') return send(res, 200, { discounts: (store.discounts || []).map(publicDiscount), plans: (store.plans || []).filter((x) => x.active).map((x) => ({ id: x.id, name: x.name, price: x.price })) });
+  if (url.pathname === '/discounts' && req.method === 'POST') {
+    let b;
+    try { b = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const code = (String(b.code || '').trim().toUpperCase()) || genDiscountCode();
+    if (!/^[A-Z0-9]{3,20}$/.test(code)) return send(res, 400, { error: 'A code can use letters and numbers only, 3 to 20 characters.' });
+    if (findDiscount(code)) return send(res, 409, { error: 'That code already exists. Pick another.' });
+    const type = b.type === 'usd' ? 'usd' : 'pct', value = Math.round(Number(b.value) * 100) / 100;
+    if (!Number.isFinite(value) || value < 1 || (type === 'pct' && value > 100) || value > 100000) return send(res, 400, { error: type === 'pct' ? 'Percent must be between 1 and 100.' : 'Dollars off must be 1 or more.' });
+    const activeIds = (store.plans || []).filter((x) => x.active).map((x) => x.id);
+    const planIds = Array.isArray(b.planIds) ? [...new Set(b.planIds.map(String))].filter((id) => activeIds.includes(id)) : [];
+    if (!planIds.length) return send(res, 400, { error: 'Pick at least one plan.' });
+    let max = null;
+    if (b.max !== undefined && b.max !== null && b.max !== '') { max = Number(b.max); if (!Number.isInteger(max) || max < 1 || max > 1000000) return send(res, 400, { error: 'Uses must be a whole number from 1 up, or blank for no limit.' }); }
+    const ends = String(b.ends || '');
+    if (ends && (!/^\d{4}-\d{2}-\d{2}$/.test(ends) || ends < localDay(new Date()))) return send(res, 400, { error: 'The end date must be today or later.' });
+    if ((store.discounts || []).length >= 500) return send(res, 400, { error: 'That is a lot of codes. Delete some you no longer need first.' });
+    const d = { code, type, value, planIds, max, used: 0, ends, on: true, note: cleanText(b.note, 80), created: Date.now(), by: auditBy };
+    store.discounts = [d, ...(store.discounts || [])];
+    b.code = code; b.type = type; b.value = value; // so the change log names the real code
+    saveStore();
+    return send(res, 200, { ok: true, discount: publicDiscount(d) });
+  }
+  const dm = url.pathname.match(/^\/discounts\/([A-Za-z0-9]{3,20})$/);
+  if (dm && req.method === 'PUT') {
+    const d = findDiscount(dm[1]);
+    if (!d) return send(res, 404, { error: 'That code was not found.' });
+    let b;
+    try { b = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    d.on = !!b.on; saveStore();
+    return send(res, 200, { ok: true, discount: publicDiscount(d) });
+  }
+  if (dm && req.method === 'DELETE') {
+    if (!findDiscount(dm[1])) return send(res, 404, { error: 'That code was not found.' });
+    store.discounts = (store.discounts || []).filter((d) => d.code !== dm[1].toUpperCase()); saveStore();
+    return send(res, 200, { ok: true });
   }
   if (url.pathname === '/audit' && req.method === 'GET') return send(res, 200, { audit: (store.audit || []).slice(0, 300) });
 

@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Website Admin</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<script src="../config.js"></script>
+<style>
+@font-face { font-family: 'Inter'; src: url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+/* Same look as the Aurora app and website: navy, gradient buttons, pill header. One column, a form card, then the list of codes. */
+:root {
+  --bg: #070c1c; --bg-2: #0e1530; --bg-3: #1b2549; --text: #fff; --muted: #b3b3b3; --dim: #808080; --line: #232f58;
+  --accent: #2ad4d0; --live: #e5384f; --green: #46d369; --amber: #ffd479;
+  --accent-grad: linear-gradient(100deg, #18b6d6 0%, #4f7bff 55%, #7a5cff 100%);
+  --font: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 var(--font); -webkit-font-smoothing: antialiased;
+  background-image: radial-gradient(60% 30% at 8% 0%, rgba(42,212,208,.14), transparent 70%), radial-gradient(50% 30% at 100% 0%, rgba(122,92,255,.2), transparent 70%); background-repeat: no-repeat; }
+.wrap { max-width: 980px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-bottom: 60px; }
+h1, h2, h3 { margin: 0; line-height: 1.15; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding-block: 16px; }
+.pill { display: flex; align-items: center; gap: .9rem; padding: .45rem 1.1rem; border-radius: 999px; background: rgba(12,19,44,.76); border: 1px solid rgba(255,255,255,.09); }
+.pill svg { height: 20px; width: auto; display: block; }
+.pill span { font-size: .8rem; color: #cfd6f5; letter-spacing: .06em; text-transform: uppercase; font-weight: 600; }
+.btn { border: 0; border-radius: 4px; padding: .65rem 1.3rem; font: 700 .95rem var(--font); cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: .4rem; }
+.btn.red { background: var(--accent-grad); color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,.35); }
+.btn.gray { background: rgba(109,109,110,.7); color: #fff; }
+.btn.line { background: none; border: 1px solid var(--line); color: #e5e5e5; }
+.btn.sm { padding: .4rem .8rem; font-size: .8rem; }
+.btn:hover { filter: brightness(1.12); }
+.card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+.card h2 { font-size: 1.25rem; font-weight: 800; margin-bottom: 4px; }
+.sub { color: var(--muted); font-size: .9rem; margin: 0 0 18px; }
+label { display: block; font-size: .78rem; font-weight: 700; margin: 0 0 6px; color: #e5e5e5; }
+input, select { width: 100%; padding: 11px 12px; border-radius: 6px; border: 1px solid var(--line); background: #0a1126; color: #fff; font: inherit; }
+input::placeholder { color: #6d78a6; }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; }
+.full { grid-column: 1 / -1; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { flex: 1; border: 0; background: #0a1126; color: #cfd6f5; padding: 10px; font: 600 .9rem var(--font); cursor: pointer; }
+.seg button[aria-pressed="true"] { background: #fff; color: #0a1126; }
+.row { display: flex; gap: 8px; }
+.row input { min-width: 0; }
+.row .btn { flex: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 999px; background: #0a1126; font-size: .88rem; cursor: pointer; }
+.chip input { width: auto; margin: 0; accent-color: #4f7bff; }
+.msg { margin-top: 14px; font-size: .92rem; }
+.msg.ok { color: var(--green); } .msg.err { color: #ff8d9b; }
+.made { margin-top: 16px; padding: 18px; border-radius: 12px; border: 1px solid #2f4a8f; background: radial-gradient(70% 140% at 8% 0%, rgba(42,212,208,.16), transparent 70%), #0a1126; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+.made .code { font-size: 2rem; font-weight: 800; letter-spacing: .12em; }
+.made small { color: var(--muted); display: block; }
+.tools { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; margin: 28px 0 12px; }
+.tools h2 { font-size: 1.25rem; font-weight: 800; }
+.tools select { width: auto; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); }
+table { width: 100%; border-collapse: collapse; min-width: 640px; font-size: .92rem; }
+th { text-align: left; font-size: .72rem; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); padding: 12px 14px; border-bottom: 1px solid var(--line); }
+td { padding: 13px 14px; border-top: 1px solid rgba(255,255,255,.06); vertical-align: middle; }
+tbody tr:first-child td { border-top: 0; }
+td.c { font-weight: 800; letter-spacing: .08em; font-variant-numeric: tabular-nums; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+.tag { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .72rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.tag.on { background: rgba(70,211,105,.15); color: var(--green); } .tag.off { background: rgba(255,255,255,.08); color: var(--muted); }
+.tag.exp { background: rgba(229,56,79,.15); color: #ff8d9b; } .tag.used { background: rgba(255,212,121,.14); color: var(--amber); }
+.bar2 { height: 6px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; margin-top: 5px; min-width: 70px; }
+.bar2 i { display: block; height: 100%; background: var(--accent-grad); }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+.demo { margin-top: 22px; font-size: .8rem; color: var(--dim); }
+.login { max-width: 420px; margin: 40px auto; }
+.login .btn { width: 100%; margin-top: 18px; }
+.login label { margin-top: 14px; }
+@media (max-width: 640px) { .grid { grid-template-columns: 1fr; } .pill span { display: none; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="bar">
+    <div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Website admin</span></div>
+    <button class="btn line sm" id="signout" hidden>Sign out</button>
+  </div>
+
+  <div id="login" class="card login">
+    <h2>Admin sign in</h2>
+    <p class="sub">Use your Aurora administrator account (the same one you use in the app).</p>
+    <label for="lu">Username</label><input id="lu" autocomplete="username">
+    <label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password" placeholder="Your password">
+    <button class="btn red" id="lgo" type="button">Sign in</button>
+    <p class="msg err" id="lerr" hidden></p>
+    
+  </div>
+
+  <div id="app" hidden>
+    <div class="card">
+      <h2>Make a discount code</h2>
+      <p class="sub">Customers type it on the sign-up form. It works on the website straight away.</p>
+      <div class="grid">
+        <div class="full">
+          <label for="code">Code</label>
+          <div class="row"><input id="code" maxlength="20" placeholder="Leave blank to make one for you, or type your own" autocomplete="off"><button class="btn gray" id="gen" type="button">Generate</button></div>
+        </div>
+        <div>
+          <label id="tl">What it takes off</label>
+          <div class="seg" role="group" aria-labelledby="tl"><button type="button" id="tp" aria-pressed="true">Percent off</button><button type="button" id="td" aria-pressed="false">Dollars off</button></div>
+        </div>
+        <div>
+          <label for="val" id="vl">Percent (1 to 100)</label>
+          <input id="val" type="number" inputmode="decimal" min="1" value="20">
+        </div>
+        <div class="full">
+          <label>Works on</label>
+          <div class="chips" id="plans"></div>
+        </div>
+        <div>
+          <label for="max">How many times it can be used</label>
+          <input id="max" type="number" inputmode="numeric" min="1" placeholder="Blank = no limit">
+        </div>
+        <div>
+          <label for="exp">Ends on</label>
+          <input id="exp" type="date">
+        </div>
+        <div class="full">
+          <label for="note">Note to yourself <span style="font-weight:400;color:var(--dim)">(optional)</span></label>
+          <input id="note" maxlength="80" placeholder="e.g. Black Friday, for John's group">
+        </div>
+      </div>
+      <button class="btn red" id="make" style="margin-top:18px">Create code</button>
+      <p class="msg err" id="merr" role="alert" hidden></p>
+      <div class="made" id="made" hidden>
+        <div><small>Code created</small><div class="code" id="madecode"></div><small id="madewhat"></small></div>
+        <button class="btn gray" id="copy">Copy code</button>
+      </div>
+    </div>
+
+    <div class="tools">
+      <h2>Your codes</h2>
+      <select id="filter" aria-label="Show"><option value="all">All codes</option><option value="active">Working now</option><option value="ended">Switched off or ended</option></select>
+    </div>
+    <div class="tablewrap"><table><thead><tr><th>Code</th><th>Takes off</th><th>Works on</th><th class="n">Used</th><th>Ends</th><th>Status</th><th></th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="none" hidden>No codes here yet.</div></div>
+    <p class="demo" id="count"></p>
+  </div>
+</div>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
+  var session = null, codes = [], plans = [], type = 'pct';
+  try { session = JSON.parse(sessionStorage.getItem('aurora.admin') || 'null'); } catch (e) { session = null; }
+  function keep() { try { if (session) sessionStorage.setItem('aurora.admin', JSON.stringify(session)); else sessionStorage.removeItem('aurora.admin'); } catch (e) { /* private window */ } }
+  function esc(s) { return String(s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function fmt(d) { return d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'No end date'; }
+  function money(c) { return c.type === 'pct' ? c.value + '% off' : '$' + c.value + ' off'; }
+  function api(method, path, body) {
+    var h = {}; if (body) h['Content-Type'] = 'application/json';
+    if (session) { h['X-Emby-Token'] = session.token; h['X-Aurora-User'] = session.name; }
+    return fetch(G + path, { method: method, headers: h, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
+  }
+  function show(signedIn) { $('login').hidden = signedIn; $('app').hidden = !signedIn; $('signout').hidden = !signedIn; }
+  function out(text) { session = null; keep(); show(false); if (text) { $('lerr').hidden = false; $('lerr').textContent = text; } }
+
+  function render() {
+    var f = $('filter').value, tb = $('rows'); tb.innerHTML = '';
+    var list = codes.filter(function (c) { var w = c.status === 'working'; return f === 'all' || (f === 'active' ? w : !w); });
+    $('none').hidden = list.length > 0; $('none').textContent = codes.length ? 'No codes in this view.' : 'No codes yet. Make your first one above.';
+    var label = { working: 'Working', off: 'Switched off', ended: 'Ended', used: 'All used' }, cls = { working: 'on', off: 'off', ended: 'exp', used: 'used' };
+    list.forEach(function (c) {
+      var tr = document.createElement('tr'), pct = c.max ? Math.min(100, Math.round(c.used / c.max * 100)) : 0;
+      var names = (c.planIds || []).map(function (id) { var p = plans.filter(function (x) { return x.id === id; })[0]; return p ? p.name.replace(/\s*·.*$/, '') : 'A removed plan'; }).join(', ');
+      tr.innerHTML = '<td class="c">' + esc(c.code) + (c.note ? '<div style="font-weight:400;letter-spacing:0;color:var(--dim);font-size:.78rem">' + esc(c.note) + '</div>' : '') + '</td>' +
+        '<td>' + esc(money(c)) + '</td><td>' + esc(names) + '</td>' +
+        '<td class="n">' + c.used + (c.max ? ' of ' + c.max + '<div class="bar2"><i style="width:' + pct + '%"></i></div>' : ' <span style="color:var(--dim)">(no limit)</span>') + '</td>' +
+        '<td>' + esc(fmt(c.ends)) + '</td><td><span class="tag ' + cls[c.status] + '">' + label[c.status] + '</span></td>' +
+        '<td><button class="btn line sm" type="button">' + (c.on ? 'Switch off' : 'Switch on') + '</button></td>';
+      tr.querySelector('button').onclick = function () {
+        var b = this; b.disabled = true;
+        api('PUT', '/discounts/' + encodeURIComponent(c.code), { on: !c.on }).then(function (j) {
+          if (j.__status === 401 || j.__status === 403) return out('Your sign-in ended. Please sign in again.');
+          if (j.discount) { codes[codes.indexOf(c)] = j.discount; } render();
+        }).catch(function () { b.disabled = false; });
+      };
+      tb.appendChild(tr);
+    });
+    $('count').textContent = codes.length ? codes.length + ' code' + (codes.length === 1 ? '' : 's') + ' in total. Codes are saved on your Aurora Guard.' : '';
+  }
+  function drawPlans() {
+    var box = $('plans'); box.innerHTML = '';
+    plans.forEach(function (p) {
+      var l = document.createElement('label'); l.className = 'chip';
+      l.innerHTML = '<input type="checkbox" class="plan" checked> <span></span>';
+      l.querySelector('input').value = p.id; l.querySelector('span').textContent = p.name.replace(/\s*·.*$/, '') + ' · $' + p.price;
+      box.appendChild(l);
+    });
+  }
+  function load() {
+    api('GET', '/discounts').then(function (j) {
+      if (j.__status === 401 || j.__status === 403) return out('Your sign-in ended. Please sign in again.');
+      if (j.__status !== 200) { $('none').hidden = false; $('none').textContent = j.error || 'Could not load your codes.'; return; }
+      codes = j.discounts || []; plans = j.plans || []; drawPlans(); render();
+    }).catch(function () { $('none').hidden = false; $('none').textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  function setType(t) {
+    type = t; $('tp').setAttribute('aria-pressed', t === 'pct'); $('td').setAttribute('aria-pressed', t === 'usd');
+    $('vl').textContent = t === 'pct' ? 'Percent (1 to 100)' : 'Dollars off ($1 or more)'; $('val').value = t === 'pct' ? 20 : 5;
+  }
+  function gen() { var a = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', s = '', r = new Uint32Array(8); (window.crypto || {}).getRandomValues ? crypto.getRandomValues(r) : r.forEach(function (_, i) { r[i] = Math.random() * 4e9; }); for (var i = 0; i < 8; i++) s += a[r[i] % a.length]; return s; }
+
+  $('tp').onclick = function () { setType('pct'); }; $('td').onclick = function () { setType('usd'); };
+  $('gen').onclick = function () { $('code').value = gen(); };
+  $('filter').onchange = render;
+  $('signout').onclick = function () { out(''); $('lp').value = ''; };
+  function login() {
+    var u = $('lu').value.trim(), p = $('lp').value, err = $('lerr');
+    if (!u || !p) { err.hidden = false; err.textContent = 'Enter your username and password.'; return; }
+    if (!G) { err.hidden = false; err.textContent = 'The Guard address is not set in config.js.'; return; }
+    var b = $('lgo'); b.disabled = true; err.hidden = true;
+    api('POST', '/admin-login', { username: u, password: p }).then(function (j) {
+      b.disabled = false;
+      if (j.__status !== 200) { err.hidden = false; err.textContent = j.error || 'Could not sign in.'; return; }
+      session = { token: j.token, name: j.name }; keep(); $('lp').value = ''; show(true); load();
+    }).catch(function () { b.disabled = false; err.hidden = false; err.textContent = 'Could not reach the Aurora Guard. Check your connection.'; });
+  }
+  $('lgo').onclick = login;
+  $('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+  $('make').onclick = function () {
+    var err = $('merr'), btn = $('make');
+    var ids = [].slice.call(document.querySelectorAll('.plan')).filter(function (p) { return p.checked; }).map(function (p) { return p.value; });
+    var body = { code: $('code').value.trim(), type: type, value: Number($('val').value), planIds: ids, max: $('max').value, ends: $('exp').value, note: $('note').value.trim() };
+    err.hidden = true; btn.disabled = true;
+    api('POST', '/discounts', body).then(function (j) {
+      btn.disabled = false;
+      if (j.__status === 401 || j.__status === 403) return out('Your sign-in ended. Please sign in again.');
+      if (j.__status !== 200) { err.hidden = false; err.textContent = j.error || 'Could not make the code.'; return; }
+      var c = j.discount; codes.unshift(c); $('code').value = ''; $('note').value = ''; $('max').value = ''; $('exp').value = '';
+      $('madecode').textContent = c.code;
+      $('madewhat').textContent = money(c) + ' · ' + (c.planIds || []).map(function (id) { var p = plans.filter(function (x) { return x.id === id; })[0]; return p ? p.name.replace(/\s*·.*$/, '') : ''; }).filter(Boolean).join(' and ') + (c.max ? ' · ' + c.max + ' uses' : '') + (c.ends ? ' · ends ' + fmt(c.ends) : '');
+      $('made').hidden = false; render();
+    }).catch(function () { btn.disabled = false; err.hidden = false; err.textContent = 'Could not reach the Aurora Guard.'; });
+  };
+  $('copy').onclick = function () {
+    var t = $('madecode').textContent, b = $('copy');
+    function done() { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy code'; }, 1500); }
+    try { navigator.clipboard.writeText(t).then(done, function () { b.textContent = 'Select and copy it'; }); } catch (e) { b.textContent = 'Select and copy it'; }
+  };
+  if (session && session.token) { show(true); load(); } else show(false);
+})();
+</script>
+
+</body>
+</html>
