@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Reseller Panel</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<script src="../config.js"></script>
+<style>
+@font-face { font-family: 'Inter'; src: url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+/* Same look as the Aurora app and website. A credits header, an add-customer card, then the customer list with filters. */
+:root { --bg:#070c1c; --bg-2:#0e1530; --bg-3:#1b2549; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --live:#e5384f; --green:#46d369; --amber:#ffd479;
+  --accent-grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
+.wrap { max-width:1020px; margin:0 auto; padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); padding-bottom:60px; }
+h1,h2,h3 { margin:0; line-height:1.15; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.bar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-block:16px; }
+.pill { display:flex; align-items:center; gap:.9rem; padding:.45rem 1.1rem; border-radius:999px; background:rgba(12,19,44,.76); border:1px solid rgba(255,255,255,.09); }
+.pill svg { height:20px; width:auto; display:block; }
+.pill span { font-size:.8rem; color:#cfd6f5; letter-spacing:.06em; text-transform:uppercase; font-weight:600; }
+.btn { border:0; border-radius:4px; padding:.65rem 1.3rem; font:700 .95rem var(--font); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:.4rem; color:#fff; }
+.btn.red { background:var(--accent-grad); text-shadow:0 1px 2px rgba(0,0,0,.35); } .btn.gray { background:rgba(109,109,110,.7); } .btn.line { background:none; border:1px solid var(--line); color:#e5e5e5; }
+.btn.sm { padding:.4rem .8rem; font-size:.8rem; } .btn:hover { filter:brightness(1.12); } .btn.danger { color:#ff8d9b; }
+.card { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:22px; }
+.card h2 { font-size:1.25rem; font-weight:800; margin-bottom:4px; } .sub { color:var(--muted); font-size:.9rem; margin:0 0 16px; }
+label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
+input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; } input::placeholder { color:#6d78a6; }
+.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 16px; } .full { grid-column:1/-1; }
+.row { display:flex; gap:8px; } .row input { min-width:0; } .row .btn { flex:none; }
+.hero { display:grid; grid-template-columns:1.3fr 1fr; gap:16px; margin-bottom:16px; }
+.credits { background:radial-gradient(70% 140% at 8% 0%,rgba(42,212,208,.2),transparent 70%),radial-gradient(60% 140% at 100% 0%,rgba(122,92,255,.3),transparent 70%),var(--bg-2); }
+.credits .n { font-size:3.4rem; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; } .credits small { color:var(--muted); }
+.low { display:inline-block; margin-top:10px; padding:4px 10px; border-radius:999px; font-size:.75rem; font-weight:700; background:rgba(255,212,121,.14); color:var(--amber); }
+.msg { margin-top:12px; font-size:.92rem; } .msg.ok { color:var(--green); } .msg.err { color:#ff8d9b; }
+.toggle { display:flex; gap:10px; align-items:flex-start; font-weight:400; color:var(--muted); font-size:.9rem; }
+.toggle input { width:auto; margin-top:4px; accent-color:#4f7bff; }
+.made { margin-top:16px; padding:16px; border-radius:12px; border:1px solid #2f4a8f; background:#0a1126; display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; }
+.made b { font-size:1.05rem; letter-spacing:.04em; } .made small { display:block; color:var(--muted); }
+.tools { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center; margin:28px 0 12px; } .tools h2 { font-size:1.25rem; font-weight:800; }
+.chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.chip { padding:7px 13px; border:1px solid var(--line); border-radius:999px; background:#0a1126; color:#cfd6f5; font:600 .85rem var(--font); cursor:pointer; }
+.chip[aria-pressed="true"] { background:#fff; color:#0a1126; border-color:#fff; }
+.list { display:grid; gap:10px; }
+.cust { background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.cust .top { display:flex; flex-wrap:wrap; gap:8px 16px; justify-content:space-between; align-items:center; }
+.cust .nm { font-weight:800; } .cust .meta { color:var(--muted); font-size:.85rem; }
+.tag { display:inline-block; padding:3px 9px; border-radius:999px; font-size:.7rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-left:6px; vertical-align:middle; }
+.tag.on { background:rgba(70,211,105,.15); color:var(--green); } .tag.soon { background:rgba(255,212,121,.14); color:var(--amber); } .tag.exp { background:rgba(229,56,79,.15); color:#ff8d9b; }
+.tag.trial { background:rgba(79,123,255,.2); color:#9db4ff; } .tag.hold { background:rgba(255,255,255,.08); color:var(--muted); }
+.act { display:none; margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,.07); gap:8px; flex-wrap:wrap; align-items:center; } .cust.open .act { display:flex; }
+.act select { width:auto; } .act .note { width:100%; color:var(--muted); font-size:.85rem; }
+.empty { padding:26px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:12px; }
+.demo { margin-top:22px; font-size:.8rem; color:var(--dim); }
+.login { max-width:420px; margin:40px auto; } .login .btn { width:100%; margin-top:18px; } .login label { margin-top:14px; }
+@media (max-width:720px) { .hero,.grid { grid-template-columns:1fr; } .pill span { display:none; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="bar">
+    <div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Reseller panel</span></div>
+    <button class="btn line sm" id="out" hidden>Sign out</button>
+  </div>
+
+  <div class="card login" id="login">
+    <h2>Reseller sign in</h2><p class="sub">Use the username and password we gave you (the same ones you use in the Aurora app).</p>
+    <label for="lu">Username</label><input id="lu" autocomplete="username">
+    <label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password" placeholder="Your password">
+    <button class="btn red" id="go" type="button">Sign in</button>
+    <p class="msg err" id="lerr" role="alert" hidden></p>
+  </div>
+
+  <div id="app" hidden>
+    <div class="hero">
+      <div class="card credits"><small>Signed in as <b id="who"></b> · Your credits</small><div class="n" id="cr">0</div><small>1 credit = 1 connection for 1 month</small><div><span class="low" id="low" hidden>Running low</span></div></div>
+      <div class="card"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
+        <div class="row"><input id="ask" type="number" min="1" placeholder="How many" inputmode="numeric"><button class="btn gray" id="askbtn" type="button">Ask</button></div><p class="msg ok" id="askmsg" hidden></p></div>
+    </div>
+
+    <div class="card">
+      <h2>Add a customer</h2><p class="sub">Their account is ready straight away. <span id="trialnote"></span></p>
+      <div class="grid">
+        <div><label for="nu">Username</label><input id="nu" placeholder="e.g. mike_t" maxlength="32" autocomplete="off"></div>
+        <div><label for="np">Password</label><div class="row"><input id="np" placeholder="Leave blank to make one" autocomplete="off"><button class="btn gray" id="gp" type="button">Make</button></div></div>
+        <div><label for="plan">Plan</label><select id="plan"></select></div>
+        <div style="display:flex;align-items:end"><label class="toggle" for="trial"><input id="trial" type="checkbox"> Free 2-day trial (no credits)</label></div>
+        <div><label for="fn">Full name <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="fn" maxlength="60"></div>
+        <div><label for="em">Email <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="em" type="email" maxlength="80"></div>
+        <div class="full"><label for="nt">Note to yourself <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="nt" maxlength="300" placeholder="e.g. paid by cash, friend of John"></div>
+      </div>
+      <button class="btn red" id="add" type="button" style="margin-top:18px">Create customer</button>
+      <p class="msg err" id="adderr" role="alert" hidden></p>
+      <div class="made" id="made" hidden><div><small>Customer created. Send them these:</small><b id="madeu"></b><small id="madep"></small></div><button class="btn gray" id="cp" type="button">Copy login message</button></div>
+    </div>
+
+    <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
+    <div class="chips" id="chips" role="group" aria-label="Filter"></div>
+    <div class="list" id="list" aria-live="polite"></div>
+    
+  </div>
+</div>
+<script>
+(function () {
+  var $ = function (i) { return document.getElementById(i); };
+  var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
+  var session = null, me = null, filter = 'all', openId = null, busy = false;
+  try { session = JSON.parse(sessionStorage.getItem('aurora.reseller') || 'null'); } catch (e) { session = null; }
+  function keep() { try { if (session) sessionStorage.setItem('aurora.reseller', JSON.stringify(session)); else sessionStorage.removeItem('aurora.reseller'); } catch (e) { /* private window */ } }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function fmt(d) { return d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'No end date'; }
+  function api(method, path, body) {
+    var h = {}; if (body) h['Content-Type'] = 'application/json';
+    if (session) h['X-Emby-Token'] = session.token;
+    var q = (path.indexOf('?') >= 0 ? '&' : '?') + 'userId=' + encodeURIComponent(session ? session.userId : '') + '&by=' + encodeURIComponent(session ? session.name : '');
+    return fetch(G + path + q, { method: method, headers: h, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
+  }
+  function show(inn) { $('login').hidden = inn; $('app').hidden = !inn; $('out').hidden = !inn; }
+  function out(text) { session = null; me = null; keep(); show(false); if (text) { $('lerr').hidden = false; $('lerr').textContent = text; } }
+  function msg(el, text, kind) { el.hidden = !text; el.textContent = text || ''; el.className = 'msg ' + kind; }
+  function gen() { var w = ['Blue','Tiger','Maple','River','Cloud','Amber','Falcon','Cedar','Pearl','Comet'], r = new Uint32Array(3); crypto.getRandomValues(r); return w[r[0] % 10] + w[r[1] % 10] + (10 + r[2] % 90); }
+
+  function state(c) { return c.hold ? 'hold' : c.expired ? 'exp' : c.trial ? 'trial' : (c.daysLeft != null && c.daysLeft <= 7) ? 'soon' : 'on'; }
+  var label = { on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold' };
+  function planOptions() { return (me.plans || []).map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + p.credits + ' credits)</option>'; }).join(''); }
+
+  function chips() {
+    var cs = me.customers || [], counts = { all: cs.length }, names = { all: 'All', on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold' };
+    ['on', 'soon', 'exp', 'trial', 'hold'].forEach(function (k) { counts[k] = cs.filter(function (c) { return state(c) === k; }).length; });
+    $('chips').innerHTML = Object.keys(names).map(function (k) { return '<button class="chip" type="button" data-k="' + k + '" aria-pressed="' + (filter === k) + '">' + names[k] + ' ' + counts[k] + '</button>'; }).join('');
+  }
+  function render() {
+    if (!me) return;
+    $('cr').textContent = me.credits; $('low').hidden = !me.low; $('who').textContent = me.name;
+    $('trialnote').textContent = 'A free trial costs nothing (you have ' + me.trialsLeft + ' left today).';
+    var keepPlan = $('plan').value; $('plan').innerHTML = planOptions(); if (keepPlan) $('plan').value = keepPlan;
+    if (me.request) { $('askmsg').hidden = false; $('askmsg').className = 'msg ok'; $('askmsg').textContent = 'Your request for ' + me.request.amount + ' credits is waiting.'; $('askbtn').disabled = true; } else { $('askbtn').disabled = false; }
+    chips();
+    var q = $('q').value.trim().toLowerCase(), list = $('list'); list.innerHTML = '';
+    var rows = (me.customers || []).filter(function (c) { return (filter === 'all' || state(c) === filter) && (!q || ((c.name || '') + ' ' + (c.full || '') + ' ' + (c.email || '')).toLowerCase().indexOf(q) >= 0); });
+    if (!rows.length) { list.innerHTML = '<div class="empty">' + ((me.customers || []).length ? 'No customers here.' : 'No customers yet. Add your first one above.') + '</div>'; return; }
+    rows.forEach(function (c) {
+      var s = state(c), el = document.createElement('div'); el.className = 'cust' + (openId === c.id ? ' open' : '');
+      var ends = c.expires ? ((c.daysLeft != null && c.daysLeft < 0 ? 'Ended ' : 'Ends ') + fmt(c.expires) + (c.daysLeft != null && c.daysLeft >= 0 ? ' (' + c.daysLeft + ' day' + (c.daysLeft === 1 ? '' : 's') + ')' : '')) : 'No end date';
+      el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div></div>' +
+        '<div class="meta" style="text-align:right">' + esc(c.planName || '') + '<br>' + esc(ends) + '</div></div>' +
+        '<div class="act"><select class="rp" aria-label="Renew plan">' + planOptions() + '</select><button class="btn red sm renew" type="button">Renew</button><button class="btn line sm pw" type="button">Reset password</button>' +
+        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm danger del" type="button">Delete</button>' +
+        (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div></div>';
+      var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
+      var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
+      top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+      function act(btn, method, path, body, ok) {
+        if (busy) return; busy = true; btn.disabled = true;
+        api(method, path, body).then(function (j) {
+          busy = false; btn.disabled = false;
+          if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
+          if (j.__status !== 200) return say(j.error || 'That did not work. Please try again.', true);
+          ok(j);
+        }).catch(function () { busy = false; btn.disabled = false; say('Could not reach Aurora. Check your connection.', true); });
+      }
+      el.querySelector('.renew').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/renew', { planId: el.querySelector('.rp').value }, function (j) { me.credits = j.credits; reload(); }); };
+      el.querySelector('.pw').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/password', {}, function (j) { say('New password for ' + c.name + ': ' + j.password); }); };
+      el.querySelector('.so').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/signout', {}, function (j) { say('Signed out ' + j.signedOut + ' device' + (j.signedOut === 1 ? '' : 's') + '.'); }); };
+      el.querySelector('.hd').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/hold', { hold: !c.hold }, function () { reload(); }); };
+      var del = el.querySelector('.del');
+      del.onclick = function () { del.textContent = 'Tap again to delete'; del.onclick = function () { act(del, 'DELETE', '/reseller/customers/' + encodeURIComponent(c.id), null, function () { openId = null; reload(); }); }; };
+      list.appendChild(el);
+    });
+  }
+  function reload() {
+    return api('GET', '/reseller/me').then(function (j) {
+      if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
+      if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
+      if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
+      me = j; render();
+    }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
+  }
+
+  function login() {
+    var u = $('lu').value.trim(), p = $('lp').value, err = $('lerr');
+    if (!u || !p) { err.hidden = false; err.textContent = 'Enter your username and password.'; return; }
+    if (!G) { err.hidden = false; err.textContent = 'The Guard address is not set in config.js.'; return; }
+    var b = $('go'); b.disabled = true; err.hidden = true;
+    fetch(G + '/site-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); })
+      .then(function (j) {
+        b.disabled = false;
+        if (j.__status !== 200) { err.hidden = false; err.textContent = j.error || 'Could not sign in.'; return; }
+        if (!j.reseller) { err.hidden = false; err.textContent = 'This account is not a reseller. Ask your provider to set you up.'; return; }
+        session = { token: j.token, userId: j.userId, name: j.name }; keep(); $('lp').value = ''; show(true); reload();
+      }).catch(function () { b.disabled = false; err.hidden = false; err.textContent = 'Could not reach Aurora. Check your connection.'; });
+  }
+  $('go').onclick = login; $('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+  $('out').onclick = function () { out(''); $('lp').value = ''; };
+  $('chips').addEventListener('click', function (e) { var b = e.target.closest('.chip'); if (b) { filter = b.getAttribute('data-k'); render(); } });
+  $('q').addEventListener('input', render);
+  $('gp').onclick = function () { $('np').value = gen(); };
+
+  $('askbtn').onclick = function () {
+    var n = Number($('ask').value), m = $('askmsg');
+    if (!Number.isInteger(n) || n < 1 || n > 1000) { m.hidden = false; m.className = 'msg err'; m.textContent = 'Ask for a whole number of credits from 1 to 1000.'; return; }
+    $('askbtn').disabled = true;
+    api('POST', '/reseller/credit-request', { amount: n }).then(function (j) {
+      m.hidden = false;
+      if (j.__status === 200) { m.className = 'msg ok'; m.textContent = 'Request sent for ' + n + ' credits.'; $('ask').value = ''; reload(); }
+      else { $('askbtn').disabled = false; m.className = 'msg err'; m.textContent = j.error || 'Could not send the request.'; }
+    }).catch(function () { $('askbtn').disabled = false; m.hidden = false; m.className = 'msg err'; m.textContent = 'Could not reach Aurora.'; });
+  };
+
+  $('add').onclick = function () {
+    var u = $('nu').value.trim(), trial = $('trial').checked, err = $('adderr');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(u)) return msg(err, 'The username must be 3 to 32 letters, numbers, dots, dashes or underscores.', 'err');
+    if (!$('plan').value) return msg(err, 'You have no plans to sell yet. Ask your provider.', 'err');
+    var pw = $('np').value.trim(); if (pw && pw.length < 6) return msg(err, 'The password must be at least 6 characters.', 'err');
+    if (busy) return; busy = true; msg(err, '', 'err'); $('add').disabled = true;
+    api('POST', '/reseller/customers', { username: u, password: pw || undefined, planId: $('plan').value, trial: trial, fullName: $('fn').value.trim(), email: $('em').value.trim(), note: $('nt').value.trim() }).then(function (j) {
+      busy = false; $('add').disabled = false;
+      if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
+      if (j.__status !== 200) return msg(err, j.error || 'Could not make the customer.', 'err');
+      $('madeu').textContent = u; $('madep').textContent = 'Password: ' + j.password; $('made').hidden = false;
+      ['nu', 'np', 'fn', 'em', 'nt'].forEach(function (i) { $(i).value = ''; }); $('trial').checked = false; reload();
+    }).catch(function () { busy = false; $('add').disabled = false; msg(err, 'Could not reach Aurora. Check your connection.', 'err'); });
+  };
+  $('cp').onclick = function () {
+    var t = 'Aurora login\nUsername: ' + $('madeu').textContent + '\n' + $('madep').textContent, b = $('cp');
+    try { navigator.clipboard.writeText(t).then(function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy login message'; }, 1500); }, function () { b.textContent = 'Select and copy it'; }); } catch (e) { b.textContent = 'Select and copy it'; }
+  };
+  $('csv').onclick = function () {
+    if (!me) return;
+    var q = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""').replace(/^([=+\-@])/, "'$1") + '"'; };
+    var lines = [['Name', 'Username', 'Email', 'Phone', 'Plan', 'Status', 'Ends', 'Note'].map(q).join(',')];
+    (me.customers || []).forEach(function (c) { lines.push([c.full, c.name, c.email, c.phone, c.planName, label[state(c)], c.expires || '', c.note].map(q).join(',')); });
+    var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'aurora-customers.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  };
+  if (session && session.token) { show(true); reload(); } else show(false);
+})();
+</script>
+
+</body>
+</html>
