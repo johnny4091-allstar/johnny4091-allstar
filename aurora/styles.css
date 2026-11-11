@@ -1854,3 +1854,12 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .tv .al-logo { width: 120px; height: 120px; } .tv .al-logo span { font-size: .95rem; } .tv .al-msg { font-size: 1.3rem; } .tv .al-sub { font-size: 1rem; max-width: 520px; }
 .tv .al-halo { display: none; } .tv .al-logo span { animation: none; }
 @media (prefers-reduced-motion: reduce) { .al-ring { animation-duration: 6s; } .al-halo, .al-logo span { animation: none; } }
+
+/* ---------- Live TV: the channel list didn't load ---------- */
+.live-fail { max-width: 640px; margin: 0 auto; padding: 2rem 1rem; text-align: center; display: flex; flex-direction: column; align-items: center; gap: .8rem; }
+.live-fail h2 { margin: 0; font-size: clamp(1.3rem, 2.6vw, 1.9rem); font-weight: 800; }
+.live-fail .live-said { margin: 0; padding: .5rem .9rem; border-radius: 10px; background: #0a1126; border: 1px solid #232f58; color: #cfd6f5; font-size: .95rem; }
+.live-fail .live-said b { color: #ffd479; }
+.live-fail .live-steps { text-align: left; margin: .2rem 0 0; padding-left: 1.2rem; color: #cfd6f5; display: grid; gap: .35rem; }
+.live-fail-btns { display: flex; flex-wrap: wrap; gap: .7rem; justify-content: center; margin-top: .6rem; }
+.live-fail .empty-msg { padding: 0; margin: 0; }

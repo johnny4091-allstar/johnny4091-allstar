@@ -1964,7 +1964,8 @@
   const LIST_MAX_AGE = 30 * 60000;
   let staleNoticeShown = false;
 
-  async function iptvText(url, cfg = iptv.config, timeoutMs = 60000, { maxAge = 0, liveOnly = false, saved = false } = {}) {
+  async function iptvText(url, cfg = iptv.config, timeoutMs = 60000, opts = {}) {
+    const { maxAge = 0, liveOnly = false, saved = false } = opts;
     const headers = cfg?.userAgent ? { 'User-Agent': cfg.userAgent } : {};
     if (saved && nativeApp?.iptvFetch) {
       const useSaved = cfg === iptv.config;
@@ -1973,6 +1974,8 @@
         iptvFetchPending.set(id, resolve);
         nativeApp.iptvFetch(id, url, cfg?.userAgent || '', useSaved ? maxAge : 0, useSaved, liveOnly, timeoutMs);
       });
+      // A provider that answers a burst of requests with a web page often accepts the same request a moment later: wait and ask once more.
+      if (!r?.status && /web page instead/i.test(r?.error || '') && !opts.retried) { await new Promise((ok) => setTimeout(ok, 2500)); return iptvText(url, cfg, timeoutMs, { ...opts, retried: true }); }
       if (!r?.status) throw new Error(`Couldn't reach the TV provider${r?.error ? ` (${r.error})` : ''}.`);
       if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
       if (r.stale && !staleNoticeShown) {
@@ -2349,6 +2352,34 @@
     if (nav.on && (!document.activeElement || document.activeElement === document.body || !document.contains(document.activeElement))) focusEl($('[data-retry]', el));
   }
 
+  // The channel list didn't load. Says what the provider answered (when it sent a page), what that usually means and what to try, and offers
+  // Try again, the Status check and a message to support with the details attached.
+  let lastLiveError = '', statusAutoRun = false, helpPrefill = '';
+  function liveFailure(message) {
+    const m = String(message || ''), said = (/\("([^"]{1,120})"\)/.exec(m) || [])[1] || '';
+    const page = /web page instead/i.test(m), hay = said.toLowerCase(); // only the provider's own words: the rest of the sentence is ours and always mentions "busy or expired"
+    if (page && /too many|max(imum)?\s+connection|connection limit|limit reached|in use/.test(hay)) return { said, title: "The TV provider's connections are all in use right now", why: 'Everyone is sharing a limited number of streams and they are all busy. Nothing is wrong with your TV or your internet.', steps: ['Wait a minute and press Try again.'] };
+    if (page && /expired|suspend|disabled|inactive|subscription/.test(hay)) return { said, title: 'The Live TV account has ended', why: 'The provider says the Live TV account has ended. Your Aurora account is fine.', steps: ['Send a message to support below so we can sort it out.'] };
+    if (page) return { said, title: 'The TV provider is refusing this connection', why: 'The provider answered, but not with the channel list. That usually means it blocks this internet connection (some internet companies, VPNs and shared addresses), or its connections are busy.', steps: ['Turn off any VPN or Private DNS on this device, then try again.', 'Try a phone hotspot. If channels load there, your home network is the one being blocked.', 'Send us the details below so we can ask the provider.'] };
+    return { said: '', title: "We couldn't load the channels", why: m.replace(/^Couldn't load the channels:\s*/i, ''), steps: ['Press Try again.', 'Press Why can\'t I watch? to find out whether it is your connection, the server or the TV provider.'] };
+  }
+  function liveListError(el, e, retry) {
+    const f = liveFailure(e?.message);
+    lastLiveError = `Live TV list: ${f.said ? `provider said "${f.said}" · ` : ''}${String(e?.message || '').slice(0, 160)}`;
+    el.innerHTML = `<div class="live-error live-fail"><h2>${esc(f.title)}</h2>
+      ${f.said ? `<p class="live-said">The provider said: <b>${esc(f.said)}</b></p>` : ''}
+      <p class="empty-msg">${esc(f.why)}</p>
+      <ol class="live-steps">${f.steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>
+      <div class="live-fail-btns"><button class="btn btn-white" data-retry>Try again</button><button class="btn btn-gray" data-why>Why can't I watch?</button><button class="btn btn-gray" data-tell>Send to support</button></div></div>`;
+    $('[data-retry]', el).addEventListener('click', (ev) => {
+      const b = ev.currentTarget; b.disabled = true; b.textContent = 'Trying again…';
+      setTimeout(retry, 1500);
+    });
+    $('[data-why]', el).addEventListener('click', () => { statusAutoRun = true; location.hash = '#/status'; });
+    $('[data-tell]', el).addEventListener('click', () => { helpPrefill = `Live TV won't load. ${lastLiveError}`; location.hash = '#/help'; });
+    if (nav.on && (!document.activeElement || document.activeElement === document.body || !document.contains(document.activeElement))) focusEl($('[data-retry]', el));
+  }
+
   // Opens the native player with the list the channel came from, so up/down flips through it.
   let iptvPlaying = null;
   let lastLive = null; // the channel last started, for Help & support
@@ -2682,7 +2713,7 @@
     body.innerHTML = '<div class="spinner"></div>';
     let src;
     try { src = await iptvSource(); } catch (e) {
-      if (isCurrent()) liveError(body, `Couldn't load the channels: ${esc(e.message)}`, () => route());
+      if (isCurrent()) liveListError(body, e, () => route());
       return;
     }
     if (!isCurrent()) return;
@@ -3549,7 +3580,7 @@
   async function renderIptvChannels(page, body, isCurrent) {
     let src;
     try { src = await iptvSource(); } catch (e) {
-      if (isCurrent()) liveError(body, `Couldn't load the channels: ${esc(e.message)}`, () => route());
+      if (isCurrent()) liveListError(body, e, () => route());
       return;
     }
     if (!isCurrent()) return;
@@ -5049,6 +5080,7 @@
       if (nav.tv) autoFocus(runBtn);
     };
     runBtn.addEventListener('click', check);
+    if (statusAutoRun) { statusAutoRun = false; check(); }
     page.addEventListener('click', (e) => {
       const a = e.target.closest('[data-st-act]')?.dataset.stAct;
       if (a === 'again') check();
@@ -7219,7 +7251,7 @@
       connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
       playing: lastLive && Date.now() - lastLive.t < 30 * 60000 ? `Live: ${lastLive.name}` : '',
       status: lastStatusVerdict,
-      errors: appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100)),
+      errors: [...(lastLiveError ? [lastLiveError.slice(0, 140)] : []), ...appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100))],
     };
   }
   async function renderHelp(page, isCurrent) {
@@ -7230,6 +7262,7 @@
     try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Help &amp; support')}</p>`; return; }
     if (!isCurrent()) return;
     const open = t && t.status === 'open';
+    const prefill = helpPrefill; helpPrefill = '';
     const dg = helpDiag();
     root.innerHTML = `${head}
       <section class="settings-section"><h2>Quick answers</h2>
@@ -7239,7 +7272,7 @@
       </section>
       <section class="settings-section"><h2>Message your provider${open ? ' <small>conversation open</small>' : ''}</h2>
         <div class="help-thread" data-thread>${(t?.messages || []).map((m) => `<div class="help-msg ${m.from === 'user' ? 'me' : 'them'}">${esc(m.text)}<small>${m.from === 'user' ? 'You' : 'Support'} · ${esc(timeAgo(m.at))}</small></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div>
-        <textarea class="st-note-input" data-msg rows="3" maxlength="1000" placeholder="Describe the problem"></textarea>
+        <textarea class="st-note-input" data-msg rows="3" maxlength="1000" placeholder="Describe the problem">${esc(prefill)}</textarea>
         <p class="muted help-diag">Sent with your message: ${esc(dg.app)} · ${esc(dg.device)} · ${esc(dg.connection)}${dg.playing ? ' · ' + esc(dg.playing) : ''}${dg.status ? ' · ' + esc(dg.status) : ''}</p>
         <div class="m-actions"><button class="btn btn-white" data-send>Send</button></div><div class="live-result" data-result></div></section>`;
     $('[data-send]', root).addEventListener('click', async () => {
