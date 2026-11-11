@@ -4,10 +4,11 @@ A plain-files website (no build step) that tells people about Aurora and lets th
 
 - `index.html`: the public page: features, Sports, prices, sign-up form (with referral and discount codes), the Downloader code and app download, FAQ. Prices are read from the Aurora Guard (`GET /site/info`), so they match Admin → Plans; the page has the standard two plans built in as a fallback.
 - `admin/index.html`: the admin page (not linked from the site, not indexed). Sign in with an Emby administrator account; make discount codes (percent or dollars off, which plans, how many uses, end date), switch them on or off and see how many times each was used.
+- `reseller/index.html`: the reseller page (not linked except by the "Reseller sign in" button at the bottom, not indexed). A reseller signs in with their Emby account and gets the same tools as the app's Reseller panel: credits, ask for credits, add a customer (paid plan or free trial), renew, reset password, sign out devices, hold, delete, search, filters and CSV export. The Guard enforces everything: they only see their own customers and only sell the plans you gave them.
 - `config.js`: the Guard address, the Android file link, the Downloader code, the web app address and a contact line. Blank `webAppUrl` / `contact` hide those parts of the page.
 - `netlify.toml`: publish this folder as it is.
 
-## What the Aurora Guard needs (1.16.0)
+## What the Aurora Guard needs (1.16.1)
 
 1. Copy `server/aurora-guard.js` to the PC and restart the "Aurora Guard" task.
 2. Sign-up is **off** until you add `"signupEnabled": true` to `config.json`. Optional: `signupTrialDays` (2), `signupTrialConnections` (1), `signupMaxPerDay` (30), `signupPerIpPerDay` (3).

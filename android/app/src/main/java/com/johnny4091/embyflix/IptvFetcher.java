@@ -131,8 +131,17 @@ final class IptvFetcher {
         String start = new String(head, 0, n, java.nio.charset.StandardCharsets.UTF_8).replace("\uFEFF", "").trim();
         String lower = start.toLowerCase(java.util.Locale.ROOT);
         if (!lower.startsWith("<!doctype html") && !lower.startsWith("<html") && !(lower.startsWith("<") && lower.contains("<body"))) return null;
+        // What the page says, so the viewer (and whoever helps them) can see the provider's own words: the title, or else the first
+        // readable text on the page ("Access denied", "Too many connections", ...).
+        String said = "";
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("<title[^>]*>([^<]{1,120})", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(start);
-        return "The TV provider sent a web page instead of the channels" + (m.find() ? " (\"" + m.group(1).trim() + "\")" : "")
+        if (m.find()) said = m.group(1).trim();
+        if (said.isEmpty()) {
+            String text = start.replaceAll("(?is)<(script|style)[^>]*>.*?</\\1>", " ").replaceAll("(?s)<[^>]*>", " ").replaceAll("&nbsp;", " ").replaceAll("\\s+", " ").trim();
+            said = text.length() > 90 ? text.substring(0, 90).trim() : text;
+        }
+        said = said.replace('"', '\'');
+        return "The TV provider sent a web page instead of the channels" + (said.isEmpty() ? "" : " (\"" + said + "\")")
                 + ". The provider may be blocking this internet connection, or the account may be busy or expired.";
     }
 

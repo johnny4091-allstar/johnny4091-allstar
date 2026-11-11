@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.16.0';
+const VERSION = '1.16.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1605,6 +1605,21 @@ async function handle(req, res) {
     }
     if (!r?.AccessToken || !r.User?.Policy?.IsAdministrator) { noteFailure(ip); return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
     return send(res, 200, { token: r.AccessToken, userId: r.User.Id, name: r.User.Name });
+  }
+  // Sign-in for the website's reseller page: any Emby account, answered with its token and whether it is a reseller (or an administrator).
+  if (url.pathname === '/site-login' && req.method === 'POST') {
+    if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const name = String(body.username || '').trim().slice(0, 64), pw = String(body.password || '').slice(0, 128);
+    if (!name || !pw) return send(res, 400, { error: 'Enter your username and password.' });
+    let r;
+    try { r = await emby('POST', '/Users/AuthenticateByName', { body: { Username: name, Pw: pw } }); } catch (e) {
+      if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); return send(res, 401, { error: 'That username or password is not right.' }); }
+      return send(res, 502, { error: `Can't reach Emby: ${e.message}` });
+    }
+    if (!r?.AccessToken || !r.User?.Id) { noteFailure(ip); return send(res, 401, { error: 'That username or password is not right.' }); }
+    return send(res, 200, { token: r.AccessToken, userId: r.User.Id, name: r.User.Name, admin: !!r.User.Policy?.IsAdministrator, reseller: !!resellerOfUser(r.User.Id) });
   }
   if (url.pathname === '/signup' && req.method === 'POST') {
     let body;

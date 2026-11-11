@@ -38,6 +38,15 @@ h1, h2, h3 { margin: 0; line-height: 1.1; text-wrap: balance; }
 .nav-pill a.l:hover { background: rgba(255,255,255,.1); color: #fff; }
 .nav-pill a.l.on { background: #fff; color: #0a1126; font-weight: 700; }
 .nav-cta { pointer-events: auto; flex: none; }
+.nav-pill { position: relative; }
+.menu { display: flex; align-items: center; gap: .15rem; }
+.menu-cta { display: none; }
+.burger { display: none; width: 42px; height: 42px; border: 0; border-radius: 999px; background: rgba(255,255,255,.08); cursor: pointer; padding: 0; position: relative; flex: none; }
+.burger span { position: absolute; left: 12px; right: 12px; height: 2px; border-radius: 2px; background: #fff; transition: transform .2s, opacity .2s, top .2s; }
+.burger span:nth-child(1) { top: 14px; } .burger span:nth-child(2) { top: 20px; } .burger span:nth-child(3) { top: 26px; }
+.burger[aria-expanded="true"] span:nth-child(1) { top: 20px; transform: rotate(45deg); }
+.burger[aria-expanded="true"] span:nth-child(2) { opacity: 0; }
+.burger[aria-expanded="true"] span:nth-child(3) { top: 20px; transform: rotate(-45deg); }
 
 /* buttons, as in the app */
 .btn { border: 0; border-radius: 4px; padding: .7rem 1.6rem; font: 700 1rem var(--font); display: inline-flex; align-items: center; justify-content: center; gap: .5rem; cursor: pointer; transition: filter .15s, background .15s; }
@@ -74,6 +83,20 @@ h1, h2, h3 { margin: 0; line-height: 1.1; text-wrap: balance; }
 .live b { flex: 1; font-weight: 600; font-size: .72rem; padding: 8px 10px; border-radius: 8px; background: var(--bg-3); }
 .live b em { color: var(--live); font-style: normal; margin-right: 6px; font-weight: 800; }
 
+.hero-art { position: relative; padding-bottom: 14%; }
+.art-desk { display: block; width: 100%; height: auto; border-radius: 14px; border: 1px solid rgba(255,255,255,.14); box-shadow: 0 30px 80px rgba(0,0,0,.6); }
+.art-phone { position: absolute; right: -3%; bottom: 0; width: 30%; height: auto; border-radius: 22px; border: 3px solid #0e1530; box-shadow: 0 20px 60px rgba(0,0,0,.7); }
+.shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.shots figure, .phones figure { margin: 0; min-width: 0; }
+.shots img { display: block; width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); }
+.phones { display: grid; grid-template-columns: repeat(2, minmax(0, 220px)) 1fr; gap: 20px; margin-top: 28px; align-items: center; }
+.phones img { display: block; width: 100%; height: auto; border-radius: 20px; border: 3px solid var(--bg-2); box-shadow: 0 16px 40px rgba(0,0,0,.5); }
+figcaption { margin-top: 10px; font-size: .9rem; color: var(--muted); }
+figcaption b { color: #fff; display: block; font-size: 1rem; margin-bottom: 2px; }
+.phones .say h3 { font-size: 1.2rem; margin-bottom: 8px; }
+.phones .say p { color: var(--muted); margin: 0 0 10px; }
+.foot-admin { display: inline-flex; }
+.foot-links { display: flex; gap: 8px; flex-wrap: wrap; }
 /* sections: a row title, then cards */
 section { padding-block: 56px; }
 .row-title { font-size: clamp(1.2rem, 2vw, 1.7rem); font-weight: 800; margin: 0 0 6px; }
@@ -142,6 +165,18 @@ details p { margin: 0 0 18px; color: var(--muted); }
 footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; align-items: center; }
 
 @media (max-width: 900px) {
+  .navbar { align-items: flex-start; }
+  .nav-pill { flex: 1; justify-content: space-between; overflow: visible; padding: .3rem .3rem .3rem 1.1rem; }
+  .nav-pill .logo { margin-right: 0; }
+  .burger { display: block; }
+  .menu { display: none; position: absolute; top: calc(100% + 8px); left: 0; right: 0; flex-direction: column; align-items: stretch; gap: 2px; padding: 8px; border-radius: 18px; background: rgba(12,19,44,.97); border: 1px solid rgba(255,255,255,.1); box-shadow: 0 16px 40px rgba(0,0,0,.5); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+  .menu.open { display: flex; }
+  .nav-pill a.l { padding: .8rem 1rem; font-size: 1rem; border-radius: 12px; }
+  .menu-cta { display: block; margin-top: 6px; background: var(--accent-grad); color: #fff !important; font-weight: 700; text-align: center; }
+  .shots { grid-template-columns: 1fr; }
+  .phones { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .phones .say { grid-column: 1 / -1; }
+  .hero-art { padding-bottom: 12%; } .art-phone { right: 2%; width: 28%; }
   .hero-in, .split { grid-template-columns: 1fr; }
   .hero { min-height: 0; } .hero-in { padding-top: 120px; }
   .cards, .plans, .apps, .two { grid-template-columns: 1fr; }
@@ -156,7 +191,8 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
 <div class="navbar">
   <nav class="nav-pill" aria-label="Main">
     <a class="logo" href="#top" aria-label="Aurora home"><svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg></a>
-    <a class="l on" href="#top">Home</a><a class="l" href="#features">Features</a><a class="l" href="#sports">Sports</a><a class="l" href="#prices">Prices</a><a class="l" href="#app">Get the app</a><a class="l" href="#faq">FAQ</a>
+    <button class="burger" id="burger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="menu"><span></span><span></span><span></span></button>
+    <div class="menu" id="menu"><a class="l on" href="#top">Home</a><a class="l" href="#see">See it</a><a class="l" href="#features">Features</a><a class="l" href="#sports">Sports</a><a class="l" href="#prices">Prices</a><a class="l" href="#app">Get the app</a><a class="l" href="#faq">FAQ</a><a class="l menu-cta" href="#signup">Sign up</a></div>
   </nav>
   <a class="btn btn-red sm nav-cta" href="#signup">Sign up</a>
 </div>
@@ -169,15 +205,29 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
       <div class="actions"><a class="btn btn-red" href="#signup">Start free trial</a><a class="btn btn-gray" href="#app">Get the app</a></div>
       <div class="devices"><span>Android phones</span><span>Android and Google TV</span><span>Web browser</span></div>
     </div>
-    <div class="mock" aria-hidden="true">
-      <div class="feat"></div>
-      <div class="rl">Continue Watching</div>
-      <div class="tiles"><i></i><i></i><i></i><i></i></div>
-      <div class="rl">On Now</div>
-      <div class="live"><b><em>LIVE</em>Evening News</b><b><em>LIVE</em>Premier League</b></div>
+    <div class="hero-art">
+      <img class="art-desk" src="assets/img/shot-home.jpg" width="1280" height="720" alt="The Aurora home screen with a featured movie and rows of titles to continue watching" fetchpriority="high">
+      <img class="art-phone" src="assets/img/shot-phone-home.jpg" width="780" height="1688" alt="Aurora on a phone" loading="lazy">
     </div>
   </div>
 </header>
+
+<section id="see" class="band">
+  <div class="wrap">
+    <h2 class="row-title">See Aurora in action</h2>
+    <p class="sub">This is the real app. The titles here are made up for the pictures; your library shows your own movies and shows.</p>
+    <div class="shots">
+      <figure><img src="assets/img/shot-home.jpg" width="1280" height="720" loading="lazy" alt="Aurora home screen"><figcaption><b>A home screen made for the big screen</b>A featured title, Continue Watching and rows picked for you.</figcaption></figure>
+      <figure><img src="assets/img/shot-details.jpg" width="1280" height="720" loading="lazy" alt="Details window for a movie"><figcaption><b>Everything about a title</b>Rating, length and story, with Play, add to favorites and watched.</figcaption></figure>
+      <figure><img src="assets/img/shot-movies.jpg" width="1280" height="720" loading="lazy" alt="The Movies page with filters"><figcaption><b>Browse with filters</b>Pick a genre, sort by newest and scroll.</figcaption></figure>
+    </div>
+    <div class="phones">
+      <figure><img src="assets/img/shot-phone-home.jpg" width="780" height="1688" loading="lazy" alt="Aurora home on a phone"><figcaption>Home on your phone</figcaption></figure>
+      <figure><img src="assets/img/shot-phone-movies.jpg" width="780" height="1688" loading="lazy" alt="The Movies page on a phone"><figcaption>Movies on your phone</figcaption></figure>
+      <div class="say"><h3>The same Aurora on every screen</h3><p>Sign in on your phone, your TV or a browser. Your list and your place in every show go with you.</p><a class="btn btn-red" href="#signup">Start free trial</a></div>
+    </div>
+  </div>
+</section>
 
 <section id="features">
   <div class="wrap">
@@ -349,7 +399,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
       <p>Send us a message and we will help.</p>
       <p style="margin-top:18px;font-size:.95rem" id="contact"></p>
     </div>
-    <footer><span>AURORA · Where streaming is possible</span><span>For customers and invited guests</span></footer>
+    <footer><span>AURORA · Where streaming is possible</span><span>For customers and invited guests</span><span class="foot-links"><a class="btn btn-gray sm foot-admin" href="reseller/">Reseller sign in</a> <a class="btn btn-gray sm foot-admin" href="admin/">Admin sign in</a></span></footer>
   </div>
 </section>
 <script>
@@ -436,6 +486,15 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
       f.hidden = true; done.hidden = false; $('app').scrollIntoView({ behavior: 'smooth' });
     }).catch(function () { btn.disabled = false; btn.textContent = 'Start my free trial'; msg(err, 'Could not reach Aurora. Please check your connection and try again.', 'err'); });
   });
+
+  // phone menu
+  var burger = $('burger'), menu = $('menu');
+  function setMenu(open) { menu.classList.toggle('open', open); burger.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+  burger.addEventListener('click', function (e) { e.stopPropagation(); setMenu(!menu.classList.contains('open')); });
+  menu.addEventListener('click', function (e) { if (e.target.closest('a')) setMenu(false); });
+  document.addEventListener('click', function (e) { if (!e.target.closest('.nav-pill')) setMenu(false); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') setMenu(false); });
+  window.addEventListener('resize', function () { if (window.innerWidth > 900) setMenu(false); });
 
   // highlight the section in the menu
   var links = [].slice.call(document.querySelectorAll('.nav-pill a.l')), ids = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
