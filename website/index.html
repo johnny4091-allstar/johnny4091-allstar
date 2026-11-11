@@ -478,13 +478,17 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
     else if (!G) text = 'Sign-up is not available right now.';
     msg(err, text, 'err'); if (text) return;
     var btn = $('su-btn'); btn.disabled = true; btn.textContent = 'Making your account...';
+    function reopen() { btn.disabled = !info.signupEnabled; btn.textContent = 'Start my free trial'; }
     api('POST', '/signup', { username: u, email: m, password: p, agree: true, referral: $('su-ref').value.trim(), discount: $('su-disc').value.trim(), website: $('su-web').value }).then(function (j) {
-      btn.disabled = false; btn.textContent = 'Start my free trial';
-      if (j.__status !== 200 || !j.ok) { msg(err, j.error || 'Something went wrong. Please try again.', 'err'); return; }
-      $('su-msg').textContent = 'Your username is ' + j.username + '. Your account works for ' + plural(j.days, 'day') + ' (until ' + j.expires + '). Sign in with the password you just chose.';
-      $('su-extra').textContent = j.discount ? 'Your discount code (' + j.discount + ') is saved and applies to your first paid plan.' : '';
-      f.hidden = true; done.hidden = false; $('app').scrollIntoView({ behavior: 'smooth' });
-    }).catch(function () { btn.disabled = false; btn.textContent = 'Start my free trial'; msg(err, 'Could not reach Aurora. Please check your connection and try again.', 'err'); });
+      if (j.__status !== 200 || !j.ok) { reopen(); msg(err, j.error || 'Something went wrong. Please try again.', 'err'); return; }
+      // The account exists from here on: whatever happens while showing the result, never say it failed.
+      try {
+        $('su-msg').textContent = 'Your username is ' + j.username + '. Your account works for ' + plural(j.days, 'day') + ' (until ' + j.expires + '). Sign in with the password you just chose.';
+        $('su-extra').textContent = j.discount ? 'Your discount code (' + j.discount + ') is saved and applies to your first paid plan.' : '';
+        $('app').scrollIntoView({ behavior: 'smooth' });
+      } catch (e) { /* the page still switches to the done panel below */ }
+      f.hidden = true; done.hidden = false;
+    }, function () { reopen(); msg(err, 'Could not reach Aurora. Please check your connection and try again.', 'err'); });
   });
 
   // phone menu

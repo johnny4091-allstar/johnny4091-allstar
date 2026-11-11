@@ -137,7 +137,11 @@ final class IptvFetcher {
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("<title[^>]*>([^<]{1,120})", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(start);
         if (m.find()) said = m.group(1).trim();
         if (said.isEmpty()) {
-            String text = start.replaceAll("(?is)<(script|style)[^>]*>.*?</\\1>", " ").replaceAll("(?s)<[^>]*>", " ").replaceAll("&nbsp;", " ").replaceAll("\\s+", " ").trim();
+            // Only the first 4 KB is read, so a style or script block may be cut off: drop it to the end, and a half-read tag at the very end.
+            String text = start.replaceAll("(?is)<(script|style|noscript)[^>]*>.*?(</\\1>|$)", " ").replaceAll("(?s)<[^>]*>", " ").replaceAll("(?s)<[^>]*$", " ")
+                    .replaceAll("&nbsp;", " ").replaceAll("\\s+", " ").trim();
+            // Page code that got through is not something to show to a viewer.
+            if (text.contains("{") || text.contains("}") || text.contains(";")) text = "";
             said = text.length() > 90 ? text.substring(0, 90).trim() : text;
         }
         said = said.replace('"', '\'');

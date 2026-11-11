@@ -27,7 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.16.1';
+const VERSION = '1.16.2';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -458,6 +458,26 @@ function overLimit(bucket, ip, max, windowMs) {
 }
 const emailOk = (v) => /^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,30}$/.test(v) && v.length <= 120;
 
+// Checks an Emby username and password from a request body. Resolves { r } (Emby's answer) or { error, status } to send back as it is.
+async function embyLoginFor(req, ip) {
+  if (tooManyFailures(ip)) return { status: 429, error: 'Too many failed attempts. Try again in a few minutes.' };
+  let body;
+  try { body = await readBody(req); } catch (e) { return { status: 400, error: e.message }; }
+  const name = String(body.username || '').trim().slice(0, 64), pw = String(body.password || '').slice(0, 128);
+  if (!name || !pw) return { status: 400, error: 'Enter your username and password.' };
+  let r;
+  try { r = await emby('POST', '/Users/AuthenticateByName', { body: { Username: name, Pw: pw } }); } catch (e) {
+    if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); return { status: 401, error: 'That username or password is not right.' }; }
+    return { status: 502, error: `Can't reach Emby: ${e.message}` };
+  }
+  if (!r?.AccessToken || !r.User?.Id) { noteFailure(ip); return { status: 401, error: 'That username or password is not right.' }; }
+  return { r };
+}
+// One sign-up at a time: its limits (per address, per day, code uses, email, username) are read and then updated around slow calls to Emby,
+// so without this many requests sent at once would all pass the checks.
+let signupChain = Promise.resolve();
+const serialSignup = (fn) => { const run = signupChain.then(fn, fn); signupChain = run.catch(() => {}); return run; };
+
 // ---------- Maintenance mode (guard 1.12.0) ----------
 // The admin can put parts of Aurora in maintenance: customers get a friendly "taking a short break" page there instead. The admin still
 // has full access. (This is the app's doing: another Emby app that talks to the server directly is not stopped by it.)
@@ -531,7 +551,7 @@ function applyPlan(userId, userName, plan, mode, priceOverride) {
   let price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number.isFinite(Number(priceOverride)) ? Math.max(0, Math.round(Number(priceOverride) * 100) / 100) : plan.price;
   // A discount code the customer entered when signing up takes effect on their first paid plan it works on.
   const dc = rec.discount;
-  if ((priceOverride === undefined || priceOverride === null || priceOverride === '') && dc && !dc.usedAt && (!dc.planIds || !dc.planIds.length || dc.planIds.includes(plan.id))) {
+  if ((priceOverride === undefined || priceOverride === null || priceOverride === '') && plan.price > 0 && dc && !dc.usedAt && (!dc.planIds || !dc.planIds.length || dc.planIds.includes(plan.id))) {
     price = discountedPrice(plan.price, dc); dc.usedAt = today; dc.paid = price;
     recordAudit('Discount', `${userName}: code ${dc.code} (${discountLabel(dc)}) applied to ${plan.name}: $${plan.price} became $${price}`);
   }
@@ -1592,34 +1612,17 @@ async function handle(req, res) {
     if (problem) return send(res, 200, { valid: false, message: problem });
     return send(res, 200, { valid: true, type: d.type, value: d.value, label: discountLabel(d), planIds: d.planIds || [] });
   }
-  if (url.pathname === '/admin-login' && req.method === 'POST') {
-    if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
-    let body;
-    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
-    const name = String(body.username || '').trim().slice(0, 64), pw = String(body.password || '').slice(0, 128);
-    if (!name || !pw) return send(res, 400, { error: 'Enter your username and password.' });
-    let r;
-    try { r = await emby('POST', '/Users/AuthenticateByName', { body: { Username: name, Pw: pw } }); } catch (e) {
-      if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); return send(res, 401, { error: 'That username or password is not right.' }); }
-      return send(res, 502, { error: `Can't reach Emby: ${e.message}` });
+  // Sign-in for the website: the person's Emby username and password. /admin-login only lets administrators in; /site-login lets anyone in and
+  // says whether they are an administrator or a reseller (the reseller page uses it).
+  if ((url.pathname === '/admin-login' || url.pathname === '/site-login') && req.method === 'POST') {
+    const login = await embyLoginFor(req, ip);
+    if (login.error) return send(res, login.status, { error: login.error });
+    const u = login.r.User;
+    if (url.pathname === '/admin-login') {
+      if (!u.Policy?.IsAdministrator) { noteFailure(ip); return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
+      return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name });
     }
-    if (!r?.AccessToken || !r.User?.Policy?.IsAdministrator) { noteFailure(ip); return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
-    return send(res, 200, { token: r.AccessToken, userId: r.User.Id, name: r.User.Name });
-  }
-  // Sign-in for the website's reseller page: any Emby account, answered with its token and whether it is a reseller (or an administrator).
-  if (url.pathname === '/site-login' && req.method === 'POST') {
-    if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
-    let body;
-    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
-    const name = String(body.username || '').trim().slice(0, 64), pw = String(body.password || '').slice(0, 128);
-    if (!name || !pw) return send(res, 400, { error: 'Enter your username and password.' });
-    let r;
-    try { r = await emby('POST', '/Users/AuthenticateByName', { body: { Username: name, Pw: pw } }); } catch (e) {
-      if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); return send(res, 401, { error: 'That username or password is not right.' }); }
-      return send(res, 502, { error: `Can't reach Emby: ${e.message}` });
-    }
-    if (!r?.AccessToken || !r.User?.Id) { noteFailure(ip); return send(res, 401, { error: 'That username or password is not right.' }); }
-    return send(res, 200, { token: r.AccessToken, userId: r.User.Id, name: r.User.Name, admin: !!r.User.Policy?.IsAdministrator, reseller: !!resellerOfUser(r.User.Id) });
+    return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name, admin: !!u.Policy?.IsAdministrator, reseller: !!resellerOfUser(u.Id) });
   }
   if (url.pathname === '/signup' && req.method === 'POST') {
     let body;
@@ -1631,46 +1634,51 @@ async function handle(req, res) {
     if (!emailOk(email)) return send(res, 400, { error: 'Enter a valid email address.' });
     if (password.length < 8 || password.length > 64) return send(res, 400, { error: 'Your password needs 8 to 64 characters.' });
     if (body.agree !== true) return send(res, 400, { error: 'Please agree to not share your login.' });
-    const day = localDay(new Date());
-    if (overLimit('signup-try', ip, 40, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
-    const made = smallLimit.get('signup|' + ip); // accounts made from this address today (counted only when one is really made)
-    if (made && Date.now() - made.since <= 86400000 && made.n >= cfg.signupPerIpPerDay) return send(res, 429, { error: 'Too many accounts were made from this connection today. Please try again tomorrow.' });
-    if ((store.signups || []).filter((x) => x.day === day).length >= cfg.signupMaxPerDay) {
-      if (store.signupFullDay !== day) { store.signupFullDay = day; sendAlert('Aurora: sign-ups full for today', `${cfg.signupMaxPerDay} accounts were made from the website today, so new sign-ups are paused until tomorrow.`, false); }
-      return send(res, 429, { error: 'Sign-ups are full for today. Please try again tomorrow.' });
-    }
-    if (Object.values(store.users).some((u) => (u.contact?.email || '').toLowerCase() === email) || (store.signups || []).some((x) => x.email === email)) return send(res, 409, { error: 'That email already has an account.' });
-    // Codes are checked before the account is made, so a wrong code never leaves a half-made account behind.
-    let dc = null, refId = null;
-    if (String(body.discount || '').trim()) { dc = findDiscount(body.discount); const pr = discountProblem(dc); if (pr) return send(res, 400, { error: pr }); }
-    if (String(body.referral || '').trim()) {
-      if (!(cfg.referralDays > 0)) return send(res, 400, { error: 'Referral codes are not being used right now.' });
-      const rc = String(body.referral).trim().toUpperCase();
-      refId = Object.keys(store.users).find((id) => store.users[id].refCode === rc);
-      if (!refId) return send(res, 400, { error: 'That referral code was not found.' });
-      const yearAgo = Date.now() - 365 * 86400000;
-      if (Object.values(store.users).filter((u) => u.referredBy === refId && (u.referredAt || 0) > yearAgo).length >= cfg.referralMaxPerYear) return send(res, 400, { error: 'That referral code has reached its limit.' });
-    }
-    let existing;
-    try { existing = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: 'Sign-up is not available right now. Please try again in a few minutes.' }); }
-    if ((existing || []).some((u) => String(u.Name).toLowerCase() === username.toLowerCase())) return send(res, 409, { error: 'That username is taken. Try another.' });
-    let user;
-    try { user = await newEmbyAccount(username, password); } catch (e) { log('Website sign-up could not make the account:', e.message); return send(res, 502, { error: 'Could not make your account. Please try again in a few minutes.' }); }
-    if (made && Date.now() - made.since <= 86400000) made.n++; else smallLimit.set('signup|' + ip, { n: 1, since: Date.now() });
-    const days = cfg.signupTrialDays, conns = cfg.signupTrialConnections;
-    const rec = store.users[user.Id] = { limit: conns, expires: addDays(day, days), categories: null, name: username, updated: Date.now(), trial: true, created: Date.now(), site: true, contact: { full: '', email, phone: '', note: 'Website sign-up' },
-      plan: { id: 'trial', name: 'Free trial', price: 0, connections: conns, length: days, unit: 'day', categories: null, since: day } };
-    if (dc) { dc.used = (dc.used || 0) + 1; rec.discount = { code: dc.code, type: dc.type, value: dc.value, planIds: dc.planIds || [], at: Date.now() }; }
-    let gave = 0;
-    if (refId) { rec.referredBy = refId; rec.referredAt = Date.now(); if (giveDays(user.Id, cfg.referralDays, 'referral code')) gave = cfg.referralDays; giveDays(refId, cfg.referralDays, `referral: ${username} joined`); }
-    store.signups = [{ at: Date.now(), day, email, user: username, discount: dc ? dc.code : '', referral: !!refId }, ...(store.signups || [])].slice(0, 2000);
-    recordAudit('Website', `Sign-up: ${username}${dc ? `, code ${dc.code}` : ''}${refId ? ', referral' : ''}`);
-    try { saveStore(); } catch (e) { log('Could not save after a website sign-up:', e.message); }
-    queueAlert(`New website sign-up: ${username}${dc ? ` (code ${dc.code})` : ''}`);
-    log('Website sign-up:', username);
-    copyAppDefaults(user.Id).catch(() => {});
-    try { await enforce(user.Id); if (refId) await enforce(refId); } catch (e) { log('Applying', username, 'failed:', e.message); }
-    return send(res, 200, { ok: true, username, days: days + gave, expires: rec.expires, connections: conns, discount: dc ? discountLabel(dc) : '' });
+    return serialSignup(async () => {
+      const day = localDay(new Date());
+      if (overLimit('signup-try', ip, 40, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+      const made = smallLimit.get('signup|' + ip); // accounts made from this address today (counted only when one is really made)
+      if (made && Date.now() - made.since <= 86400000 && made.n >= cfg.signupPerIpPerDay) return send(res, 429, { error: 'Too many accounts were made from this connection today. Please try again tomorrow.' });
+      if ((store.signups || []).filter((x) => x.day === day).length >= cfg.signupMaxPerDay) {
+        if (store.signupFullDay !== day) { store.signupFullDay = day; sendAlert('Aurora: sign-ups full for today', `${cfg.signupMaxPerDay} accounts were made from the website today, so new sign-ups are paused until tomorrow.`, false); }
+        return send(res, 429, { error: 'Sign-ups are full for today. Please try again tomorrow.' });
+      }
+      if (Object.values(store.users).some((u) => (u.contact?.email || '').toLowerCase() === email) || (store.signups || []).some((x) => x.email === email && Object.values(store.users).some((u) => u.name === x.user))) return send(res, 409, { error: 'That email already has an account.' });
+      // Codes are checked before the account is made, so a wrong code never leaves a half-made account behind.
+      let dc = null, refId = null;
+      if (String(body.discount || '').trim()) { dc = findDiscount(body.discount); const pr = discountProblem(dc); if (pr) return send(res, 400, { error: pr }); }
+      if (String(body.referral || '').trim()) {
+        if (!(cfg.referralDays > 0)) return send(res, 400, { error: 'Referral codes are not being used right now.' });
+        const rc = String(body.referral).trim().toUpperCase();
+        refId = Object.keys(store.users).find((id) => store.users[id].refCode === rc);
+        if (!refId) return send(res, 400, { error: 'That referral code was not found.' });
+        // A friend must be a real customer: free trials can't feed each other, and nobody refers their own email.
+        if (store.users[refId].trial) return send(res, 400, { error: 'That referral code can only be used once your friend has a paid plan.' });
+        if ((store.users[refId].contact?.email || '').toLowerCase() === email) return send(res, 400, { error: 'You cannot use your own referral code.' });
+        const yearAgo = Date.now() - 365 * 86400000;
+        if (Object.values(store.users).filter((u) => u.referredBy === refId && (u.referredAt || 0) > yearAgo).length >= cfg.referralMaxPerYear) return send(res, 400, { error: 'That referral code has reached its limit.' });
+      }
+      let existing;
+      try { existing = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: 'Sign-up is not available right now. Please try again in a few minutes.' }); }
+      if ((existing || []).some((u) => String(u.Name).toLowerCase() === username.toLowerCase())) return send(res, 409, { error: 'That username is taken. Try another.' });
+      let user;
+      try { user = await newEmbyAccount(username, password); } catch (e) { log('Website sign-up could not make the account:', e.message); return send(res, 502, { error: 'Could not make your account. Please try again in a few minutes.' }); }
+      if (made && Date.now() - made.since <= 86400000) made.n++; else smallLimit.set('signup|' + ip, { n: 1, since: Date.now() });
+      const days = cfg.signupTrialDays, conns = cfg.signupTrialConnections;
+      const rec = store.users[user.Id] = { limit: conns, expires: addDays(day, days), categories: null, name: username, updated: Date.now(), trial: true, created: Date.now(), site: true, contact: { full: '', email, phone: '', note: 'Website sign-up' },
+        plan: { id: 'trial', name: 'Free trial', price: 0, connections: conns, length: days, unit: 'day', categories: null, since: day } };
+      if (dc) { dc.used = (dc.used || 0) + 1; rec.discount = { code: dc.code, type: dc.type, value: dc.value, planIds: dc.planIds || [], at: Date.now() }; }
+      let gave = 0;
+      if (refId) { rec.referredBy = refId; rec.referredAt = Date.now(); if (giveDays(user.Id, cfg.referralDays, 'referral code')) gave = cfg.referralDays; giveDays(refId, cfg.referralDays, `referral: ${username} joined`); }
+      store.signups = [{ at: Date.now(), day, email, user: username, discount: dc ? dc.code : '', referral: !!refId }, ...(store.signups || [])].slice(0, 2000);
+      recordAudit('Website', `Sign-up: ${username}${dc ? `, code ${dc.code}` : ''}${refId ? ', referral' : ''}`);
+      try { saveStore(); } catch (e) { log('Could not save after a website sign-up:', e.message); }
+      queueAlert(`New website sign-up: ${username}${dc ? ` (code ${dc.code})` : ''}`);
+      log('Website sign-up:', username);
+      copyAppDefaults(user.Id).catch(() => {});
+      try { await enforce(user.Id); if (refId) await enforce(refId); } catch (e) { log('Applying', username, 'failed:', e.message); }
+      return send(res, 200, { ok: true, username, days: days + gave, expires: rec.expires, connections: conns, discount: dc ? discountLabel(dc) : '' });
+    });
   }
   if (url.pathname === '/plans/public' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
