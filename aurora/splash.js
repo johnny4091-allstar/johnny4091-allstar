@@ -267,7 +267,7 @@
         var ctx = ac;
         if (ctx.state === 'suspended') ctx.resume();
         var lag = Math.min((performance.now() - born) / 1000, 0.6);
-        play(ctx.currentTime + 0.05 - lag);
+        play(Math.max(ctx.currentTime + 0.02, ctx.currentTime + 0.05 - lag)); // never a start time in the past (a negative one makes Web Audio throw)
         // A browser that won't start it before the first tap: give up quietly rather than play it late.
         setTimeout(function () { if (ctx.state === 'suspended') { try { ctx.close(); } catch (e) { /* ignore */ } } }, 1500);
         document.addEventListener('visibilitychange', function () { if (document.hidden) { try { ctx.close(); } catch (e) { /* ignore */ } } }, { once: true });

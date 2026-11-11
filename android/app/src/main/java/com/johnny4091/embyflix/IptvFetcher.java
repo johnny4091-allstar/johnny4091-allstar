@@ -119,6 +119,35 @@ final class IptvFetcher {
         return new File(dir, Integer.toHexString(url.hashCode()) + (liveOnly ? ".live" : "") + ".txt");
     }
 
+    /** Turns the common HTML entities (&amp; &#39; &nbsp; ...) into plain characters, so their semicolons are not mistaken for page code. */
+    private static String decodeEntities(String t) {
+        StringBuffer out = new StringBuffer();
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("&(#[0-9]{1,6}|#[xX][0-9a-fA-F]{1,5}|[a-zA-Z]{2,8});").matcher(t);
+        while (m.find()) {
+            String e = m.group(1), r;
+            if (e.charAt(0) == '#') {
+                try {
+                    int cp = (e.charAt(1) == 'x' || e.charAt(1) == 'X') ? Integer.parseInt(e.substring(2), 16) : Integer.parseInt(e.substring(1));
+                    r = Character.isValidCodePoint(cp) && cp > 31 ? new String(Character.toChars(cp)) : " ";
+                } catch (NumberFormatException ex) { r = " "; }
+            } else switch (e.toLowerCase(java.util.Locale.ROOT)) {
+                case "amp": r = "&"; break;
+                case "lt": r = "<"; break;
+                case "gt": r = ">"; break;
+                case "quot": r = "\""; break;
+                case "apos": r = "'"; break;
+                case "nbsp": r = " "; break;
+                case "rsquo": case "lsquo": r = "'"; break;
+                case "ldquo": case "rdquo": r = "\""; break;
+                case "ndash": case "mdash": r = "-"; break;
+                default: r = " ";
+            }
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(r));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
     /** If the file is a web page rather than a channel list or provider data: what to tell the viewer. Otherwise null. */
     static String webPage(File f) {
         byte[] head = new byte[4096];
@@ -135,11 +164,12 @@ final class IptvFetcher {
         // readable text on the page ("Access denied", "Too many connections", ...).
         String said = "";
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("<title[^>]*>([^<]{1,120})", java.util.regex.Pattern.CASE_INSENSITIVE).matcher(start);
-        if (m.find()) said = m.group(1).trim();
+        if (m.find()) said = decodeEntities(m.group(1)).trim();
         if (said.isEmpty()) {
             // Only the first 4 KB is read, so a style or script block may be cut off: drop it to the end, and a half-read tag at the very end.
             String text = start.replaceAll("(?is)<(script|style|noscript)[^>]*>.*?(</\\1>|$)", " ").replaceAll("(?s)<[^>]*>", " ").replaceAll("(?s)<[^>]*$", " ")
-                    .replaceAll("&nbsp;", " ").replaceAll("\\s+", " ").trim();
+                    .replaceAll("\\s+", " ").trim();
+            text = decodeEntities(text).replaceAll("\\s+", " ").trim();
             // Page code that got through is not something to show to a viewer.
             if (text.contains("{") || text.contains("}") || text.contains(";")) text = "";
             said = text.length() > 90 ? text.substring(0, 90).trim() : text;

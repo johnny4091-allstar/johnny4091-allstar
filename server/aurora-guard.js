@@ -58,7 +58,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.18.0';
+const VERSION = '1.18.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -591,6 +591,7 @@ function applyPlan(userId, userName, plan, mode, priceOverride) {
   rec.limit = plan.connections;
   rec.expires = addPlanLength(from, plan);
   rec.categories = plan.categories ? [...plan.categories] : null;
+  if (plan.price > 0) rec.trial = false; // a paid plan ends a free trial
   rec.name = userName; rec.updated = Date.now();
   let price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number.isFinite(Number(priceOverride)) ? Math.max(0, Math.round(Number(priceOverride) * 100) / 100) : plan.price;
   // A discount code the customer entered when signing up takes effect on their first paid plan it works on.
@@ -677,7 +678,7 @@ async function isAdminToken(token) {
   if (hit && hit.until > Date.now()) return hit.ok;
   let ok = false;
   try { await emby('GET', '/Auth/Keys', { token }); ok = true; } catch (e) {
-    if (!e.status) throw e; // Emby unreachable: can't tell, so the request fails rather than passing
+    if (e.status !== 401 && e.status !== 403) throw e; // Emby unreachable or erroring (5xx): can't tell, so the request fails rather than passing
   }
   adminCache.set(key, { ok, until: Date.now() + 60000 });
   if (adminCache.size > 500) adminCache.delete(adminCache.keys().next().value);
@@ -1446,7 +1447,7 @@ function fetchUpdateBytes(address, max, depth = 0) {
 async function checkForUpdate() {
   try {
     const list = JSON.parse((await fetchUpdateBytes(`${UPDATE_API}/repos/${cfg.updateRepo}/releases?per_page=8`, 2 * 1024 * 1024)).toString('utf8'));
-    const rel = (Array.isArray(list) ? list : []).find((r) => r && !r.draft && !r.prerelease && (r.assets || []).some((a) => a.name === 'aurora-guard.json') && (r.assets || []).some((a) => a.name === 'aurora-guard.js'));
+    const rel = (Array.isArray(list) ? list : []).find((r) => r && !r.draft && (!r.prerelease || String(r.tag_name || '').startsWith('aurora-guard-v')) && (r.assets || []).some((a) => a.name === 'aurora-guard.json') && (r.assets || []).some((a) => a.name === 'aurora-guard.js'));
     if (!rel) throw new Error('No release carries a guard update yet.');
     const jsonAsset = rel.assets.find((a) => a.name === 'aurora-guard.json'), fileAsset = rel.assets.find((a) => a.name === 'aurora-guard.js');
     const meta = JSON.parse((await fetchUpdateBytes(jsonAsset.browser_download_url, 4096)).toString('utf8'));
@@ -1892,7 +1893,7 @@ async function handle(req, res) {
     if (login.error) return send(res, login.status, { error: login.error });
     const u = login.r.User;
     if (url.pathname === '/admin-login') {
-      if (!u.Policy?.IsAdministrator) { noteFailure(ip); return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
+      if (!u.Policy?.IsAdministrator) { noteFailure(ip); emby('POST', '/Sessions/Logout', { token: login.r.AccessToken }).catch(() => {}); /* don't leave a session behind for a non-admin */ return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
       return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name });
     }
     return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name, admin: !!u.Policy?.IsAdministrator, reseller: !!resellerOfUser(u.Id) });
@@ -2216,11 +2217,14 @@ async function handle(req, res) {
     if (!(cfg.referralDays > 0)) return send(res, 400, { error: 'Referrals are switched off.' });
     if (me.Policy?.IsAdministrator) return send(res, 400, { error: 'Administrator accounts cannot use a code.' });
     const code = String(body.code || '').trim().toUpperCase();
-    const mine = store.users[me.Id] || (store.users[me.Id] = { limit: cfg.defaultLimit, expires: null, name: me.Name, updated: Date.now() });
+    const mine = store.users[me.Id] || (store.users[me.Id] = { limit: cfg.defaultLimit, expires: null, name: me.Name, updated: Date.now(), created: Date.now() });
+    if (mine.trial) return send(res, 400, { error: 'Codes can be used once you have a paid plan.' });
     if (mine.referredBy) return send(res, 409, { error: 'You have already used a code.' });
     const refId = Object.keys(store.users).find((id) => store.users[id].refCode === code);
     if (!refId || refId === me.Id) return send(res, 404, { error: 'That code was not found.' });
+    if (store.users[refId].trial) return send(res, 400, { error: 'That code can only be used once your friend has a paid plan.' });
     if (store.users[refId].referredBy === me.Id) return send(res, 409, { error: 'That friend already used your code, so you can\'t use theirs.' });
+    if (!mine.created && !Object.keys(store.firstSeen[me.Id] || {}).length) mine.created = Date.now(); // first time we see this account: its 14 days start now
     const seen = Math.min(mine.created || Infinity, ...Object.values(store.firstSeen[me.Id] || {}));
     if (Number.isFinite(seen) && Date.now() - seen > 14 * 86400000) return send(res, 409, { error: 'Codes can be used in the first 14 days of an account.' });
     const yearAgo = Date.now() - 365 * 86400000;
