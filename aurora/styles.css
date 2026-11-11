@@ -1863,3 +1863,16 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .live-fail .live-steps { text-align: left; margin: .2rem 0 0; padding-left: 1.2rem; color: #cfd6f5; display: grid; gap: .35rem; }
 .live-fail-btns { display: flex; flex-wrap: wrap; gap: .7rem; justify-content: center; margin-top: .6rem; }
 .live-fail .empty-msg { padding: 0; margin: 0; }
+
+/* ---------- Admin → Server: Aurora Guard updates ---------- */
+.gu-pill { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: .75rem; font-weight: 700; margin: 0 0 .8rem; }
+.gu-pill.ok { background: rgba(70,211,105,.15); color: #46d369; } .gu-pill.new { background: rgba(79,123,255,.2); color: #9db4ff; } .gu-pill.bad { background: rgba(255,141,155,.15); color: #ff8d9b; } .gu-pill.busy, .gu-pill.warn { background: rgba(255,212,121,.14); color: #ffd479; }
+.gu-ver { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; margin-bottom: .8rem; }
+.gu-ver div { background: #0a1126; border: 1px solid #232f58; border-radius: 12px; padding: .7rem .9rem; }
+.gu-ver small { display: block; color: #808080; font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; }
+.gu-ver b { font-size: 1.3rem; font-variant-numeric: tabular-nums; }
+.gu-notes { background: #0a1126; border: 1px solid #232f58; border-radius: 12px; padding: .7rem 1rem; margin: 0 0 .8rem; font-size: .9rem; color: #cfd6f5; }
+.gu-notes b { display: block; margin-bottom: .2rem; } .gu-notes ul { margin: 0; padding-left: 1.1rem; display: grid; gap: .15rem; }
+.gu-bar { height: 8px; border-radius: 4px; background: #1b2549; overflow: hidden; margin: .3rem 0 .8rem; } .gu-bar i { display: block; height: 100%; background: var(--accent-grad); transition: width .4s; }
+.gu-steps { list-style: none; margin: 0 0 .8rem; padding: 0; display: grid; gap: .3rem; font-size: .92rem; } .gu-steps li { color: #808080; } .gu-steps li.on { color: #fff; font-weight: 700; } .gu-steps li.done { color: #46d369; }
+.gu-steps li::before { content: '\25CB'; margin-right: .5rem; } .gu-steps li.done::before { content: '\2713'; } .gu-steps li.on::before { content: '\25CF'; color: var(--accent); }

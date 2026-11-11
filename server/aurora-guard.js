@@ -27,7 +27,38 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 
-const VERSION = '1.16.2';
+// ---------- Keep-alive (guard 1.17.0) ----------
+// Run as `node aurora-guard.js`, this process only watches over the real Guard (a child of itself). That lets the Guard restart
+// itself after an update, and start again by itself if it ever crashes, whatever the Windows task or Linux service does.
+// Anything else (--check, --test-alert, a copy started with AURORA_GUARD_SUPERVISE=0) runs the Guard directly.
+const SUPERVISED_CHILD = process.env.AURORA_GUARD_CHILD === '1';
+if (require.main === module && !SUPERVISED_CHILD && process.env.AURORA_GUARD_SUPERVISE !== '0' && !process.argv.slice(2).some((a) => /^--(check|test-)/.test(a))) {
+  const { fork } = require('child_process');
+  let child = null, stopping = false, starts = [];
+  const note = (m) => console.log(`${new Date().toISOString()} ${m}`);
+  const launch = () => {
+    child = fork(__filename, process.argv.slice(2), { env: { ...process.env, AURORA_GUARD_CHILD: '1' }, stdio: 'inherit' });
+    child.on('exit', (code) => {
+      child = null;
+      if (stopping) process.exit(0);
+      if (code === 3) { note('Restarting the guard (an update or a restore).'); setTimeout(launch, 500); return; }
+      starts = starts.filter((t) => Date.now() - t < 10 * 60000); starts.push(Date.now());
+      if (starts.length > 8) { note(`The guard keeps stopping (last code ${code}). Giving up so the problem is easy to see: fix it, then start the guard again.`); process.exit(code || 1); }
+      note(`The guard stopped (code ${code}). Starting it again in 5 seconds.`);
+      setTimeout(launch, 5000);
+    });
+  };
+  for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; if (child) child.kill(sig); else process.exit(0); });
+  launch();
+  return; // nothing else in this file runs in the watching process
+}
+if (SUPERVISED_CHILD) {
+  // If the watching process is gone (the task was stopped), don't carry on alone holding the port.
+  const parent = process.ppid;
+  setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
+}
+
+const VERSION = '1.17.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -67,6 +98,11 @@ function loadConfig() {
     signupTrialConnections: 1,
     signupMaxPerDay: 30,      // most new accounts in one day, in total
     signupPerIpPerDay: 3,     // most from one internet address in one day
+    // Updates (guard 1.17.0): the Guard looks for a newer version in the Aurora releases once a day and offers it in Admin -> Server.
+    // It only ever installs one when an administrator taps Update. "updateCheck": false switches the looking off.
+    updateCheck: true,
+    updateRepo: 'johnny4091-allstar/johnny4091-allstar',
+    updateApi: 'https://api.github.com',
     // Sports scores (Live TV -> Sports): ESPN's public scoreboard feed. It is not an official, documented API and ESPN can change or
     // stop it at any time. Set "scoresEnabled": false to switch it off, or "scoresBase" to point at another server with the same shape.
     scoresEnabled: true,
@@ -100,7 +136,7 @@ const PROVIDER_FILE = path.join(cfg.dataDir, 'provider.json');
 // ---------- Log ----------
 function log(...parts) {
   const line = `${new Date().toISOString()} ${parts.join(' ')}`;
-  console.log(line);
+  try { console.log(line); } catch { /* nowhere to print (the window is gone): the log file below still gets it */ }
   try {
     if (fs.existsSync(LOG_FILE) && fs.statSync(LOG_FILE).size > 2 * 1024 * 1024) fs.renameSync(LOG_FILE, LOG_FILE + '.old');
     fs.appendFileSync(LOG_FILE, line + '\n');
@@ -876,6 +912,7 @@ function describeChange(req, url, subject) {
     const x = (store.extensions || []).find((e) => e.id === r[1]);
     return `${b.action === 'deny' ? 'Denied' : 'Approved'} an extension request from ${x ? x.name : 'a customer'}${b.action !== 'deny' && b.days ? ` (${plural(b.days, 'day')})` : ''}`;
   }
+  if (p === '/update/apply' || p === '/update/rollback' || p === '/update/check') return '';
   if (p === '/discounts' && m === 'POST') return `Made the discount code ${String(b.code || '').toUpperCase() || '(generated)'} (${b.type === 'usd' ? '$' + b.value : b.value + '%'} off)`;
   if ((r = p.match(/^\/discounts\/([A-Za-z0-9]{3,20})$/))) return m === 'DELETE' ? `Deleted the discount code ${r[1].toUpperCase()}` : `Switched the discount code ${r[1].toUpperCase()} ${b.on ? 'on' : 'off'}`;
   if (p === '/plans' && m === 'POST') return `Added plan ${b.name || ''}`.trim();
@@ -1350,6 +1387,137 @@ async function testScores() {
   }
   console.log(ok === keys.length ? 'All leagues answered.' : `${ok} of ${keys.length} leagues answered. The feed may have changed or be blocked from this PC.`);
   process.exit(ok ? 0 : 1);
+}
+
+// ---------- Updating the guard (guard 1.17.0) ----------
+// Each Aurora release carries aurora-guard.js and aurora-guard.json ({ version, sha256, size }). The guard looks once a day (and when an
+// administrator asks), and installs a newer one only when an administrator taps Update in Admin -> Server:
+//   download -> compare with the published checksum -> trial start (--check) -> keep a copy of this version -> replace -> restart.
+// If any step fails nothing is changed. "Go back" puts the kept copy back. Only https downloads from GitHub's own hosts are used.
+const UPDATE_API = String(cfg.updateApi || 'https://api.github.com').replace(/\/+$/, '');
+const SCRIPT_FILE = __filename;
+const BACKUP_DIR = path.join(DIR, 'backups');
+const UPDATE_STEPS = ['Downloading the update', 'Checking it matches the published checksum', 'Testing it starts on this PC', 'Keeping a copy of the current version', 'Restarting'];
+let updateInfo = { checkedAt: 0, latest: '', notes: [], tag: '', jsonUrl: '', fileUrl: '', sha256: '', size: 0, error: '' };
+let updateRun = { busy: false, kind: '', step: -1, error: '', finishedAt: 0 };
+const versionParts = (v) => String(v).split('.').map((n) => parseInt(n, 10) || 0);
+function versionGreater(a, b) { const x = versionParts(a), y = versionParts(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; }
+const testApiHost = (() => { try { const u = new URL(UPDATE_API); return u.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(u.hostname) ? u.host : ''; } catch { return ''; } })();
+function downloadAllowed(u) {
+  if (u.protocol === 'https:' && (u.hostname === 'api.github.com' || u.hostname === 'github.com' || u.hostname.endsWith('.githubusercontent.com'))) return true;
+  return !!testApiHost && u.host === testApiHost; // a copy of GitHub on this PC, only when the config says so (for testing)
+}
+// GET with a size limit, following up to four redirects, only to allowed hosts. Resolves a Buffer.
+function fetchUpdateBytes(address, max, depth = 0) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(address); } catch { return reject(new Error('The update address is not valid.')); }
+    if (!downloadAllowed(u)) return reject(new Error(`Updates are only taken from GitHub (not ${u.hostname}).`));
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get(u, { headers: { 'User-Agent': `AuroraGuard/${VERSION}`, Accept: 'application/octet-stream, application/json' }, timeout: 20000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        if (depth >= 4) return reject(new Error('Too many redirects.'));
+        return fetchUpdateBytes(new URL(res.headers.location, u).toString(), max, depth + 1).then(resolve, reject);
+      }
+      if (res.statusCode !== 200) { res.resume(); return reject(new Error(`GitHub answered ${res.statusCode}.`)); }
+      const chunks = []; let size = 0;
+      res.on('data', (c) => { size += c.length; if (size > max) { req.destroy(new Error('The download is larger than expected.')); } else chunks.push(c); });
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error('GitHub did not answer in time.')));
+    req.on('error', reject);
+  });
+}
+async function checkForUpdate() {
+  try {
+    const list = JSON.parse((await fetchUpdateBytes(`${UPDATE_API}/repos/${cfg.updateRepo}/releases?per_page=8`, 2 * 1024 * 1024)).toString('utf8'));
+    const rel = (Array.isArray(list) ? list : []).find((r) => r && !r.draft && !r.prerelease && (r.assets || []).some((a) => a.name === 'aurora-guard.json') && (r.assets || []).some((a) => a.name === 'aurora-guard.js'));
+    if (!rel) throw new Error('No release carries a guard update yet.');
+    const jsonAsset = rel.assets.find((a) => a.name === 'aurora-guard.json'), fileAsset = rel.assets.find((a) => a.name === 'aurora-guard.js');
+    const meta = JSON.parse((await fetchUpdateBytes(jsonAsset.browser_download_url, 4096)).toString('utf8'));
+    if (!/^\d+(\.\d+){1,3}$/.test(String(meta.version)) || !/^[0-9a-f]{64}$/.test(String(meta.sha256))) throw new Error('The release information is not valid.');
+    updateInfo = { checkedAt: Date.now(), latest: String(meta.version), tag: rel.tag_name || '', jsonUrl: jsonAsset.browser_download_url, fileUrl: fileAsset.browser_download_url, sha256: String(meta.sha256), size: Number(meta.size) || 0,
+      notes: String(rel.body || '').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ')).map((l) => l.slice(2).slice(0, 160)).slice(0, 8), error: '' };
+    const seen = (store.update || {}).announced;
+    if (versionGreater(updateInfo.latest, VERSION) && seen !== updateInfo.latest) {
+      store.update = { ...(store.update || {}), announced: updateInfo.latest }; try { saveStore(); } catch { /* announced again next time */ }
+      sendAlert('Aurora Guard: update available', `Version ${updateInfo.latest} is available (this one is ${VERSION}). Update it in Admin -> Server.`, false);
+    }
+  } catch (e) {
+    updateInfo = { ...updateInfo, checkedAt: Date.now(), error: e.message };
+  }
+  return updateInfo;
+}
+function publicUpdate() {
+  const backups = (() => { try { return fs.readdirSync(BACKUP_DIR).filter((f) => /^aurora-guard-[\d.]+\.js$/.test(f)).sort((a, b) => versionGreater(a.replace(/^aurora-guard-|\.js$/g, ''), b.replace(/^aurora-guard-|\.js$/g, '')) ? -1 : 1); } catch { return []; } })();
+  const last = (store.update || {}).lastApplied || null;
+  return { current: VERSION, latest: updateInfo.latest || '', available: !!updateInfo.latest && versionGreater(updateInfo.latest, VERSION), notes: updateInfo.notes, checkedAt: updateInfo.checkedAt, error: updateInfo.error,
+    enabled: cfg.updateCheck !== false, run: { ...updateRun, steps: UPDATE_STEPS }, lastApplied: last, canGoBack: !!(last && last.backup && backups.includes(last.backup)), platform: process.platform };
+}
+const restartGuard = () => setTimeout(() => { log('Restarting the guard.'); try { saveStore(); } catch { /* saved again after the restart */ } process.exit(3); }, 1500);
+async function applyUpdate(by) {
+  const stage = SCRIPT_FILE + '.new';
+  const fail = (step, message) => { try { fs.unlinkSync(stage); } catch { /* not there */ } updateRun = { busy: false, kind: 'update', step, error: message, finishedAt: Date.now() }; log('Update refused:', message); sendAlert('Aurora Guard: update refused', `Version ${updateInfo.latest} was not installed (nothing was changed): ${message}`, true); };
+  updateRun = { busy: true, kind: 'update', step: 0, error: '', finishedAt: 0 };
+  try {
+    // 1. download
+    const bytes = await fetchUpdateBytes(updateInfo.fileUrl, 2 * 1024 * 1024);
+    fs.writeFileSync(stage, bytes);
+    // 2. checksum, size and the version the file says it is
+    updateRun.step = 1;
+    const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (sha !== updateInfo.sha256) return fail(1, 'the downloaded file does not match its published checksum.');
+    if (updateInfo.size && bytes.length !== updateInfo.size) return fail(1, 'the downloaded file is not the size that was published.');
+    const said = (/const VERSION = '([\d.]+)'/.exec(bytes.toString('utf8')) || [])[1];
+    if (said !== updateInfo.latest) return fail(1, `the file says it is version ${said || 'unknown'}, not ${updateInfo.latest}.`);
+    if (!versionGreater(said, VERSION)) return fail(1, `version ${said} is not newer than this one (${VERSION}).`);
+    // 3. a trial start on this PC with this config: the certificate, the Emby key and the code itself all have to load
+    updateRun.step = 2;
+    const { spawnSync } = require('child_process');
+    const trial = spawnSync(process.execPath, [...process.execArgv, stage, '--check'], { cwd: DIR, env: { ...process.env, AURORA_GUARD_CONFIG: CONFIG_FILE, AURORA_GUARD_SUPERVISE: '0' }, timeout: 40000, encoding: 'utf8' });
+    if (trial.error || trial.status === null || trial.status === 1 || trial.status > 2) {
+      const out = String((trial.stdout || '') + (trial.stderr || '')).split('\n').map((l) => l.trim()).filter(Boolean).slice(-2).join(' ');
+      return fail(2, `the new version did not start properly on this PC (${trial.error ? trial.error.message : out || 'exit ' + trial.status}).`);
+    }
+    // 4. keep this version
+    updateRun.step = 3;
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const backup = `aurora-guard-${VERSION}.js`;
+    fs.copyFileSync(SCRIPT_FILE, path.join(BACKUP_DIR, backup));
+    const old = fs.readdirSync(BACKUP_DIR).filter((f) => /^aurora-guard-[\d.]+\.js$/.test(f)).sort((a, b) => (versionGreater(a.replace(/^aurora-guard-|\.js$/g, ''), b.replace(/^aurora-guard-|\.js$/g, '')) ? -1 : 1));
+    for (const f of old.slice(6)) { try { fs.unlinkSync(path.join(BACKUP_DIR, f)); } catch { /* keeps one more */ } }
+    // 5. replace and restart
+    updateRun.step = 4;
+    fs.renameSync(stage, SCRIPT_FILE);
+    store.update = { ...(store.update || {}), lastApplied: { from: VERSION, to: said, at: Date.now(), by: by || 'an admin', backup } };
+    recordAudit(by || 'an admin', `Updated the guard from ${VERSION} to ${said}`);
+    saveStore();
+    log(`Updated the guard from ${VERSION} to ${said}; restarting.`);
+    sendAlert('Aurora Guard: updated', `Updated from ${VERSION} to ${said} by ${by || 'an admin'}. The guard is restarting.`, false);
+    updateRun = { busy: true, kind: 'update', step: 4, error: '', finishedAt: 0 };
+    restartGuard();
+  } catch (e) { fail(Math.max(0, updateRun.step), e.message); }
+}
+async function rollbackUpdate(by) {
+  const last = (store.update || {}).lastApplied;
+  updateRun = { busy: true, kind: 'rollback', step: 0, error: '', finishedAt: 0 };
+  try {
+    const src = path.join(BACKUP_DIR, (last && last.backup) || '');
+    if (!last || !last.backup || !fs.existsSync(src)) throw new Error('There is no earlier version to go back to.');
+    const text = fs.readFileSync(src, 'utf8');
+    const said = (/const VERSION = '([\d.]+)'/.exec(text) || [])[1];
+    if (!said) throw new Error('The saved copy does not look right.');
+    fs.writeFileSync(SCRIPT_FILE + '.new', text); fs.renameSync(SCRIPT_FILE + '.new', SCRIPT_FILE);
+    store.update = { ...(store.update || {}), lastApplied: null, announced: '' };
+    recordAudit(by || 'an admin', `Went back to guard version ${said}`);
+    saveStore();
+    log(`Went back to guard version ${said}; restarting.`);
+    sendAlert('Aurora Guard: went back', `Went back to version ${said} (from ${VERSION}) by ${by || 'an admin'}. The guard is restarting.`, false);
+    updateRun = { busy: true, kind: 'rollback', step: 4, error: '', finishedAt: 0 };
+    restartGuard();
+  } catch (e) { updateRun = { busy: false, kind: 'rollback', step: 0, error: e.message, finishedAt: Date.now() }; }
 }
 
 // ---------- HTTP ----------
@@ -1990,6 +2158,18 @@ async function handle(req, res) {
       if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
     });
   }
+  // Updating the guard (admin).
+  if (url.pathname === '/update' && req.method === 'GET') return send(res, 200, publicUpdate());
+  if (url.pathname === '/update/check' && req.method === 'POST') { await checkForUpdate(); return send(res, 200, publicUpdate()); }
+  if (url.pathname === '/update/apply' && req.method === 'POST') {
+    if (updateRun.busy) return send(res, 409, { error: 'An update is already running.' });
+    if (!updateInfo.latest || !versionGreater(updateInfo.latest, VERSION)) return send(res, 409, { error: 'There is no newer version to install. Check again first.' });
+    applyUpdate(auditBy); return send(res, 200, { ok: true, ...publicUpdate() });
+  }
+  if (url.pathname === '/update/rollback' && req.method === 'POST') {
+    if (updateRun.busy) return send(res, 409, { error: 'An update is already running.' });
+    rollbackUpdate(auditBy); return send(res, 200, { ok: true, ...publicUpdate() });
+  }
   // Discount codes for the website (admin).
   if (url.pathname === '/discounts' && req.method === 'GET') return send(res, 200, { discounts: (store.discounts || []).map(publicDiscount), plans: (store.plans || []).filter((x) => x.active).map((x) => ({ id: x.id, name: x.name, price: x.price })) });
   if (url.pathname === '/discounts' && req.method === 'POST') {
@@ -2608,6 +2788,7 @@ function start() {
   }
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
+  if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
   setTimeout(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 4000);
   setInterval(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 15000);
 }

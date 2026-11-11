@@ -353,3 +353,17 @@ shows in Admin → Support. Auto quality also starts from what was just measured
 Used by the `website/` folder. Public (no sign-in): `GET /site/info` (prices, whether sign-up is open), `GET /discount/check?code=`, `POST /signup`, `POST /admin-login` (an Emby administrator's username and password, answers with a token). Admin: `GET/POST /discounts`, `PUT/DELETE /discounts/CODE`. Sign-up is off until `"signupEnabled": true` is in `config.json` (also `signupTrialDays`, `signupTrialConnections`, `signupMaxPerDay`, `signupPerIpPerDay`). See `website/README.md`.
 
 Guard 1.16.1 adds `POST /site-login` (any Emby account; answers with the token and whether it is an administrator or a reseller), used by the website's reseller page.
+
+## Updating the guard (guard 1.17.0)
+
+Admin → Server has an **Aurora Guard** card. The guard looks for a newer version in the Aurora releases on GitHub once a day (and when you press Check again). When there is one it shows what changed and an **Update now** button. Nothing is installed until an administrator taps it.
+
+Tapping Update now: the guard downloads `aurora-guard.js`, compares it with the checksum published in `aurora-guard.json` (same release), checks it is a newer version, tries it (`--check`: the certificate, the Emby key and the code have to load on this PC), keeps the current file in `backups/` (the last six are kept), replaces the file and restarts itself. If any step fails nothing is changed and Discord is told why. **Go back** puts the kept version back.
+
+- First time: copy this version of `aurora-guard.js` to the PC by hand and restart the task; after that the button does it.
+- Only https downloads from GitHub's own addresses are accepted. `"updateCheck": false` stops the daily look; `"updateRepo"` points it at a different repository.
+- Every push that changes `server/` publishes a release carrying the guard file (`.github/workflows/aurora-apk.yml`), so a guard-only change also builds the app; the version number in `aurora-guard.js` (`VERSION`) must go up for the guard to offer it.
+
+### Keep-alive
+
+`node aurora-guard.js` now runs as two processes: a small watcher and the real guard. The watcher restarts the guard after an update and also if it ever crashes (after 5 seconds; it gives up after 8 stops in 10 minutes so a real problem stays visible). Stopping the watcher (Stop-ScheduledTask, Ctrl+C, `systemctl stop`) stops the guard too. `--check`, `--test-alert` and `--test-scores` run directly, and `AURORA_GUARD_SUPERVISE=0` turns the watcher off.
