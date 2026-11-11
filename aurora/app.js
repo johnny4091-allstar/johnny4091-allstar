@@ -8519,12 +8519,32 @@
     if (u.run?.busy) { progress(u, false); follow(u.current); } else draw(u);
   }
 
+  // ----- Daily summary (Admin → Server; Guard 1.18.0): when it is sent, and a button to send one now -----
+  async function dailySummaryCard(box, isCurrent) {
+    let st;
+    try { st = await guard('/summary'); } catch { return; } // an older guard: nothing to show
+    if (!isCurrent()) return;
+    const hourText = (h) => `${((h + 11) % 12) + 1}:00 ${h < 12 ? 'AM' : 'PM'}`;
+    const status = !st.webhook ? 'No alert webhook is set, so there is nowhere to send it. Add "alertWebhookUrl" to the guard\'s config.json.'
+      : st.off ? 'Switched off in config.json ("dailySummary": false).'
+        : `Sent every morning at ${hourText(st.hour)} (the PC's clock) to your alerts channel${st.lastDay ? `. Last sent for ${st.lastDay}` : ''}.`;
+    box.innerHTML = `<section class="admin-card"><h2>Daily summary <small>Discord</small></h2><p class="muted">${esc(status)} It covers the day before: who watched what, sign-ups and plans, devices signed out, channel reports, the server, and anything waiting for you.</p>
+      ${st.webhook ? '<div class="m-actions"><button class="btn btn-gray" data-sum-send>Send one now</button></div>' : ''}<div class="live-result" data-sum-result></div></section>`;
+    $('[data-sum-send]', box)?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget, out = $('[data-sum-result]', box); b.disabled = true; out.className = 'live-result'; out.textContent = 'Sending…';
+      try { await guard('/summary/send', { method: 'POST' }); out.className = 'live-result good'; out.textContent = 'Sent. Check your Discord channel.'; }
+      catch (e) { out.className = 'live-result bad'; out.textContent = e.message; }
+      b.disabled = false;
+    });
+  }
+
   async function adminServer(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Server health');
     // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
-    const noteBox = document.createElement('div'), updBox = document.createElement('div'), main = document.createElement('div');
-    body.append(noteBox, updBox, main);
+    const noteBox = document.createElement('div'), updBox = document.createElement('div'), sumBox = document.createElement('div'), main = document.createElement('div');
+    body.append(noteBox, updBox, sumBox, main);
     guardUpdateCard(updBox, isCurrent);
+    dailySummaryCard(sumBox, isCurrent);
     (async () => {
       let current = '';
       try { current = (await guard('/service-status', { params: { userId: state.userId } })).note?.text || ''; } catch { return; }

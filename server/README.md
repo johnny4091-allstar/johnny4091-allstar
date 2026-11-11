@@ -367,3 +367,12 @@ Tapping Update now: the guard downloads `aurora-guard.js`, compares it with the 
 ### Keep-alive
 
 `node aurora-guard.js` now runs as two processes: a small watcher and the real guard. The watcher restarts the guard after an update and also if it ever crashes (after 5 seconds; it gives up after 8 stops in 10 minutes so a real problem stays visible). Stopping the watcher (Stop-ScheduledTask, Ctrl+C, `systemctl stop`) stops the guard too. `--check`, `--test-alert` and `--test-scores` run directly, and `AURORA_GUARD_SUPERVISE=0` turns the watcher off.
+
+## Daily summary (guard 1.18.0)
+
+Each morning the guard sends one message about the day before to the alert webhook (`alertWebhookUrl`): hours watched, viewers, the most streams at once and the TV provider peak, the most watched titles, new sign-ups, plans put on accounts (and the amount), free trials, devices signed out, accounts switched off, channels people reported, whether Emby was reachable, free disk space, and a **Needs attention** list first when something is waiting (accounts ending within a week, support messages, credit and extension requests, resellers low on credits, low disk space). A Discord webhook gets an embed (green for a quiet day, blue normal, amber when something needs you, red when Emby was down or the disk is low); other webhook kinds get the same facts as text. It does not count toward the 12-alerts-an-hour limit.
+
+- On whenever `alertWebhookUrl` is set. In `config.json`: `"dailySummary": false` switches it off, `"dailySummaryHour": 8` sets the hour (the PC's clock), `"dailySummaryMoney": false` leaves the plans-sold amount out.
+- The first message comes the day after the guard first runs with it. If the PC was off at the hour, it is sent when the guard next starts that day (once a day); a failed send is tried again after 10 minutes.
+- `node --openssl-legacy-provider aurora-guard.js --test-summary` sends yesterday's summary now; Admin → Server has a **Send one now** button (`POST /summary/send`, `GET /summary`).
+- It is built from what the guard already keeps (usage, sign-ups, plans, actions, reports, server checks). Peaks are recorded from 1.18.0 on, so the first days may show 0 streams.
