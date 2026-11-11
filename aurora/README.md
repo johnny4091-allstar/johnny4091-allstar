@@ -54,6 +54,7 @@ Versions read `V2.5.4`. The CI build number N becomes `2.(N div 50).(N mod 50)` 
   change the next time it opens; no new APK is needed.
 - Trailers: a Trailer button on movies and shows (and in Requests). Trailer files in the library play in Aurora;
   online (YouTube) trailers open in the YouTube app, or in a window inside Aurora where there isn't one
+- Admin → Requests → Recent requests (`adminRequestList`; Android app only, read from Jellyseerr): who asked for what, newest first, with the title, movie or series (and seasons), when, and where it stands (waiting, approved, partly available, available, declined). Filters, a By person view, and Approve / Decline for waiting requests (Jellyseerr's own Manage Requests permission applies; Decline asks first).
 - Resume where you left off, progress reported back to Emby, and auto-play of the next episode
 - Works on phones, tablets, and desktops
 

@@ -5985,10 +5985,88 @@
   }
 
   // Live TV source: Emby's own Live TV, an M3U playlist, or an Xtream Codes account. Saved for every account.
+  // ----- Admin → Requests: who asked for what (read from Jellyseerr; Android app only) -----
+  // One row per request: the title, who asked, when, and where it stands. Waiting requests can be approved or declined here (Jellyseerr's
+  // own permission applies). "By person" counts them per requester.
+  async function adminRequestList(box, isCurrent) {
+    const note = (html) => { box.innerHTML = `<section class="admin-card"><h2>Recent requests</h2><p class="muted">${html}</p></section>`; };
+    if (!state.requestsEnabled || !state.requestsServer) { note('The Requests tab is off, so there is nothing to list. Switch it on below.'); return; }
+    if (!hasRequests()) { note('Open Aurora on your Android phone or TV to see who asked for what here. Jellyseerr\'s own Requests page shows the same list in a browser.'); return; }
+    box.innerHTML = '<section class="admin-card"><h2>Recent requests</h2><div class="spinner"></div></section>';
+    let me, data;
+    try {
+      me = await seerrMe();
+      if (!me) { if (isCurrent()) note('Open the <strong>Requests</strong> tab once to sign in to Jellyseerr, then come back here.'); return; }
+      data = (await seerr('/request?take=100&skip=0&sort=added&filter=all')).data;
+    } catch (e) { if (isCurrent()) note(`Couldn't read the requests: ${esc(e.message)}`); return; }
+    if (!isCurrent()) return;
+    const stateOf = (r) => (r.status === 3 ? 'no' : r.status === 1 ? 'wait' : (r.media?.status || 0) >= 5 ? 'ok' : (r.media?.status || 0) === 4 ? 'part' : 'appr');
+    const LABEL = { wait: 'Waiting for approval', appr: 'Approved, getting it', part: 'Partly available', ok: 'Available', no: 'Declined' };
+    const rows = (data?.results || []).filter((r) => r.media?.tmdbId).map((r) => ({
+      id: r.id, type: r.media.mediaType || r.type, tmdb: r.media.tmdbId, who: r.requestedBy?.displayName || r.requestedBy?.username || 'Someone', whoId: r.requestedBy?.id,
+      at: r.createdAt, seasons: (r.seasons || []).map((x) => x.seasonNumber).filter((n) => n != null).sort((a, b) => a - b), st: stateOf(r), title: '', year: '', poster: '' }));
+    let view = 'list', filter = 'all';
+    const hue = (name) => ['#4f7bff', '#2ad4d0', '#7a5cff', '#e5384f', '#ff9f43', '#46d369'][[...String(name)].reduce((n, c) => n + c.charCodeAt(0), 0) % 6];
+    const seasonText = (r) => (r.type !== 'tv' || !r.seasons.length ? '' : r.seasons.length === 1 ? ` · Season ${r.seasons[0]}` : ` · Seasons ${r.seasons[0]} to ${r.seasons[r.seasons.length - 1]}`);
+    const draw = () => {
+      const counts = { all: rows.length }; for (const k of ['wait', 'appr', 'part', 'ok', 'no']) counts[k] = rows.filter((r) => r.st === k).length;
+      const names = { all: 'All', wait: 'Waiting', appr: 'Approved', ok: 'Available', no: 'Declined' };
+      const chips = view === 'list' ? `<div class="rq-chips">${Object.keys(names).map((k) => `<button type="button" class="rq-chip" data-rq-f="${k}" aria-pressed="${filter === k}">${names[k]} ${k === 'appr' ? counts.appr + counts.part : counts[k]}</button>`).join('')}</div>` : '';
+      let inner;
+      if (!rows.length) inner = '<div class="rq-empty">Nobody has asked for anything yet.</div>';
+      else if (view === 'people') {
+        const by = new Map(); rows.forEach((r) => { const k = r.whoId ?? r.who; (by.get(k) || by.set(k, { name: r.who, list: [] }).get(k)).list.push(r); });
+        inner = `<div class="rq-people">${[...by.values()].sort((a, b) => b.list.length - a.list.length).map((p) => {
+          const waiting = p.list.filter((r) => r.st === 'wait').length;
+          return `<div class="rq-p"><span class="rq-av" style="background:${hue(p.name)}">${esc(p.name[0].toUpperCase())}</span><div><b>${esc(p.name)}</b><small>${esc(p.list.slice(0, 4).map((r) => r.title || '…').join(', '))}${p.list.length > 4 ? ` and ${p.list.length - 4} more` : ''}${waiting ? ` · ${waiting} waiting` : ''}</small></div><span class="rq-count">${p.list.length}</span></div>`;
+        }).join('')}</div>`;
+      } else {
+        const shown = rows.filter((r) => filter === 'all' || r.st === filter || (filter === 'appr' && r.st === 'part'));
+        inner = shown.length ? `<div class="rq-list">${shown.map((r) => `<div class="rq-req" data-rq="${r.id}">
+          <div class="rq-poster" ${r.poster ? `style="background-image:url('${esc(r.poster)}')"` : `style="background:linear-gradient(160deg,${hue(r.title || r.who)},#101a40)"`}></div>
+          <div><div class="rq-top"><span class="rq-title">${esc(r.title || 'Loading…')}${r.year ? ` <span class="rq-year">(${esc(r.year)})</span>` : ''}</span><span class="rq-tag ${r.st}">${LABEL[r.st]}</span></div>
+            <div class="rq-meta">${r.type === 'tv' ? 'Series' : 'Movie'}${esc(seasonText(r))} · ${esc(timeAgo(r.at))}</div>
+            <div class="rq-who"><span class="rq-av" style="background:${hue(r.who)}">${esc(r.who[0].toUpperCase())}</span>Requested by <b>${esc(r.who)}</b></div>
+            ${r.st === 'wait' ? `<div class="rq-acts"><button class="btn btn-red" data-rq-a="approve">Approve</button><button class="btn btn-gray" data-rq-a="decline">Decline</button></div><div class="live-result" data-rq-res></div>` : ''}</div></div>`).join('')}</div>` : '<div class="rq-empty">No requests here.</div>';
+      }
+      const onlyMine = rows.length && rows.every((r) => r.whoId === me.id);
+      box.innerHTML = `<section class="admin-card rq"><h2>Recent requests <small>${rows.length}</small></h2>
+        <p class="muted">What people asked for through the Requests tab, newest first. ${onlyMine ? 'You only see your own requests here: your Jellyseerr account needs the "Manage Requests" permission to see everyone\'s.' : ''}</p>
+        <div class="rq-tabs"><button type="button" class="rq-chip" data-rq-v="list" aria-pressed="${view === 'list'}">Requests</button><button type="button" class="rq-chip" data-rq-v="people" aria-pressed="${view === 'people'}">By person</button></div>${chips}${inner}</section>`;
+    };
+    box.addEventListener('click', async (ev) => {
+      const v = ev.target.closest('[data-rq-v]'); if (v) { view = v.dataset.rqV; draw(); return; }
+      const f = ev.target.closest('[data-rq-f]'); if (f) { filter = f.dataset.rqF; draw(); return; }
+      const a = ev.target.closest('[data-rq-a]'); if (!a) return;
+      const row = a.closest('[data-rq]'), r = rows.find((x) => String(x.id) === row.dataset.rq), out = $('[data-rq-res]', row), approve = a.dataset.rqA === 'approve';
+      if (!approve && !(await confirmAction(`Decline ${r.title || 'this request'}?`, `${r.who} will see it as declined.`, 'Decline'))) return;
+      $$('.rq-acts .btn', row).forEach((b) => { b.disabled = true; });
+      try { await seerr(`/request/${r.id}/${approve ? 'approve' : 'decline'}`, { method: 'POST' }); r.st = approve ? 'appr' : 'no'; draw(); }
+      catch (e) { $$('.rq-acts .btn', row).forEach((b) => { b.disabled = false; }); out.className = 'live-result bad'; out.textContent = e.status === 403 ? "Your Jellyseerr account isn't allowed to approve or decline requests (it needs the Manage Requests permission)." : e.message; }
+    });
+    draw();
+    // Titles and pictures come from Jellyseerr's details, a few at a time; the list redraws as they arrive (not once per title).
+    let next = 0, timer = 0;
+    const later = () => { if (!timer) timer = setTimeout(() => { timer = 0; if (isCurrent() && box.isConnected && !box.querySelector('[data-rq-res]:not(:empty)')) draw(); }, 150); };
+    const worker = async () => {
+      while (next < rows.length && isCurrent()) {
+        const r = rows[next++];
+        try { const m = await seerrDetail(r.type, r.tmdb); r.title = seerrTitle(m); r.year = seerrYear(m); r.poster = tmdbImage(m.posterPath, 'w185'); } catch { r.title = r.title || 'A title'; }
+        later();
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    later();
+  }
+
   async function adminRequests(body, isCurrent) {
     await refreshRequestsConfig();
     if (!isCurrent()) return;
     const fromApp = !!requestsOverride;
+    const listBox = document.createElement('div'), settingsBox = document.createElement('div');
+    body.innerHTML = ''; body.append(listBox, settingsBox);
+    adminRequestList(listBox, isCurrent);
+    body = settingsBox;
     body.innerHTML = `
       <section class="admin-card req-admin">
         <h2>Request server (Jellyseerr)</h2>
