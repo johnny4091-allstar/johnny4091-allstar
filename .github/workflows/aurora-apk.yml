@@ -5,6 +5,7 @@ on:
     paths:
       - 'aurora/**'
       - 'android/**'
+      - 'server/**'
       - '.github/workflows/aurora-apk.yml'
   workflow_dispatch:
 
@@ -130,6 +131,19 @@ jobs:
             echo "Built from ${{ github.ref_name }} at ${{ github.sha }}."
           } > release-notes.md
 
+      # Every release also carries the Aurora Guard file and its checksum. The guard looks here for updates and installs one only
+      # when an administrator taps Update in Admin -> Server (it checks the checksum, tries the new file, and keeps the old one).
+      - name: Package the guard update
+        run: |
+          VER=$(grep -oP "const VERSION = '\K[0-9.]+" server/aurora-guard.js)
+          if [ -z "$VER" ]; then echo "::error::Could not read VERSION from server/aurora-guard.js"; exit 1; fi
+          node --check server/aurora-guard.js
+          cp server/aurora-guard.js aurora-guard.js
+          SHA=$(sha256sum aurora-guard.js | cut -d' ' -f1)
+          SIZE=$(stat -c%s aurora-guard.js)
+          printf '{"version":"%s","sha256":"%s","size":%s}\n' "$VER" "$SHA" "$SIZE" > aurora-guard.json
+          cat aurora-guard.json
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -137,5 +151,8 @@ jobs:
           name: Aurora V${{ env.VERSION_NAME }}
           target_commitish: ${{ github.sha }}
           make_latest: true
-          files: Aurora.apk
+          files: |
+            Aurora.apk
+            aurora-guard.js
+            aurora-guard.json
           body_path: release-notes.md

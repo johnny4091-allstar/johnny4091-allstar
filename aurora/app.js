@@ -8445,11 +8445,86 @@
     return `<svg class="spark ${cls}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
   }
 
+  // ----- Aurora Guard updates (Admin → Server; Guard 1.17.0) -----
+  // Shows the version the guard is running and the newest release. Update now: the guard downloads it, checks it, tries it, keeps the
+  // old one and restarts itself; this card follows along and says how it went. Go back puts the kept version back.
+  async function guardUpdateCard(box, isCurrent) {
+    const verTiles = (a, b) => `<div class="gu-ver"><div><small>Running now</small><b>${esc(a)}</b></div><div><small>Latest</small><b>${esc(b || '?')}</b></div></div>`;
+    const head = (pill, cls) => `<h2>Aurora Guard <small>Updates come from the Aurora releases on GitHub</small></h2><span class="gu-pill ${cls}">${esc(pill)}</span>`;
+    const notesHtml = (title, lines) => lines?.length ? `<div class="gu-notes"><b>${esc(title)}</b><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>` : '';
+    let u;
+    try { u = await guard('/update'); } catch (e) {
+      if (!isCurrent()) return;
+      box.innerHTML = e.status === 404
+        ? `<section class="admin-card"><h2>Aurora Guard <small>Updates</small></h2><p class="muted">One-tap updates arrive with Aurora Guard 1.17.0. Copy the new aurora-guard.js to the PC once and restart it, and this card appears with an Update button from then on.</p></section>`
+        : '';
+      return;
+    }
+    if (!isCurrent()) return;
+    const ago = (t) => (t ? timeAgo(t) : 'not yet');
+    let watching = null;
+    const progress = (u2, restarting) => {
+      const back = u2.run?.kind === 'rollback';
+      const steps = back ? ['Putting the kept version back', 'Restarting'] : (u2.run?.steps || []);
+      const at = restarting ? steps.length - 1 : back ? ((u2.run?.step ?? 0) >= 4 ? 1 : 0) : (u2.run?.step ?? 0);
+      box.innerHTML = `<section class="admin-card gu">${head(back ? 'Going back…' : 'Updating…', 'busy')}<div class="gu-bar"><i style="width:${Math.round(((restarting ? steps.length - 0.5 : at) / Math.max(1, steps.length)) * 100)}%"></i></div>
+        <ul class="gu-steps">${steps.map((n, i) => `<li class="${i < at ? 'done' : i === at ? 'on' : ''}">${esc(n)}</li>`).join('')}</ul>
+        <p class="muted">Keep this screen open. Admin may not answer for about a minute while the guard restarts.</p></section>`;
+    };
+    const draw = (x) => {
+      u = x;
+      const refused = x.run?.error && !x.run.busy;
+      let html;
+      if (x.error && !x.latest) html = `${head("Can't check", 'warn')}${verTiles(x.current, '')}<div class="gu-notes"><b>The guard could not find an update</b>${esc(x.error)}</div><div class="m-actions"><button class="btn btn-gray" data-gu="check">Check again</button></div>`;
+      else if (refused) html = `${head('Update refused', 'bad')}${verTiles(x.current, x.latest)}<div class="gu-notes"><b>Nothing was changed</b>The ${esc(x.run.kind === 'rollback' ? 'old version' : 'new version')} was not installed: ${esc(x.run.error)}</div><div class="m-actions">${x.available ? '<button class="btn btn-red" data-gu="update">Try again</button>' : ''}<button class="btn btn-gray" data-gu="check">Check again</button></div>`;
+      else if (x.available) html = `${head('Update available', 'new')}${verTiles(x.current, x.latest)}${notesHtml(`What changed in ${x.latest}`, x.notes)}<div class="m-actions"><button class="btn btn-red" data-gu="update">Update now</button><button class="btn btn-gray" data-gu="check">Check again</button></div><p class="muted">Last checked ${esc(ago(x.checkedAt))}. The guard restarts itself, which takes about a minute.</p>`;
+      else if (x.lastApplied) html = `${head(`Updated to ${x.lastApplied.to}`, 'ok')}${verTiles(x.current, x.latest || x.current)}<div class="gu-notes"><b>${esc(x.lastApplied.from)} → ${esc(x.lastApplied.to)}</b><ul><li>The new file matched its published checksum</li><li>It started properly on this PC</li><li>The old version is kept as a backup</li></ul></div><div class="m-actions">${x.canGoBack ? `<button class="btn btn-gray" data-gu="back">Go back to ${esc(x.lastApplied.from)}</button>` : ''}<button class="btn btn-gray" data-gu="check">Check again</button></div><p class="muted">Updated ${esc(timeAgo(x.lastApplied.at))}${x.lastApplied.by ? ` by ${esc(x.lastApplied.by)}` : ''}.</p>`;
+      else html = `${head('Up to date', 'ok')}${verTiles(x.current, x.latest || x.current)}<div class="m-actions"><button class="btn btn-gray" data-gu="check">Check again</button></div><p class="muted">Last checked ${esc(ago(x.checkedAt))}.${x.enabled ? ' Checked automatically once a day.' : ' Automatic checks are switched off in config.json.'}</p>`;
+      box.innerHTML = `<section class="admin-card gu">${html}<div class="live-result" data-gu-result></div></section>`;
+    };
+    const say = (t) => { const el = $('[data-gu-result]', box); if (el) { el.className = 'live-result bad'; el.textContent = t; } };
+    const follow = (from) => {
+      watching = { from, at: Date.now(), down: false };
+      const timer = routeInterval(async () => {
+        if (!isCurrent() || !box.isConnected) { clearInterval(timer); return; }
+        let x;
+        try { x = await guard('/update'); } catch {
+          watching.down = true; progress(u, true);
+          if (Date.now() - watching.at > 120000) { clearInterval(timer); box.innerHTML = `<section class="admin-card gu">${head('The guard did not come back', 'bad')}<div class="gu-notes"><b>It has not answered for 2 minutes</b>On the PC, run <code>Start-ScheduledTask -TaskName 'Aurora Guard'</code>, or restart the Aurora Guard task. The previous version is saved in the guard's backups folder.</div></section>`; }
+          return;
+        }
+        if (x.run?.busy && !watching.down) { u = x; progress(x, false); return; }
+        if (x.run?.busy) { progress(x, true); return; }
+        clearInterval(timer); watching = null;
+        // The guard forgets what it found when it restarts: ask again once so the card is right straight away.
+        if (!x.latest && !x.run?.error) { try { x = await guard('/update/check', { method: 'POST' }); } catch { /* shown as it is */ } }
+        draw(x);
+      }, 1500);
+    };
+    const act = async (what, btn) => {
+      if (btn) btn.disabled = true;
+      try {
+        if (what === 'check') { draw(await guard('/update/check', { method: 'POST' })); return; }
+        if (what === 'update') {
+          if (!(await confirmAction(`Update the guard to ${u.latest}?`, "Customers stay signed in. The guard restarts itself, which takes about a minute, and Admin may not answer until it is back. The current version is kept so you can go back.", 'Update now'))) { if (btn) btn.disabled = false; return; }
+          const r = await guard('/update/apply', { method: 'POST' }); u = r; progress(r, false); follow(r.current); return;
+        }
+        if (what === 'back') {
+          if (!(await confirmAction(`Go back to ${u.lastApplied?.from}?`, 'The guard puts the kept version back and restarts itself.', 'Go back'))) { if (btn) btn.disabled = false; return; }
+          const r = await guard('/update/rollback', { method: 'POST' }); u = r; progress(r, false); follow(r.current);
+        }
+      } catch (e) { if (btn) btn.disabled = false; say(e.message); }
+    };
+    box.addEventListener('click', (ev) => { const b = ev.target.closest('[data-gu]'); if (b) act(b.dataset.gu, b); });
+    if (u.run?.busy) { progress(u, false); follow(u.current); } else draw(u);
+  }
+
   async function adminServer(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Server health');
     // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
-    const noteBox = document.createElement('div'), main = document.createElement('div');
-    body.append(noteBox, main);
+    const noteBox = document.createElement('div'), updBox = document.createElement('div'), main = document.createElement('div');
+    body.append(noteBox, updBox, main);
+    guardUpdateCard(updBox, isCurrent);
     (async () => {
       let current = '';
       try { current = (await guard('/service-status', { params: { userId: state.userId } })).note?.text || ''; } catch { return; }
