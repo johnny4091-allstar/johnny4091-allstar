@@ -58,7 +58,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.17.0';
+const VERSION = '1.18.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -102,6 +102,11 @@ function loadConfig() {
     // It only ever installs one when an administrator taps Update. "updateCheck": false switches the looking off.
     updateCheck: true,
     updateRepo: 'johnny4091-allstar/johnny4091-allstar',
+    // Daily summary (guard 1.18.0): one message each morning to the alert webhook about the day before. On whenever alertWebhookUrl is set;
+    // "dailySummary": false turns it off. The hour is the PC's local time. "dailySummaryMoney": false leaves the plans-sold amount out.
+    dailySummary: true,
+    dailySummaryHour: 8,
+    dailySummaryMoney: true,
     updateApi: 'https://api.github.com',
     // Sports scores (Live TV -> Sports): ESPN's public scoreboard feed. It is not an official, documented API and ESPN can change or
     // stop it at any time. Set "scoresEnabled": false to switch it off, or "scoresBase" to point at another server with the same shape.
@@ -158,7 +163,7 @@ function alertFormat() {
   return 'json';
 }
 // Resolves {ok, status, error}. Never rejects, never takes longer than 10 s.
-function postAlert(title, text, urgent) {
+function postAlert(title, text, urgent, embed) {
   return new Promise((resolve) => {
     let settled = false, req = null, deadline = null;
     const done = (r) => { if (settled) return; settled = true; clearTimeout(deadline); try { req && req.destroy(); } catch {} resolve(r); };
@@ -167,7 +172,10 @@ function postAlert(title, text, urgent) {
       const target = new URL(cfg.alertWebhookUrl), fmt = alertFormat();
       const headers = { 'User-Agent': `AuroraGuard/${VERSION}` };
       let body;
-      if (fmt === 'discord') {
+      if (fmt === 'discord' && embed) {
+        body = JSON.stringify({ username: 'Aurora Guard', embeds: [embed] });
+        headers['Content-Type'] = 'application/json';
+      } else if (fmt === 'discord') {
         body = JSON.stringify({ username: 'Aurora Guard', content: `**${title}**\n${text}`.slice(0, 1900) });
         headers['Content-Type'] = 'application/json';
       } else if (fmt === 'ntfy') {
@@ -912,7 +920,7 @@ function describeChange(req, url, subject) {
     const x = (store.extensions || []).find((e) => e.id === r[1]);
     return `${b.action === 'deny' ? 'Denied' : 'Approved'} an extension request from ${x ? x.name : 'a customer'}${b.action !== 'deny' && b.days ? ` (${plural(b.days, 'day')})` : ''}`;
   }
-  if (p === '/update/apply' || p === '/update/rollback' || p === '/update/check') return '';
+  if (p === '/update/apply' || p === '/update/rollback' || p === '/update/check' || p === '/summary/send') return '';
   if (p === '/discounts' && m === 'POST') return `Made the discount code ${String(b.code || '').toUpperCase() || '(generated)'} (${b.type === 'usd' ? '$' + b.value : b.value + '%'} off)`;
   if ((r = p.match(/^\/discounts\/([A-Za-z0-9]{3,20})$/))) return m === 'DELETE' ? `Deleted the discount code ${r[1].toUpperCase()}` : `Switched the discount code ${r[1].toUpperCase()} ${b.on ? 'on' : 'off'}`;
   if (p === '/plans' && m === 'POST') return `Added plan ${b.name || ''}`.trim();
@@ -1041,6 +1049,9 @@ function samplePass(users, sessions) {
   // Server health.
   const cpu = cpuPercent(), total = os.totalmem(), memPct = total ? Math.round(100 * (1 - os.freemem() / total)) : null;
   health = { cpu, memPct, playing, transcoding, direct };
+  const dy = ((store.daily || (store.daily = {}))[dayKey(now)] ||= { peak: 0, live: 0 });
+  if (playing > dy.peak) { dy.peak = playing; usageDirtyAt = now; }
+  for (const k of Object.keys(store.daily).sort().slice(0, -62)) delete store.daily[k];
   healthHistory.push({ t: now, cpu, mem: memPct, playing, transcoding });
   while (healthHistory.length > 1440) healthHistory.shift();
   for (const d of diskInfo()) {
@@ -1140,6 +1151,8 @@ async function checkConnections() {
   let changed = false;
   if (c.peakDay !== today) { c.peakDay = today; c.peak = 0; c.peakAt = 0; changed = true; }
   if (n > c.peak) { c.peak = n; c.peakAt = Date.now(); changed = true; }
+  const dl = ((store.daily || (store.daily = {}))[dayKey()] ||= { peak: 0, live: 0 });
+  if (n > dl.live) { dl.live = n; changed = true; }
   if (c.limit > 0) {
     // Each alert once, until the count has dropped back a little (so it doesn't repeat every minute at the edge).
     if (n >= c.limit && !c.full) {
@@ -1518,6 +1531,98 @@ async function rollbackUpdate(by) {
     updateRun = { busy: true, kind: 'rollback', step: 4, error: '', finishedAt: 0 };
     restartGuard();
   } catch (e) { updateRun = { busy: false, kind: 'rollback', step: 0, error: e.message, finishedAt: Date.now() }; }
+}
+
+// ---------- Daily summary (guard 1.18.0) ----------
+// One message each morning about the day before, to the same webhook the alerts use (a Discord embed, or plain text for other kinds).
+// It is separate from the alerts' 12-an-hour limit. Built only from what the guard already keeps: usage, sign-ups, plans, actions, reports,
+// the server checks and the waiting requests.
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + 's'}`;
+const summaryOn = () => cfg.dailySummary !== false && !!cfg.alertWebhookUrl;
+const daysAway = (day) => Math.round((dayBounds(day)[0] - dayBounds(dayKey())[0]) / 86400000); // 0 = today, 1 = tomorrow
+function dayBounds(day) { const [Y, M, D] = day.split('-').map(Number); return [new Date(Y, M - 1, D).getTime(), new Date(Y, M - 1, D + 1).getTime()]; }
+function buildSummary(day) {
+  const [t0, t1] = dayBounds(day), within = (t) => t >= t0 && t < t1;
+  const prettyDay = new Date(t0).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const fields = [], attention = [];
+  // Watching
+  const use = (store.usage || {})[day] || {}, viewers = Object.values(use).filter((u) => u.min > 0);
+  const minutes = viewers.reduce((n, u) => n + u.min, 0), titles = new Map();
+  for (const u of viewers) for (const [t, m] of Object.entries(u.titles || {})) titles.set(t, (titles.get(t) || 0) + m);
+  const top = [...titles.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t, m], i) => `${i + 1}. ${t.replace(/^Live: ?(.*)$/, '$1 (Live)')} · ${(m / 60).toFixed(1)} h`);
+  const peaks = (store.daily || {})[day] || {};
+  if (viewers.length) {
+    fields.push(['Watching', `${(minutes / 60).toFixed(1)} hours across ${plural(viewers.length, 'viewer')}\nMost at once: ${plural(Math.max(peaks.peak || 0, peaks.live || 0), 'stream')}${peaks.live ? ` (TV provider peak ${peaks.live}${connCfg().limit ? ` of ${connCfg().limit}` : ''})` : ''}`]);
+    if (top.length) fields.push(['Most watched', top.join('\n')]);
+  } else fields.push(['Watching', 'Nobody watched anything.']);
+  // Customers
+  const signups = (store.signups || []).filter((x) => x.day === day), withCode = signups.filter((x) => x.discount).length;
+  const subs = (store.subscriptions || []).filter((x) => within(x.at)), money = Math.round(subs.reduce((n, x) => n + (Number(x.price) || 0), 0) * 100) / 100;
+  const trials = Object.values(store.users).filter((u) => u.trial && u.created && within(u.created)).length;
+  const acts = (store.actions || []).filter((a) => within(a.at)), signedOut = acts.filter((a) => a.type === 'signedOut').length, expired = acts.filter((a) => a.type === 'disabled').length;
+  const cust = [];
+  if (signups.length) cust.push(`${plural(signups.length, 'new website sign-up')}${withCode ? ` (${withCode} used a discount code)` : ''}`);
+  if (subs.length) cust.push(`${plural(subs.length, 'plan')} put on accounts`);
+  if (trials) cust.push(`${plural(trials, 'free trial')} started`);
+  if (signedOut) cust.push(`${plural(signedOut, 'device')} signed out for going over the limit`);
+  if (expired) cust.push(`${plural(expired, 'account')} switched off (expired)`);
+  fields.push(['Customers', cust.length ? cust.join('\n') : 'No new sign-ups or renewals']);
+  if (subs.length && cfg.dailySummaryMoney !== false) fields.push(['Plans sold', `${plural(subs.length, 'plan')} · $${money}`]);
+  // Channels people reported
+  const rep = new Map();
+  for (const r of store.reports || []) if (within(r.at)) { const k = String(r.channel).toLowerCase(); const e = rep.get(k) || { name: r.channel, users: new Set() }; e.users.add(r.user); rep.set(k, e); }
+  if (rep.size) fields.push(['Channels reported', [...rep.values()].sort((a, b) => b.users.size - a.users.size).slice(0, 4).map((e) => `${e.name} (${plural(e.users.size, 'person', 'people')})`).join(' · ')]);
+  // Server
+  let ok = 0, bad = 0;
+  for (let t = t0; t < t1; t += 3600000) { const b = (store.reach || {})[new Date(t).toISOString().slice(0, 13)]; if (b) { ok += b.ok; bad += b.bad; } }
+  const outages = (store.incidents || []).filter((x) => x.kind === 'server' && x.start < t1 && (x.end || Date.now()) > t0);
+  const downMin = Math.round(bad * cfg.intervalSeconds / 60);
+  const disks = diskInfo().filter((d) => !d.error), lowest = disks.sort((a, b) => a.freePct - b.freePct)[0];
+  const lowDisk = lowest && cfg.diskAlertPercent > 0 && lowest.freePct < cfg.diskAlertPercent;
+  const serverLines = [ok + bad === 0 ? 'No server checks were recorded.' : bad === 0 ? 'Emby reachable all day' : `Emby was unreachable for about ${plural(downMin, 'minute')} (${plural(outages.length || 1, 'outage')})`];
+  if (lowest) serverLines.push(`${diskLabel(lowest.path)} ${lowest.freePct}% free${lowDisk ? ' (low)' : ''}`);
+  serverLines.push(`Guard ${VERSION}, up for ${Math.max(1, Math.round(process.uptime() / 86400))} ${Math.round(process.uptime() / 86400) <= 1 ? 'day' : 'days'}`);
+  fields.push(['Server', serverLines.join('\n')]);
+  // Needs attention
+  const today = dayKey(), soon = Object.values(store.users).filter((u) => u.expires && !u.hold && u.expires >= today && daysAway(u.expires) <= 7).sort((a, b) => a.expires.localeCompare(b.expires));
+  const ending = soon.filter((u) => daysAway(u.expires) <= 1);
+  if (ending.length) attention.push(`${plural(ending.length, 'account')} end today or tomorrow: ${ending.slice(0, 4).map((u) => u.name).join(', ')}${ending.length > 4 ? ` and ${ending.length - 4} more` : ''}`);
+  if (soon.length - ending.length > 0) attention.push(`${plural(soon.length - ending.length, 'more account')} end within a week`);
+  const waiting = { tickets: (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length, credit: (store.creditRequests || []).filter((x) => x.status === 'pending'), ext: (store.extensions || []).filter((x) => x.status === 'pending').length };
+  if (waiting.tickets) attention.push(`${plural(waiting.tickets, 'support message')} waiting`);
+  if (waiting.credit.length) attention.push(`${plural(waiting.credit.length, 'credit request')} waiting${waiting.credit.length === 1 && store.resellers ? ` (from ${(Object.values(store.resellers).find((r) => r.id === waiting.credit[0].reseller) || {}).name || 'a reseller'})` : ''}`);
+  if (waiting.ext) attention.push(`${plural(waiting.ext, 'extension request')} waiting`);
+  const lowCredit = Object.values(store.resellers || {}).filter((r) => r.status === 'active' && r.credits <= cfg.resellerLowCredits);
+  if (lowCredit.length) attention.push(`Low on credits: ${lowCredit.slice(0, 4).map((r) => `${r.name} (${r.credits})`).join(', ')}`);
+  if (lowDisk) attention.push(`Disk space is low on ${diskLabel(lowest.path)}`);
+  const problem = bad > 0 || lowDisk || signedOut >= 5;
+  const quiet = !attention.length && !problem && minutes < 600 && !signups.length && !subs.length && !trials;
+  const desc = attention.length || problem ? 'A few things need you today.' : quiet ? 'A quiet day.' : 'Everything ran normally.';
+  const embed = { title: `Aurora daily summary · ${prettyDay}`, description: desc, color: bad > 0 || lowDisk ? 0xe5384f : attention.length ? 0xffd479 : quiet ? 0x46d369 : 0x4f7bff,
+    fields: [...(attention.length ? [{ name: 'Needs attention', value: attention.map((a) => '• ' + a).join('\n').slice(0, 1000), inline: false }] : []), ...fields.map(([name, value]) => ({ name, value: value.slice(0, 1000), inline: false }))],
+    footer: { text: `Aurora Guard ${VERSION} · covers ${prettyDay}` } };
+  const text = [embed.title, desc, ...embed.fields.map((f) => `\n${f.name}\n${f.value}`)].join('\n');
+  return { embed, text };
+}
+const diskLabel = (p) => (/^[A-Za-z]:/.test(p) ? p.slice(0, 2) : (Array.isArray(cfg.diskPaths) && cfg.diskPaths.length ? String(p).replace(/[\\/]+$/, '').slice(-24) : 'Disk'));
+let summaryBusy = false;
+async function sendSummary(day) {
+  const s = buildSummary(day || dayKey(Date.now() - 86400000));
+  return postAlert(s.embed.title, s.text, false, s.embed);
+}
+async function maybeSendSummary() {
+  if (!summaryOn() || summaryBusy) return;
+  const today = dayKey(), st = store.summary || (store.summary = {});
+  if (!st.lastDay) { st.lastDay = today; try { saveStore(); } catch { /* next time */ } return; } // first time: the first message comes tomorrow
+  if (st.lastDay === today || new Date().getHours() < Math.min(23, Math.max(0, Number(cfg.dailySummaryHour) || 0))) return;
+  if (st.lastTry && Date.now() - st.lastTry < 10 * 60000) return;
+  summaryBusy = true;
+  try {
+    st.lastTry = Date.now();
+    const r = await sendSummary();
+    if (r.ok) { st.lastDay = today; st.lastTry = 0; log('Sent the daily summary.'); } else log('The daily summary was not delivered:', r.status ? `the webhook answered ${r.status}` : r.error, '(trying again in 10 minutes)');
+    saveStore();
+  } catch (e) { log('The daily summary failed:', e.message); } finally { summaryBusy = false; }
 }
 
 // ---------- HTTP ----------
@@ -2158,6 +2263,13 @@ async function handle(req, res) {
       if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
     });
   }
+  // Daily summary (admin): its settings, and send one now.
+  if (url.pathname === '/summary' && req.method === 'GET') return send(res, 200, { enabled: summaryOn(), hour: Math.min(23, Math.max(0, Number(cfg.dailySummaryHour) || 0)), lastDay: (store.summary || {}).lastDay || '', webhook: !!cfg.alertWebhookUrl, off: cfg.dailySummary === false });
+  if (url.pathname === '/summary/send' && req.method === 'POST') {
+    if (!cfg.alertWebhookUrl) return send(res, 400, { error: 'No alert webhook is set in config.json ("alertWebhookUrl"), so there is nowhere to send it.' });
+    const r = await sendSummary();
+    return send(res, r.ok ? 200 : 502, r.ok ? { ok: true } : { error: r.status ? `The webhook answered ${r.status}.` : (r.error || 'The webhook did not answer.') });
+  }
   // Updating the guard (admin).
   if (url.pathname === '/update' && req.method === 'GET') return send(res, 200, publicUpdate());
   if (url.pathname === '/update/check' && req.method === 'POST') { await checkForUpdate(); return send(res, 200, publicUpdate()); }
@@ -2789,11 +2901,19 @@ function start() {
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
   if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
+  setTimeout(() => maybeSendSummary().catch(() => {}), 20000); setInterval(() => maybeSendSummary().catch(() => {}), 60000);
   setTimeout(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 4000);
   setInterval(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 15000);
 }
 
 // node aurora-guard.js --test-alert: sends one test message to alertWebhookUrl and says whether it arrived.
+// node aurora-guard.js --test-summary: sends yesterday's summary to the webhook now and says whether it arrived.
+async function testSummary() {
+  if (!cfg.alertWebhookUrl) { console.log('No "alertWebhookUrl" is set in config.json, so there is nowhere to send the summary.'); process.exit(1); }
+  const r = await sendSummary();
+  console.log(r.ok ? `OK: the webhook accepted it (${r.status}).` : `FAILED: ${r.status ? 'the webhook answered ' + r.status : r.error}`);
+  process.exit(r.ok ? 0 : 1);
+}
 async function testAlert() {
   if (!cfg.alertWebhookUrl) { console.log('No "alertWebhookUrl" is set in config.json, so there is nowhere to send an alert.'); process.exit(1); }
   const r = await postAlert('Aurora Guard: test alert', `This is a test from ${os.hostname()} (guard ${VERSION}). If you can read it, alerts work.`, false);
@@ -2808,5 +2928,5 @@ process.on('unhandledRejection', (e) => { try { log('UNEXPECTED ERROR in the bac
 // Usage and sharing are saved every 5 minutes; save once more when the service is stopped.
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { try { saveStore(); } catch {} process.exit(0); });
 
-if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else if (process.argv.includes('--test-scores')) testScores(); else start(); }
+if (require.main === module) { if (process.argv.includes('--check')) selfCheck(); else if (process.argv.includes('--test-alert')) testAlert(); else if (process.argv.includes('--test-summary')) testSummary(); else if (process.argv.includes('--test-scores')) testScores(); else start(); }
 module.exports = { enforce, isExpired, activeByUser, normalizeSportsEvent };
