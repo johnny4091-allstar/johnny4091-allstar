@@ -376,3 +376,11 @@ Each morning the guard sends one message about the day before to the alert webho
 - The first message comes the day after the guard first runs with it. If the PC was off at the hour, it is sent when the guard next starts that day (once a day); a failed send is tried again after 10 minutes.
 - `node --openssl-legacy-provider aurora-guard.js --test-summary` sends yesterday's summary now; Admin → Server has a **Send one now** button (`POST /summary/send`, `GET /summary`).
 - It is built from what the guard already keeps (usage, sign-ups, plans, actions, reports, server checks). Peaks are recorded from 1.18.0 on, so the first days may show 0 streams.
+
+## Fixes in 1.18.1
+
+- A paid plan put on a website trial account now ends the trial (it kept showing "Free trial" and could not use or give referral codes).
+- Referral codes: a free trial account cannot use a code or be the friend whose code is used, and the first 14 days now start when an account is first seen (they could not be checked before for accounts the guard had no record of).
+- A server error from Emby (5xx) while checking who is an administrator no longer counts as "not an administrator".
+- Signing in to the admin page with a non-administrator account no longer leaves a signed-in session behind.
+- A change to the guard alone (`server/**`) is published by its own workflow as a guard-only release. It does not build a new app, so the phone and TV apps are not asked to update.

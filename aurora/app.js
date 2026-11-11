@@ -4566,6 +4566,8 @@
   // for a few minutes, so a down guard never holds up opening the app or starting a video.
   let guardDownUntil = 0;
   async function guard(path, { method = 'GET', body, params, quick = false } = {}) {
+    // Sports answers come from ESPN and can be slow: they get longer to answer and a slow one never marks the guard as down.
+    const soft = quick && path.startsWith('/sports/');
     if (!guardEnabled) throw new Error('Aurora Guard is switched off');
     if (quick && Date.now() < guardDownUntil) throw new Error('Aurora Guard is not answering');
     const url = new URL(guardUrl.replace(/\/+$/, '') + path);
@@ -4575,12 +4577,12 @@
     let res;
     try {
       res = await fetch(url, {
-        method, cache: 'no-store', signal: timeoutSignal(quick ? 3000 : 15000),
+        method, cache: 'no-store', signal: timeoutSignal(soft ? 10000 : quick ? 3000 : 15000),
         headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
     } catch (e) {
-      if (quick) guardDownUntil = Date.now() + 5 * 60000;
+      if (quick && !soft) guardDownUntil = Date.now() + 5 * 60000;
       // The browser's own words ("signal timed out", "Failed to fetch") mean nothing to anyone: say what happened and what to check.
       if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
         const t = new Error("Aurora Guard didn't answer in time, so nothing was saved. Check that the PC running it is on and online (and that the Aurora Guard task is running), then try again.");

@@ -159,7 +159,9 @@ td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
   function money(c) { return c.type === 'pct' ? c.value + '% off' : '$' + c.value + ' off'; }
   function api(method, path, body) {
     var h = {}; if (body) h['Content-Type'] = 'application/json';
-    if (session) { h['X-Emby-Token'] = session.token; h['X-Aurora-User'] = session.name; }
+    if (session) h['X-Emby-Token'] = session.token;
+    // Who is making the change goes in the address, as plain characters: a header with a non-Latin name makes the browser refuse the request.
+    if (session && method !== 'GET') path += (path.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
     return fetch(G + path, { method: method, headers: h, body: body ? JSON.stringify(body) : undefined })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
   }

@@ -5,7 +5,6 @@ on:
     paths:
       - 'aurora/**'
       - 'android/**'
-      - 'server/**'
       - '.github/workflows/aurora-apk.yml'
   workflow_dispatch:
 
@@ -106,7 +105,15 @@ jobs:
               prev_lines = lines(m.group(1)) if m else []
           except Exception:
               prev_lines = []
-          if not mine or mine == prev_lines:
+          # Was whats-new.md touched by this push? (Unknown, e.g. a brand new branch: fall back to comparing with the last release.)
+          before = os.environ.get('BEFORE', '')
+          changed = None
+          try:
+              if re.fullmatch(r'[0-9a-f]{40}', before) and set(before) != {'0'}:
+                  changed = any(f['filename'] == 'aurora/whats-new.md' for f in get(f'https://api.github.com/repos/{repo}/compare/{before}...{sha}').get('files', []))
+          except Exception:
+              changed = None
+          if not mine or mine == prev_lines or changed is False:
               subjects = []
               before = os.environ.get('BEFORE', '')
               try:

@@ -1,0 +1,54 @@
+name: Publish Aurora Guard update
+
+# A change to the Guard alone (server/**) publishes only the Guard file and checksum. It does not build an APK or make a new
+# app version, so the phone and TV apps are not told to update for a change they can't use. Pushes that also change the
+# app are published by the "Build Aurora APK" workflow, which carries the same Guard files.
+on:
+  push:
+    paths:
+      - 'server/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package the guard update
+        env:
+          HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          VER=$(grep -oP "const VERSION = '\K[0-9.]+" server/aurora-guard.js)
+          if [ -z "$VER" ]; then echo "::error::Could not read VERSION from server/aurora-guard.js"; exit 1; fi
+          node --check server/aurora-guard.js
+          cp server/aurora-guard.js aurora-guard.js
+          SHA=$(sha256sum aurora-guard.js | cut -d' ' -f1)
+          SIZE=$(stat -c%s aurora-guard.js)
+          printf '{"version":"%s","sha256":"%s","size":%s}\n' "$VER" "$SHA" "$SIZE" > aurora-guard.json
+          cat aurora-guard.json
+          echo "GUARD_VERSION=$VER" >> "$GITHUB_ENV"
+          {
+            echo "## Aurora Guard $VER"
+            echo '<!-- notes -->'
+            printf '%s\n' "$HEAD_MESSAGE" | head -n 1 | sed 's/^/- /'
+            echo '<!-- /notes -->'
+            echo
+            echo 'Guard update only: no new app. In Admin -> Server, tap Update.'
+          } > guard-notes.md
+
+      - name: Publish guard release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aurora-guard-v${{ env.GUARD_VERSION }}
+          name: Aurora Guard ${{ env.GUARD_VERSION }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          files: |
+            aurora-guard.js
+            aurora-guard.json
+          body_path: guard-notes.md
