@@ -2354,18 +2354,20 @@
 
   // The channel list didn't load. Says what the provider answered (when it sent a page), what that usually means and what to try, and offers
   // Try again, the Status check and a message to support with the details attached.
-  let lastLiveError = '', statusAutoRun = false, helpPrefill = '';
+  let lastLiveError = '', lastLiveErrorAt = 0, statusAutoAt = 0, helpPrefill = '', helpPrefillAt = 0; // the last three only count for a few seconds, so they can't fire later in the wrong place
   function liveFailure(message) {
     const m = String(message || ''), said = (/\("([^"]{1,120})"\)/.exec(m) || [])[1] || '';
     const page = /web page instead/i.test(m), hay = said.toLowerCase(); // only the provider's own words: the rest of the sentence is ours and always mentions "busy or expired"
-    if (page && /too many|max(imum)?\s+connection|connection limit|limit reached|in use/.test(hay)) return { said, title: "The TV provider's connections are all in use right now", why: 'Everyone is sharing a limited number of streams and they are all busy. Nothing is wrong with your TV or your internet.', steps: ['Wait a minute and press Try again.'] };
-    if (page && /expired|suspend|disabled|inactive|subscription/.test(hay)) return { said, title: 'The Live TV account has ended', why: 'The provider says the Live TV account has ended. Your Aurora account is fine.', steps: ['Send a message to support below so we can sort it out.'] };
+    const full = /too many (connections|streams|devices|users|sessions)|max(imum)?( number of)? connections|connection limit|connections? (is |are )?(full|in use|exceeded|reached)|limit (of connections )?reached/.test(hay);
+    const ended = /(account|subscription|service|line).{0,30}(expired|suspended|disabled|inactive|ended|terminated)|(expired|suspended|terminated) (account|subscription|line)|^(account )?expired$/.test(hay);
+    if (page && full) return { said, title: "The TV provider's connections are all in use right now", why: 'Everyone is sharing a limited number of streams and they are all busy. Nothing is wrong with your TV or your internet.', steps: ['Wait a minute and press Try again.'] };
+    if (page && ended) return { said, title: 'The Live TV account has ended', why: 'The provider says the Live TV account has ended. Your Aurora account is fine.', steps: ['Send a message to support below so we can sort it out.'] };
     if (page) return { said, title: 'The TV provider is refusing this connection', why: 'The provider answered, but not with the channel list. That usually means it blocks this internet connection (some internet companies, VPNs and shared addresses), or its connections are busy.', steps: ['Turn off any VPN or Private DNS on this device, then try again.', 'Try a phone hotspot. If channels load there, your home network is the one being blocked.', 'Send us the details below so we can ask the provider.'] };
     return { said: '', title: "We couldn't load the channels", why: m.replace(/^Couldn't load the channels:\s*/i, ''), steps: ['Press Try again.', 'Press Why can\'t I watch? to find out whether it is your connection, the server or the TV provider.'] };
   }
   function liveListError(el, e, retry) {
     const f = liveFailure(e?.message);
-    lastLiveError = `Live TV list: ${f.said ? `provider said "${f.said}" · ` : ''}${String(e?.message || '').slice(0, 160)}`;
+    lastLiveError = `Live TV list: ${f.said ? `provider said "${f.said}" · ` : ''}${String(e?.message || '').slice(0, 160)}`; lastLiveErrorAt = Date.now();
     el.innerHTML = `<div class="live-error live-fail"><h2>${esc(f.title)}</h2>
       ${f.said ? `<p class="live-said">The provider said: <b>${esc(f.said)}</b></p>` : ''}
       <p class="empty-msg">${esc(f.why)}</p>
@@ -2375,8 +2377,8 @@
       const b = ev.currentTarget; b.disabled = true; b.textContent = 'Trying again…';
       setTimeout(retry, 1500);
     });
-    $('[data-why]', el).addEventListener('click', () => { statusAutoRun = true; location.hash = '#/status'; });
-    $('[data-tell]', el).addEventListener('click', () => { helpPrefill = `Live TV won't load. ${lastLiveError}`; location.hash = '#/help'; });
+    $('[data-why]', el).addEventListener('click', () => { statusAutoAt = Date.now(); location.hash = '#/status'; });
+    $('[data-tell]', el).addEventListener('click', () => { helpPrefill = `Live TV won't load${f.said ? ` (the provider said "${f.said}")` : ''}.`; helpPrefillAt = Date.now(); location.hash = '#/help'; });
     if (nav.on && (!document.activeElement || document.activeElement === document.body || !document.contains(document.activeElement))) focusEl($('[data-retry]', el));
   }
 
@@ -2712,7 +2714,7 @@
   async function renderIptvGuide(body, isCurrent) {
     body.innerHTML = '<div class="spinner"></div>';
     let src;
-    try { src = await iptvSource(); } catch (e) {
+    try { src = await iptvSource(); lastLiveError = ''; } catch (e) {
       if (isCurrent()) liveListError(body, e, () => route());
       return;
     }
@@ -3579,7 +3581,7 @@
 
   async function renderIptvChannels(page, body, isCurrent) {
     let src;
-    try { src = await iptvSource(); } catch (e) {
+    try { src = await iptvSource(); lastLiveError = ''; } catch (e) {
       if (isCurrent()) liveListError(body, e, () => route());
       return;
     }
@@ -5009,6 +5011,7 @@
   }
 
   async function renderStatus(page, isCurrent) {
+    const autoRun = Date.now() - statusAutoAt < 15000; statusAutoAt = 0;
     page.innerHTML = `<div class="page-pad status-page">
       <div class="page-head"><h1>Status</h1></div>
       <div class="st-banner" data-st-banner role="status"><span class="st-dot"></span><div><b data-st-title>Checking…</b><small data-st-sub></small></div></div>
@@ -5080,7 +5083,7 @@
       if (nav.tv) autoFocus(runBtn);
     };
     runBtn.addEventListener('click', check);
-    if (statusAutoRun) { statusAutoRun = false; check(); }
+    if (autoRun) check();
     page.addEventListener('click', (e) => {
       const a = e.target.closest('[data-st-act]')?.dataset.stAct;
       if (a === 'again') check();
@@ -7251,10 +7254,11 @@
       connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
       playing: lastLive && Date.now() - lastLive.t < 30 * 60000 ? `Live: ${lastLive.name}` : '',
       status: lastStatusVerdict,
-      errors: [...(lastLiveError ? [lastLiveError.slice(0, 140)] : []), ...appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100))],
+      errors: [...(lastLiveError && Date.now() - lastLiveErrorAt < 30 * 60000 ? [lastLiveError.slice(0, 140)] : []), ...appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100))],
     };
   }
   async function renderHelp(page, isCurrent) {
+    const prefill = Date.now() - helpPrefillAt < 15000 ? helpPrefill : ''; helpPrefill = ''; helpPrefillAt = 0;
     page.innerHTML = '<div class="page-pad help-page"><div class="page-head"><h1>Help &amp; support</h1></div><div class="spinner"></div></div>';
     const root = $('.help-page', page);
     const head = '<div class="page-head"><h1>Help &amp; support</h1></div>';
@@ -7262,7 +7266,6 @@
     try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Help &amp; support')}</p>`; return; }
     if (!isCurrent()) return;
     const open = t && t.status === 'open';
-    const prefill = helpPrefill; helpPrefill = '';
     const dg = helpDiag();
     root.innerHTML = `${head}
       <section class="settings-section"><h2>Quick answers</h2>
