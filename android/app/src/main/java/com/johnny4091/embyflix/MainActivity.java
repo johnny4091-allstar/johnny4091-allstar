@@ -75,6 +75,8 @@ public class MainActivity extends Activity {
 
     private FrameLayout root;
     private WebView webView;
+    /** The small live picture in the Live TV guide (null until the guide asks for one). */
+    private LivePreview preview;
     private View customView;
     private WebChromeClient.CustomViewCallback customViewCallback;
     private boolean playerMode;
@@ -638,6 +640,7 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         resumed = false;
+        stopPreview(); // the guide's small picture and its provider connection don't carry on in the background
         // Save the playback position before the WebView stops running the page.
         webView.evaluateJavascript("window.auroraPause && window.auroraPause()", null);
         webView.onPause();
@@ -676,6 +679,7 @@ public class MainActivity extends Activity {
         super.onResume();
         resumed = true;
         webView.onResume();
+        webView.evaluateJavascript("window.auroraPreviewEvent && window.auroraPreviewEvent('resumed')", null);
         // Opened from a reminder notification: the page picks the target up (it also looks when it comes to the front).
         if (pendingHash != null) webView.evaluateJavascript("window.auroraTakeLaunch && window.auroraTakeLaunch()", null);
         // Back from the "install unknown apps" screen: carry on with the update.
@@ -846,9 +850,18 @@ public class MainActivity extends Activity {
         if (installReceiver != null) {
             try { unregisterReceiver(installReceiver); } catch (Exception ignored) { /* not registered */ }
         }
+        stopPreview();
         root.removeAllViews();
         webView.destroy();
         super.onDestroy();
+    }
+
+    /** Frees the guide's small live picture. Tells the page, which carries on when the app comes back. */
+    private void stopPreview() {
+        if (preview == null) return;
+        boolean was = preview.running();
+        preview.release();
+        if (was && webView != null) webView.evaluateJavascript("window.auroraPreviewEvent && window.auroraPreviewEvent('released')", null);
     }
 
     /** Methods the web app can call as window.EmbyFlixAndroid.*. */
@@ -966,6 +979,7 @@ public class MainActivity extends Activity {
                 // A double tap (or a double OK press) must not open a second player: a second stream from the provider
                 // can push a one-connection account over its limit.
                 if (playerBusy()) { pageLog("Live player request ignored: a player is already open"); return; }
+                if (preview != null) preview.release(); // one provider connection at a time
                 LivePlayerActivity.pendingChannels = channelsJson;
                 inPlayer = true;
                 playerLaunchedAt = SystemClock.elapsedRealtime();
@@ -978,11 +992,43 @@ public class MainActivity extends Activity {
             });
         }
 
+        // ----- The small live picture in the Live TV guide (x, y, w, h in screen pixels of the page) -----
+        @JavascriptInterface
+        public void previewStart(String url, String userAgent, int x, int y, int w, int h, boolean software) {
+            runOnUiThread(() -> {
+                if (inPlayer || !resumed) return;
+                if (preview == null) preview = new LivePreview(MainActivity.this, root,
+                        () -> webView.evaluateJavascript("window.auroraPreviewEvent && window.auroraPreviewEvent('failed')", null));
+                preview.start(url, userAgent, x + webView.getLeft(), y + webView.getTop(), w, h, software);
+            });
+        }
+
+        @JavascriptInterface
+        public void previewMove(int x, int y, int w, int h) {
+            runOnUiThread(() -> { if (preview != null) preview.move(x + webView.getLeft(), y + webView.getTop(), w, h); });
+        }
+
+        @JavascriptInterface
+        public void previewVisible(boolean on) {
+            runOnUiThread(() -> { if (preview != null) preview.setVisible(on); });
+        }
+
+        @JavascriptInterface
+        public void previewMute(boolean on) {
+            runOnUiThread(() -> { if (preview != null) preview.mute(on); });
+        }
+
+        @JavascriptInterface
+        public void previewStop() {
+            runOnUiThread(() -> { if (preview != null) preview.release(); });
+        }
+
         /** Plays an Emby movie or episode in the native player; specJson is described in VodPlayerActivity. */
         @JavascriptInterface
         public void playVod(String specJson) {
             runOnUiThread(() -> {
                 if (playerBusy()) { pageLog("Player request ignored: a player is already open"); return; }
+                if (preview != null) preview.release();
                 inPlayer = true;
                 playerLaunchedAt = SystemClock.elapsedRealtime();
                 Intent intent = new Intent(MainActivity.this, VodPlayerActivity.class);
