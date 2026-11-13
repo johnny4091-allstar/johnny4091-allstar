@@ -1350,8 +1350,8 @@
 
   // ---------- Browse (Movies / TV) ----------
   // ---------- The provider's movies and TV shows ----------
-  // For customers the admin switched on (Admin → Users, a plan, or a reseller), the Movies and TV Shows pages get a "My library | Provider"
-  // switch. Provider titles come from the same Xtream account as Live TV and play straight from the provider in the Aurora player,
+  // For customers the admin switched on (Admin → Users, a plan, or a reseller), the Movies and TV Shows pages show the provider's titles
+  // instead of the Emby library (no labels or buttons). Provider titles come from the same Xtream account as Live TV and play straight from the provider in the Aurora player,
   // so they cost the server nothing. They don't have Emby's progress or watched marks; Aurora only remembers where each one stopped.
   const providerFlags = {};
   const providerKey = () => 'ef.vod.' + state.userId;
@@ -1477,6 +1477,14 @@
   }
 
   async function renderBrowse(page, { type, title, isCurrent }) {
+    // A customer the admin switched the provider's movies and TV on for sees the provider's titles here instead of the Emby library (no labels).
+    if (providerOk() && (type === 'Movie' || type === 'Series')) {
+      const pv = document.createElement('div');
+      pv.className = 'rows';
+      pv.innerHTML = `<div class="page-pad" style="padding-top:6rem"><div class="page-head"><h1>${esc(title)}</h1></div><div class="pv-host"></div></div>`;
+      page.appendChild(pv);
+      return renderProvider($('.pv-host', pv), type === 'Movie' ? 'movie' : 'series', isCurrent);
+    }
     renderHero(page, { IncludeItemTypes: type });
     const wrap = document.createElement('div');
     wrap.className = 'rows';
@@ -1506,27 +1514,6 @@
 
     const grid = $('.grid', wrap), sentinel = $('.sentinel', wrap);
     const genreSel = $('[data-genre]', wrap), sortSel = $('[data-sort]', wrap), filterSel = $('[data-filter]', wrap);
-
-    // "My library | Provider": only for customers the admin switched the provider's movies and TV on for.
-    if (providerOk() && (type === 'Movie' || type === 'Series')) {
-      const kind = type === 'Movie' ? 'movie' : 'series', srcKey = 'ef.src.' + kind;
-      const head = $('.page-head', wrap), host = document.createElement('div');
-      host.className = 'pv-host hidden'; sentinel.after(host);
-      const sw = document.createElement('div');
-      sw.className = 'src-switch'; sw.setAttribute('role', 'group'); sw.setAttribute('aria-label', 'Where to browse');
-      sw.innerHTML = '<button type="button" data-src="mine">My library</button><button type="button" data-src="prov">Provider</button>';
-      head.querySelector('h1').after(sw);
-      const setSrc = (src) => {
-        const prov = src === 'prov';
-        store.set(srcKey, src);
-        $$('[data-src]', sw).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.src === src)));
-        [genreSel, sortSel, filterSel, grid, sentinel].forEach((n) => n.classList.toggle('hidden', prov));
-        host.classList.toggle('hidden', !prov);
-        if (prov && !host.dataset.ready) { host.dataset.ready = '1'; renderProvider(host, kind, isCurrent); }
-      };
-      $$('[data-src]', sw).forEach((b) => b.addEventListener('click', () => setSrc(b.dataset.src)));
-      setSrc(store.get(srcKey) === 'prov' ? 'prov' : 'mine');
-    }
 
     api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: type, Recursive: true, SortBy: 'SortName' } })
       .then((res) => {
@@ -8228,7 +8215,7 @@
       ${guardEnabled && !guardError && !exempt && iptvOn() && iptv.config?.type === 'xtream' ? `<section class="admin-card">
         <h2>Provider movies and TV</h2>
         <label class="admin-check"><input type="checkbox" data-vod${lim?.vod ? ' checked' : ''}> Let ${esc(user.Name)} watch the provider's movies and TV shows</label>
-        <p class="muted">They get a "My library | Provider" switch on the Movies and TV Shows pages. Saved straight away. It uses your TV provider's connections, like Live TV.</p>
+        <p class="muted">Their Movies and TV Shows pages show the provider's titles instead of your library. Saved straight away. It uses your TV provider's connections, like Live TV.</p>
         <div class="live-result" data-vod-result></div>
       </section>` : ''}
       <section class="admin-card">
