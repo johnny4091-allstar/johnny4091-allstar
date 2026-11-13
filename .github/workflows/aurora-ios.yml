@@ -48,7 +48,9 @@ jobs:
         run: |
           APP=$(find ~/Library/Developer/Xcode/DerivedData -name Aurora.app -path '*Debug-iphonesimulator*' | head -n 1)
           echo "App: $APP"
-          test -f "$APP/aurora/index.html" && test -f "$APP/aurora/app.js" && echo "The Aurora screens are bundled."
+          ls -la "$APP" | head -40
+          if [ -f "$APP/aurora/index.html" ] && [ -f "$APP/aurora/app.js" ]; then echo "The Aurora screens are bundled in aurora/."
+          else echo "::error::The Aurora screens are not at aurora/ inside the app."; find "$APP" -name index.html | head; exit 1; fi
 
       - name: Keep the build log
         if: always()
