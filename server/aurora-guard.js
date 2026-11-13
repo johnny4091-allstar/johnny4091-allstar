@@ -58,7 +58,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.19.0';
+const VERSION = '1.19.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1813,7 +1813,7 @@ async function handle(req, res) {
   if (url.pathname === '/account' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
     if (!me) return send(res, 401, { error: 'Not signed in' });
-    if (me.Policy?.IsAdministrator) return send(res, 200, { admin: true, name: me.Name, vod: true });
+    if (me.Policy?.IsAdministrator) return send(res, 200, { admin: true, name: me.Name }); // an administrator always sees their own library; the provider's titles are for customers
     const rec = store.users[me.Id];
     const devices = activeByUser(await sessionsShared()).get(me.Id);
     const mine = (store.extensions || []).filter((x) => x.userId === me.Id);
@@ -2036,7 +2036,7 @@ async function handle(req, res) {
           store.users[user.Id] = { limit: plan.connections, expires: addDays(today, 2), categories: plan.categories ? [...plan.categories] : null, name: username, updated: Date.now(), plan: { id: plan.id, name: plan.name, price: 0, connections: plan.connections, length: 2, unit: 'day', categories: plan.categories || null, since: today } };
         } else applyPlan(user.Id, username, plan, 'today');
         const rec = store.users[user.Id];
-        rec.reseller = r.id; rec.trial = trial; rec.created = Date.now(); if (body.vod === true) rec.vod = true;
+        rec.reseller = r.id; rec.trial = trial; rec.created = Date.now(); if (body.vod === true || plan.vod) rec.vod = true;
         rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
         creditEntry(r, -cost, trial ? 'Free trial' : plan.name, by, { customer: username });
         recordAudit(by, `Created the customer ${username} on ${trial ? 'a free trial' : plan.name} (${cost} credits)`);
@@ -2814,7 +2814,8 @@ async function handle(req, res) {
     try { users = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: e.message }); }
     let n = 0;
     for (const u of users || []) {
-      if (u.Policy?.IsAdministrator) continue;
+      if (u.Policy?.IsAdministrator || resellerOfUser(u.Id)) continue; // administrators and resellers aren't customers here
+      if (!store.users[u.Id] && body.on !== true) continue; // nothing to turn off, so no record is made
       const rec = store.users[u.Id] || (store.users[u.Id] = { limit: cfg.defaultLimit, expires: null, name: u.Name, updated: Date.now() });
       if (!!rec.vod !== (body.on === true)) { rec.vod = body.on === true; rec.updated = Date.now(); n++; }
     }

@@ -1362,10 +1362,12 @@
   const pvCache = new Map();
   async function pvGet(action, params = {}) {
     const key = action + JSON.stringify(params), hit = pvCache.get(key);
-    if (hit && Date.now() - hit.t < 10 * 60000) return hit.v;
+    if (hit && Date.now() - hit.t < 5 * 60000) return hit.v;
     const v = await xtJson(iptv.config, { action, ...params });
+    // A whole catalog can be tens of thousands of titles: only the latest one is kept (for searching), plus a few category lists.
+    if (/^get_(vod_streams|series)$/.test(action) && params.category_id == null) for (const k of [...pvCache.keys()]) if (/^get_(vod_streams|series)\{\}$/.test(k)) pvCache.delete(k);
     pvCache.set(key, { v, t: Date.now() });
-    if (pvCache.size > 40) pvCache.delete(pvCache.keys().next().value);
+    if (pvCache.size > 8) pvCache.delete(pvCache.keys().next().value);
     return v;
   }
   function pvPlay(url, title, subtitle, key) {
@@ -1433,10 +1435,10 @@
     const norm = (x) => movie
       ? { id: x.stream_id, name: x.name || 'Movie', img: x.stream_icon || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || '', ext: x.container_extension }
       : { id: x.series_id, name: x.name || 'Show', img: x.cover || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || (x.releaseDate ? String(x.releaseDate).slice(0, 4) : '') };
-    let items = [], shown = 0;
+    let items = [], shown = 0, loadToken = 0, busy = false;
     const PAGE = 60;
     // The next batch loads by itself when the end of the grid comes into view (the button stays as a fallback).
-    const watch = 'IntersectionObserver' in window ? new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && shown < items.length && host.isConnected) draw(false); }, { rootMargin: '600px' }) : null;
+    const watch = 'IntersectionObserver' in window ? new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && !busy && shown < items.length && host.isConnected) draw(false); }, { rootMargin: '600px' }) : null;
     watch?.observe(more);
     const draw = (reset) => {
       if (reset) { grid.innerHTML = ''; shown = 0; }
@@ -1455,9 +1457,18 @@
       $('[data-more]', more)?.addEventListener('click', () => draw(false));
     };
     const load = async (loader) => {
+      const mine = ++loadToken;
+      busy = true; items = []; shown = 0; // nothing of the old list may be drawn while this one loads
       grid.innerHTML = ''; more.innerHTML = '<div class="spinner"></div>';
-      try { const list = await loader(); if (!isCurrent() || !host.isConnected) return; items = (Array.isArray(list) ? list : []).map(norm); draw(true); }
-      catch (e) { if (isCurrent() && host.isConnected) more.innerHTML = `<p class="muted">${esc(e.message || "Couldn't load the provider's list.")}</p>`; }
+      try {
+        const list = await loader();
+        if (mine !== loadToken || !isCurrent() || !host.isConnected) return; // a newer choice has taken over
+        items = (Array.isArray(list) ? list : []).map(norm); busy = false; draw(true);
+      } catch (e) {
+        if (mine !== loadToken) return;
+        busy = false;
+        if (isCurrent() && host.isConnected) more.innerHTML = `<p class="muted">${esc(e.message || "Couldn't load the provider's list.")}</p>`;
+      }
     };
     const act = movie ? ['get_vod_categories', 'get_vod_streams'] : ['get_series_categories', 'get_series'];
     let cats = [];
@@ -2229,7 +2240,7 @@
     try {
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
       applyPlanCategories(a.admin ? null : a.categories);
-      setProviderAllowed(!!(a.admin || a.vod));
+      setProviderAllowed(!a.admin && !!a.vod);
     } catch { /* keep what is known */ }
   }
 
@@ -2939,25 +2950,47 @@
 
     // ----- The small live picture -----
     const pvBox = previewOn ? $('.tm-preview', root) : null;
-    const pvRect = () => { const r = pvBox.getBoundingClientRect(), d = window.devicePixelRatio || 1; return [r.left, r.top, r.width, r.height].map((v) => Math.round(v * d)); };
+    // The box in the page's own pixels, and the page's width in them: the Android app works out the scale from the real screen.
+    const pvRect = () => { const r = pvBox.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, document.documentElement.clientWidth || window.innerWidth]; };
     const markPreviewing = () => $$('.guide-row', rows).forEach((r) => r.classList.toggle('previewing', !!previewCh && r.__guide.ch.id === previewCh.id));
+    let pvStartedAt = 0;
     const startPreview = (ch) => {
       if (!previewOn || !ch?.url || !root.isConnected) return;
+      if (previewCh?.id === ch.id && Date.now() - pvStartedAt < 2000) return; // already starting it
+      pvStartedAt = Date.now(); pvShown = true;
       const r = pvRect();
-      if (r[2] < 40) return;
+      if (r[2] < 20) return;
       previewCh = ch;
       pvBox.classList.add('on'); pvBox.classList.remove('failed');
       $('.tm-pv-name', pvBox).textContent = ch.name;
       markPreviewing();
-      nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], getPref('ffmpeg') !== 'off');
+      nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], r[4], getPref('ffmpeg') !== 'off');
     };
     const stopPreview = () => { previewCh = null; resumeCh = null; if (pvBox) pvBox.classList.remove('on', 'failed'); nativeApp?.previewStop?.(); markPreviewing(); };
-    let pvFrame = 0;
-    const syncPreview = () => {
-      if (!root.isConnected) { window.removeEventListener('resize', syncPreview); window.removeEventListener('scroll', syncPreview, true); return; }
-      cancelAnimationFrame(pvFrame);
-      pvFrame = requestAnimationFrame(() => { if (previewCh && root.isConnected) nativeApp.previewMove(...pvRect()); });
+    let pvFrame = 0, pvShown = true;
+    // The video is drawn by Android on top of the page, so page content can't cover it: hide it whenever something should be over it
+    // (a menu or sheet, the groups list) or the box has scrolled partly off the screen.
+    const pvShouldShow = () => {
+      if (!previewCh || !root.isConnected) return true;
+      if (groupsEl.classList.contains('open') || !$('#modal')?.classList.contains('hidden') || $('.ctx-menu, .item-menu, .menu-pop, [role="menu"]')) return false;
+      const r = pvBox.getBoundingClientRect();
+      return r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
     };
+    const syncPreview = () => {
+      if (!root.isConnected) { window.removeEventListener('resize', syncPreview); window.removeEventListener('scroll', syncPreview, true); pvWatch?.disconnect(); return; }
+      cancelAnimationFrame(pvFrame);
+      pvFrame = requestAnimationFrame(() => {
+        if (!previewCh || !root.isConnected) return;
+        nativeApp.previewMove(...pvRect());
+        const show = pvShouldShow();
+        if (show !== pvShown) { pvShown = show; nativeApp.previewVisible(show); }
+      });
+    };
+    // Menus and sheets open without scrolling or resizing: watch for them.
+    const pvWatch = previewOn && 'MutationObserver' in window ? new MutationObserver(syncPreview) : null;
+    pvWatch?.observe(document.body, { childList: true, attributes: true, attributeFilter: ['class', 'style'], subtree: false });
+    const modalEl = $('#modal');
+    if (pvWatch && modalEl) pvWatch.observe(modalEl, { attributes: true, attributeFilter: ['class'] });
     if (previewOn) {
       window.addEventListener('resize', syncPreview);
       window.addEventListener('scroll', syncPreview, true);
@@ -3148,8 +3181,8 @@
 
     // ----- Groups -----
     function openGroups() {
-      if (previewCh) nativeApp.previewVisible(false);
       groupsEl.classList.add('open');
+      syncPreview();
       root.classList.add('groups-open');
       // Once it's visible (it can't take the focus before that).
       if (nav.on) requestAnimationFrame(() => focusEl($('.tm-group.active', groupsEl) || $('.tm-group', groupsEl)));
@@ -3158,7 +3191,7 @@
       if (!groupsEl.classList.contains('open')) return false;
       groupsEl.classList.remove('open');
       root.classList.remove('groups-open');
-      if (previewCh) nativeApp.previewVisible(true);
+      syncPreview();
       if (refocus && nav.on) focusEl($('.guide-ch', rows) || groupBtn);
       return true;
     }
@@ -3220,7 +3253,6 @@
     await openCat(current);
     tick();
     const lastSeen = readLast();
-    if (previewOn && lastSeen) { const lc = list.find((c) => c.id === lastSeen.id) || iptvRecent().find((c) => c.id === lastSeen.id); if (lc) setTimeout(() => startPreview(lc), 350); }
     if (lastSeen?.pending && lastSeen.group === current && focusChannel(lastSeen.id)) endPending();
     else if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
   }
@@ -5063,7 +5095,7 @@
       }
       if (!isCurrent() || !section.isConnected) return;
       applyPlanCategories(a.admin ? null : a.categories);
-      setProviderAllowed(!!(a.admin || a.vod));
+      setProviderAllowed(!a.admin && !!a.vod);
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
       const soon = a.daysLeft != null && a.daysLeft <= 7;
