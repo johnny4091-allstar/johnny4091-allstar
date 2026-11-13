@@ -23,8 +23,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show the Xcode in use
+      # Apple only accepts apps built with the iOS 26 SDK (Xcode 26) or newer, so use the newest Xcode 26 on the runner.
+      - name: Select Xcode 26
         run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$X" ]; then echo "::error::No Xcode 26 is installed on this runner. Installed:"; ls /Applications | grep -i xcode; exit 1; fi
+          sudo xcode-select -s "$X/Contents/Developer"
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 

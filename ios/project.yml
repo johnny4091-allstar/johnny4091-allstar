@@ -43,6 +43,8 @@ targets:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        UIDeviceFamily:
+          - 1
         UIRequiredDeviceCapabilities:
           - arm64
         UIStatusBarStyle: UIStatusBarStyleLightContent
@@ -56,4 +58,5 @@ targets:
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        TARGETED_DEVICE_FAMILY: "1"          # iPhone only (the generator's default for an iOS app is iPhone and iPad)
         CODE_SIGN_STYLE: Automatic
