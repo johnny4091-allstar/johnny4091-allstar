@@ -1,2 +1,1 @@
-- Fixed: Admins keep their own Movies and TV Shows library. The Live TV guide picture now only starts when you press OK, hides while a menu is open or the box is off screen, and no longer stops a good channel after a failed one.
-- Fixed: Provider movies and TV lists no longer mix up categories when you switch quickly, and use less memory on small TVs.
+- Fixed: Recently Watched Channels on Home now shows its channels (the tiles had shrunk to almost nothing). A channel you watch in the guide's live picture for a few seconds is added to it too.

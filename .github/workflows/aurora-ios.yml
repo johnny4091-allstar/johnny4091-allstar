@@ -1,0 +1,115 @@
+name: Build Aurora iPhone app
+
+# Builds the iPhone app on a GitHub Mac. Without Apple signing secrets it only proves the app compiles (and keeps the build
+# for download). With them (see ios/README.md) it also signs the app and sends it to TestFlight.
+on:
+  push:
+    paths:
+      - 'ios/**'
+      - 'aurora/**'
+      - '.github/workflows/aurora-ios.yml'
+  workflow_dispatch:
+  # A TestFlight build stops working 90 days after it is uploaded. This builds and uploads a fresh one every month, even when
+  # nothing changed, so the app on the phones can't expire from a quiet spell. (GitHub runs scheduled workflows from main only.)
+  schedule:
+    - cron: '17 6 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Apple only accepts apps built with the iOS 26 SDK (Xcode 26) or newer, so use the newest Xcode 26 on the runner.
+      - name: Select Xcode 26
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$X" ]; then echo "::error::No Xcode 26 is installed on this runner. Installed:"; ls /Applications | grep -i xcode; exit 1; fi
+          sudo xcode-select -s "$X/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Compile for the iPhone simulator with no signing: this needs no Apple account.
+      - name: Build (compile check)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project Aurora.xcodeproj -scheme Aurora \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/build.log" | tail -n 40
+
+      - name: Check the bundled Aurora screens are in the app
+        run: |
+          APP=$(find ~/Library/Developer/Xcode/DerivedData -name AuroraApp.app -path '*Debug-iphonesimulator*' | head -n 1)
+          echo "App: $APP"
+          ls -la "$APP" | head -40
+          if [ -f "$APP/aurora/index.html" ] && [ -f "$APP/aurora/app.js" ]; then echo "The Aurora screens are bundled in aurora/."
+          else echo "::error::The Aurora screens are not at aurora/ inside the app."; find "$APP" -name index.html | head; exit 1; fi
+
+      - name: Keep the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
+
+      # Signed build for TestFlight. Needs the secrets listed in ios/README.md; without them this step does nothing.
+      - name: Sign and send to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_BASE64" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$IOS_BUNDLE_ID" ]; then
+            echo "::notice::No Apple signing secrets yet, so only the compile check ran. See ios/README.md."
+            exit 0
+          fi
+          set -euo pipefail
+          KEY_DIR="$RUNNER_TEMP/keys"; mkdir -p "$KEY_DIR"
+          KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_KEY_BASE64" | base64 --decode > "$KEY_FILE"
+          cd ios
+          xcodebuild archive \
+            -project Aurora.xcodeproj -scheme Aurora -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/Aurora.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          # The archive above is not signed: the export below signs it for the App Store with Apple's cloud-managed
+          # distribution certificate. (Signing the archive itself would need an iPhone registered on the Apple account.)
+          cat > "$RUNNER_TEMP/export.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Aurora.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/export.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_FILE" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          rm -f "$KEY_FILE"
+          echo "Sent to TestFlight."
