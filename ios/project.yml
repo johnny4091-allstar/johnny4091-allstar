@@ -25,7 +25,7 @@ targets:
       - path: Aurora
         excludes:
           - Info.plist
-    resources:
+      # The Aurora screens, bundled as a folder named aurora (the app serves them to its web view from there).
       - path: ../aurora
         type: folder
         buildPhase: resources
