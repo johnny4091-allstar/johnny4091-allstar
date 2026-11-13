@@ -718,6 +718,8 @@ html.tv { font-size: 18px; }
 .iptv-grid { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
 .iptv-grid .card, .iptv-tile { flex: none; }
 .iptv-grid .iptv-tile { width: 100%; }
+/* In a Home row (Recently Watched Channels) a channel tile is as wide as any other tile in the row; without this it shrank to a few pixels. */
+.row-track .iptv-tile { flex: 0 0 var(--card-w); }
 .iptv-tile { background: linear-gradient(160deg, var(--bg-3), var(--bg-2)); }
 .iptv-logo { position: absolute; inset: 0 0 38% 0; display: flex; align-items: center; justify-content: center; padding: 10% 14%; }
 .iptv-logo img { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }

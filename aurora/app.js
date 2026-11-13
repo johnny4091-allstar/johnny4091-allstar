@@ -2953,11 +2953,14 @@
     // The box in the page's own pixels, and the page's width in them: the Android app works out the scale from the real screen.
     const pvRect = () => { const r = pvBox.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, document.documentElement.clientWidth || window.innerWidth]; };
     const markPreviewing = () => $$('.guide-row', rows).forEach((r) => r.classList.toggle('previewing', !!previewCh && r.__guide.ch.id === previewCh.id));
-    let pvStartedAt = 0;
+    let pvStartedAt = 0, pvWatchedTimer = 0;
     const startPreview = (ch) => {
       if (!previewOn || !ch?.url || !root.isConnected) return;
       if (previewCh?.id === ch.id && Date.now() - pvStartedAt < 2000) return; // already starting it
       pvStartedAt = Date.now(); pvShown = true;
+      // A channel that stays in the picture for a few seconds counts as watched (Recently Watched Channels), like one opened full screen.
+      clearTimeout(pvWatchedTimer);
+      pvWatchedTimer = setTimeout(() => { if (previewCh?.id === ch.id) { rememberChannel(ch); updateRecentRow(); } }, 10000);
       const r = pvRect();
       if (r[2] < 20) return;
       previewCh = ch;
@@ -2966,7 +2969,7 @@
       markPreviewing();
       nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], r[4], getPref('ffmpeg') !== 'off');
     };
-    const stopPreview = () => { previewCh = null; resumeCh = null; if (pvBox) pvBox.classList.remove('on', 'failed'); nativeApp?.previewStop?.(); markPreviewing(); };
+    const stopPreview = () => { clearTimeout(pvWatchedTimer); previewCh = null; resumeCh = null; if (pvBox) pvBox.classList.remove('on', 'failed'); nativeApp?.previewStop?.(); markPreviewing(); };
     let pvFrame = 0, pvShown = true;
     // The video is drawn by Android on top of the page, so page content can't cover it: hide it whenever something should be over it
     // (a menu or sheet, the groups list) or the box has scrolled partly off the screen.
