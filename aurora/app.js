@@ -2939,17 +2939,18 @@
 
     // ----- The small live picture -----
     const pvBox = previewOn ? $('.tm-preview', root) : null;
-    const pvRect = () => { const r = pvBox.getBoundingClientRect(), d = window.devicePixelRatio || 1; return [r.left, r.top, r.width, r.height].map((v) => Math.round(v * d)); };
+    // The box in the page's own pixels, and the page's width in them: the Android app works out the scale from the real screen.
+    const pvRect = () => { const r = pvBox.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, document.documentElement.clientWidth || window.innerWidth]; };
     const markPreviewing = () => $$('.guide-row', rows).forEach((r) => r.classList.toggle('previewing', !!previewCh && r.__guide.ch.id === previewCh.id));
     const startPreview = (ch) => {
       if (!previewOn || !ch?.url || !root.isConnected) return;
       const r = pvRect();
-      if (r[2] < 40) return;
+      if (r[2] < 20) return;
       previewCh = ch;
       pvBox.classList.add('on'); pvBox.classList.remove('failed');
       $('.tm-pv-name', pvBox).textContent = ch.name;
       markPreviewing();
-      nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], getPref('ffmpeg') !== 'off');
+      nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], r[4], getPref('ffmpeg') !== 'off');
     };
     const stopPreview = () => { previewCh = null; resumeCh = null; if (pvBox) pvBox.classList.remove('on', 'failed'); nativeApp?.previewStop?.(); markPreviewing(); };
     let pvFrame = 0;

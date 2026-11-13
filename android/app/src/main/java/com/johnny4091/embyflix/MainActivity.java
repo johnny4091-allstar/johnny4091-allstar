@@ -856,6 +856,16 @@ public class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    /**
+     * The page's box (x, y, w, h in the page's own CSS pixels, viewW the page's width in them) in screen pixels. The scale is
+     * worked out from the real width of the WebView, not from devicePixelRatio, which some TVs report differently from how
+     * they actually draw the page.
+     */
+    private int[] previewRect(double x, double y, double w, double h, double viewW) {
+        double scale = viewW > 0 && webView.getWidth() > 0 ? webView.getWidth() / viewW : getResources().getDisplayMetrics().density;
+        return new int[] { (int) Math.round(x * scale) + webView.getLeft(), (int) Math.round(y * scale) + webView.getTop(), (int) Math.round(w * scale), (int) Math.round(h * scale) };
+    }
+
     /** Frees the guide's small live picture. Tells the page, which carries on when the app comes back. */
     private void stopPreview() {
         if (preview == null) return;
@@ -994,18 +1004,23 @@ public class MainActivity extends Activity {
 
         // ----- The small live picture in the Live TV guide (x, y, w, h in screen pixels of the page) -----
         @JavascriptInterface
-        public void previewStart(String url, String userAgent, int x, int y, int w, int h, boolean software) {
+        public void previewStart(String url, String userAgent, double x, double y, double w, double h, double viewW, boolean software) {
             runOnUiThread(() -> {
                 if (inPlayer || !resumed) return;
                 if (preview == null) preview = new LivePreview(MainActivity.this, root,
                         () -> webView.evaluateJavascript("window.auroraPreviewEvent && window.auroraPreviewEvent('failed')", null));
-                preview.start(url, userAgent, x + webView.getLeft(), y + webView.getTop(), w, h, software);
+                int[] r = previewRect(x, y, w, h, viewW);
+                preview.start(url, userAgent, r[0], r[1], r[2], r[3], software);
             });
         }
 
         @JavascriptInterface
-        public void previewMove(int x, int y, int w, int h) {
-            runOnUiThread(() -> { if (preview != null) preview.move(x + webView.getLeft(), y + webView.getTop(), w, h); });
+        public void previewMove(double x, double y, double w, double h, double viewW) {
+            runOnUiThread(() -> {
+                if (preview == null) return;
+                int[] r = previewRect(x, y, w, h, viewW);
+                preview.move(r[0], r[1], r[2], r[3]);
+            });
         }
 
         @JavascriptInterface
