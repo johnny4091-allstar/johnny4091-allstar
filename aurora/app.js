@@ -1349,6 +1349,133 @@
   }
 
   // ---------- Browse (Movies / TV) ----------
+  // ---------- The provider's movies and TV shows ----------
+  // For customers the admin switched on (Admin → Users, a plan, or a reseller), the Movies and TV Shows pages get a "My library | Provider"
+  // switch. Provider titles come from the same Xtream account as Live TV and play straight from the provider in the Aurora player,
+  // so they cost the server nothing. They don't have Emby's progress or watched marks; Aurora only remembers where each one stopped.
+  const providerFlags = {};
+  const providerKey = () => 'ef.vod.' + state.userId;
+  function setProviderAllowed(on) { providerFlags[state.userId] = !!on; try { store.set(providerKey(), on ? '1' : '0'); } catch { /* ignore */ } }
+  const providerOk = () => !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
+    && (state.userId in providerFlags ? providerFlags[state.userId] : store.get(providerKey()) === '1');
+  const pvCache = new Map();
+  async function pvGet(action, params = {}) {
+    const key = action + JSON.stringify(params), hit = pvCache.get(key);
+    if (hit && Date.now() - hit.t < 10 * 60000) return hit.v;
+    const v = await xtJson(iptv.config, { action, ...params });
+    pvCache.set(key, { v, t: Date.now() });
+    if (pvCache.size > 40) pvCache.delete(pvCache.keys().next().value);
+    return v;
+  }
+  function pvPlay(url, title, subtitle, key) {
+    if (!nativeApp?.playVod) { toast('Provider titles play in the Aurora app for Android and Android TV.'); return; }
+    offlinePlaying = 'pv:' + key; // remembers where they stopped, like a saved download
+    nativeApp.playVod(JSON.stringify({ url, hls: false, startMs: Number(store.get('ef.dl.pos.pv:' + key)) || 0, title, subtitle, subs: [], softwareDecoders: getPref('ffmpeg') !== 'off' }));
+  }
+  const pvBase = () => `${withScheme(iptv.config.server)}`;
+  const pvUrl = (kind, id, ext) => `${pvBase()}/${kind}/${encodeURIComponent(iptv.config.username)}/${encodeURIComponent(iptv.config.password || '')}/${id}.${String(ext || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4'}`;
+  function pvSheet(kind, it) {
+    $('.pv-sheet')?.remove();
+    const el = document.createElement('div');
+    el.className = 'pv-sheet'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.tabIndex = -1;
+    const poster = it.img ? `<img class="pv-poster" src="${esc(it.img)}" alt="" referrerpolicy="no-referrer">` : '';
+    el.innerHTML = `<div class="pv-box"><button class="btn btn-gray pv-x" data-x>Close</button>
+      <div class="pv-head">${poster}<div class="pv-info"><h2>${esc(it.name)}</h2><div class="muted" data-meta>${esc([it.year, it.rating ? '★ ' + it.rating : ''].filter(Boolean).join(' · '))}</div>
+      <p class="pv-plot" data-plot></p><div data-body><div class="spinner"></div></div></div></div></div>`;
+    document.body.appendChild(el);
+    const close = () => { el.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    el.addEventListener('click', (e) => { if (e.target === el) close(); });
+    $('[data-x]', el).addEventListener('click', close);
+    $('[data-x]', el).focus();
+    const body = $('[data-body]', el), plot = $('[data-plot]', el), meta = $('[data-meta]', el);
+    const fail = (e) => { body.innerHTML = `<p class="muted">${esc(e.message || "Couldn't load this from the provider.")}</p>`; };
+    if (kind === 'movie') {
+      pvGet('get_vod_info', { vod_id: it.id }).then((d) => {
+        if (!el.isConnected) return;
+        const i = d.info || {}, ext = d.movie_data?.container_extension || it.ext || 'mp4';
+        plot.textContent = String(i.plot || i.description || '').slice(0, 600);
+        meta.textContent = [i.releasedate ? String(i.releasedate).slice(0, 4) : it.year, i.duration, i.genre, i.rating ? '★ ' + i.rating : ''].filter(Boolean).join(' · ');
+        body.innerHTML = '<button class="btn btn-red" data-play>&#9654; Play</button>';
+        const b = $('[data-play]', body); b.focus();
+        b.addEventListener('click', () => { close(); pvPlay(pvUrl('movie', it.id, ext), it.name, i.releasedate ? String(i.releasedate).slice(0, 4) : '', 'movie:' + it.id); });
+      }).catch(fail);
+    } else {
+      pvGet('get_series_info', { series_id: it.id }).then((d) => {
+        if (!el.isConnected) return;
+        const i = d.info || {}, eps = d.episodes || {};
+        const seasons = Object.keys(eps).sort((a, b) => Number(a) - Number(b));
+        plot.textContent = String(i.plot || '').slice(0, 600);
+        meta.textContent = [it.year, i.genre, i.rating ? '★ ' + i.rating : ''].filter(Boolean).join(' · ');
+        if (!seasons.length) { body.innerHTML = '<p class="muted">The provider lists no episodes for this show.</p>'; return; }
+        body.innerHTML = `<label class="pv-seas"><span class="muted">Season</span> <select data-seas>${seasons.map((n) => `<option value="${esc(n)}">Season ${esc(n)}</option>`).join('')}</select></label><div class="pv-eps" data-eps></div>`;
+        const list = $('[data-eps]', body), sel = $('[data-seas]', body);
+        const draw = () => {
+          list.innerHTML = (eps[sel.value] || []).map((e, n) => `<button class="pv-ep" data-ep="${n}"><b>${esc(e.episode_num != null ? e.episode_num : n + 1)}</b><span>${esc(e.title || 'Episode ' + (n + 1))}</span><small>${esc(e.info?.duration || '')}</small></button>`).join('');
+          $$('[data-ep]', list).forEach((b) => b.addEventListener('click', () => {
+            const e = eps[sel.value][Number(b.dataset.ep)];
+            close(); pvPlay(pvUrl('series', e.id, e.container_extension), it.name, `Season ${sel.value} · Episode ${e.episode_num != null ? e.episode_num : ''} ${e.title ? '· ' + e.title : ''}`.trim(), 'ep:' + e.id);
+          }));
+          $('[data-ep]', list)?.focus();
+        };
+        sel.addEventListener('change', draw); draw();
+      }).catch(fail);
+    }
+  }
+  // The browse view: a category list, a search box and a poster grid, for movies ('movie') or shows ('series').
+  async function renderProvider(host, kind, isCurrent) {
+    const movie = kind === 'movie';
+    host.innerHTML = `<div class="pv-tools"><select data-pv-cat aria-label="Category"></select><input type="search" data-pv-q placeholder="Search the provider's ${movie ? 'movies' : 'shows'}" autocomplete="off"></div>
+      <div class="grid pv-grid"></div><div class="pv-more"></div>`;
+    const catSel = $('[data-pv-cat]', host), q = $('[data-pv-q]', host), grid = $('.pv-grid', host), more = $('.pv-more', host);
+    const norm = (x) => movie
+      ? { id: x.stream_id, name: x.name || 'Movie', img: x.stream_icon || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || '', ext: x.container_extension }
+      : { id: x.series_id, name: x.name || 'Show', img: x.cover || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || (x.releaseDate ? String(x.releaseDate).slice(0, 4) : '') };
+    let items = [], shown = 0;
+    const PAGE = 90;
+    const draw = (reset) => {
+      if (reset) { grid.innerHTML = ''; shown = 0; }
+      for (const it of items.slice(shown, shown + PAGE)) {
+        const el = document.createElement('div');
+        el.className = 'poster'; el.tabIndex = 0;
+        el.innerHTML = `<div class="poster-img">${it.img ? `<img loading="lazy" decoding="async" src="${esc(it.img)}" alt="" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-fallback',textContent:this.dataset.t}))" data-t="${esc(it.name)}">` : `<div class="card-fallback">${esc(it.name)}</div>`}</div>
+          <div class="poster-title">${esc(it.name)}</div><div class="poster-sub">${esc([it.year, it.rating ? '★ ' + it.rating : ''].filter(Boolean).join(' · '))}</div>`;
+        const open = () => pvSheet(kind, it);
+        el.addEventListener('click', open);
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+        grid.appendChild(el);
+      }
+      shown = Math.min(items.length, shown + PAGE);
+      more.innerHTML = shown < items.length ? '<button class="btn btn-gray" data-more>Show more</button>' : (items.length ? '' : '<p class="muted">Nothing here.</p>');
+      $('[data-more]', more)?.addEventListener('click', () => draw(false));
+    };
+    const load = async (loader) => {
+      grid.innerHTML = ''; more.innerHTML = '<div class="spinner"></div>';
+      try { const list = await loader(); if (!isCurrent() || !host.isConnected) return; items = (Array.isArray(list) ? list : []).map(norm); draw(true); }
+      catch (e) { if (isCurrent() && host.isConnected) more.innerHTML = `<p class="muted">${esc(e.message || "Couldn't load the provider's list.")}</p>`; }
+    };
+    const act = movie ? ['get_vod_categories', 'get_vod_streams'] : ['get_series_categories', 'get_series'];
+    let cats = [];
+    try { cats = await pvGet(act[0]); } catch (e) { more.innerHTML = `<p class="muted">${esc(e.message || "Couldn't reach the provider.")}</p>`; return; }
+    if (!isCurrent() || !host.isConnected) return;
+    cats = (Array.isArray(cats) ? cats : []).filter((c) => c.category_id != null);
+    if (!cats.length) { more.innerHTML = `<p class="muted">Your provider has no ${movie ? 'movies' : 'shows'} listed on this account.</p>`; return; }
+    catSel.innerHTML = cats.map((c) => `<option value="${esc(c.category_id)}">${esc(c.category_name || 'Category')}</option>`).join('');
+    const byCat = () => load(() => pvGet(act[1], { category_id: catSel.value }));
+    catSel.addEventListener('change', () => { q.value = ''; byCat(); });
+    let timer = 0;
+    q.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const t = q.value.trim().toLowerCase();
+        if (t.length < 2) { byCat(); return; }
+        load(async () => (await pvGet(act[1])).filter((x) => String(x.name || '').toLowerCase().includes(t)).slice(0, 300));
+      }, 400);
+    });
+    byCat();
+  }
+
   async function renderBrowse(page, { type, title, isCurrent }) {
     renderHero(page, { IncludeItemTypes: type });
     const wrap = document.createElement('div');
@@ -1379,6 +1506,27 @@
 
     const grid = $('.grid', wrap), sentinel = $('.sentinel', wrap);
     const genreSel = $('[data-genre]', wrap), sortSel = $('[data-sort]', wrap), filterSel = $('[data-filter]', wrap);
+
+    // "My library | Provider": only for customers the admin switched the provider's movies and TV on for.
+    if (providerOk() && (type === 'Movie' || type === 'Series')) {
+      const kind = type === 'Movie' ? 'movie' : 'series', srcKey = 'ef.src.' + kind;
+      const head = $('.page-head', wrap), host = document.createElement('div');
+      host.className = 'pv-host hidden'; sentinel.after(host);
+      const sw = document.createElement('div');
+      sw.className = 'src-switch'; sw.setAttribute('role', 'group'); sw.setAttribute('aria-label', 'Where to browse');
+      sw.innerHTML = '<button type="button" data-src="mine">My library</button><button type="button" data-src="prov">Provider</button>';
+      head.querySelector('h1').after(sw);
+      const setSrc = (src) => {
+        const prov = src === 'prov';
+        store.set(srcKey, src);
+        $$('[data-src]', sw).forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.src === src)));
+        [genreSel, sortSel, filterSel, grid, sentinel].forEach((n) => n.classList.toggle('hidden', prov));
+        host.classList.toggle('hidden', !prov);
+        if (prov && !host.dataset.ready) { host.dataset.ready = '1'; renderProvider(host, kind, isCurrent); }
+      };
+      $$('[data-src]', sw).forEach((b) => b.addEventListener('click', () => setSrc(b.dataset.src)));
+      setSrc(store.get(srcKey) === 'prov' ? 'prov' : 'mine');
+    }
 
     api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: type, Recursive: true, SortBy: 'SortName' } })
       .then((res) => {
@@ -2089,6 +2237,7 @@
     try {
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
       applyPlanCategories(a.admin ? null : a.categories);
+      setProviderAllowed(!!(a.admin || a.vod));
     } catch { /* keep what is known */ }
   }
 
@@ -4879,6 +5028,7 @@
       }
       if (!isCurrent() || !section.isConnected) return;
       applyPlanCategories(a.admin ? null : a.categories);
+      setProviderAllowed(!!(a.admin || a.vod));
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
       const soon = a.daysLeft != null && a.daysLeft <= 7;
@@ -6713,6 +6863,7 @@
         </div>
         <p class="muted">Credits a reseller pays for this plan. Blank means connections × months (1 credit is one connection for one month).</p>
         <label class="admin-check"><input type="checkbox" data-p="active"${p.active ? ' checked' : ''}> On offer (customers can ask for it, and it shows when you pick a plan)</label>
+        <label class="admin-check"><input type="checkbox" data-p="vod"${p.vod ? ' checked' : ''}> Includes the provider's movies and TV shows (switches it on for the customer when you put this plan on their account)</label>
         <div class="cat-pick-wrap">
           <div class="cat-pick-head"><div><strong>Live TV categories</strong><div class="muted" data-cat-summary></div></div>
             <div><label class="admin-check"><input type="radio" name="plancats" data-p="catsAll"${p.categories ? '' : ' checked'}> All categories</label>
@@ -6751,7 +6902,7 @@
       $('[data-save]', form).addEventListener('click', async () => {
         const v = (n) => $(`[data-p="${n}"]`, form).value;
         const payload = { name: v('name').trim(), price: Number(v('price')), length: Number(v('length')), unit: v('unit'), connections: Number(v('connections')),
-          active: $('[data-p="active"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null, credits: v('credits').trim() === '' ? null : Number(v('credits')) };
+          active: $('[data-p="active"]', form).checked, vod: $('[data-p="vod"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null, credits: v('credits').trim() === '' ? null : Number(v('credits')) };
         if (v('price') === '' || Number.isNaN(payload.price)) return say('Enter the price.', 'bad');
         say('<div class="spinner"></div>');
         try {
@@ -7820,6 +7971,12 @@
     if (!filters.includes(filter)) filter = 'all';
     body.innerHTML = `
       ${extensionsCardHtml(ext, planList)}
+      ${guardEnabled && !guardError && iptv.config?.type === 'xtream' && iptvOn() ? `<section class="admin-card">
+        <h2>Provider movies and TV <small>${rows.filter((r) => !r.exempt && r.lim?.vod).length} of ${rows.filter((r) => !r.exempt).length} customers</small></h2>
+        <p class="muted">Switch it on or off for one customer on their page, or for a plan in Admin → Plans. Here you can change everyone at once.</p>
+        <div class="m-actions"><button class="btn btn-gray" data-vod-all="1">Turn on for everyone</button><button class="btn btn-gray" data-vod-all="0">Turn off for everyone</button></div>
+        <div class="live-result" data-vod-all-result></div>
+      </section>` : ''}
       <section class="admin-card">
         <div class="users-head">
           <h2>Users <small>${rows.length}</small></h2>
@@ -7884,6 +8041,13 @@
         }
       }, 10000);
     }
+    $$('[data-vod-all]', body).forEach((btn) => btn.addEventListener('click', async () => {
+      const on = btn.dataset.vodAll === '1', out = $('[data-vod-all-result]', body);
+      if (!(await confirmAction(on ? 'Turn on for everyone?' : 'Turn off for everyone?', on ? "Every customer gets the provider's movies and TV shows." : "No customer will see the provider's movies and TV shows.", on ? 'Turn on' : 'Turn off'))) return;
+      out.className = 'live-result'; out.innerHTML = '<div class="spinner"></div>';
+      try { const r = await guard('/vod/all', { method: 'POST', body: { on } }); out.className = 'live-result good'; out.textContent = `Done. ${r.changed} ${r.changed === 1 ? 'customer' : 'customers'} changed.`; setTimeout(() => { if (isCurrent()) adminUsers(body, isCurrent); }, 1200); }
+      catch (e) { out.className = 'live-result bad'; out.textContent = e.message; }
+    }));
     const bulkBox = $('[data-bulk]', body), selectBtn = $('[data-select-mode]', body);
     const drawBulk = () => {
       if (!selecting) { bulkBox.classList.add('hidden'); return; }
@@ -8061,6 +8225,12 @@
         <p class="muted">Sets their device limit, end date and Live TV categories, switches the account back on if it had expired, and adds a line to the subscription history.</p>
         <div class="live-result" data-plan-result></div>` : '<p class="muted">No plans to choose from yet. Add them in Admin → Plans.</p>'}
       </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && iptvOn() && iptv.config?.type === 'xtream' ? `<section class="admin-card">
+        <h2>Provider movies and TV</h2>
+        <label class="admin-check"><input type="checkbox" data-vod${lim?.vod ? ' checked' : ''}> Let ${esc(user.Name)} watch the provider's movies and TV shows</label>
+        <p class="muted">They get a "My library | Provider" switch on the Movies and TV Shows pages. Saved straight away. It uses your TV provider's connections, like Live TV.</p>
+        <div class="live-result" data-vod-result></div>
+      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -8085,6 +8255,12 @@
     const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
     const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
 
+    $('[data-vod]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/vod`, { method: 'PUT', body: { on } }); say('[data-vod-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-vod-result]', esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
     $('[data-save-limits]', body)?.addEventListener('click', async () => {
       const next = { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() };
       if (isExpired(next) && !user.Policy?.IsDisabled && !self && !exempt

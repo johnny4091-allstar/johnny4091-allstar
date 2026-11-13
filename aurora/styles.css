@@ -1894,3 +1894,27 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .rq-p { display: grid; grid-template-columns: 34px 1fr auto; gap: .8rem; align-items: center; background: #0a1126; border: 1px solid #232f58; border-radius: 12px; padding: .6rem .8rem; }
 .rq-p .rq-av { width: 34px; height: 34px; font-size: .9rem; } .rq-p b { display: block; } .rq-p small { color: #b3b3b3; } .rq-count { font-size: 1.2rem; font-weight: 800; font-variant-numeric: tabular-nums; }
 .rq-empty { padding: 1.4rem; text-align: center; color: #b3b3b3; border: 1px dashed #232f58; border-radius: 12px; }
+
+/* The provider's movies and TV shows: a "My library | Provider" switch, the provider grid and its detail sheet. */
+.src-switch { display: inline-flex; gap: .4rem; }
+.src-switch button { border: 1px solid var(--line, #232f58); background: #0a1126; color: #cfd6f5; border-radius: 999px; padding: .45rem 1rem; font: 600 .9rem var(--font, inherit); cursor: pointer; }
+.src-switch button[aria-pressed="true"] { background: #fff; color: #0a1126; border-color: #fff; }
+.pv-tools { display: flex; flex-wrap: wrap; gap: .75rem; margin-bottom: 1.2rem; }
+.pv-tools select, .pv-tools input { padding: .6rem .8rem; border-radius: 6px; border: 1px solid var(--line, #232f58); background: #0a1126; color: #fff; font: inherit; min-width: 0; }
+.pv-tools input { flex: 1; min-width: 200px; }
+.pv-more { text-align: center; padding: 1.2rem 0 2rem; }
+.pv-sheet { position: fixed; inset: 0; z-index: 400; background: rgba(3, 6, 16, .82); display: grid; place-items: center; padding: 1rem; overflow-y: auto; }
+.pv-box { position: relative; background: #0e1530; border: 1px solid #232f58; border-radius: 16px; padding: 1.4rem; width: min(760px, 100%); max-height: calc(100vh - 2rem); overflow-y: auto; }
+.pv-x { position: absolute; top: .8rem; right: .8rem; padding: .4rem .9rem; }
+.pv-head { display: flex; gap: 1.2rem; align-items: flex-start; padding-right: 4.5rem; }
+.pv-poster { width: 120px; border-radius: 8px; flex: none; aspect-ratio: 2 / 3; object-fit: cover; background: #1b2549; }
+.pv-info { min-width: 0; flex: 1; }
+.pv-info h2 { margin: 0 0 .3rem; font-size: 1.4rem; }
+.pv-plot { color: #cfd6f5; font-size: .92rem; margin: .6rem 0 1rem; }
+.pv-seas { display: inline-flex; gap: .6rem; align-items: center; margin-bottom: .8rem; }
+.pv-seas select { padding: .45rem .7rem; border-radius: 6px; border: 1px solid #232f58; background: #0a1126; color: #fff; font: inherit; }
+.pv-eps { display: grid; gap: .4rem; max-height: 45vh; overflow-y: auto; }
+.pv-ep { display: grid; grid-template-columns: 2.2rem 1fr auto; gap: .8rem; align-items: center; text-align: left; background: #0a1126; border: 1px solid #232f58; border-radius: 10px; padding: .6rem .8rem; color: #fff; font: inherit; cursor: pointer; }
+.pv-ep:hover, .pv-ep:focus-visible { border-color: #4f7bff; outline: none; background: #0f1a3d; }
+.pv-ep small { color: #9aa4c8; }
+@media (max-width: 560px) { .pv-head { flex-direction: column; padding-right: 0; padding-top: 2.4rem; } .pv-poster { width: 90px; } }

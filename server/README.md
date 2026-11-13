@@ -384,3 +384,13 @@ Each morning the guard sends one message about the day before to the alert webho
 - A server error from Emby (5xx) while checking who is an administrator no longer counts as "not an administrator".
 - Signing in to the admin page with a non-administrator account no longer leaves a signed-in session behind.
 - A change to the guard alone (`server/**`) is published by its own workflow as a guard-only release. It does not build a new app, so the phone and TV apps are not asked to update.
+
+## Provider movies and TV (guard 1.19.0)
+
+The admin chooses which customers can browse and play the TV provider's movies and TV shows (an Xtream account set in Admin → Live TV). The app shows them a "My library | Provider" switch on the Movies and TV Shows pages.
+
+- Per customer: Admin → Users → the customer → "Provider movies and TV" (`PUT /limits/<id>/vod` with `{ "on": true }`). For everyone at once: `POST /vod/all`.
+- Per plan: tick "Includes the provider's movies and TV shows" on a plan. Putting that plan on an account switches it on (a plan without it leaves the switch alone).
+- Resellers always have it themselves and can switch it for each of their customers (reseller page, or `POST /reseller/customers/<id>/vod`) and when making a customer.
+- `GET /account` returns `vod` for the signed-in customer. Every change is written to the audit log.
+- The switch is checked by the app. The provider account's login is the same one Live TV already uses, so this is a menu choice and not a lock.
