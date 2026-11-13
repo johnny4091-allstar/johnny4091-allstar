@@ -1433,7 +1433,10 @@
       ? { id: x.stream_id, name: x.name || 'Movie', img: x.stream_icon || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || '', ext: x.container_extension }
       : { id: x.series_id, name: x.name || 'Show', img: x.cover || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || (x.releaseDate ? String(x.releaseDate).slice(0, 4) : '') };
     let items = [], shown = 0;
-    const PAGE = 90;
+    const PAGE = 60;
+    // The next batch loads by itself when the end of the grid comes into view (the button stays as a fallback).
+    const watch = 'IntersectionObserver' in window ? new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && shown < items.length && host.isConnected) draw(false); }, { rootMargin: '600px' }) : null;
+    watch?.observe(more);
     const draw = (reset) => {
       if (reset) { grid.innerHTML = ''; shown = 0; }
       for (const it of items.slice(shown, shown + PAGE)) {
@@ -1461,8 +1464,9 @@
     if (!isCurrent() || !host.isConnected) return;
     cats = (Array.isArray(cats) ? cats : []).filter((c) => c.category_id != null);
     if (!cats.length) { more.innerHTML = `<p class="muted">Your provider has no ${movie ? 'movies' : 'shows'} listed on this account.</p>`; return; }
-    catSel.innerHTML = cats.map((c) => `<option value="${esc(c.category_id)}">${esc(c.category_name || 'Category')}</option>`).join('');
-    const byCat = () => load(() => pvGet(act[1], { category_id: catSel.value }));
+    catSel.innerHTML = '<option value="">All categories</option>' + cats.map((c) => `<option value="${esc(c.category_id)}">${esc(c.category_name || 'Category')}</option>`).join('');
+    catSel.selectedIndex = 1; // starts on the first category: the whole catalog is big
+    const byCat = () => load(() => (catSel.value ? pvGet(act[1], { category_id: catSel.value }) : pvGet(act[1])));
     catSel.addEventListener('change', () => { q.value = ''; byCat(); });
     let timer = 0;
     q.addEventListener('input', () => {
@@ -1470,7 +1474,7 @@
       timer = setTimeout(() => {
         const t = q.value.trim().toLowerCase();
         if (t.length < 2) { byCat(); return; }
-        load(async () => (await pvGet(act[1])).filter((x) => String(x.name || '').toLowerCase().includes(t)).slice(0, 300));
+        load(async () => (await pvGet(act[1])).filter((x) => String(x.name || '').toLowerCase().includes(t)).slice(0, 3000));
       }, 400);
     });
     byCat();
