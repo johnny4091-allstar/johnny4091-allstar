@@ -58,7 +58,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.18.1';
+const VERSION = '1.19.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -355,7 +355,7 @@ function publicReseller(r) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    trial: !!rec.trial, vod: !!rec.vod, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
@@ -581,7 +581,7 @@ function cleanPlan(b, id) {
     credits = Number(b.credits);
     if (!Number.isInteger(credits) || credits < 0 || credits > 10000) return { error: 'The credit cost must be a whole number from 0 up, or blank.' };
   }
-  return { plan: { id, name, price, length, unit, connections, categories, credits, active: b.active !== false } };
+  return { plan: { id, name, price, length, unit, connections, categories, credits, vod: b.vod === true, active: b.active !== false } };
 }
 // Puts a plan on an account. mode "extend": time already left is kept and the plan's length added after it; "today": starts now.
 function applyPlan(userId, userName, plan, mode, priceOverride) {
@@ -592,6 +592,7 @@ function applyPlan(userId, userName, plan, mode, priceOverride) {
   rec.expires = addPlanLength(from, plan);
   rec.categories = plan.categories ? [...plan.categories] : null;
   if (plan.price > 0) rec.trial = false; // a paid plan ends a free trial
+  if (plan.vod) rec.vod = true; // a plan that includes the provider's movies and TV switches it on (a plan without it leaves a switch you set by hand alone)
   rec.name = userName; rec.updated = Date.now();
   let price = priceOverride !== undefined && priceOverride !== null && priceOverride !== '' && Number.isFinite(Number(priceOverride)) ? Math.max(0, Math.round(Number(priceOverride) * 100) / 100) : plan.price;
   // A discount code the customer entered when signing up takes effect on their first paid plan it works on.
@@ -1812,7 +1813,7 @@ async function handle(req, res) {
   if (url.pathname === '/account' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
     if (!me) return send(res, 401, { error: 'Not signed in' });
-    if (me.Policy?.IsAdministrator) return send(res, 200, { admin: true, name: me.Name });
+    if (me.Policy?.IsAdministrator) return send(res, 200, { admin: true, name: me.Name, vod: true });
     const rec = store.users[me.Id];
     const devices = activeByUser(await sessionsShared()).get(me.Id);
     const mine = (store.extensions || []).filter((x) => x.userId === me.Id);
@@ -1823,6 +1824,7 @@ async function handle(req, res) {
       expires, expired: isExpired(rec), daysLeft: expires ? daysUntil(expires) : null, disabled: !!me.Policy?.IsDisabled,
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
+      vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
         && mine.filter((x) => Date.now() - x.at < 30 * 86400000).length < MAX_REQUESTS_PER_MONTH,
@@ -2034,7 +2036,7 @@ async function handle(req, res) {
           store.users[user.Id] = { limit: plan.connections, expires: addDays(today, 2), categories: plan.categories ? [...plan.categories] : null, name: username, updated: Date.now(), plan: { id: plan.id, name: plan.name, price: 0, connections: plan.connections, length: 2, unit: 'day', categories: plan.categories || null, since: today } };
         } else applyPlan(user.Id, username, plan, 'today');
         const rec = store.users[user.Id];
-        rec.reseller = r.id; rec.trial = trial; rec.created = Date.now();
+        rec.reseller = r.id; rec.trial = trial; rec.created = Date.now(); if (body.vod === true) rec.vod = true;
         rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
         creditEntry(r, -cost, trial ? 'Free trial' : plan.name, by, { customer: username });
         recordAudit(by, `Created the customer ${username} on ${trial ? 'a free trial' : plan.name} (${cost} credits)`);
@@ -2076,13 +2078,19 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
         const rec = store.users[id];
         let body = {};
         if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+        // The provider's movies and TV shows for this customer (a reseller can always switch it).
+        if (act === 'vod' && req.method === 'POST') {
+          rec.vod = body.on === true; rec.updated = Date.now();
+          recordAudit(by, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${rec.name}`); saveStore();
+          return send(res, 200, { ok: true, vod: rec.vod });
+        }
         // Put a customer on hold (sign-in is switched off and their devices are signed out; the end date keeps running), or release them.
         if (act === 'hold' && req.method === 'POST') {
           let user;
@@ -2786,6 +2794,32 @@ async function handle(req, res) {
     try { await enforce(m[1]); } catch (e) { applied = false; log('Applying', user.Name, 'failed:', e.message); }
     const fresh = await emby('GET', `/Users/${m[1]}`).catch(() => user);
     return send(res, 200, { ok: true, applied, record: store.users[m[1]], disabled: !!fresh.Policy?.IsDisabled, disabledByGuard: !!store.disabledByGuard[m[1]] });
+  }
+  // The provider's movies and TV shows: one customer, or everyone at once ({ on: true | false }).
+  const vm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/vod$/);
+  if (vm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${vm[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    const rec = store.users[vm[1]] || (store.users[vm[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    rec.vod = body.on === true; rec.updated = Date.now();
+    recordAudit(auditBy, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${user.Name}`); saveStore();
+    return send(res, 200, { ok: true, vod: rec.vod });
+  }
+  if (url.pathname === '/vod/all' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let users;
+    try { users = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: e.message }); }
+    let n = 0;
+    for (const u of users || []) {
+      if (u.Policy?.IsAdministrator) continue;
+      const rec = store.users[u.Id] || (store.users[u.Id] = { limit: cfg.defaultLimit, expires: null, name: u.Name, updated: Date.now() });
+      if (!!rec.vod !== (body.on === true)) { rec.vod = body.on === true; rec.updated = Date.now(); n++; }
+    }
+    recordAudit(auditBy, `${body.on === true ? 'Switched on' : 'Switched off'} provider movies and TV for everyone (${n} changed)`); saveStore();
+    return send(res, 200, { ok: true, changed: n });
   }
   if (m && req.method === 'DELETE') {
     const had = store.users[m[1]];
