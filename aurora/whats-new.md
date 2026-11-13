@@ -1,1 +1,2 @@
-- New: A live picture in the Live TV guide, like TiviMate. The channel you pick keeps playing in a small window at the top while you browse the guide below. Press OK on another channel to move the picture to it, and OK again to go full screen. You can turn it off in Settings → Playback → Live picture in the guide.
+- Fixed: Admins keep their own Movies and TV Shows library. The Live TV guide picture now only starts when you press OK, hides while a menu is open or the box is off screen, and no longer stops a good channel after a failed one.
+- Fixed: Provider movies and TV lists no longer mix up categories when you switch quickly, and use less memory on small TVs.

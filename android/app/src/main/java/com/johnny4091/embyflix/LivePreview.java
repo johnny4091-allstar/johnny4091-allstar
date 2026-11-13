@@ -40,7 +40,8 @@ final class LivePreview {
     private String url = "";
     /** Called (on the UI thread) when the picture stops by itself: "ended-error" or "released". */
     private final Runnable onFailed;
-    private boolean muted;
+    /** Counts channel starts, so a late error from an old channel can't stop the one that replaced it. */
+    private int generation;
 
     LivePreview(Activity activity, FrameLayout root, Runnable onFailed) {
         this.activity = activity;
@@ -89,9 +90,9 @@ final class LivePreview {
         view.setVisibility(View.VISIBLE);
         if (player == null) build(userAgent, software);
         url = channelUrl;
+        generation++;
         player.setMediaItem(mediaItem(channelUrl));
         player.prepare();
-        player.setVolume(muted ? 0f : 1f);
         player.setPlayWhenReady(true);
     }
 
@@ -121,7 +122,9 @@ final class LivePreview {
             @Override
             public void onPlayerError(androidx.media3.common.PlaybackException error) {
                 // A preview doesn't retry or show errors: it is dropped, and the page says so beside the box.
-                root.post(() -> { release(); if (onFailed != null) onFailed.run(); }); // not from inside the player's own callback
+                final int failedGeneration = generation;
+                // Not from inside the player's own callback, and only if that channel is still the one showing.
+                root.post(() -> { if (failedGeneration != generation || player == null) return; release(); if (onFailed != null) onFailed.run(); });
             }
         });
         view.setPlayer(player);
@@ -141,11 +144,6 @@ final class LivePreview {
         if (view == null) return;
         view.setVisibility(on ? View.VISIBLE : View.INVISIBLE);
         if (player != null) player.setPlayWhenReady(on);
-    }
-
-    void mute(boolean on) {
-        muted = on;
-        if (player != null) player.setVolume(on ? 0f : 1f);
     }
 
     /** Stops the picture and frees the player (and the provider connection). Safe to call at any time. */

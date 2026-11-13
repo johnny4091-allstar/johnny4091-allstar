@@ -391,6 +391,13 @@ The admin chooses which customers can browse and play the TV provider's movies a
 
 - Per customer: Admin → Users → the customer → "Provider movies and TV" (`PUT /limits/<id>/vod` with `{ "on": true }`). For everyone at once: `POST /vod/all`.
 - Per plan: tick "Includes the provider's movies and TV shows" on a plan. Putting that plan on an account switches it on (a plan without it leaves the switch alone).
+- Administrators always see their own library (the provider's titles are for customers). A bulk change skips administrators and resellers, and turning it off makes no new records.
 - Resellers always have it themselves and can switch it for each of their customers (reseller page, or `POST /reseller/customers/<id>/vod`) and when making a customer.
 - `GET /account` returns `vod` for the signed-in customer. Every change is written to the audit log.
 - The switch is checked by the app. The provider account's login is the same one Live TV already uses, so this is a menu choice and not a lock.
+
+## Fixes in 1.19.1
+
+- `/account` no longer gives administrators the provider flag, so they keep their Emby library on the Movies and TV Shows pages.
+- `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
+- A reseller trial made on a plan that includes the provider's titles gets them.

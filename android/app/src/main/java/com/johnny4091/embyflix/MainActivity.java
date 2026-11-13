@@ -1029,11 +1029,6 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void previewMute(boolean on) {
-            runOnUiThread(() -> { if (preview != null) preview.mute(on); });
-        }
-
-        @JavascriptInterface
         public void previewStop() {
             runOnUiThread(() -> { if (preview != null) preview.release(); });
         }
