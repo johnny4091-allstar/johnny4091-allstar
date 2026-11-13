@@ -1,8 +1,2 @@
-- Fixed: The Sports tab no longer makes the app think Aurora Guard is down when ESPN is just slow.
-- Fixed: Live TV messages from the provider now show names and apostrophes correctly (they were being left out).
-- Fixed: The opening sound could stay silent on a slow start.
-- Fixed: Website free-trial accounts end their trial when a paid plan is added, and referral codes are checked more carefully.
-- New: When Live TV channels won't load, Aurora now tells you what the TV provider answered (like "Access denied" or "Too many connections"), explains what it usually means and what to try, and has a Why can't I watch? button that runs the connection check for you and a Send to support button that sends the details. It also quietly tries once more before giving up.
-- New in Live TV: the Sports tab has a fresh look. Pick any day this week, see your team's game at the top, and tap a game for stats, plays, standings and the best channel to watch it on. Turn on alerts for scoring plays and final scores.
-- New: A new loading screen for videos and Live TV channels: a glowing AURORA ring with words under it ("Starting…", "Buffering…", "Tuning to …"). If it takes more than 8 seconds it says so and tells you what can help.
-- New: A brand new opening screen. You fly through space, there is a flash, and the Aurora logo settles in with the line "Where streaming is possible", with a new opening sound. It is about 4 seconds instead of 10. You can still turn the sound off in Settings.
+- New: Provider movies and TV shows. For customers your admin turns it on for, the Movies and TV Shows pages show the provider's titles, with categories, search, seasons and episodes, played straight from the provider.
+- New for resellers: switch the provider's movies and TV on or off for each of your customers, or include it when you make one.

@@ -91,6 +91,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
         <div><label for="np">Password</label><div class="row"><input id="np" placeholder="Leave blank to make one" autocomplete="off"><button class="btn gray" id="gp" type="button">Make</button></div></div>
         <div><label for="plan">Plan</label><select id="plan"></select></div>
         <div style="display:flex;align-items:end"><label class="toggle" for="trial"><input id="trial" type="checkbox"> Free 2-day trial (no credits)</label></div>
+        <div class="full" style="grid-column:1/-1"><label class="toggle" for="vod"><input id="vod" type="checkbox"> Include the provider's movies and TV shows</label></div>
         <div><label for="fn">Full name <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="fn" maxlength="60"></div>
         <div><label for="em">Email <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="em" type="email" maxlength="80"></div>
         <div class="full"><label for="nt">Note to yourself <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="nt" maxlength="300" placeholder="e.g. paid by cash, friend of John"></div>
@@ -152,7 +153,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div></div>' +
         '<div class="meta" style="text-align:right">' + esc(c.planName || '') + '<br>' + esc(ends) + '</div></div>' +
         '<div class="act"><select class="rp" aria-label="Renew plan">' + planOptions() + '</select><button class="btn red sm renew" type="button">Renew</button><button class="btn line sm pw" type="button">Reset password</button>' +
-        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm danger del" type="button">Delete</button>' +
+        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm danger del" type="button">Delete</button>' +
         (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
@@ -169,6 +170,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.querySelector('.renew').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/renew', { planId: el.querySelector('.rp').value }, function (j) { me.credits = j.credits; reload(); }); };
       el.querySelector('.pw').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/password', {}, function (j) { say('New password for ' + c.name + ': ' + j.password); }); };
       el.querySelector('.so').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/signout', {}, function (j) { say('Signed out ' + j.signedOut + ' device' + (j.signedOut === 1 ? '' : 's') + '.'); }); };
+      el.querySelector('.vd').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/vod', { on: !c.vod }, function () { reload(); }); };
       el.querySelector('.hd').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/hold', { hold: !c.hold }, function () { reload(); }); };
       var del = el.querySelector('.del');
       del.onclick = function () { del.textContent = 'Tap again to delete'; del.onclick = function () { act(del, 'DELETE', '/reseller/customers/' + encodeURIComponent(c.id), null, function () { openId = null; reload(); }); }; };
@@ -221,7 +223,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     if (!$('plan').value) return msg(err, 'You have no plans to sell yet. Ask your provider.', 'err');
     var pw = $('np').value.trim(); if (pw && pw.length < 6) return msg(err, 'The password must be at least 6 characters.', 'err');
     if (busy) return; busy = true; msg(err, '', 'err'); $('add').disabled = true;
-    api('POST', '/reseller/customers', { username: u, password: pw || undefined, planId: $('plan').value, trial: trial, fullName: $('fn').value.trim(), email: $('em').value.trim(), note: $('nt').value.trim() }).then(function (j) {
+    api('POST', '/reseller/customers', { username: u, password: pw || undefined, planId: $('plan').value, trial: trial, vod: $('vod').checked, fullName: $('fn').value.trim(), email: $('em').value.trim(), note: $('nt').value.trim() }).then(function (j) {
       busy = false; $('add').disabled = false;
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200) return msg(err, j.error || 'Could not make the customer.', 'err');
