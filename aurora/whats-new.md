@@ -1,2 +1,2 @@
-- New: Provider movies and TV shows. Customers your admin turns it on for get a My library | Provider switch on the Movies and TV Shows pages, with categories, search, seasons and episodes, played straight from the provider.
+- New: Provider movies and TV shows. For customers your admin turns it on for, the Movies and TV Shows pages show the provider's titles, with categories, search, seasons and episodes, played straight from the provider.
 - New for resellers: switch the provider's movies and TV on or off for each of your customers, or include it when you make one.

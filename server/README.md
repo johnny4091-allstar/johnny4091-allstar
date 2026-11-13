@@ -387,7 +387,7 @@ Each morning the guard sends one message about the day before to the alert webho
 
 ## Provider movies and TV (guard 1.19.0)
 
-The admin chooses which customers can browse and play the TV provider's movies and TV shows (an Xtream account set in Admin → Live TV). The app shows them a "My library | Provider" switch on the Movies and TV Shows pages.
+The admin chooses which customers can browse and play the TV provider's movies and TV shows (an Xtream account set in Admin → Live TV). Their Movies and TV Shows pages then show the provider's titles instead of the Emby library (no labels or buttons); with it off they see the library as before.
 
 - Per customer: Admin → Users → the customer → "Provider movies and TV" (`PUT /limits/<id>/vod` with `{ "on": true }`). For everyone at once: `POST /vod/all`.
 - Per plan: tick "Includes the provider's movies and TV shows" on a plan. Putting that plan on an account switches it on (a plan without it leaves the switch alone).
