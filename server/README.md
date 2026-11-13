@@ -401,3 +401,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `/account` no longer gives administrators the provider flag, so they keep their Emby library on the Movies and TV Shows pages.
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
+
+## Review account (guard 1.20.0)
+
+For an account that Apple's reviewer (or anyone) should see as a plain media player: Admin → Users → the account → **Review account**
+(`PUT /limits/<id>/demo` with `{ "on": true }`). The app then hides Live TV, Requests and the provider's titles for it, so it only
+shows the Emby library the account can see in Emby. `GET /account` returns `demo`. Administrators can't be review accounts. Making an
+account a review account switches its provider flag off. Every change is in the audit log.

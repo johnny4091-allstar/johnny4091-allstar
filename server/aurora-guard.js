@@ -58,7 +58,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.19.1';
+const VERSION = '1.20.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1825,6 +1825,7 @@ async function handle(req, res) {
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
+      demo: !!rec?.demo, // a review account (for Apple's reviewer): the app hides Live TV, Requests and the provider's titles for it
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
         && mine.filter((x) => Date.now() - x.at < 30 * 86400000).length < MAX_REQUESTS_PER_MONTH,
@@ -2806,6 +2807,20 @@ async function handle(req, res) {
     rec.vod = body.on === true; rec.updated = Date.now();
     recordAudit(auditBy, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${user.Name}`); saveStore();
     return send(res, 200, { ok: true, vod: rec.vod });
+  }
+  // A review account: shows only the Emby library the account can see (no Live TV, Requests or provider titles).
+  const demoM = url.pathname.match(/^\/limits\/([\w-]{1,64})\/demo$/);
+  if (demoM && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${demoM[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    if (user.Policy?.IsAdministrator) return send(res, 400, { error: 'An administrator account cannot be a review account.' });
+    const rec = store.users[demoM[1]] || (store.users[demoM[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    rec.demo = body.on === true; rec.updated = Date.now();
+    if (rec.demo) rec.vod = false;
+    recordAudit(auditBy, `${rec.demo ? 'Made' : 'Stopped treating'} ${user.Name} ${rec.demo ? 'a review account' : 'as a review account'}`); saveStore();
+    return send(res, 200, { ok: true, demo: rec.demo });
   }
   if (url.pathname === '/vod/all' && req.method === 'POST') {
     let body;
