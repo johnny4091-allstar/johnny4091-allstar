@@ -1,0 +1,6 @@
+Aurora.xcodeproj/
+*.xcarchive
+build/
+DerivedData/
+xcuserdata/
+Aurora/Info.plist
