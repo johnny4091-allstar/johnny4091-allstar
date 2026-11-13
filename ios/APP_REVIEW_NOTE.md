@@ -44,12 +44,25 @@ analytics tools. The privacy policy is at <https://your-website/privacy/>.
 
 If anything does not work during review, please contact <your email> and the server will be checked straight away.
 
+## Making the demo account (about 10 minutes)
+
+1. **A small library of free titles.** On the PC running Emby, make a folder, for example `Demo`, and put in a few free or public-domain
+   videos (archive.org has many) or your own clips. In Emby: Dashboard → Library → Add Media Library → name it Demo → choose that folder.
+2. **The account.** In the Aurora app: Admin → Users → **Add user**. Username `applereview` (or anything you like), a strong password you
+   will paste into App Store Connect, and 1 device. Do not make it an administrator.
+3. **Only the demo library.** In Emby: Dashboard → Users → `applereview` → Library Access → turn off "Enable access to all libraries",
+   then tick only **Demo**. (Check there is nothing else ticked, including Live TV.)
+4. **Review account.** In Aurora: Admin → Users → `applereview` → turn on **Review account**.
+5. **No end date.** On the same page, set **No end date** and save, so it can't expire during the review.
+6. **Try it.** Sign out of the app, sign in as `applereview` on a phone, and check: only the Demo titles show, there is no Live TV tab and
+   no Requests tab, and a video plays. Then put these details in the TestFlight sign-in box.
+
 ## Checklist before you submit
 
 - [ ] The demo user exists in Emby, is **not** an administrator, can only see the small library, and has no end date or device limit
       in Aurora Guard (Admin → Users → the user → set no end date).
 - [ ] The server and Aurora Guard are switched on and reachable from the internet for the whole review (it can take a day or two).
-- [ ] The demo user's "Provider movies and TV" switch is **off**, and Live TV is not set up for it.
+- [ ] In Aurora: Admin → Users → the demo user → turn on **Review account** (needs Guard 1.20.0 and the app version that has it). That hides Live TV, Requests and the provider's titles for this one account.
 - [ ] The privacy policy page opens in a phone browser, and its contact line shows your email (set `contact` in `website/config.js`).
 - [ ] The description and screenshots only show features that work in this version (see `ios/README.md`).
 - [ ] You tried the build yourself on a real iPhone first.

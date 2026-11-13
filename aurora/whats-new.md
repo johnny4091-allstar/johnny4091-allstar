@@ -1,1 +1,1 @@
-- Fixed: Recently Watched Channels on Home now shows its channels (the tiles had shrunk to almost nothing). A channel you watch in the guide's live picture for a few seconds is added to it too.
+- New: a Review account switch in Admin → Users for an account that should only see the Emby library, with no Live TV, Requests or provider titles (for testers and app reviewers).
