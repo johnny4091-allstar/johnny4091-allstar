@@ -1915,3 +1915,19 @@ html.reseller-only .nav-links, html.reseller-only #search-box, html.reseller-onl
 .pv-ep:hover, .pv-ep:focus-visible { border-color: #4f7bff; outline: none; background: #0f1a3d; }
 .pv-ep small { color: #9aa4c8; }
 @media (max-width: 560px) { .pv-head { flex-direction: column; padding-right: 0; padding-top: 2.4rem; } .pv-poster { width: 90px; } }
+
+/* The small live picture in the Live TV guide (the video itself is drawn by the Android app on top of this box). */
+.tm-guide.has-preview .tm-info { height: auto; min-height: 150px; }
+.tm-preview { flex: none; position: relative; width: 240px; aspect-ratio: 16 / 9; border-radius: 9px; background: #05080f; border: 1px solid #25305f; overflow: hidden; display: flex; align-items: center; justify-content: center; text-align: center; padding: .5rem; }
+.tm-pv-hint { color: var(--dim, #808080); font-size: .8rem; line-height: 1.35; }
+.tm-pv-name { display: none; }
+.tm-preview.on .tm-pv-hint { display: none; }
+/* A preview that could not start says so in the box (the video is drawn over the box while it plays). */
+.tm-preview.failed { background: #1a0f16; border-color: #6b2a3a; }
+.tm-preview.failed .tm-pv-name { display: block; color: #ffb3c0; font-size: .8rem; line-height: 1.35; }
+.tm-guide.has-preview .tm-info-logo { display: none; }
+.tm-grid .guide-row.previewing .guide-ch { box-shadow: inset 3px 0 0 var(--accent, #2ad4d0); background: #14304a; }
+.tm-grid .guide-row.previewing .guide-ch-name::after { content: ''; display: inline-block; width: 8px; height: 8px; margin-left: .5rem; border-radius: 50%; background: #e5384f; }
+@media (max-width: 700px) { .tm-preview { width: 150px; } .tm-guide.has-preview .tm-info { min-height: 100px; } }
+@media (min-width: 1200px) { .tm-preview { width: 300px; } }
+html.tv .tm-preview { width: 320px; }

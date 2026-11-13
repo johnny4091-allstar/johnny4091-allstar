@@ -1028,6 +1028,7 @@
   let lastRouteAt = Date.now();
   function route() {
     if (!state.userId) return;
+    nativeApp?.previewStop?.(); // the Live TV guide's small picture (and its provider connection) never outlives its page
     lastRouteAt = Date.now();
     const hash = location.hash.replace(/^#\/?/, '');
     const [path, query] = hash.split('?');
@@ -2874,6 +2875,8 @@
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
     if (!cats.some((c) => c.id === current)) current = cats[0].id;
+    // A small live picture beside the details (Android app only): the channel you pick keeps playing while you browse the guide.
+    const previewOn = !!nativeApp?.previewStart && getPref('guidePreview') !== 'off';
     const CH_W = nav.tv ? 260 : (window.innerWidth < 600 ? 120 : 220);
     const start = new Date();
     start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
@@ -2884,8 +2887,9 @@
     for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
     const dayLabel = (d) => (new Date().toDateString() === d.toDateString() ? 'Today' : d.toLocaleDateString([], { weekday: 'short' }));
     body.innerHTML = `
-      <div class="tm-guide" style="--tm-ch:${CH_W}px">
+      <div class="tm-guide${previewOn ? ' has-preview' : ''}" style="--tm-ch:${CH_W}px">
         <section class="tm-info">
+          ${previewOn ? '<div class="tm-preview" aria-label="Live preview"><span class="tm-pv-hint">Press OK on a channel to watch it here</span><span class="tm-pv-name"></span></div>' : ''}
           <div class="tm-info-logo"></div>
           <div class="tm-info-text">
             <div class="tm-info-ch"></div>
@@ -2916,6 +2920,7 @@
     const nowLine = $('.tm-now-line', body), groupsEl = $('.tm-groups', body), groupBtn = $('.tm-group-btn', body);
     const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); requestAnimationFrame(() => fit()); };
     let list = [], drawn = 0, groupName = '', token = 0;
+    let previewCh = null, resumeCh = null; // the channel in the small picture, and the one to bring back when the app returns
     const PAGE = 30;
     const GUIDE_LAST = 'ef.guide.last';
     const readLast = () => { try { const v = JSON.parse(store.get(GUIDE_LAST) || 'null'); return v && Date.now() - v.t < 15 * 60000 ? v : null; } catch { return null; } };
@@ -2930,7 +2935,40 @@
       focusEl($('.guide-prog.now', el) || $('.guide-prog, .guide-empty', el) || $('.guide-ch', el));
       return true;
     };
-    root.__restore = (ended) => { const last = readLast(); const ok = focusChannel(ended?.id || last?.id); endPending(); return ok; };
+    root.__restore = (ended) => { const last = readLast(); const ok = focusChannel(ended?.id || last?.id); endPending(); const back = ended || (last && list.find((c) => c.id === last.id)); if (previewOn && back) setTimeout(() => startPreview(back), 150); return ok; };
+
+    // ----- The small live picture -----
+    const pvBox = previewOn ? $('.tm-preview', root) : null;
+    const pvRect = () => { const r = pvBox.getBoundingClientRect(), d = window.devicePixelRatio || 1; return [r.left, r.top, r.width, r.height].map((v) => Math.round(v * d)); };
+    const markPreviewing = () => $$('.guide-row', rows).forEach((r) => r.classList.toggle('previewing', !!previewCh && r.__guide.ch.id === previewCh.id));
+    const startPreview = (ch) => {
+      if (!previewOn || !ch?.url || !root.isConnected) return;
+      const r = pvRect();
+      if (r[2] < 40) return;
+      previewCh = ch;
+      pvBox.classList.add('on'); pvBox.classList.remove('failed');
+      $('.tm-pv-name', pvBox).textContent = ch.name;
+      markPreviewing();
+      nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], getPref('ffmpeg') !== 'off');
+    };
+    const stopPreview = () => { previewCh = null; resumeCh = null; if (pvBox) pvBox.classList.remove('on', 'failed'); nativeApp?.previewStop?.(); markPreviewing(); };
+    let pvFrame = 0;
+    const syncPreview = () => {
+      if (!root.isConnected) { window.removeEventListener('resize', syncPreview); window.removeEventListener('scroll', syncPreview, true); return; }
+      cancelAnimationFrame(pvFrame);
+      pvFrame = requestAnimationFrame(() => { if (previewCh && root.isConnected) nativeApp.previewMove(...pvRect()); });
+    };
+    if (previewOn) {
+      window.addEventListener('resize', syncPreview);
+      window.addEventListener('scroll', syncPreview, true);
+      // The app went to the background or a full-screen player opened (the picture is freed then); it comes back with the app.
+      window.auroraPreviewEvent = (kind) => {
+        if (!root.isConnected) return;
+        if (kind === 'released') { if (previewCh) { resumeCh = previewCh; previewCh = null; pvBox.classList.remove('on'); markPreviewing(); } }
+        else if (kind === 'resumed') { if (resumeCh) { const c = resumeCh; resumeCh = null; startPreview(c); } }
+        else if (kind === 'failed') { pvBox.classList.add('failed'); $('.tm-pv-name', pvBox).textContent = (previewCh?.name || '') + ' could not be previewed. Press OK to open it.'; }
+      };
+    }
 
     // ----- Details panel -----
     const info = {
@@ -3088,8 +3126,11 @@
         </button>
         <div class="guide-progs" style="width:${width}px"></div>`;
       // Remember the place, so coming back from the player (or the app being reloaded meanwhile) lands on this channel again.
-      const play = () => { store.set(GUIDE_LAST, JSON.stringify({ group: current, id: ch.id, name: ch.name, t: Date.now(), pending: true })); playIptv(list, idx, groupName); };
+      const full = () => { resumeCh = null; store.set(GUIDE_LAST, JSON.stringify({ group: current, id: ch.id, name: ch.name, t: Date.now(), pending: true })); playIptv(list, idx, groupName); };
+      // With the small picture: OK plays the channel in it; OK on the channel that is already there opens it full screen.
+      const play = () => (previewOn && previewCh?.id !== ch.id ? startPreview(ch) : full());
       el.__guide = { ch, play, idx };
+      if (previewCh?.id === ch.id) el.classList.add('previewing');
       el.classList.toggle('is-fav', isIptvFav(ch));
       const chBtn = $('.guide-ch', el);
       chBtn.addEventListener('click', play);
@@ -3107,6 +3148,7 @@
 
     // ----- Groups -----
     function openGroups() {
+      if (previewCh) nativeApp.previewVisible(false);
       groupsEl.classList.add('open');
       root.classList.add('groups-open');
       // Once it's visible (it can't take the focus before that).
@@ -3116,6 +3158,7 @@
       if (!groupsEl.classList.contains('open')) return false;
       groupsEl.classList.remove('open');
       root.classList.remove('groups-open');
+      if (previewCh) nativeApp.previewVisible(true);
       if (refocus && nav.on) focusEl($('.guide-ch', rows) || groupBtn);
       return true;
     }
@@ -3177,6 +3220,7 @@
     await openCat(current);
     tick();
     const lastSeen = readLast();
+    if (previewOn && lastSeen) { const lc = list.find((c) => c.id === lastSeen.id) || iptvRecent().find((c) => c.id === lastSeen.id); if (lc) setTimeout(() => startPreview(lc), 350); }
     if (lastSeen?.pending && lastSeen.group === current && focusChannel(lastSeen.id)) endPending();
     else if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
   }
@@ -4940,7 +4984,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', subColor: 'white', subEdge: 'shadow', allowShots: 'off', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
+  const PREF_DEFAULTS = { guidePreview: 'on', splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', subColor: 'white', subEdge: 'shadow', allowShots: 'off', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -5299,6 +5343,7 @@
         ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
         ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
         ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
+        ${nativeApp?.previewStart ? settingRow('Live picture in the guide', 'Keeps a small live picture of your channel at the top of the Live TV guide while you browse. It uses one connection from the TV provider. Turn it off if you only have one.', selectHtml('guidePreview', [['on', 'On'], ['off', 'Off']], getPref('guidePreview'))) : ''}
         ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
         ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
         ${nativeApp?.setAllowScreenshots && !nativeApp.isTv?.() ? settingRow('Allow screenshots', 'Lock Aurora hides the app from screenshots and screen recordings. Turn this on to allow them while the lock is on.', selectHtml('allowShots', [['off', 'Off'], ['on', 'On']], getPref('allowShots'))) : ''}

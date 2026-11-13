@@ -1,2 +1,1 @@
-- New: Provider movies and TV shows. For customers your admin turns it on for, the Movies and TV Shows pages show the provider's titles, with categories, search, seasons and episodes, played straight from the provider.
-- New for resellers: switch the provider's movies and TV on or off for each of your customers, or include it when you make one.
+- New: A live picture in the Live TV guide, like TiviMate. The channel you pick keeps playing in a small window at the top while you browse the guide below. Press OK on another channel to move the picture to it, and OK again to go full screen. You can turn it off in Settings → Playback → Live picture in the guide.
