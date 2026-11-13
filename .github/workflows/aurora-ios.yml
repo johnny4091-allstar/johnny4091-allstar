@@ -88,8 +88,9 @@ jobs:
             -archivePath "$RUNNER_TEMP/Aurora.xcarchive" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
             CURRENT_PROJECT_VERSION=${{ github.run_number }} \
-            -allowProvisioningUpdates \
-            -authenticationKeyPath "$KEY_FILE" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          # The archive above is not signed: the export below signs it for the App Store with Apple's cloud-managed
+          # distribution certificate. (Signing the archive itself would need an iPhone registered on the Apple account.)
           cat > "$RUNNER_TEMP/export.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
