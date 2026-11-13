@@ -46,7 +46,7 @@ jobs:
 
       - name: Check the bundled Aurora screens are in the app
         run: |
-          APP=$(find ~/Library/Developer/Xcode/DerivedData -name Aurora.app -path '*Debug-iphonesimulator*' | head -n 1)
+          APP=$(find ~/Library/Developer/Xcode/DerivedData -name AuroraApp.app -path '*Debug-iphonesimulator*' | head -n 1)
           echo "App: $APP"
           ls -la "$APP" | head -40
           if [ -f "$APP/aurora/index.html" ] && [ -f "$APP/aurora/app.js" ]; then echo "The Aurora screens are bundled in aurora/."
