@@ -9,6 +9,10 @@ on:
       - 'aurora/**'
       - '.github/workflows/aurora-ios.yml'
   workflow_dispatch:
+  # A TestFlight build stops working 90 days after it is uploaded. This builds and uploads a fresh one every month, even when
+  # nothing changed, so the app on the phones can't expire from a quiet spell. (GitHub runs scheduled workflows from main only.)
+  schedule:
+    - cron: '17 6 1 * *'
 
 permissions:
   contents: read
