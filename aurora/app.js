@@ -1354,23 +1354,10 @@
   // For customers the admin switched on (Admin → Users, a plan, or a reseller), the Movies and TV Shows pages show the provider's titles
   // instead of the Emby library (no labels or buttons). Provider titles come from the same Xtream account as Live TV and play straight from the provider in the Aurora player,
   // so they cost the server nothing. They don't have Emby's progress or watched marks; Aurora only remembers where each one stopped.
-  // A "review account" (for Apple's reviewer, set by the admin) sees only the Emby library: no Live TV, Requests or provider titles.
-  const demoFlags = {};
-  const demoKey = () => 'ef.demo.' + state.userId;
-  function setDemoMode(on) {
-    const was = demoMode();
-    demoFlags[state.userId] = !!on;
-    try { store.set(demoKey(), on ? '1' : '0'); } catch { /* ignore */ }
-    if (was !== !!on) { // the menu follows at once
-      $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
-      updateRequestsLink();
-    }
-  }
-  const demoMode = () => (state.userId in demoFlags ? demoFlags[state.userId] : store.get(demoKey()) === '1');
   const providerFlags = {};
   const providerKey = () => 'ef.vod.' + state.userId;
   function setProviderAllowed(on) { providerFlags[state.userId] = !!on; try { store.set(providerKey(), on ? '1' : '0'); } catch { /* ignore */ } }
-  const providerOk = () => !demoMode() && !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
+  const providerOk = () => !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
     && (state.userId in providerFlags ? providerFlags[state.userId] : store.get(providerKey()) === '1');
   const pvCache = new Map();
   async function pvGet(action, params = {}) {
@@ -2048,7 +2035,7 @@
   // Emby server (display preferences), so each customer's app picks it up when they sign in.
   const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
   const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null };
-  const iptvOn = (cfg = iptv.config) => !demoMode() && !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
+  const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
   const showLiveLink = () => hasLiveTv() || iptvOn();
 
   function iptvLocalKey() { return 'ef.iptv.' + state.userId; }
@@ -2176,7 +2163,7 @@
     try { return JSON.parse(text); } catch { throw new Error("The TV provider's answer wasn't understood. Check the server address."); }
   }
   function xtChannel(cfg, st) {
-    const ext = cfg.format === 'hls' ? 'm3u8' : 'ts';
+    const ext = cfg.format === 'hls' || window.AuroraIOS ? 'm3u8' : 'ts'; // an iPhone plays HLS, not raw MPEG-TS
     return {
       id: 'x' + st.stream_id, streamId: st.stream_id, name: st.name || 'Channel', logo: st.stream_icon || '',
       num: st.num != null ? String(st.num) : '', group: st.category_id, epgId: st.epg_channel_id || '',
@@ -2254,7 +2241,6 @@
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
       applyPlanCategories(a.admin ? null : a.categories);
       setProviderAllowed(!a.admin && !!a.vod);
-      setDemoMode(!a.admin && !!a.demo);
     } catch { /* keep what is known */ }
   }
 
@@ -3902,7 +3888,7 @@
   const GUIDE_PX_PER_MIN = 6;
   const live = { channelIds: [], tunedId: null }; // tunedId: the channel being watched or switched to
 
-  const hasLiveTv = () => !demoMode() && state.views.some((v) => v.CollectionType === 'livetv');
+  const hasLiveTv = () => state.views.some((v) => v.CollectionType === 'livetv');
   // Emby dates can carry 7 fractional digits; trim to milliseconds for Date.parse.
   const parseDate = (s) => (s ? new Date(String(s).replace(/(\.\d{3})\d+/, '$1')) : null);
   const clock = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -4160,7 +4146,7 @@
   // (EmbyFlixAndroid.httpRequest). Each person signs in to Jellyseerr with their Emby details, so requests
   // are made as them and Jellyseerr's own permissions and limits apply.
   const TMDB_IMG = 'https://image.tmdb.org/t/p/';
-  const hasRequests = () => !demoMode() && state.requestsEnabled && !!state.requestsServer && !!nativeApp?.httpRequest;
+  const hasRequests = () => state.requestsEnabled && !!state.requestsServer && !!nativeApp?.httpRequest;
   const MEDIA_STATUS = { 2: 'Requested', 3: 'Requested', 4: 'Partly available', 5: 'Available' };
   const REQUEST_STATUS = { 1: 'Waiting for approval', 2: 'Approved', 3: 'Declined' };
 
@@ -4691,7 +4677,7 @@
   function updateRequestsLink() {
     // While Requests isn't switched on the tab still shows, with a "Coming soon" page.
     const comingSoon = !state.requestsEnabled || !state.requestsServer;
-    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', demoMode() || (!comingSoon && !hasRequests())));
+    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !comingSoon && !hasRequests()));
   }
 
   // The admin can set the Requests address in the app (Admin → Requests). It's kept on the Emby server for
@@ -5113,7 +5099,6 @@
       if (!isCurrent() || !section.isConnected) return;
       applyPlanCategories(a.admin ? null : a.categories);
       setProviderAllowed(!a.admin && !!a.vod);
-      setDemoMode(!a.admin && !!a.demo);
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
       const soon = a.daysLeft != null && a.daysLeft <= 7;
@@ -8317,12 +8302,6 @@
         <p class="muted">Their Movies and TV Shows pages show the provider's titles instead of your library. Saved straight away. It uses your TV provider's connections, like Live TV.</p>
         <div class="live-result" data-vod-result></div>
       </section>` : ''}
-      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
-        <h2>Review account</h2>
-        <label class="admin-check"><input type="checkbox" data-demo${lim?.demo ? ' checked' : ''}> This is an account for Apple's reviewer: show ${esc(user.Name)} only the Emby library</label>
-        <p class="muted">Hides Live TV, Requests and the provider's titles for this account, so a reviewer sees an ordinary media player. Saved straight away. The account can still only see the libraries you allow it in Emby.</p>
-        <div class="live-result" data-demo-result></div>
-      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -8347,12 +8326,6 @@
     const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
     const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
 
-    $('[data-demo]', body)?.addEventListener('change', async (ev) => {
-      const on = ev.target.checked; ev.target.disabled = true;
-      try { await guard(`/limits/${userId}/demo`, { method: 'PUT', body: { on } }); say('[data-demo-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
-      catch (e) { ev.target.checked = !on; say('[data-demo-result]', esc(e.message), 'bad'); }
-      ev.target.disabled = false;
-    });
     $('[data-vod]', body)?.addEventListener('change', async (ev) => {
       const on = ev.target.checked; ev.target.disabled = true;
       try { await guard(`/limits/${userId}/vod`, { method: 'PUT', body: { on } }); say('[data-vod-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }

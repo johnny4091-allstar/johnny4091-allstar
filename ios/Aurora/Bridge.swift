@@ -26,6 +26,9 @@ enum Bridge {
             showKeyboard: function () {},
             setPlayerMode: function () {},
             openYouTube: function (id) { post({ cmd: 'openurl', url: 'https://www.youtube.com/watch?v=' + encodeURIComponent(id) }); return true; },
+            playLive: function (channels, index, group, userAgent, report) {
+              post({ cmd: 'playLive', channels: channels, index: index, group: group || '', ua: userAgent || '' });
+            },
             httpRequest: function (id, method, url, headers, body) {
               post({ cmd: 'http', method: method, url: url, headers: headers, body: body }).then(
                 function (r) { window.auroraHttpDone(id, r); },
@@ -45,8 +48,15 @@ enum Bridge {
     }
 }
 
+/// What the page's calls can ask of the screen that shows it.
+protocol LiveHost: AnyObject {
+    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String)
+}
+
 /// Receives the page's calls.
 final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
+    weak var host: LiveHost?
+
     /// Requests the page makes through the app: some services (Jellyseerr) don't allow calls from a web page, and the app
     /// keeps its own cookies for them, like the Android app does.
     private lazy var session: URLSession = {
@@ -67,6 +77,16 @@ final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(true, nil)
         case "http":
             http(body, reply: replyHandler)
+        case "playLive":
+            if let text = body["channels"] as? String, let data = text.data(using: .utf8),
+               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], !list.isEmpty {
+                let channels = list.map { LiveChannel($0) }
+                let index = (body["index"] as? Int) ?? 0
+                let group = (body["group"] as? String) ?? ""
+                let agent = (body["ua"] as? String) ?? ""
+                DispatchQueue.main.async { self.host?.presentLive(channels: channels, index: index, group: group, userAgent: agent) }
+            }
+            replyHandler(true, nil)
         default:
             replyHandler(nil, "unknown command")
         }

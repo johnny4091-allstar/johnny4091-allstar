@@ -4,12 +4,18 @@ A native iPhone app (iPhone only) that shows the same Aurora screens as the Andr
 `../aurora` are bundled into the app. A small native layer (`Aurora/Bridge.swift`) provides the few things a web page can't do
 itself.
 
-## What works in this version (stage 1)
+## What works in this version
 
 - Sign in, Home, Movies, TV Shows, Favorites, search, the Requests tab (through the app, like Android) and the Admin pages.
 - Movies and shows play in the page's own player: direct when the iPhone can, converted by your server (HLS) when it can't.
-- Not yet (the screens hide them): Live TV channels and the guide, the guide's live picture, the provider's movies and TV shows,
-  downloads, reminders, the app lock. These come in the next stages.
+- **Live TV channels (stage 2):** the channel list and what's on now come from the provider through the app. Tapping a channel opens a
+  full-screen player (Apple's player) with swipe up and down for the next and previous channel, a channel list, and a quiet retry.
+  The iPhone plays HLS: an Xtream provider's channel is asked for as `.m3u8`. A plain M3U playlist whose addresses are raw `.ts`
+  streams will not play on an iPhone until a second player is added.
+- Not yet: the full TV guide (it needs a program-guide reader in the app) and the guide's live picture, the provider's movies and TV
+  shows, downloads, reminders, the app lock, and live-viewing reports to Aurora Guard (so iPhone viewers are not yet counted in the
+  admin's "watching now" and provider connection numbers).
+- Every account sees the same app. Nothing is hidden from any account (an account's libraries are set in Emby).
 - Updates come through TestFlight, not from GitHub (the app's own update check is switched off on iPhone).
 
 ## How it is built

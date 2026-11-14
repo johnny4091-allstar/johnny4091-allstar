@@ -26,16 +26,17 @@ you stopped, and request new titles.
 
 ## Review note (paste into the Notes box)
 
-Aurora is a client app for a user's own media server (an Emby server). It contains no media of its own and does not provide any
-content: it only plays what is on the server the user signs in to.
+Aurora is a client app for a user's own media server (an Emby server). It contains no media of its own. It plays what is on the
+server the user signs in to, including the server's Live TV: a live TV playlist that the person who runs the server sets up. The app
+supplies no channels itself. Live TV is part of the app for every account, including the demo account below.
 
 How to review it:
 
 1. Open the app. On the sign-in screen enter the demo account:
    - Username: `<demo username>`
    - Password: `<demo password>`
-2. The demo account is on a small library of free-to-use videos (<say what they are, for example public-domain films>).
-   Open Movies or TV Shows, choose a title and press Play.
+2. Open Movies or TV Shows, choose a title and press Play. Open Live TV to see the channels the server provides and press a channel
+   to watch it. (<say what the demo library contains>)
 3. No payment, purchase or account creation takes place inside the app. Access to a user's own server account is arranged outside
    the app by the person who runs the server.
 
@@ -46,23 +47,23 @@ If anything does not work during review, please contact <your email> and the ser
 
 ## Making the demo account (about 10 minutes)
 
-1. **A small library of free titles.** On the PC running Emby, make a folder, for example `Demo`, and put in a few free or public-domain
-   videos (archive.org has many) or your own clips. In Emby: Dashboard → Library → Add Media Library → name it Demo → choose that folder.
+The reviewer must see the same app your customers see. Don't hide any feature from this account. Give it a login that works and a few
+titles to play.
+
+1. **Some titles to play.** In Emby, make a library (for example `Demo`) with a few free or public-domain videos (archive.org has many)
+   or your own clips. Or let the demo user see a normal library: your choice.
 2. **The account.** In the Aurora app: Admin → Users → **Add user**. Username `applereview` (or anything you like), a strong password you
-   will paste into App Store Connect, and 1 device. Do not make it an administrator.
-3. **Only the demo library.** In Emby: Dashboard → Users → `applereview` → Library Access → turn off "Enable access to all libraries",
-   then tick only **Demo**. (Check there is nothing else ticked, including Live TV.)
-4. **Review account.** In Aurora: Admin → Users → `applereview` → turn on **Review account**.
-5. **No end date.** On the same page, set **No end date** and save, so it can't expire during the review.
-6. **Try it.** Sign out of the app, sign in as `applereview` on a phone, and check: only the Demo titles show, there is no Live TV tab and
-   no Requests tab, and a video plays. Then put these details in the TestFlight sign-in box.
+   will paste into App Store Connect. Do not make it an administrator. It gets Live TV like any other account.
+3. **No end date.** On the user's page, set **No end date** and save, so it can't expire during the review.
+4. **Try it.** Sign in as `applereview` on a phone and check that you can browse and play a title and that Live TV works.
+   Then put these details in the TestFlight sign-in box.
 
 ## Checklist before you submit
 
-- [ ] The demo user exists in Emby, is **not** an administrator, can only see the small library, and has no end date or device limit
-      in Aurora Guard (Admin → Users → the user → set no end date).
+- [ ] The demo user exists in Emby, is **not** an administrator, and has no end date or device limit that could lock it out
+      (Admin → Users → the user → set no end date).
 - [ ] The server and Aurora Guard are switched on and reachable from the internet for the whole review (it can take a day or two).
-- [ ] In Aurora: Admin → Users → the demo user → turn on **Review account** (needs Guard 1.20.0 and the app version that has it). That hides Live TV, Requests and the provider's titles for this one account.
+- [ ] The demo account sees the same app as every customer. Nothing is hidden from it, and the note above describes Live TV honestly.
 - [ ] The privacy policy page opens in a phone browser, and its contact line shows your email (set `contact` in `website/config.js`).
 - [ ] The description and screenshots only show features that work in this version (see `ios/README.md`).
 - [ ] You tried the build yourself on a real iPhone first.

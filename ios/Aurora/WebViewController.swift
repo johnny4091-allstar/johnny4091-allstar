@@ -2,7 +2,7 @@ import UIKit
 import WebKit
 
 /// One full-screen web view that shows the Aurora screens bundled in the app.
-final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, LiveHost {
     private let background = UIColor(red: 7 / 255, green: 12 / 255, blue: 28 / 255, alpha: 1)
     private var webView: WKWebView!
     private let handler = BridgeHandler()
@@ -14,6 +14,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = background
+        handler.host = self
 
         let config = WKWebViewConfiguration()
         config.setURLSchemeHandler(AssetSchemeHandler(), forURLScheme: AssetSchemeHandler.scheme)
@@ -47,6 +48,20 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         ])
         webView = web
         web.load(URLRequest(url: AssetSchemeHandler.startURL))
+    }
+
+    // MARK: Live TV
+
+    /// Opens the live TV player over the page, and tells the page which channel it ended on and what happened.
+    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String) {
+        guard presentedViewController == nil else { return } // a double tap must not open a second player
+        let player = LivePlayerViewController(channels: channels, index: index, group: group, userAgent: userAgent) { [weak self] ended, stats in
+            guard let self = self,
+                  let data = try? JSONSerialization.data(withJSONObject: stats),
+                  let json = String(data: data, encoding: .utf8) else { return }
+            self.webView.evaluateJavaScript("window.auroraLiveClosed && window.auroraLiveClosed(\(ended), \(json))", completionHandler: nil)
+        }
+        present(player, animated: true)
     }
 
     // MARK: Navigation
