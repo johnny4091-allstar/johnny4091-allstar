@@ -1,0 +1,41 @@
+# The Aurora Apple TV app: a native SwiftUI app (Apple TV has no web view, so it can't reuse the Aurora web screens).
+# The Xcode project is generated with XcodeGen:   cd tvos && xcodegen generate
+name: AuroraTV
+options:
+  bundleIdPrefix: com.johnny4091
+  deploymentTarget:
+    tvOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    TARGETED_DEVICE_FAMILY: "3"           # Apple TV
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    PRODUCT_BUNDLE_IDENTIFIER: com.johnny4091.aurora   # the build workflow passes the real bundle ID (the same one the iPhone app uses)
+    DEVELOPMENT_TEAM: ""
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+targets:
+  AuroraTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: AuroraTV
+        excludes:
+          - Info.plist
+    info:
+      path: AuroraTV/Info.plist
+      properties:
+        CFBundleDisplayName: Aurora
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        ITSAppUsesNonExemptEncryption: false
+        UIUserInterfaceStyle: Dark
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true       # the server may be reached by address over http
+    settings:
+      base:
+        PRODUCT_NAME: AuroraTV
+        TARGETED_DEVICE_FAMILY: "3"
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
+        CODE_SIGN_STYLE: Automatic
