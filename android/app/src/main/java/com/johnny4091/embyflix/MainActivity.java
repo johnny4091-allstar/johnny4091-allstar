@@ -42,6 +42,7 @@ import android.widget.FrameLayout;
 import androidx.core.content.FileProvider;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
+import androidx.core.view.WindowInsetsControllerCompat;
 import androidx.webkit.WebViewAssetLoader;
 
 import org.json.JSONObject;
@@ -1246,13 +1247,23 @@ public class MainActivity extends Activity {
                 webView.requestFocus();
                 InputMethodManager imm = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
                 if (imm == null) return;
-                // Give the page a moment to focus its text box, then ask. Some TV-provider keyboards
-                // ignore a polite request, so fall back to a forced one.
+                // Give the page a moment to focus its text box, then ask. A polite (implicit) request is silently ignored on
+                // Fire TV and some other boxes, because their remote counts as a hardware keyboard: it says "shown" and nothing
+                // appears. So a TV asks firmly straight away, and if the keyboard still hasn't come up it asks again another way.
                 webView.postDelayed(() -> {
-                    if (!imm.showSoftInput(webView, InputMethodManager.SHOW_IMPLICIT)) {
-                        imm.showSoftInput(webView, InputMethodManager.SHOW_FORCED);
-                    }
+                    boolean shown = imm.showSoftInput(webView, tvDevice ? InputMethodManager.SHOW_FORCED : InputMethodManager.SHOW_IMPLICIT);
+                    if (!shown) imm.showSoftInput(webView, InputMethodManager.SHOW_FORCED);
                 }, 150);
+                webView.postDelayed(() -> {
+                    if (keyboardShowing(webView) || !webView.hasFocus()) return;
+                    // Still no keyboard: the newer way, through the window, then a toggle as the last resort.
+                    WindowInsetsControllerCompat controller = ViewCompat.getWindowInsetsController(webView);
+                    if (controller != null) controller.show(WindowInsetsCompat.Type.ime());
+                }, 700);
+                webView.postDelayed(() -> {
+                    if (keyboardShowing(webView) || !webView.hasFocus() || !webView.onCheckIsTextEditor()) return;
+                    imm.showSoftInput(webView, InputMethodManager.SHOW_FORCED);
+                }, 1400);
             });
         }
 
