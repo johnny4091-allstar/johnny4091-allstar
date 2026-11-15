@@ -36,12 +36,22 @@ enum Bridge {
             setPlayerMode: function () {},
             openYouTube: function (id) { post({ cmd: 'openurl', url: 'https://www.youtube.com/watch?v=' + encodeURIComponent(id) }); return true; },
             playLive: function (channels, index, group, userAgent, report) {
-              post({ cmd: 'playLive', channels: channels, index: index, group: group || '', ua: userAgent || '' });
+              post({ cmd: 'playLive', channels: channels, index: index, group: group || '', ua: userAgent || '', report: report || '' });
             },
             httpRequest: function (id, method, url, headers, body) {
-              post({ cmd: 'http', method: method, url: url, headers: headers, body: body }).then(
-                function (r) { window.auroraHttpDone(id, r); },
-                function () { window.auroraHttpDone(id, { status: 0, body: '' }); });
+              post({ cmd: 'http', method: method, url: url, headers: headers, body: body }).then(function (r) {
+                // A big answer (a provider's channel list can be tens of megabytes) comes over in pieces: one huge message freezes the page.
+                if (!r || !r.handle) return window.auroraHttpDone(id, r);
+                var parts = [];
+                var pull = function (offset) {
+                  return post({ cmd: 'httpchunk', handle: r.handle, offset: offset }).then(function (piece) {
+                    if (!piece) return;
+                    parts.push(piece);
+                    return pull(offset + piece.length);
+                  });
+                };
+                return pull(0).then(function () { r.body = parts.join(''); delete r.handle; window.auroraHttpDone(id, r); });
+              }).catch(function () { window.auroraHttpDone(id, { status: 0, body: '' }); });
             },
             // The TV guide: the app reads it (EpgStore) and hands it over a few hundred channels at a time; lookups are then
             // answered here, the same way the Android app's guide reader answers them.
@@ -51,13 +61,17 @@ enum Bridge {
                 var byId = new Map(), byName = new Map();
                 var next = function (offset) {
                   return post({ cmd: 'epgchunk', token: sum.token, offset: offset }).then(function (rows) {
-                    if (!rows || !rows.length) return;
-                    rows.forEach(function (r) {
+                    if (!rows || rows === '[]') return;
+                    var list = JSON.parse(rows);
+                    if (!list.length) return;
+                    // Each channel's listings stay as JSON text and are only unpacked when asked for: thousands of channels of
+                    // small objects would use many times the memory and get the page stopped.
+                    list.forEach(function (r) {
                       byId.set(r[0], [r[1], r[2], r[3]]);
                       var n = epgNormal(r[1]);
                       if (n && !byName.has(n)) byName.set(n, r[0]);
                     });
-                    return next(offset + rows.length);
+                    return next(offset + list.length);
                   });
                 };
                 return next(0).then(function () {
@@ -70,12 +84,12 @@ enum Bridge {
               var list = [];
               try { list = JSON.parse(request); } catch (e) { /* none */ }
               if (!epg || (url && epg.url !== url)) return 'null';
-              return JSON.stringify(list.map(function (r) { var e = epgFind(r); return e ? { n: e[0], i: e[1], p: e[2] } : null; }));
+              return '[' + list.map(function (r) { var e = epgFind(r); return e ? '{"n":' + JSON.stringify(e[0]) + ',"i":' + JSON.stringify(e[1]) + ',"p":' + e[2] + '}' : 'null'; }).join(',') + ']';
             },
             epgCount: function (url, request) {
               var list = [], listings = 0, logos = 0;
               try { list = JSON.parse(request); } catch (e) { /* none */ }
-              if (epg && (!url || epg.url === url)) list.forEach(function (r) { var e = epgFind(r); if (!e) return; if (e[2].length) listings++; if (e[1]) logos++; });
+              if (epg && (!url || epg.url === url)) list.forEach(function (r) { var e = epgFind(r); if (!e) return; if (e[2].length > 2) listings++; if (e[1]) logos++; });
               return JSON.stringify({ listings: listings, logos: logos });
             }
           };
@@ -94,7 +108,7 @@ enum Bridge {
 
 /// What the page's calls can ask of the screen that shows it.
 protocol LiveHost: AnyObject {
-    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String)
+    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String, report: String)
 }
 
 /// Receives the page's calls.
@@ -135,7 +149,10 @@ final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
         case "epgchunk":
             let token = (body["token"] as? String) ?? ""
             let offset = (body["offset"] as? Int) ?? 0
-            replyHandler(EpgStore.shared.chunk(token: token, offset: offset), nil)
+            // Built off the main thread: a few hundred channels of listings is a lot of text to join.
+            DispatchQueue.global(qos: .userInitiated).async { replyHandler(EpgStore.shared.chunk(token: token, offset: offset), nil) }
+        case "httpchunk":
+            replyHandler(takeChunk(handle: (body["handle"] as? String) ?? "", offset: (body["offset"] as? Int) ?? 0), nil)
         case "playLive":
             if let text = body["channels"] as? String, let data = text.data(using: .utf8),
                let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], !list.isEmpty {
@@ -143,7 +160,8 @@ final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
                 let index = (body["index"] as? Int) ?? 0
                 let group = (body["group"] as? String) ?? ""
                 let agent = (body["ua"] as? String) ?? ""
-                DispatchQueue.main.async { self.host?.presentLive(channels: channels, index: index, group: group, userAgent: agent) }
+                let report = (body["report"] as? String) ?? ""
+                DispatchQueue.main.async { self.host?.presentLive(channels: channels, index: index, group: group, userAgent: agent, report: report) }
             }
             replyHandler(true, nil)
         default:
@@ -166,7 +184,40 @@ final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
             guard error == nil, let http = response as? HTTPURLResponse else { return reply(["status": 0, "body": ""], nil) }
             // Cookies set by the service are handed back to the page, which keeps them (the Android app does the same).
             let cookie = (http.allHeaderFields["Set-Cookie"] as? String) ?? ""
-            reply(["status": http.statusCode, "body": String(data: data ?? Data(), encoding: .utf8) ?? "", "setCookie": cookie], nil)
+            // Lossy on purpose: a stray bad byte must not turn a whole answer into an empty one.
+            let text = String(decoding: data ?? Data(), as: UTF8.self)
+            if (data?.count ?? 0) > BridgeHandler.chunkSize {
+                reply(["status": http.statusCode, "handle": self.keepBody(text), "setCookie": cookie], nil)
+            } else {
+                reply(["status": http.statusCode, "body": text, "setCookie": cookie], nil)
+            }
         }.resume()
+    }
+
+    // MARK: Big answers, handed over in pieces
+
+    /// About 1 million characters per piece.
+    private static let chunkSize = 1_000_000
+    private let bodiesLock = NSLock()
+    private var bodies: [String: NSString] = [:]
+
+    private func keepBody(_ text: String) -> String {
+        bodiesLock.lock(); defer { bodiesLock.unlock() }
+        if bodies.count >= 4 { bodies.removeAll() } // a page that went away without collecting its answer
+        let handle = UUID().uuidString
+        bodies[handle] = text as NSString
+        return handle
+    }
+
+    /// The piece of a kept answer starting at `offset` (counted in UTF-16 units, like the page's strings); "" when it is all handed over.
+    private func takeChunk(handle: String, offset: Int) -> String {
+        bodiesLock.lock(); defer { bodiesLock.unlock() }
+        guard let text = bodies[handle], offset >= 0, offset < text.length else { bodies[handle] = nil; return "" }
+        var end = min(text.length, offset + BridgeHandler.chunkSize)
+        // Never cut a character in two (an emoji is two units).
+        if end < text.length { end = NSMaxRange(text.rangeOfComposedCharacterSequence(at: end - 1)) }
+        let piece = text.substring(with: NSRange(location: offset, length: end - offset))
+        if end >= text.length { bodies[handle] = nil }
+        return piece
     }
 }

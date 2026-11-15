@@ -35,7 +35,9 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         web.scrollView.bounces = false
         web.scrollView.contentInsetAdjustmentBehavior = .never
         web.allowsBackForwardNavigationGestures = false
-        if #available(iOS 16.4, *) { web.isInspectable = true }
+        #if DEBUG
+        if #available(iOS 16.4, *) { web.isInspectable = true } // for development only
+        #endif
         web.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(web)
         // Inside the safe area: clear of the notch and the home bar.
@@ -53,9 +55,9 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     // MARK: Live TV
 
     /// Opens the live TV player over the page, and tells the page which channel it ended on and what happened.
-    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String) {
+    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String, report: String) {
         guard presentedViewController == nil else { return } // a double tap must not open a second player
-        let player = LivePlayerViewController(channels: channels, index: index, group: group, userAgent: userAgent) { [weak self] ended, stats in
+        let player = LivePlayerViewController(channels: channels, index: index, group: group, userAgent: userAgent, report: report) { [weak self] ended, stats in
             guard let self = self,
                   let data = try? JSONSerialization.data(withJSONObject: stats),
                   let json = String(data: data, encoding: .utf8) else { return }
@@ -89,7 +91,39 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     /// If iOS closes the web view's process to free memory, start it again rather than showing a blank screen.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        EpgStore.shared.trim() // free what the app holds too, so it doesn't happen again straight away
         webView.load(URLRequest(url: AssetSchemeHandler.startURL))
+    }
+
+    /// iOS says memory is short: let go of the TV guide copy the app holds (the page keeps its own).
+    override func didReceiveMemoryWarning() {
+        super.didReceiveMemoryWarning()
+        EpgStore.shared.trim()
+    }
+
+    // MARK: A page that didn't load
+
+    private var loadFailures = 0
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loadFailures = 0 }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { loadFailed(error) }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { loadFailed(error) }
+
+    /// The bundled screens failing to load is rare (the web view was stopped, or memory ran out): try again once, then say so.
+    private func loadFailed(_ error: Error) {
+        if (error as NSError).code == NSURLErrorCancelled { return }
+        loadFailures += 1
+        if loadFailures == 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.webView.load(URLRequest(url: AssetSchemeHandler.startURL)) }
+            return
+        }
+        guard presentedViewController == nil else { return }
+        let alert = UIAlertController(title: "Aurora couldn't open", message: "Something went wrong while starting. Try again.", preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Try again", style: .default) { [weak self] _ in
+            self?.loadFailures = 0
+            self?.webView.load(URLRequest(url: AssetSchemeHandler.startURL))
+        })
+        present(alert, animated: true)
     }
 
     // MARK: Page alerts (the pages use confirm() in a few places)

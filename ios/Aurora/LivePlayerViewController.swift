@@ -7,8 +7,10 @@ struct LiveChannel {
     let url: String
     let number: String
     let now: String
+    let logo: String
 
     init(_ json: [String: Any]) {
+        logo = (json["logo"] as? String) ?? ""
         url = (json["url"] as? String) ?? ""
         name = (json["name"] as? String) ?? "Channel"
         number = (json["num"] as? String) ?? ""
@@ -24,6 +26,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     private var index: Int
     private let groupName: String
     private let userAgent: String
+    private let reporter: LiveReporter?
     private let onClose: (Int, [String: Any]) -> Void
 
     private let player = AVPlayer()
@@ -38,6 +41,11 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
 
     private var hideTimer: Timer?
     private var retryWork: DispatchWorkItem?
+    private var retryPending = false          // a retry is already waiting: a second failure signal must not add another
+    private var startWork: DispatchWorkItem?  // a channel change waiting out the swiping
+    private var stableWork: DispatchWorkItem? // after 20 s of steady playing the retries start fresh
+    private var reportWork: DispatchWorkItem?
+    private var heartbeat: Timer?
     private var retries = 0
     private var itemObservation: NSKeyValueObservation?
     private var rateObservation: NSKeyValueObservation?
@@ -47,11 +55,12 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     private var lastFailedName = ""
     private var closed = false
 
-    init(channels: [LiveChannel], index: Int, group: String, userAgent: String, onClose: @escaping (Int, [String: Any]) -> Void) {
+    init(channels: [LiveChannel], index: Int, group: String, userAgent: String, report: String, onClose: @escaping (Int, [String: Any]) -> Void) {
         self.channels = channels
         self.index = max(0, min(index, channels.count - 1))
         self.groupName = group
         self.userAgent = userAgent
+        self.reporter = LiveReporter(json: report)
         self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .fullScreen
@@ -159,8 +168,11 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         rateObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             DispatchQueue.main.async { self?.playbackStateChanged(player.timeControlStatus) }
         }
-        play(index: index)
+        play(index: index, immediate: true)
         showBars(autoHide: true)
+        if reporter != nil {
+            heartbeat = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.reporter?.heartbeat() }
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -192,9 +204,13 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         return URL(string: address)
     }
 
-    private func play(index newIndex: Int) {
+    private func play(index newIndex: Int, immediate: Bool = false) {
         guard channels.indices.contains(newIndex) else { return }
         retryWork?.cancel()
+        retryPending = false
+        startWork?.cancel()
+        stableWork?.cancel()
+        reportWork?.cancel()
         retries = 0
         index = newIndex
         if visited.last != newIndex { visited.append(newIndex) }
@@ -203,7 +219,21 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         titleLabel.text = channel.name
         nowLabel.text = channel.now
         statusLabel.isHidden = true
-        start(channel)
+        // Swiping quickly through channels must not open a stream for every one of them (a provider only allows a few at once):
+        // the picture changes once the swiping stops.
+        if immediate { start(channel); } else {
+            spinner.startAnimating()
+            let work = DispatchWorkItem { [weak self] in self?.start(channel) }
+            startWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        }
+        // Tell Admin what is playing once the viewer has stayed on a channel for a few seconds (not while surfing).
+        if let reporter = reporter {
+            let group = groupName
+            let work = DispatchWorkItem { reporter.playing(name: channel.name, num: channel.number, logo: channel.logo, group: group, now: channel.now) }
+            reportWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+        }
     }
 
     private func start(_ channel: LiveChannel) {
@@ -230,11 +260,17 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
 
     private func itemFailed(_ channel: LiveChannel, _ error: Error?) {
         guard !closed, channels.indices.contains(index), channels[index].url == channel.url else { return }
+        // The player reports one failure in two ways: only the first one counts.
+        if retryPending { return }
+        stableWork?.cancel()
         // A provider often fails once and works a moment later: try again a few times before saying so.
         if retries < 3 {
             retries += 1
+            retryPending = true
             let work = DispatchWorkItem { [weak self] in
-                guard let self = self, !self.closed, self.channels.indices.contains(self.index), self.channels[self.index].url == channel.url else { return }
+                guard let self = self else { return }
+                self.retryPending = false
+                guard !self.closed, self.channels.indices.contains(self.index), self.channels[self.index].url == channel.url else { return }
                 self.start(channel)
             }
             retryWork = work
@@ -261,7 +297,11 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         case .playing:
             spinner.stopAnimating()
             statusLabel.isHidden = true
-            retries = 0
+            // The retries start fresh only once a channel has played steadily: one that keeps dropping must still give up.
+            stableWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.retries = 0 }
+            stableWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
             showBars(autoHide: true)
         case .waitingToPlayAtSpecifiedRate:
             if statusLabel.isHidden { spinner.startAnimating() }
@@ -344,7 +384,12 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         guard !closed else { return }
         closed = true
         hideTimer?.invalidate()
+        heartbeat?.invalidate()
         retryWork?.cancel()
+        startWork?.cancel()
+        stableWork?.cancel()
+        reportWork?.cancel()
+        reporter?.stopped()
         itemObservation = nil
         rateObservation = nil
         if let old = endObserver { NotificationCenter.default.removeObserver(old) }
