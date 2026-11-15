@@ -602,7 +602,7 @@
         const input = $('.su-input', root), ex = $('[data-ex]', root);
         input.addEventListener('input', () => { U.name = input.value; ex.textContent = input.value.trim() || who; });
         const typeBtn = $('[data-su="typename"]', root);
-        typeBtn?.addEventListener('click', () => { input.tabIndex = 0; focusEl(input); nativeApp?.showKeyboard(); });
+        typeBtn?.addEventListener('click', () => { input.tabIndex = 0; focusEl(input); showDeviceKeyboard(); });
         if (typeBtn) {
           input.addEventListener('blur', () => { input.tabIndex = -1; typeBtn.textContent = input.value.trim() || 'Type a name'; });
           input.__onBack = () => focusEl($('[data-su="next"]', root));
@@ -1747,7 +1747,7 @@
     $('[data-act="device-kb"]', page)?.addEventListener('click', () => {
       devInput.value = query;
       devInput.focus();
-      nativeApp.showKeyboard();
+      showDeviceKeyboard();
     });
     devInput?.addEventListener('input', () => { query = devInput.value.slice(0, 60); show(); });
     devInput?.addEventListener('blur', () => { devInput.value = ''; });
@@ -5495,7 +5495,7 @@
     writeBtn?.addEventListener('click', () => {
       box.tabIndex = 0;
       focusEl(box);
-      nativeApp?.showKeyboard();
+      showDeviceKeyboard();
     });
     if (writeBtn) {
       box.addEventListener('blur', () => { box.tabIndex = -1; });
@@ -10406,7 +10406,7 @@
       if (nav.tv) { location.hash = '#/search'; return; } // TV: on-screen keyboard page
       box.classList.add('open');
       input.focus();
-      nativeApp?.showKeyboard();
+      showDeviceKeyboard();
     });
     input.addEventListener('input', () => {
       clearTimeout(searchTimer);
@@ -10461,6 +10461,7 @@
   }
 
   function activeLayer() {
+    if (ownKbOpen()) return $('#own-kb');
     if (isPlayerOpen()) {
       if (stillWatchingVisible()) return $('#still-watching');
       return tracksOpen() ? $('#tracks-panel') : $('#player');
@@ -10625,12 +10626,116 @@
     }
   }
 
+
+  // ----- Aurora's own on-screen keyboard (TV) -----
+  // Fire TV never opens the system keyboard for the app, so a text box could not be typed in. On those boxes Aurora draws its
+  // own keyboard (the remote's arrows and OK move over the keys). Other TVs keep their system keyboard; turn this on for one
+  // with localStorage 'ef.ownKeyboard' = '1' (off with '0').
+  const ownKbWanted = () => {
+    const forced = store.get('ef.ownKeyboard');
+    if (forced === '0') return false;
+    return forced === '1' || /\bAFT[A-Za-z0-9]*\b/.test(navigator.userAgent || '');
+  };
+  const ownKbOpen = () => !!document.getElementById('own-kb');
+  // Asks for the keyboard for the text box that has the focus: Aurora's own on a Fire TV, otherwise the device's.
+  function showDeviceKeyboard() {
+    const el = document.activeElement;
+    if (ownKbWanted() && isTextInput(el)) { openOwnKb(el); return; }
+    nativeApp?.showKeyboard?.();
+  }
+  const OWN_KB_ROWS = {
+    lower: ['1234567890'.split(''), 'qwertyuiop'.split(''), 'asdfghjkl'.split(''), ['shift', ...'zxcvbnm'.split(''), 'del'], ['sym', '@', '.', 'space', '_', '-', 'show']],
+    upper: ['1234567890'.split(''), 'QWERTYUIOP'.split(''), 'ASDFGHJKL'.split(''), ['shift', ...'ZXCVBNM'.split(''), 'del'], ['sym', '@', '.', 'space', '_', '-', 'show']],
+    sym: ['!@#$%^&*()'.split(''), ['-', '_', '=', '+', ';', ':', "'", '"', '/', '\\'], ['[', ']', '{', '}', '<', '>', '?', '|', '~', '`'], ['abc', ',', '.', '@', '#', '%', '&', '*', 'del'], ['abc', '@', '.', 'space', '_', '-', 'show']],
+  };
+  const OWN_KB_LABELS = { shift: '⇧', del: '⌫', sym: '?123', abc: 'abc', space: 'Space' };
+  let ownKbState = null;
+  function openOwnKb(target) {
+    if (ownKbOpen()) closeOwnKb(false);
+    const form = target.form;
+    const inputs = form ? [...form.querySelectorAll('input, textarea')].filter((i) => isTextInput(i)) : [];
+    const next = inputs[inputs.indexOf(target) + 1] || null;
+    const isPassword = target.type === 'password';
+    const label = ((target.labels && target.labels[0] ? [...target.labels[0].childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' ') : '') || target.getAttribute('aria-label') || target.placeholder || 'Type here').trim();
+    const st = ownKbState = { target, original: target.value, layout: 'lower', shown: !isPassword, isPassword, next, max: target.maxLength > 0 ? target.maxLength : 200 };
+    try { target.scrollIntoView({ block: 'center' }); } catch { /* an old WebView */ }
+    const wrap = document.createElement('div');
+    wrap.id = 'own-kb';
+    wrap.className = 'ok-wrap';
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    wrap.setAttribute('aria-label', label);
+    wrap.innerHTML = `<div class="ok">
+      <div class="ok-top"><span class="ok-label">${esc(label)}</span><div class="ok-val" data-ok-val></div></div>
+      <div class="ok-rows" data-ok-rows></div>
+      <div class="ok-actions"><span class="ok-hint">Arrows and OK on the remote. Back closes the keyboard.</span>
+        <button type="button" class="btn btn-gray" data-ok-cancel>Cancel</button>
+        <button type="button" class="btn btn-red" data-ok-done>${next ? 'Next' : 'Done'}</button></div></div>`;
+    document.body.appendChild(wrap);
+    const valEl = $('[data-ok-val]', wrap), rowsEl = $('[data-ok-rows]', wrap);
+    const paintValue = () => {
+      const v = st.target.value;
+      valEl.innerHTML = `<span>${esc(st.shown ? v : '•'.repeat(v.length))}</span><i class="ok-caret"></i>`;
+    };
+    const set = (v) => {
+      st.target.value = v.slice(0, st.max);
+      st.target.dispatchEvent(new Event('input', { bubbles: true }));
+      paintValue();
+    };
+    const paintKeys = (focusKey) => {
+      rowsEl.innerHTML = OWN_KB_ROWS[st.layout].map((row) => `<div class="ok-row">${row.map((k) => {
+        const fn = k.length > 1;
+        const text = k === 'show' ? (st.shown ? 'Hide' : 'Show') : (OWN_KB_LABELS[k] || k);
+        return `<button type="button" class="ok-key${fn ? ' fn' : ''}${k === 'space' ? ' space' : ''}${k === 'shift' && st.layout === 'upper' ? ' on' : ''}${k === 'show' && !st.isPassword ? ' hidden' : ''}" data-k="${esc(k)}">${esc(text)}</button>`;
+      }).join('')}</div>`).join('');
+      if (focusKey) focusEl($(`[data-k="${CSS.escape(focusKey)}"]`, rowsEl) || $('.ok-key', rowsEl));
+    };
+    const press = (k) => {
+      const v = st.target.value;
+      if (k === 'del') set(v.slice(0, -1));
+      else if (k === 'space') set(v + ' ');
+      else if (k === 'shift') { st.layout = st.layout === 'upper' ? 'lower' : 'upper'; paintKeys('shift'); }
+      else if (k === 'sym') { st.layout = 'sym'; paintKeys('abc'); }
+      else if (k === 'abc') { st.layout = 'lower'; paintKeys('sym'); }
+      else if (k === 'show') { st.shown = !st.shown; paintKeys('show'); paintValue(); }
+      else {
+        set(v + k);
+        // One capital after Shift, then back to small letters (like a phone).
+        if (st.layout === 'upper') { st.layout = 'lower'; paintKeys(k.toLowerCase()); }
+      }
+    };
+    rowsEl.addEventListener('click', (e) => { const b = e.target.closest('[data-k]'); if (b) press(b.dataset.k); });
+    $('[data-ok-cancel]', wrap).addEventListener('click', () => { set(st.original); closeOwnKb(true); });
+    $('[data-ok-done]', wrap).addEventListener('click', () => {
+      const nextEl = st.next;
+      closeOwnKb(!nextEl);
+      if (nextEl) { focusEl(nextEl); openOwnKb(nextEl); }
+    });
+    // A keyboard plugged into the box, or a remote with one, types straight in.
+    st.onKey = (e) => {
+      if (!ownKbOpen() || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'Backspace') { press('del'); e.preventDefault(); e.stopPropagation(); }
+      else if (e.key.length === 1) { set(st.target.value + e.key); e.preventDefault(); e.stopPropagation(); }
+    };
+    document.addEventListener('keydown', st.onKey, true);
+    paintValue();
+    paintKeys('g');
+  }
+  function closeOwnKb(refocus) {
+    const st = ownKbState;
+    ownKbState = null;
+    document.getElementById('own-kb')?.remove();
+    if (!st) return;
+    document.removeEventListener('keydown', st.onKey, true);
+    if (refocus && document.contains(st.target)) { if (st.target.tabIndex < 0) st.target.tabIndex = 0; focusEl(st.target); }
+  }
+
   const isTextInput = (el) => el && ((el.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit'].includes(el.type)) || el.tagName === 'TEXTAREA');
 
   function activate(el) {
     const layer = activeLayer();
     if (!el || el === document.body || !layer.contains(el)) { focusInitial(layer); return; }
-    if (isTextInput(el)) { el.focus(); nativeApp?.showKeyboard(); return; }
+    if (isTextInput(el)) { el.focus(); showDeviceKeyboard(); return; }
     if (el.tagName === 'SELECT') {
       try { el.showPicker(); } catch {
         // Older WebViews: step through the options instead.
@@ -10681,7 +10786,7 @@
     if (action === 'select') {
       if (isTextInput(el) && !fromNative) {
         // Keyboard Enter submits; an empty field on a TV opens the on-screen keyboard instead.
-        if (nav.tv && !el.value) { nativeApp?.showKeyboard(); return true; }
+        if (nav.tv && !el.value) { showDeviceKeyboard(); return true; }
         return false;
       }
       activate(el);
@@ -10730,6 +10835,7 @@
   // ---------- Android app bridge ----------
   // Called by the Android back button. Returns true when the app handled it.
   window.embyflixBack = () => {
+    if (ownKbOpen()) { closeOwnKb(true); return true; }
     if (tour) { tourEnd('skip'); return true; }
     // Leaving a text box that the remote can't otherwise get out of (Settings → Write a note on a TV).
     const typing = document.activeElement;
