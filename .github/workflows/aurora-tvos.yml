@@ -1,0 +1,104 @@
+name: Build Aurora Apple TV app
+
+# Builds the Apple TV app on a GitHub Mac. Without Apple signing secrets it only proves the app compiles. With them (the same
+# secrets as the iPhone app, see ios/README.md) it also signs the app and sends it to TestFlight, under the same app record
+# (add the Apple TV platform to your app in App Store Connect first).
+on:
+  push:
+    paths:
+      - 'tvos/**'
+      - '.github/workflows/aurora-tvos.yml'
+  workflow_dispatch:
+  # A TestFlight build stops working 90 days after it is uploaded: a fresh one every month keeps it alive.
+  # (GitHub runs scheduled workflows from main only.)
+  schedule:
+    - cron: '41 6 1 * *'
+
+permissions:
+  contents: read
+
+jobs:
+  tvos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      # Apple only accepts apps built with the newest SDK (Xcode 26 or newer).
+      - name: Select Xcode 26
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$X" ]; then echo "::error::No Xcode 26 is installed on this runner. Installed:"; ls /Applications | grep -i xcode; exit 1; fi
+          sudo xcode-select -s "$X/Contents/Developer"
+          xcodebuild -version
+          xcrun --sdk appletvos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        working-directory: tvos
+        run: xcodegen generate
+
+      # Compile for the Apple TV simulator with no signing: needs no Apple account.
+      - name: Build (compile check)
+        working-directory: tvos
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project AuroraTV.xcodeproj -scheme AuroraTV \
+            -sdk appletvsimulator -destination 'generic/platform=tvOS Simulator' \
+            -configuration Debug \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/build.log" | tail -n 40
+
+      - name: Keep the build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvos-build-log
+          path: ${{ runner.temp }}/build.log
+          if-no-files-found: ignore
+
+      - name: Sign and send to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_BUNDLE_ID: ${{ secrets.IOS_BUNDLE_ID }}
+        run: |
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_BASE64" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$IOS_BUNDLE_ID" ]; then
+            echo "::notice::No Apple signing secrets yet, so only the compile check ran."
+            exit 0
+          fi
+          set -euo pipefail
+          KEY_DIR="$RUNNER_TEMP/keys"; mkdir -p "$KEY_DIR"
+          KEY_FILE="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_KEY_BASE64" | base64 --decode > "$KEY_FILE"
+          cd tvos
+          xcodebuild archive \
+            -project AuroraTV.xcodeproj -scheme AuroraTV -configuration Release \
+            -destination 'generic/platform=tvOS' \
+            -archivePath "$RUNNER_TEMP/AuroraTV.xcarchive" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" PRODUCT_BUNDLE_IDENTIFIER="$IOS_BUNDLE_ID" \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          cat > "$RUNNER_TEMP/export.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>uploadSymbols</key><true/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/AuroraTV.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/export.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$KEY_FILE" -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          rm -f "$KEY_FILE"
+          echo "Sent to TestFlight."

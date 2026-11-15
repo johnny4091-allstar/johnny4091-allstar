@@ -1,0 +1,6 @@
+AuroraTV.xcodeproj/
+*.xcarchive
+build/
+DerivedData/
+xcuserdata/
+AuroraTV/Info.plist

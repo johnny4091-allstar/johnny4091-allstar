@@ -1,1 +1,2 @@
-- New: a Review account switch in Admin → Users for an account that should only see the Emby library, with no Live TV, Requests or provider titles (for testers and app reviewers).
+- New on iPhone: Live TV channels play in a full-screen player, with swipe up and down to change channel and a channel list.
+- Removed: the Review account switch in Admin → Users. Every account sees the same app.

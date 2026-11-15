@@ -19,6 +19,15 @@ enum Bridge {
         (function () {
           var post = function (m) { return window.webkit.messageHandlers.\(handlerName).postMessage(m); };
           window.AuroraIOS = true;
+          var epg = null;
+          var epgKey = function (s) { return String(s || '').trim().toLowerCase(); };
+          var epgNormal = function (s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); };
+          var epgFind = function (r) {
+            if (!epg) return null;
+            var e = r.id ? epg.byId.get(epgKey(r.id)) : null;
+            if (!e && r.name) { var k = epg.byName.get(epgNormal(r.name)); if (k) e = epg.byId.get(k); }
+            return e || null;
+          };
           window.EmbyFlixAndroid = {
             getVersionName: function () { return \(quote("\(version) (\(build))")); },
             getDeviceName: function () { return \(quote(device)); },
@@ -26,10 +35,48 @@ enum Bridge {
             showKeyboard: function () {},
             setPlayerMode: function () {},
             openYouTube: function (id) { post({ cmd: 'openurl', url: 'https://www.youtube.com/watch?v=' + encodeURIComponent(id) }); return true; },
+            playLive: function (channels, index, group, userAgent, report) {
+              post({ cmd: 'playLive', channels: channels, index: index, group: group || '', ua: userAgent || '' });
+            },
             httpRequest: function (id, method, url, headers, body) {
               post({ cmd: 'http', method: method, url: url, headers: headers, body: body }).then(
                 function (r) { window.auroraHttpDone(id, r); },
                 function () { window.auroraHttpDone(id, { status: 0, body: '' }); });
+            },
+            // The TV guide: the app reads it (EpgStore) and hands it over a few hundred channels at a time; lookups are then
+            // answered here, the same way the Android app's guide reader answers them.
+            loadEpg: function (id, url, ua) {
+              post({ cmd: 'epgload', url: url, ua: ua || '' }).then(function (sum) {
+                if (!sum || sum.error) { window.auroraEpgDone(id, { error: (sum && sum.error) || 'The guide could not be loaded.' }); return; }
+                var byId = new Map(), byName = new Map();
+                var next = function (offset) {
+                  return post({ cmd: 'epgchunk', token: sum.token, offset: offset }).then(function (rows) {
+                    if (!rows || !rows.length) return;
+                    rows.forEach(function (r) {
+                      byId.set(r[0], [r[1], r[2], r[3]]);
+                      var n = epgNormal(r[1]);
+                      if (n && !byName.has(n)) byName.set(n, r[0]);
+                    });
+                    return next(offset + rows.length);
+                  });
+                };
+                return next(0).then(function () {
+                  epg = { url: url, byId: byId, byName: byName };
+                  window.auroraEpgDone(id, { channels: sum.channels, programmes: sum.programmes });
+                });
+              }).catch(function () { window.auroraEpgDone(id, { error: 'The guide could not be loaded.' }); });
+            },
+            epgLookup: function (url, request) {
+              var list = [];
+              try { list = JSON.parse(request); } catch (e) { /* none */ }
+              if (!epg || (url && epg.url !== url)) return 'null';
+              return JSON.stringify(list.map(function (r) { var e = epgFind(r); return e ? { n: e[0], i: e[1], p: e[2] } : null; }));
+            },
+            epgCount: function (url, request) {
+              var list = [], listings = 0, logos = 0;
+              try { list = JSON.parse(request); } catch (e) { /* none */ }
+              if (epg && (!url || epg.url === url)) list.forEach(function (r) { var e = epgFind(r); if (!e) return; if (e[2].length) listings++; if (e[1]) logos++; });
+              return JSON.stringify({ listings: listings, logos: logos });
             }
           };
         })();
@@ -45,8 +92,15 @@ enum Bridge {
     }
 }
 
+/// What the page's calls can ask of the screen that shows it.
+protocol LiveHost: AnyObject {
+    func presentLive(channels: [LiveChannel], index: Int, group: String, userAgent: String)
+}
+
 /// Receives the page's calls.
 final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
+    weak var host: LiveHost?
+
     /// Requests the page makes through the app: some services (Jellyseerr) don't allow calls from a web page, and the app
     /// keeps its own cookies for them, like the Android app does.
     private lazy var session: URLSession = {
@@ -67,6 +121,31 @@ final class BridgeHandler: NSObject, WKScriptMessageHandlerWithReply {
             replyHandler(true, nil)
         case "http":
             http(body, reply: replyHandler)
+        case "epgload":
+            guard let url = body["url"] as? String else { return replyHandler(["error": "No guide address."], nil) }
+            let agent = (body["ua"] as? String) ?? ""
+            Task {
+                do {
+                    let loaded = try await EpgStore.shared.load(url: url, userAgent: agent)
+                    replyHandler(["token": loaded.token, "channels": loaded.channels, "programmes": loaded.programmes], nil)
+                } catch {
+                    replyHandler(["error": error.localizedDescription], nil)
+                }
+            }
+        case "epgchunk":
+            let token = (body["token"] as? String) ?? ""
+            let offset = (body["offset"] as? Int) ?? 0
+            replyHandler(EpgStore.shared.chunk(token: token, offset: offset), nil)
+        case "playLive":
+            if let text = body["channels"] as? String, let data = text.data(using: .utf8),
+               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]], !list.isEmpty {
+                let channels = list.map { LiveChannel($0) }
+                let index = (body["index"] as? Int) ?? 0
+                let group = (body["group"] as? String) ?? ""
+                let agent = (body["ua"] as? String) ?? ""
+                DispatchQueue.main.async { self.host?.presentLive(channels: channels, index: index, group: group, userAgent: agent) }
+            }
+            replyHandler(true, nil)
         default:
             replyHandler(nil, "unknown command")
         }

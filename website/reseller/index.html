@@ -58,6 +58,12 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 .empty { padding:26px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:12px; }
 .demo { margin-top:22px; font-size:.8rem; color:var(--dim); }
 .login { max-width:420px; margin:40px auto; } .login .btn { width:100%; margin-top:18px; } .login label { margin-top:14px; }
+.sr { background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.sr .top { display:flex; flex-wrap:wrap; gap:8px 16px; justify-content:space-between; align-items:center; cursor:pointer; }
+.sr .nums { display:flex; gap:22px; color:var(--muted); font-size:.85rem; } .sr .nums b { color:#fff; font-size:1.05rem; display:block; }
+.sr.open .act { display:flex; } .sr .act .row input { width:90px; }
+.subs-head { display:flex; gap:14px; flex-wrap:wrap; margin:6px 0 12px; } .stat { background:#0a1126; border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:120px; } .stat b { display:block; font-size:1.4rem; } .stat small { color:var(--muted); }
+.callout { margin:14px 0 0; padding:12px 14px; border-radius:10px; background:rgba(79,123,255,.1); border:1px solid #2f4a8f; color:#cfd6f5; font-size:.88rem; }
 @media (max-width:720px) { .hero,.grid { grid-template-columns:1fr; } .pill span { display:none; } }
 </style>
 </head>
@@ -80,7 +86,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
   <div id="app" hidden>
     <div class="hero">
       <div class="card credits"><small>Signed in as <b id="who"></b> · Your credits</small><div class="n" id="cr">0</div><small>1 credit = 1 connection for 1 month</small><div><span class="low" id="low" hidden>Running low</span></div></div>
-      <div class="card"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
+      <div class="card" id="askcard"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
         <div class="row"><input id="ask" type="number" min="1" placeholder="How many" inputmode="numeric"><button class="btn gray" id="askbtn" type="button">Ask</button></div><p class="msg ok" id="askmsg" hidden></p></div>
     </div>
 
@@ -101,6 +107,27 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <div class="made" id="made" hidden><div><small>Customer created. Send them these:</small><b id="madeu"></b><small id="madep"></small></div><button class="btn gray" id="cp" type="button">Copy login message</button></div>
     </div>
 
+
+    <div id="subsec" hidden>
+      <div class="tools"><h2>Your sub-resellers</h2><button class="btn red sm" id="subtoggle" type="button">+ Add a sub-reseller</button></div>
+      <div class="card" id="subform" hidden style="margin-bottom:14px">
+        <h2>Add a sub-reseller</h2><p class="sub">They get their own panel and sell to their own customers. The credits you send them come out of your balance.</p>
+        <div class="grid">
+          <div><label for="sn">Their name</label><input id="sn" maxlength="60" placeholder="e.g. Dave's Streams" autocomplete="off"></div>
+          <div><label for="su">Login username</label><input id="su" maxlength="32" placeholder="e.g. dave_s" autocomplete="off"></div>
+          <div><label for="sp">Password</label><div class="row"><input id="sp" placeholder="Leave blank to make one" autocomplete="off"><button class="btn gray" id="sgp" type="button">Make</button></div></div>
+          <div><label for="sc">Credits to send them <span style="font-weight:400;color:var(--dim)">(you have <span id="scmax">0</span>)</span></label><input id="sc" type="number" min="0" inputmode="numeric" placeholder="0"></div>
+          <div class="full"><label for="sk">Contact <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="sk" maxlength="100" placeholder="Phone, email or a note to yourself"></div>
+        </div>
+        <p class="callout">They can sell the same plans you can. They can't add sub-resellers of their own.</p>
+        <button class="btn red" id="subadd" type="button" style="margin-top:16px">Create sub-reseller</button>
+        <p class="msg err" id="suberr" role="alert" hidden></p>
+        <div class="made" id="submade" hidden><div><small>Sub-reseller created. Send them these (they sign in at the reseller page):</small><b id="submadeu"></b><small id="submadep"></small></div><button class="btn gray" id="subcp" type="button">Copy login message</button></div>
+      </div>
+      <div class="subs-head" id="substats"></div>
+      <div class="list" id="sublist" aria-live="polite"></div>
+      <p class="demo">You see each sub-reseller's credits and how many customers they have. Their customers stay private to them (and to your provider).</p>
+    </div>
     <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
     <div class="chips" id="chips" role="group" aria-label="Filter"></div>
     <div class="list" id="list" aria-live="polite"></div>
@@ -140,6 +167,9 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
   function render() {
     if (!me) return;
     $('cr').textContent = me.credits; $('low').hidden = !me.low; $('who').textContent = me.name;
+    $('subsec').hidden = !me.canAddSubs; $('askcard').hidden = !!me.parent;
+    if (me.parent) $('who').textContent = me.name + ' (sub-reseller of ' + me.parent + ')';
+    if (me.canAddSubs) { $('scmax').textContent = me.credits; renderSubs(); }
     $('trialnote').textContent = 'A free trial costs nothing (you have ' + me.trialsLeft + ' left today).';
     var keepPlan = $('plan').value; $('plan').innerHTML = planOptions(); if (keepPlan) $('plan').value = keepPlan;
     if (me.request) { $('askmsg').hidden = false; $('askmsg').className = 'msg ok'; $('askmsg').textContent = 'Your request for ' + me.request.amount + ' credits is waiting.'; $('askbtn').disabled = true; } else { $('askbtn').disabled = false; }
@@ -174,6 +204,42 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.querySelector('.hd').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/hold', { hold: !c.hold }, function () { reload(); }); };
       var del = el.querySelector('.del');
       del.onclick = function () { del.textContent = 'Tap again to delete'; del.onclick = function () { act(del, 'DELETE', '/reseller/customers/' + encodeURIComponent(c.id), null, function () { openId = null; reload(); }); }; };
+      list.appendChild(el);
+    });
+  }
+  var subOpen = null;
+  function renderSubs() {
+    var subs = me.subs || [], total = subs.reduce(function (n, s) { return n + s.customers; }, 0), list = $('sublist');
+    $('substats').innerHTML = '<div class="stat"><small>Sub-resellers</small><b>' + subs.length + '</b></div><div class="stat"><small>Their customers</small><b>' + total + '</b></div>';
+    list.innerHTML = '';
+    if (!subs.length) { list.innerHTML = '<div class="empty">No sub-resellers yet. Add one above to let them sell under you.</div>'; return; }
+    subs.forEach(function (s) {
+      var el = document.createElement('div'), off = s.status !== 'active'; el.className = 'sr' + (subOpen === s.id ? ' open' : '');
+      el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (subOpen === s.id) + '"><div><span class="nm" style="font-weight:800">' + esc(s.name) + '</span>' +
+        (off ? '<span class="tag hold">Suspended</span>' : '<span class="tag on">Active</span>') + (!off && s.low ? '<span class="tag soon">Low credits</span>' : '') +
+        '<div class="meta">' + esc(s.userName) + (s.contact ? ' · ' + esc(s.contact) : '') + (s.created ? ' · added ' + new Date(s.created).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '') + '</div></div>' +
+        '<div class="nums"><div><b>' + s.credits + '</b>credits</div><div><b>' + s.customers + '</b>customers</div></div></div>' +
+        '<div class="act"><div class="row"><input class="amt" type="number" min="1" inputmode="numeric" placeholder="5" aria-label="Credits to send"><button class="btn red sm send" type="button">Send credits</button></div>' +
+        '<button class="btn gray sm pw" type="button">Reset password</button><button class="btn line sm st' + (off ? '' : ' danger') + '" type="button">' + (off ? 'Restore' : 'Suspend') + '</button><div class="note say" aria-live="polite"></div></div>';
+      var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
+      var top = el.querySelector('.top'), toggle = function () { subOpen = subOpen === s.id ? null : s.id; renderSubs(); };
+      top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+      function act(btn, path, body, ok) {
+        if (busy) return; busy = true; btn.disabled = true;
+        api('POST', '/reseller/subs/' + encodeURIComponent(s.id) + path, body).then(function (j) {
+          busy = false; btn.disabled = false;
+          if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
+          if (j.__status !== 200) return say(j.error || 'That did not work. Please try again.', true);
+          ok(j);
+        }).catch(function () { busy = false; btn.disabled = false; say('Could not reach Aurora. Check your connection.', true); });
+      }
+      el.querySelector('.send').onclick = function () {
+        var n = Number(el.querySelector('.amt').value);
+        if (!Number.isInteger(n) || n < 1) return say('Type a whole number of credits to send.', true);
+        act(this, '/credits', { amount: n }, function () { reload(); });
+      };
+      el.querySelector('.pw').onclick = function () { act(this, '/password', {}, function (j) { say('New password for ' + s.userName + ': ' + j.password); }); };
+      el.querySelector('.st').onclick = function () { act(this, '/status', { status: off ? 'active' : 'suspended' }, function () { reload(); }); };
       list.appendChild(el);
     });
   }
@@ -230,6 +296,28 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       $('madeu').textContent = u; $('madep').textContent = 'Password: ' + j.password; $('made').hidden = false;
       ['nu', 'np', 'fn', 'em', 'nt'].forEach(function (i) { $(i).value = ''; }); $('trial').checked = false; reload();
     }).catch(function () { busy = false; $('add').disabled = false; msg(err, 'Could not reach Aurora. Check your connection.', 'err'); });
+  };
+  $('subtoggle').onclick = function () { var f = $('subform'); f.hidden = !f.hidden; $('subtoggle').textContent = f.hidden ? '+ Add a sub-reseller' : 'Close'; };
+  $('sgp').onclick = function () { $('sp').value = gen(); };
+  $('subadd').onclick = function () {
+    var u = $('su').value.trim(), name = $('sn').value.trim(), err = $('suberr'), n = $('sc').value === '' ? 0 : Number($('sc').value);
+    if (!name) return msg(err, 'Give the sub-reseller a name.', 'err');
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(u)) return msg(err, 'The username must be 3 to 32 letters, numbers, dots, dashes or underscores.', 'err');
+    if (!Number.isInteger(n) || n < 0) return msg(err, 'Credits must be a whole number from 0 up.', 'err');
+    if (me && n > me.credits) return msg(err, 'You have ' + me.credits + ' credits, so you can not send ' + n + '.', 'err');
+    var pw = $('sp').value.trim(); if (pw && pw.length < 6) return msg(err, 'The password must be at least 6 characters.', 'err');
+    if (busy) return; busy = true; msg(err, '', 'err'); $('subadd').disabled = true;
+    api('POST', '/reseller/subs', { name: name, userName: u, password: pw || undefined, credits: n, contact: $('sk').value.trim() }).then(function (j) {
+      busy = false; $('subadd').disabled = false;
+      if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
+      if (j.__status !== 200) return msg(err, j.error || 'Could not make the sub-reseller.', 'err');
+      $('submadeu').textContent = 'Username: ' + u; $('submadep').textContent = 'Password: ' + j.password; $('submade').hidden = false;
+      ['sn', 'su', 'sp', 'sc', 'sk'].forEach(function (i) { $(i).value = ''; }); reload();
+    }).catch(function () { busy = false; $('subadd').disabled = false; msg(err, 'Could not reach Aurora. Check your connection.', 'err'); });
+  };
+  $('subcp').onclick = function () {
+    var t = 'Aurora reseller login\n' + $('submadeu').textContent + '\n' + $('submadep').textContent + '\nSign in at the reseller page.', b = $('subcp');
+    try { navigator.clipboard.writeText(t).then(function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy login message'; }, 1500); }, function () { b.textContent = 'Select and copy it'; }); } catch (e) { b.textContent = 'Select and copy it'; }
   };
   $('cp').onclick = function () {
     var t = 'Aurora login\nUsername: ' + $('madeu').textContent + '\n' + $('madep').textContent, b = $('cp');
