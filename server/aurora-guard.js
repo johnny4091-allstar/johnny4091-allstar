@@ -58,7 +58,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.20.1';
+const VERSION = '1.21.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -338,6 +338,15 @@ const planCredits = (p) => (Number.isInteger(p.credits) && p.credits >= 0 ? p.cr
 const resellerList = () => store.resellers || (store.resellers = {});
 const resellerOfUser = (userId) => Object.values(resellerList()).find((r) => r.userId === userId) || null;
 const resellerBusy = new Set();
+// Sub-resellers (guard 1.21.0): a reseller can bring on resellers of their own (one level: a sub-reseller can't add more). The credits they
+// get are moved out of the reseller's own balance. A sub-reseller sells only the plans their reseller can still sell.
+const subsOf = (r) => Object.values(resellerList()).filter((x) => x.parent === r.id);
+const resellerPlanIds = (r) => {
+  const own = r.plans || [];
+  const up = r.parent ? resellerList()[r.parent] : null;
+  return up ? own.filter((id) => (up.plans || []).includes(id)) : own;
+};
+const MAX_SUBS = 50;
 const supportCount = new Map();
 const speedCount = new Map();
 const cleanUserName = (v) => { const t = String(v || '').trim(); return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(t) ? t : null; };
@@ -350,7 +359,9 @@ function creditEntry(r, delta, why, by, extra) {
 }
 function publicReseller(r) {
   const customers = Object.values(store.users).filter((u) => u.reseller === r.id).length;
-  return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits };
+  const up = r.parent ? resellerList()[r.parent] : null;
+  return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits,
+    parent: up ? up.id : '', parentName: up ? up.name : '', subs: subsOf(r).length };
 }
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
@@ -2000,8 +2011,12 @@ async function handle(req, res) {
       const mine = Object.entries(store.users).filter(([, u]) => u.reseller === r.id).map(([id, u]) => publicCustomer(id, u, devices.get(id))).sort((a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999));
       const today = localDay(new Date());
       const trialsToday = Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length;
+      const up = r.parent ? resellerList()[r.parent] : null;
+      const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
+        customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
       return send(res, 200, { reseller: true, name: r.name, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
-        plans: (store.plans || []).filter((p) => p.active !== false && (r.plans || []).includes(p.id)).map((p) => ({ id: p.id, name: p.name, connections: p.connections, length: p.length, unit: p.unit, credits: planCredits(p) })),
+        parent: up ? up.name : '', canAddSubs: !r.parent, subs,
+        plans: (store.plans || []).filter((p) => p.active !== false && resellerPlanIds(r).includes(p.id)).map((p) => ({ id: p.id, name: p.name, connections: p.connections, length: p.length, unit: p.unit, credits: planCredits(p) })),
         customers: mine, ledger: (store.creditLog || []).filter((e) => e.reseller === r.id).slice(0, 40),
         request: (store.creditRequests || []).find((x) => x.reseller === r.id && x.status === 'pending') || null,
         report: (() => { const ms = new Date(); ms.setDate(1); ms.setHours(0, 0, 0, 0); const e = (store.creditLog || []).filter((x) => x.reseller === r.id && x.at >= ms.getTime());
@@ -2013,8 +2028,73 @@ async function handle(req, res) {
     resellerBusy.add(r.id);
     try {
       const by = `${r.name} (reseller)`;
-      const sellable = (id) => (store.plans || []).find((p) => p.id === id && p.active !== false && (r.plans || []).includes(p.id));
+      const sellable = (id) => (store.plans || []).find((p) => p.id === id && p.active !== false && resellerPlanIds(r).includes(p.id));
       const owns = (id) => store.users[id]?.reseller === r.id;
+      // ----- Sub-resellers (guard 1.21.0) -----
+      if (url.pathname === '/reseller/subs' && req.method === 'POST') {
+        if (r.parent) return send(res, 403, { error: 'Sub-resellers can not add sub-resellers of their own.' });
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const name = cleanText(body.name, 60);
+        if (!name) return send(res, 400, { error: 'Give the sub-reseller a name.' });
+        const userName = cleanUserName(body.userName);
+        if (!userName) return send(res, 400, { error: 'The login name must be 3 to 32 letters, numbers, dots, dashes or underscores.' });
+        const send0 = body.credits === undefined || body.credits === '' ? 0 : Number(body.credits);
+        if (!Number.isInteger(send0) || send0 < 0 || send0 > 100000) return send(res, 400, { error: 'The credits must be a whole number from 0 up.' });
+        if (send0 > r.credits) return send(res, 402, { error: `You have ${r.credits} credits, so you can not send ${send0}.` });
+        if (subsOf(r).length >= MAX_SUBS) return send(res, 400, { error: `You can have up to ${MAX_SUBS} sub-resellers.` });
+        const password = body.password ? String(body.password) : genPassword();
+        if (password.length < 6 || password.length > 64) return send(res, 400, { error: 'The password must be 6 to 64 characters.' });
+        const existing = await emby('GET', '/Users');
+        if ((existing || []).some((u) => String(u.Name).toLowerCase() === userName.toLowerCase())) return send(res, 409, { error: 'That login name is taken. Try another.' });
+        let user;
+        try { user = await newEmbyAccount(userName, password); } catch (e) { return send(res, 502, { error: e.message }); }
+        const id = crypto.randomBytes(4).toString('hex');
+        const sub = { id, userId: user.Id, userName, name, contact: cleanText(body.contact, 100), credits: 0, status: 'active', plans: [...resellerPlanIds(r)], created: Date.now(), parent: r.id };
+        resellerList()[id] = sub;
+        try { await limitResellerAccount(user.Id); sub.limited = true; } catch (e) { log('Could not limit the sub-reseller account', userName, '-', e.message); }
+        if (send0) { creditEntry(r, -send0, `Sent to ${name}`, by, { sub: id }); creditEntry(sub, send0, `From ${r.name}`, by, { from: r.id }); }
+        saveStore();
+        log('Sub-reseller added by', r.name + ':', name, `(${userName}) with`, send0, 'credits');
+        copyAppDefaults(user.Id).catch(() => {});
+        return send(res, 200, { ok: true, password, credits: r.credits });
+      }
+      const sm = url.pathname.match(/^\/reseller\/subs\/([\w-]{1,32})\/(credits|password|status)$/);
+      if (sm && req.method === 'POST') {
+        const sub = resellerList()[sm[1]];
+        if (!sub || sub.parent !== r.id) return send(res, 404, { error: 'No such sub-reseller.' });
+        if (resellerBusy.has(sub.id)) return send(res, 409, { error: 'That sub-reseller is busy. Try again in a moment.' });
+        resellerBusy.add(sub.id);
+        try {
+          let body;
+          try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+          if (sm[2] === 'credits') {
+            const amount = Number(body.amount);
+            if (!Number.isInteger(amount) || amount < 1 || amount > 100000) return send(res, 400, { error: 'Send a whole number of credits, 1 or more.' });
+            if (amount > r.credits) return send(res, 402, { error: `You have ${r.credits} credits, so you can not send ${amount}.` });
+            creditEntry(r, -amount, `Sent to ${sub.name}`, by, { sub: sub.id });
+            creditEntry(sub, amount, `From ${r.name}`, by, { from: r.id });
+            saveStore();
+            log('Credits', r.name, '->', sub.name, amount);
+            return send(res, 200, { ok: true, credits: r.credits, subCredits: sub.credits });
+          }
+          if (sm[2] === 'password') {
+            const password = body.password ? String(body.password) : genPassword();
+            if (password.length < 6 || password.length > 64) return send(res, 400, { error: 'The password must be 6 to 64 characters.' });
+            try {
+              await emby('POST', `/Users/${sub.userId}/Password`, { body: { Id: sub.userId, ResetPassword: true } });
+              await emby('POST', `/Users/${sub.userId}/Password`, { body: { Id: sub.userId, CurrentPw: '', NewPw: password } });
+            } catch (e) { return send(res, 502, { error: 'Could not change the password: ' + e.message }); }
+            log('Password reset for sub-reseller', sub.name, 'by', r.name);
+            return send(res, 200, { ok: true, password });
+          }
+          if (body.status !== 'active' && body.status !== 'suspended') return send(res, 400, { error: 'Choose active or suspended.' });
+          sub.status = body.status;
+          saveStore();
+          log('Sub-reseller', sub.name, body.status === 'suspended' ? 'suspended' : 'restored', 'by', r.name);
+          return send(res, 200, { ok: true, status: sub.status });
+        } finally { resellerBusy.delete(sub.id); }
+      }
       if (url.pathname === '/reseller/customers' && req.method === 'POST') {
         let body;
         try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
@@ -2047,6 +2127,7 @@ async function handle(req, res) {
         return send(res, 200, { ok: true, password, credits: r.credits, customer: publicCustomer(user.Id, rec) });
       }
       if (url.pathname === '/reseller/credit-request' && req.method === 'POST') {
+        if (r.parent) return send(res, 403, { error: `Ask your reseller (${resellerList()[r.parent]?.name || 'the one who added you'}) for credits.` });
         let body;
         try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
         const amount = Number(body.amount);
