@@ -15,18 +15,20 @@ final class EpgStore {
     /// How long a downloaded guide file is reused, and how long a read guide is used without fetching a newer one.
     private let downloadSeconds: TimeInterval = 6 * 3600
     private let freshSeconds: TimeInterval = 4 * 3600
-    /// The guide page shows six hours; keep a little before now and ten hours ahead.
-    private let beforeMs: Int64 = 3_600_000
-    private let aheadMs: Int64 = 10 * 3_600_000
-    private let maxPerChannel = 30
-    private let maxProgrammes = 300_000
-    private let maxDesc = 120
+    /// The guide page shows six hours; keep half an hour before now and eight hours ahead (the page asks again after a few hours).
+    /// Less kept means less memory in the app and in the page: a phone gets stopped by iOS when this grows too big.
+    private let beforeMs: Int64 = 30 * 60_000
+    private let aheadMs: Int64 = 8 * 3_600_000
+    private let maxPerChannel = 28
+    private let maxProgrammes = 250_000
+    private let maxDesc = 80
 
     struct Guide {
         let token: String
         let builtAt: Date
-        /// One row per channel: [key, name, icon, [[start, end, title, desc], ...]]
-        let rows: [[Any]]
+        /// One row per channel, already written as JSON text: ["key", "name", "icon", "[[start,end,title,desc],...]"]. Kept as text
+        /// (not as thousands of small objects) so the guide takes a fraction of the memory.
+        let rows: [String]
         let programmes: Int
     }
 
@@ -41,42 +43,65 @@ final class EpgStore {
             throw EpgError(message: "The guide address isn't a web address.")
         }
         let token = Self.hash(text)
-        lock.lock()
-        if let g = guides[token], Date().timeIntervalSince(g.builtAt) < freshSeconds {
-            lock.unlock()
+        switch begin(token) {
+        case .ready(let g):
             return (token, g.rows.count, g.programmes)
-        }
-        let running = loading[token]
-        lock.unlock()
-        if let running = running {
+        case .running(let running):
             let g = try await running.value
             return (token, g.rows.count, g.programmes)
+        case .start:
+            break
         }
         let task = Task<Guide, Error> { try await self.build(url: url, token: token, userAgent: userAgent) }
-        lock.lock(); loading[token] = task; lock.unlock()
+        remember(task: task, token: token)
         do {
             let g = try await task.value
-            lock.lock()
-            loading[token] = nil
-            guides[token] = g
-            // Keep this guide and at most one other (the admin's "test this source" reads a different one).
-            if guides.count > 2, let oldest = guides.values.filter({ $0.token != token }).min(by: { $0.builtAt < $1.builtAt }) { guides[oldest.token] = nil }
-            lock.unlock()
+            finish(token: token, guide: g)
             return (token, g.rows.count, g.programmes)
         } catch {
-            lock.lock(); loading[token] = nil; lock.unlock()
             // A guide read earlier is still better than none.
-            lock.lock(); let old = guides[token]; lock.unlock()
-            if let old = old { return (token, old.rows.count, old.programmes) }
+            if let old = fail(token: token) { return (token, old.rows.count, old.programmes) }
             throw error
         }
     }
 
-    /// The next channels of a loaded guide, `count` at a time from `offset`. Empty when there are no more.
-    func chunk(token: String, offset: Int, count: Int = 400) -> [[Any]] {
-        lock.lock(); let g = guides[token]; lock.unlock()
-        guard let rows = g?.rows, offset < rows.count else { return [] }
-        return Array(rows[offset..<min(rows.count, offset + count)])
+    /// The next channels of a loaded guide as JSON text (an array of rows), `count` at a time from `offset`. "[]" when there are no more.
+    func chunk(token: String, offset: Int, count: Int = 400) -> String {
+        guard let rows = guide(token)?.rows, offset < rows.count else { return "[]" }
+        return "[" + rows[offset..<min(rows.count, offset + count)].joined(separator: ",") + "]"
+    }
+
+    /// Lets go of the guides held here (the page keeps its own copy). Called when iOS says memory is short.
+    func trim() {
+        lock.lock(); guides.removeAll(); lock.unlock()
+    }
+
+    // The lock is only ever held inside these plain functions, never across an await.
+    private enum Start { case ready(Guide), running(Task<Guide, Error>), start }
+    private func begin(_ token: String) -> Start {
+        lock.lock(); defer { lock.unlock() }
+        if let g = guides[token], Date().timeIntervalSince(g.builtAt) < freshSeconds { return .ready(g) }
+        if let t = loading[token] { return .running(t) }
+        return .start
+    }
+    private func remember(task: Task<Guide, Error>, token: String) {
+        lock.lock(); loading[token] = task; lock.unlock()
+    }
+    private func finish(token: String, guide g: Guide) {
+        lock.lock(); defer { lock.unlock() }
+        loading[token] = nil
+        guides[token] = g
+        // Keep this guide and at most one other (the admin's "test this source" reads a different one).
+        if guides.count > 2, let oldest = guides.values.filter({ $0.token != token }).min(by: { $0.builtAt < $1.builtAt }) { guides[oldest.token] = nil }
+    }
+    private func fail(token: String) -> Guide? {
+        lock.lock(); defer { lock.unlock() }
+        loading[token] = nil
+        return guides[token]
+    }
+    private func guide(_ token: String) -> Guide? {
+        lock.lock(); defer { lock.unlock() }
+        return guides[token]
     }
 
     // MARK: - Reading the guide
@@ -87,7 +112,7 @@ final class EpgStore {
         let now = Int64(Date().timeIntervalSince1970 * 1000)
         let parser = EpgParser(from: now - beforeMs, to: now + aheadMs, maxPerChannel: maxPerChannel, maxProgrammes: maxProgrammes, maxDesc: maxDesc)
         try await withCheckedThrowingContinuation { (done: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .utility).async { // gentle on the processor: a big guide takes a while
                 guard let stream = InputStream(url: xml) else { return done.resume(throwing: EpgError(message: "The guide file couldn't be read.")) }
                 let xmlParser = XMLParser(stream: stream)
                 xmlParser.shouldProcessNamespaces = false
@@ -104,12 +129,19 @@ final class EpgStore {
         }
         var keys = Set(parser.channels.keys)
         keys.formUnion(parser.progs.keys)
-        var rows: [[Any]] = []
+        var rows: [String] = []
         rows.reserveCapacity(keys.count)
         for key in keys {
             let ch = parser.channels[key]
             let list = (parser.progs[key] ?? []).sorted { $0.start < $1.start }
-            rows.append([key, ch?.name ?? "", ch?.icon ?? "", list.map { [$0.start, $0.end, $0.title, $0.desc] as [Any] }])
+            // A channel with no listings and no logo has nothing to show.
+            if list.isEmpty && (ch?.icon ?? "").isEmpty { continue }
+            let progs = list.map { [$0.start, $0.end, $0.title, $0.desc] as [Any] }
+            guard let progsData = try? JSONSerialization.data(withJSONObject: progs),
+                  let progsText = String(data: progsData, encoding: .utf8),
+                  let rowData = try? JSONSerialization.data(withJSONObject: [key, ch?.name ?? "", ch?.icon ?? "", progsText]),
+                  let row = String(data: rowData, encoding: .utf8) else { continue }
+            rows.append(row)
         }
         return Guide(token: token, builtAt: Date(), rows: rows, programmes: parser.count)
     }
@@ -173,6 +205,11 @@ final class EpgStore {
         let head = (try? handle.read(upToCount: 2)) ?? Data()
         guard head.count == 2, head[0] == 0x1f, head[1] == 0x8b else { return file }
         let out = file.deletingPathExtension().appendingPathExtension(keepSource ? "probe.xml" : "xml")
+        // The unpacked copy from the last read is reused while it is newer than the download.
+        if !keepSource,
+           let packed = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+           let unpacked = try? out.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+           let when = unpacked.contentModificationDate, when >= packed, (unpacked.fileSize ?? 0) > 0 { return out }
         try Self.gunzip(from: file, to: out)
         return out
     }

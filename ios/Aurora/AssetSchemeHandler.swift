@@ -24,7 +24,7 @@ final class AssetSchemeHandler: NSObject, WKURLSchemeHandler {
         if path.isEmpty || path == "/" { path = "/index.html" }
         // Never leave the bundled folder.
         let file = root.appendingPathComponent(path).standardizedFileURL
-        guard file.path.hasPrefix(root.standardizedFileURL.path),
+        guard file.path.hasPrefix(root.standardizedFileURL.path + "/"),
               let data = try? Data(contentsOf: file, options: .mappedIfSafe) else { return fail(urlSchemeTask, 404) }
 
         let type = AssetSchemeHandler.types[file.pathExtension.lowercased()] ?? "application/octet-stream"
