@@ -1,2 +1,3 @@
+- New: renewal reminders. Choose, per customer, how many days before the end they get the in-app reminder (with a default for everyone), and copy a ready-made message to send them. Resellers also pick how many days ahead their daily "ending soon" list covers.
 - New on iPhone: Live TV channels play in a full-screen player, with swipe up and down to change channel and a channel list.
 - Removed: the Review account switch in Admin → Users. Every account sees the same app.

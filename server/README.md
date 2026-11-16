@@ -402,6 +402,19 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.26.0
+
+Renewal reminders.
+
+- Each customer can have their own reminder days (1 to 5 numbers, each 1 to 60), for example 10, 5 and 2 days before the end date. Accounts without a list
+  use the default (set by the admin; 7, 3 and 1 until then). The customer sees the notice in the Aurora app as before, just on those days.
+  `PUT /limits/<id>/remind {"days":[10,5,2]}` (or `{"days":null}` for the default), `PUT /remind-default {"days":[...]}`, and for resellers
+  `POST /reseller/customers/<id>/remind`. `/limits` and the reseller's customer list now include `remind` and `remindDefault`.
+- A reseller's daily "customers ending soon" message follows their own days ahead (up to 4 numbers; 3 until they choose). One message per day ahead.
+  Saved with `endingDays` on `PUT /reseller/notify`.
+- The apps (Admin → Users → customer, and the reseller panel) show a ready-made message ("Hi Sam, your Aurora plan ends on Dec 3 ... Reply here to renew")
+  to copy into Messenger, Text or WhatsApp. Nothing is sent automatically to customers.
+
 ## 1.20.1
 
 The "Review account" switch added in 1.20.0 is gone: an account is never shown a different app from the others. (An account's libraries are
