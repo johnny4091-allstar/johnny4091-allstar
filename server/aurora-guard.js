@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.25.0';
+const VERSION = '1.25.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1755,11 +1755,22 @@ function fetchUpdateBytes(address, max, depth = 0) {
 }
 async function checkForUpdate() {
   try {
-    const list = JSON.parse((await fetchUpdateBytes(`${UPDATE_API}/repos/${cfg.updateRepo}/releases?per_page=8`, 2 * 1024 * 1024)).toString('utf8'));
-    const rel = (Array.isArray(list) ? list : []).find((r) => r && !r.draft && (!r.prerelease || String(r.tag_name || '').startsWith('aurora-guard-v')) && (r.assets || []).some((a) => a.name === 'aurora-guard.json') && (r.assets || []).some((a) => a.name === 'aurora-guard.js'));
-    if (!rel) throw new Error('No release carries a guard update yet.');
-    const jsonAsset = rel.assets.find((a) => a.name === 'aurora-guard.json'), fileAsset = rel.assets.find((a) => a.name === 'aurora-guard.js');
-    const meta = JSON.parse((await fetchUpdateBytes(jsonAsset.browser_download_url, 4096)).toString('utf8'));
+    // GitHub lists releases by the date of the commit they were tagged on, not by version, so the newest guard is not always first:
+    // read the small version file of every release that carries one and take the highest.
+    const list = JSON.parse((await fetchUpdateBytes(`${UPDATE_API}/repos/${cfg.updateRepo}/releases?per_page=40`, 4 * 1024 * 1024)).toString('utf8'));
+    const cands = (Array.isArray(list) ? list : []).filter((r) => r && !r.draft && (!r.prerelease || String(r.tag_name || '').startsWith('aurora-guard-v')) && (r.assets || []).some((a) => a.name === 'aurora-guard.json') && (r.assets || []).some((a) => a.name === 'aurora-guard.js')).slice(0, 15);
+    if (!cands.length) throw new Error('No release carries a guard update yet.');
+    let firstErr = null;
+    const found = (await Promise.all(cands.map(async (r) => {
+      try {
+        const ja = r.assets.find((a) => a.name === 'aurora-guard.json'), fa = r.assets.find((a) => a.name === 'aurora-guard.js');
+        const m = JSON.parse((await fetchUpdateBytes(ja.browser_download_url, 4096)).toString('utf8'));
+        return /^\d+(\.\d+){1,3}$/.test(String(m.version)) ? { rel: r, jsonAsset: ja, fileAsset: fa, meta: m } : null;
+      } catch (e) { firstErr = firstErr || e; return null; }
+    }))).filter(Boolean);
+    if (!found.length) throw new Error(firstErr ? firstErr.message : 'The release information could not be read.');
+    const best = found.reduce((x, y) => (versionGreater(y.meta.version, x.meta.version) ? y : x));
+    const { rel, jsonAsset, fileAsset, meta } = best;
     if (!/^\d+(\.\d+){1,3}$/.test(String(meta.version)) || !/^[0-9a-f]{64}$/.test(String(meta.sha256))) throw new Error('The release information is not valid.');
     updateInfo = { checkedAt: Date.now(), latest: String(meta.version), tag: rel.tag_name || '', jsonUrl: jsonAsset.browser_download_url, fileUrl: fileAsset.browser_download_url, sha256: String(meta.sha256), size: Number(meta.size) || 0,
       notes: String(rel.body || '').split('\n').map((l) => l.trim()).filter((l) => l.startsWith('- ')).map((l) => l.slice(2).slice(0, 160)).slice(0, 8), error: '' };
