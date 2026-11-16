@@ -46,6 +46,7 @@ struct MainTabs: View {
             HomeView().tabItem { Text("Home") }
             LibraryView(type: "Movie", title: "Movies").tabItem { Text("Movies") }
             LibraryView(type: "Series", title: "TV Shows").tabItem { Text("TV Shows") }
+            LiveTVView().tabItem { Text("Live TV") }
             SettingsView().tabItem { Text("Settings") }
         }
     }
