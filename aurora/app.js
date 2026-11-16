@@ -10767,21 +10767,21 @@
     try { target.scrollIntoView({ block: 'center' }); } catch { /* an old WebView */ }
     const wrap = document.createElement('div');
     wrap.id = 'own-kb';
-    wrap.className = 'ok-wrap';
+    wrap.className = 'okb-wrap';
     wrap.setAttribute('role', 'dialog');
     wrap.setAttribute('aria-modal', 'true');
     wrap.setAttribute('aria-label', label);
-    wrap.innerHTML = `<div class="ok">
-      <div class="ok-top"><span class="ok-label">${esc(label)}</span><div class="ok-val" data-ok-val></div></div>
-      <div class="ok-rows" data-ok-rows></div>
-      <div class="ok-actions"><span class="ok-hint">Arrows and OK on the remote. Back closes the keyboard.</span>
+    wrap.innerHTML = `<div class="okb">
+      <div class="okb-top"><span class="okb-label">${esc(label)}</span><div class="okb-val" data-okb-val></div></div>
+      <div class="okb-rows" data-okb-rows></div>
+      <div class="okb-actions"><span class="okb-hint">Arrows and OK on the remote. Back closes the keyboard.</span>
         <button type="button" class="btn btn-gray" data-ok-cancel>Cancel</button>
         <button type="button" class="btn btn-red" data-ok-done>${next ? 'Next' : 'Done'}</button></div></div>`;
     document.body.appendChild(wrap);
-    const valEl = $('[data-ok-val]', wrap), rowsEl = $('[data-ok-rows]', wrap);
+    const valEl = $('[data-okb-val]', wrap), rowsEl = $('[data-okb-rows]', wrap);
     const paintValue = () => {
       const v = st.target.value;
-      valEl.innerHTML = `<span>${esc(st.shown ? v : '•'.repeat(v.length))}</span><i class="ok-caret"></i>`;
+      valEl.innerHTML = `<span>${esc(st.shown ? v : '•'.repeat(v.length))}</span><i class="okb-caret"></i>`;
     };
     const set = (v) => {
       st.target.value = v.slice(0, st.max);
@@ -10789,12 +10789,12 @@
       paintValue();
     };
     const paintKeys = (focusKey) => {
-      rowsEl.innerHTML = OWN_KB_ROWS[st.layout].map((row) => `<div class="ok-row">${row.map((k) => {
+      rowsEl.innerHTML = OWN_KB_ROWS[st.layout].map((row) => `<div class="okb-row">${row.map((k) => {
         const fn = k.length > 1;
         const text = k === 'show' ? (st.shown ? 'Hide' : 'Show') : (OWN_KB_LABELS[k] || k);
-        return `<button type="button" class="ok-key${fn ? ' fn' : ''}${k === 'space' ? ' space' : ''}${k === 'shift' && st.layout === 'upper' ? ' on' : ''}${k === 'show' && !st.isPassword ? ' hidden' : ''}" data-k="${esc(k)}">${esc(text)}</button>`;
+        return `<button type="button" class="okb-key${fn ? ' fn' : ''}${k === 'space' ? ' space' : ''}${k === 'shift' && st.layout === 'upper' ? ' on' : ''}${k === 'show' && !st.isPassword ? ' hidden' : ''}" data-k="${esc(k)}">${esc(text)}</button>`;
       }).join('')}</div>`).join('');
-      if (focusKey) focusEl($(`[data-k="${CSS.escape(focusKey)}"]`, rowsEl) || $('.ok-key', rowsEl));
+      if (focusKey) focusEl($(`[data-k="${CSS.escape(focusKey)}"]`, rowsEl) || $('.okb-key', rowsEl));
     };
     const press = (k) => {
       const v = st.target.value;
