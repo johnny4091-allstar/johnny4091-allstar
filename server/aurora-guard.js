@@ -26,6 +26,8 @@ const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
+const dns = require('dns');
+const net = require('net');
 
 // ---------- Keep-alive (guard 1.17.0) ----------
 // Run as `node aurora-guard.js`, this process only watches over the real Guard (a child of itself). That lets the Guard restart
@@ -58,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.21.0';
+const VERSION = '1.22.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -154,11 +156,12 @@ function log(...parts) {
 // is rate limited. The address is never written to the log (webhook addresses contain a secret).
 function alertFormat() {
   const f = String(cfg.alertFormat || 'auto').toLowerCase();
-  if (['discord', 'ntfy', 'json'].includes(f)) return f;
+  if (['discord', 'ntfy', 'json', 'telegram'].includes(f)) return f;
   try {
     const u = new URL(cfg.alertWebhookUrl);
     if (/(^|\.)discord(app)?\.com$/i.test(u.hostname) && /\/api\/webhooks\//.test(u.pathname)) return 'discord';
     if (/(^|\.)ntfy(\.|$)/i.test(u.hostname)) return 'ntfy';
+    if (u.hostname === 'api.telegram.org' && /^\/bot[^/]+\/sendMessage$/.test(u.pathname)) return 'telegram';
   } catch { /* fall through */ }
   return 'json';
 }
@@ -177,6 +180,10 @@ function postAlert(title, text, urgent, embed) {
         headers['Content-Type'] = 'application/json';
       } else if (fmt === 'discord') {
         body = JSON.stringify({ username: 'Aurora Guard', content: `**${title}**\n${text}`.slice(0, 1900) });
+        headers['Content-Type'] = 'application/json';
+      } else if (fmt === 'telegram') {
+        // https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<ID>
+        body = JSON.stringify({ chat_id: target.searchParams.get('chat_id') || '', text: `${title}\n${text}`.slice(0, 4000), disable_web_page_preview: true });
         headers['Content-Type'] = 'application/json';
       } else if (fmt === 'ntfy') {
         body = text;
@@ -352,11 +359,158 @@ const speedCount = new Map();
 const cleanUserName = (v) => { const t = String(v || '').trim(); return /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(t) ? t : null; };
 const cleanText = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n);
 function creditEntry(r, delta, why, by, extra) {
+  const before = r.credits;
   r.credits = Math.max(0, r.credits + delta);
   const e = { id: crypto.randomBytes(5).toString('hex'), reseller: r.id, at: Date.now(), by: cleanText(by, 40), delta, balance: r.credits, why: cleanText(why, 80), ...(extra || {}) };
   store.creditLog = [e, ...(store.creditLog || [])].slice(0, 3000);
+  // Crossing down into "low" tells the reseller once (not on every sale after that).
+  if (delta < 0 && before > cfg.resellerLowCredits && r.credits <= cfg.resellerLowCredits) {
+    notifyReseller(r, 'lowCredits', 'Aurora: your credits are running low', `You have ${r.credits} credit${r.credits === 1 ? '' : 's'} left. Ask for more before your next sale.`, true);
+  }
   return e;
 }
+
+// ----- Reseller notifications (guard 1.22.0): Telegram, Discord, ntfy or any web address, chosen by the reseller. -----
+// The reseller's token or link is a secret: it is stored here, never sent back to the panel in full, and never written to the log.
+// Because a reseller types the address, the guard only talks to the real services (Discord, Telegram, ntfy.sh) or to a public
+// https address: anything that points inside a private network is refused, also at the moment of sending (so a name that
+// changes its answer later can not get through).
+function isPrivateAddress(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 168) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  }
+  if (net.isIPv6(ip)) {
+    const l = ip.toLowerCase();
+    if (l === '::' || l === '::1') return true;
+    if (l.startsWith('::ffff:')) { const v4 = l.slice(7); return net.isIPv4(v4) ? isPrivateAddress(v4) : true; }
+    return /^f[cd]/.test(l) || /^fe[89ab]/.test(l) || l.startsWith('ff');
+  }
+  return true;
+}
+function safeLookup(hostname, options, cb) {
+  dns.lookup(hostname, { all: true }, (err, addrs) => {
+    if (err) return cb(err);
+    if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) return cb(new Error('that address points inside a private network, which is not allowed'));
+    if (options && options.all) return cb(null, addrs);
+    cb(null, addrs[0].address, addrs[0].family);
+  });
+}
+const NOTIFY_TYPES = ['telegram', 'discord', 'ntfy', 'webhook'];
+const NOTIFY_EVENTS = { extension: true, lowCredits: true, ending: false };
+const maskTail = (v, n = 4) => (v ? '\u2022\u2022\u2022\u2022' + String(v).slice(-n) : '');
+// Checks what a reseller entered and returns where to send: {url, make(title, text, urgent) -> {headers, body}} or {error}.
+function notifyTarget(n) {
+  if (!n || !NOTIFY_TYPES.includes(n.type)) return { error: 'Choose where to send the alerts.' };
+  const title1 = (t) => String(t).replace(/[^\x20-\x7e]/g, '');
+  if (n.type === 'telegram') {
+    const token = String(n.token || '').trim(), chat = String(n.chat || '').trim();
+    if (!/^\d{5,12}:[A-Za-z0-9_-]{30,50}$/.test(token)) return { error: 'That does not look like a Telegram bot token. It looks like 123456789:AAH... (ask @BotFather).' };
+    if (!/^(-?\d{5,20}|@[A-Za-z0-9_]{4,32})$/.test(chat)) return { error: 'The chat ID is a number such as 123456789 or -1001234567890 (or @channelname).' };
+    return { url: `https://api.telegram.org/bot${token}/sendMessage`, make: (title, text) => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text: `${title}\n${text}`.slice(0, 4000), disable_web_page_preview: true }) }) };
+  }
+  if (n.type === 'discord') {
+    let u;
+    try { u = new URL(String(n.url || '').trim()); } catch { return { error: 'Paste the whole Discord webhook link.' }; }
+    if (u.protocol !== 'https:' || !/^(?:(?:canary|ptb)\.)?discord(?:app)?\.com$/i.test(u.hostname) || !/^\/api\/(?:v\d+\/)?webhooks\/\d+\/[\w-]+$/.test(u.pathname)) return { error: 'That is not a Discord webhook link. It starts with https://discord.com/api/webhooks/' };
+    return { url: u.origin + u.pathname, make: (title, text) => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'Aurora', content: `**${title}**\n${text}`.slice(0, 1900) }) }) };
+  }
+  if (n.type === 'ntfy') {
+    const topic = String(n.topic || '').trim();
+    if (!/^[A-Za-z0-9_-]{4,64}$/.test(topic)) return { error: 'The ntfy topic is 4 to 64 letters, numbers, dashes or underscores. Make it hard to guess.' };
+    return { url: `https://ntfy.sh/${topic}`, make: (title, text, urgent) => ({ headers: { 'Content-Type': 'text/plain; charset=utf-8', Title: title1(title), Priority: urgent ? 'high' : 'default', Tags: urgent ? 'warning' : 'bell' }, body: text }) };
+  }
+  let u;
+  try { u = new URL(String(n.url || '').trim()); } catch { return { error: 'Paste the web address (https://...) that should receive the alerts.' }; }
+  if (u.protocol !== 'https:' || u.username || u.password || (u.port && u.port !== '443')) return { error: 'The address must start with https:// and use the normal port.' };
+  if (net.isIP(u.hostname.replace(/^\[|\]$/g, '')) && isPrivateAddress(u.hostname.replace(/^\[|\]$/g, ''))) return { error: 'That address is not allowed.' };
+  return { url: u.toString(), make: (title, text, urgent) => ({ headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title, text: `${title}\n${text}`, content: `**${title}**\n${text}`, message: text, urgent: !!urgent, time: new Date().toISOString() }) }) };
+}
+// Sends one message; resolves {ok, status, error}. Never rejects, never longer than 10 s, never follows a redirect.
+function notifyPost(target, title, text, urgent) {
+  return new Promise((resolve) => {
+    let settled = false, req = null, deadline = null;
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(deadline); try { req && req.destroy(); } catch {} resolve(r); };
+    try {
+      const u = new URL(target.url), m = target.make(title, text, urgent);
+      const headers = { 'User-Agent': `AuroraGuard/${VERSION}`, ...m.headers, 'Content-Length': Buffer.byteLength(m.body) };
+      deadline = setTimeout(() => done({ ok: false, status: 0, error: 'timed out' }), 10000);
+      // For the tests only: with AURORA_TEST_NOTIFY_SINK set (an address on this machine) the message goes there instead of the real service.
+      if (process.env.AURORA_TEST_NOTIFY_SINK) {
+        const sink = new URL(process.env.AURORA_TEST_NOTIFY_SINK), payload = JSON.stringify({ url: target.url, headers: m.headers, body: m.body });
+        req = http.request(sink, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } }, (r) => { r.resume(); r.on('end', () => done({ ok: r.statusCode < 300, status: r.statusCode, error: '' })); });
+        req.on('error', (e) => done({ ok: false, status: 0, error: e.message }));
+        return void req.end(payload);
+      }
+      req = https.request(u, { method: 'POST', headers, timeout: 8000, lookup: safeLookup }, (r) => {
+        let seen = '';
+        r.on('data', (c) => { if (seen.length < 1000) seen += c.toString('utf8'); });
+        r.on('end', () => {
+          let error = '';
+          if (r.statusCode >= 300) {
+            try { error = JSON.parse(seen).description || ''; } catch { /* not JSON */ }
+            if (!error) error = `it answered ${r.statusCode}`;
+          }
+          done({ ok: r.statusCode >= 200 && r.statusCode < 300, status: r.statusCode, error });
+        });
+        r.on('error', (e) => done({ ok: false, status: 0, error: e.message }));
+      });
+      req.on('timeout', () => done({ ok: false, status: 0, error: 'timed out' }));
+      req.on('error', (e) => done({ ok: false, status: 0, error: e.message }));
+      req.end(m.body);
+    } catch (e) { done({ ok: false, status: 0, error: String((e && e.message) || e) }); }
+  });
+}
+function friendlyNotifyError(type, out) {
+  const why = out.error || (out.status ? `it answered ${out.status}` : 'it did not answer');
+  if (type === 'telegram') {
+    if (out.status === 401 || out.status === 404) return 'Telegram refused that bot token. Copy it again from @BotFather.';
+    if (out.status === 400 || out.status === 403) return `Telegram could not send to that chat (${why}). Add the bot to the chat, send it a message first, and check the chat ID.`;
+  }
+  if (type === 'discord' && (out.status === 404 || out.status === 401)) return 'Discord says that webhook does not exist any more. Make a new one in the channel settings.';
+  return `The message was not delivered (${why}).`;
+}
+const notifyWindow = new Map();
+// Tells a reseller something, if they set a place for it and want that kind of message. Fire and forget; at most 30 an hour each.
+function notifyReseller(r, event, title, text, urgent) {
+  try {
+    const n = r && r.notify;
+    if (!n || !n.type || !(n.events ? n.events[event] : NOTIFY_EVENTS[event])) return;
+    const target = notifyTarget(n);
+    if (target.error) return;
+    const now = Date.now(), list = (notifyWindow.get(r.id) || []).filter((t) => now - t < 3600000);
+    if (list.length >= 30) return;
+    list.push(now); notifyWindow.set(r.id, list);
+    notifyPost(target, title, text, urgent).then((x) => { if (!x.ok) log(`Alert for the reseller ${r.name} NOT delivered (${n.type}):`, x.error || x.status); }).catch(() => {});
+  } catch { /* an alert must never get in the way */ }
+}
+// What the panel may see of a reseller's setting: never the secret itself.
+function notifyPublic(r) {
+  const n = r.notify;
+  if (!n || !n.type) return { type: '', events: { ...NOTIFY_EVENTS } };
+  let hint = '';
+  if (n.type === 'telegram') hint = `Bot ${maskTail(String(n.token || '').split(':')[0], 3)}:${maskTail(String(n.token || '').split(':')[1] || '')} \u00b7 chat ${n.chat || ''}`;
+  else if (n.type === 'discord') { try { hint = 'Discord webhook ' + maskTail(new URL(n.url).pathname.split('/').pop(), 4); } catch { hint = 'Discord webhook'; } }
+  else if (n.type === 'ntfy') hint = `ntfy topic ${n.topic}`;
+  else { try { hint = 'Webhook at ' + new URL(n.url).host; } catch { hint = 'Webhook'; } }
+  return { type: n.type, hint, events: { ...NOTIFY_EVENTS, ...(n.events || {}) } };
+}
+// A reseller's customers whose access ends in three days, once a day after 9 AM, to the resellers who asked for it.
+async function endingTick() {
+  const now = new Date();
+  if (now.getHours() < 9) return;
+  const today = localDay(now), target3 = addDays(today, 3);
+  let changed = false;
+  for (const r of Object.values(resellerList())) {
+    if (r.status !== 'active' || !r.notify || !r.notify.events || !r.notify.events.ending || r.endingDay === today) continue;
+    r.endingDay = today; changed = true;
+    const list = Object.values(store.users).filter((u) => u.reseller === r.id && u.expires === target3 && !u.hold);
+    if (list.length) notifyReseller(r, 'ending', `Aurora: ${list.length} ${list.length === 1 ? 'customer ends' : 'customers end'} in 3 days`, list.slice(0, 15).map((u) => `- ${(u.contact && u.contact.full) || u.name} (${u.name})`).join('\n') + (list.length > 15 ? `\n...and ${list.length - 15} more` : '') + '\nRenew them in your reseller panel.');
+  }
+  if (changed) saveStore();
+}
+
 function publicReseller(r) {
   const customers = Object.values(store.users).filter((u) => u.reseller === r.id).length;
   const up = r.parent ? resellerList()[r.parent] : null;
@@ -552,9 +706,11 @@ const localDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
 function addDays(day, n) { const d = new Date(day + 'T12:00:00'); d.setDate(d.getDate() + n); return localDay(d); }
 const daysUntil = (day) => Math.ceil((new Date(day + 'T23:59:59').getTime() - Date.now()) / 86400000);
 const MAX_REQUESTS_PER_MONTH = 4;
+// A request from a reseller's customer goes to that reseller. It comes to the admin only when there is no reseller, or the reseller is suspended.
+const needsAdmin = (x) => !x.reseller || !resellerList()[x.reseller] || resellerList()[x.reseller].status !== 'active';
 function publicRequest(r) {
   return r && { id: r.id, status: r.status, at: r.at, note: r.note, decidedAt: r.decidedAt || null, days: r.days || null, message: r.message || '', newExpires: r.newExpires || null,
-    wantedPlan: r.wantedPlanName || null };
+    wantedPlan: r.wantedPlanName || null, to: r.reseller && resellerList()[r.reseller] ? 'reseller' : 'admin' };
 }
 
 // ---------- Subscription plans ----------
@@ -1601,7 +1757,7 @@ function buildSummary(day) {
   const ending = soon.filter((u) => daysAway(u.expires) <= 1);
   if (ending.length) attention.push(`${plural(ending.length, 'account')} end today or tomorrow: ${ending.slice(0, 4).map((u) => u.name).join(', ')}${ending.length > 4 ? ` and ${ending.length - 4} more` : ''}`);
   if (soon.length - ending.length > 0) attention.push(`${plural(soon.length - ending.length, 'more account')} end within a week`);
-  const waiting = { tickets: (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length, credit: (store.creditRequests || []).filter((x) => x.status === 'pending'), ext: (store.extensions || []).filter((x) => x.status === 'pending').length };
+  const waiting = { tickets: (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length, credit: (store.creditRequests || []).filter((x) => x.status === 'pending'), ext: (store.extensions || []).filter((x) => x.status === 'pending' && needsAdmin(x)).length };
   if (waiting.tickets) attention.push(`${plural(waiting.tickets, 'support message')} waiting`);
   if (waiting.credit.length) attention.push(`${plural(waiting.credit.length, 'credit request')} waiting${waiting.credit.length === 1 && store.resellers ? ` (from ${(Object.values(store.resellers).find((r) => r.id === waiting.credit[0].reseller) || {}).name || 'a reseller'})` : ''}`);
   if (waiting.ext) attention.push(`${plural(waiting.ext, 'extension request')} waiting`);
@@ -1984,13 +2140,18 @@ async function handle(req, res) {
     if (mine[0]?.status === 'pending') return send(res, 409, { error: 'You already have a request waiting.' });
     if (mine.filter((x) => Date.now() - x.at < 30 * 86400000).length >= MAX_REQUESTS_PER_MONTH) return send(res, 429, { error: 'Too many requests this month. Please contact the admin.' });
     const wanted = body.planId ? (store.plans || []).find((x) => x.id === body.planId && x.active) : null;
+    const mine0 = rec.reseller ? resellerList()[rec.reseller] : null;
+    const toReseller = mine0 && mine0.status === 'active' ? mine0 : null;
     const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires,
-      wantedPlanId: wanted ? wanted.id : null, wantedPlanName: wanted ? `${wanted.name} ($${wanted.price})` : null };
+      wantedPlanId: wanted ? wanted.id : null, wantedPlanName: wanted ? `${wanted.name} ($${wanted.price})` : null, reseller: toReseller ? toReseller.id : null };
     store.extensions = [entry, ...(store.extensions || [])].slice(0, 500);
     recordAction({ type: 'extensionRequested', userId: me.Id, name: me.Name, why: `asked for an extension (expires ${rec.expires})` });
     saveStore();
     log('Extension requested by', me.Name, `(expires ${rec.expires})`);
-    sendAlert('Aurora: extension requested', `${me.Name} asked for more time (access ends ${rec.expires}).${entry.wantedPlanName ? '\nWants: ' + entry.wantedPlanName : ''}${entry.note ? '\n"' + entry.note + '"' : ''}`, false);
+    const ask = `${(rec.contact && rec.contact.full) || me.Name}${rec.contact && rec.contact.full ? ` (${me.Name})` : ''} asked for more time (access ends ${rec.expires}).${wanted ? '\nWants: ' + wanted.name : ''}${entry.note ? '\n"' + entry.note + '"' : ''}`;
+    // A reseller's customer asks their reseller (who is told where they chose); only other accounts come to the admin.
+    if (toReseller) notifyReseller(toReseller, 'extension', 'Aurora: extension request', ask + '\nApprove or deny it in your reseller panel.', false);
+    else sendAlert('Aurora: extension requested', ask, false);
     return send(res, 200, { ok: true, request: publicRequest(entry) });
   }
 
@@ -2015,7 +2176,14 @@ async function handle(req, res) {
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
       return send(res, 200, { reseller: true, name: r.name, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
-        parent: up ? up.name : '', canAddSubs: !r.parent, subs,
+        parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r),
+        extensions: (() => {
+          const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
+          const row = (x) => { const c = store.users[x.userId]; return { id: x.id, name: x.name, full: (c && c.contact && c.contact.full) || '', at: x.at, note: x.note || '', wantedPlanId: x.wantedPlanId || null, wantedPlan: planName(x.wantedPlanId),
+            expires: c ? c.expires || null : null, daysLeft: c && c.expires ? daysUntil(c.expires) : null, expired: c ? isExpired(c) : false, gone: !c, status: x.status, decidedAt: x.decidedAt || null, message: x.message || '', planName: x.planName || '', newExpires: x.newExpires || null }; };
+          const mineX = (store.extensions || []).filter((x) => x.reseller === r.id);
+          return { pending: mineX.filter((x) => x.status === 'pending').map(row).reverse(), decided: mineX.filter((x) => x.status !== 'pending').slice(0, 20).map(row) };
+        })(),
         plans: (store.plans || []).filter((p) => p.active !== false && resellerPlanIds(r).includes(p.id)).map((p) => ({ id: p.id, name: p.name, connections: p.connections, length: p.length, unit: p.unit, credits: planCredits(p) })),
         customers: mine, ledger: (store.creditLog || []).filter((e) => e.reseller === r.id).slice(0, 40),
         request: (store.creditRequests || []).find((x) => x.reseller === r.id && x.status === 'pending') || null,
@@ -2030,6 +2198,64 @@ async function handle(req, res) {
       const by = `${r.name} (reseller)`;
       const sellable = (id) => (store.plans || []).find((p) => p.id === id && p.active !== false && resellerPlanIds(r).includes(p.id));
       const owns = (id) => store.users[id]?.reseller === r.id;
+      // ----- Extension requests from this reseller's customers (guard 1.22.0) -----
+      const xm = url.pathname.match(/^\/reseller\/extensions\/([\w-]{1,32})\/(approve|deny)$/);
+      if (xm && req.method === 'POST') {
+        const x = (store.extensions || []).find((e) => e.id === xm[1]);
+        if (!x || x.reseller !== r.id) return send(res, 404, { error: 'No such request.' });
+        if (x.status !== 'pending') return send(res, 409, { error: `That request was already ${x.status}.` });
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const message = cleanText(body.message, 200);
+        if (xm[2] === 'deny') {
+          x.status = 'denied'; x.decidedAt = Date.now(); x.message = message; x.decidedBy = r.name;
+          recordAction({ type: 'extensionDenied', userId: x.userId, name: x.name, why: `extension denied by ${r.name}` });
+          recordAudit(by, `Denied an extension request from ${x.name}`);
+          saveStore();
+          return send(res, 200, { ok: true });
+        }
+        const rec = store.users[x.userId];
+        if (!rec) { x.status = 'denied'; x.decidedAt = Date.now(); x.message = 'This account no longer exists.'; saveStore(); return send(res, 404, { error: 'That customer no longer exists. The request was closed.' }); }
+        const plan = sellable(body.planId || x.wantedPlanId || rec.plan?.id);
+        if (!plan) return send(res, 400, { error: 'Choose one of your plans.' });
+        const cost = planCredits(plan);
+        if (r.credits < cost) return send(res, 402, { error: `Not enough credits: this costs ${cost} and you have ${r.credits}.` });
+        applyPlan(x.userId, rec.name, plan, 'extend');
+        rec.trial = false;
+        creditEntry(r, -cost, 'Renewed ' + plan.name, by, { customer: rec.name });
+        x.status = 'approved'; x.decidedAt = Date.now(); x.days = null; x.message = message; x.newExpires = rec.expires; x.planName = plan.name; x.decidedBy = r.name;
+        recordAction({ type: 'extended', userId: x.userId, name: x.name, why: `renewed by ${r.name} on ${plan.name}, now ends ${rec.expires}` });
+        recordAudit(by, `Approved an extension request from ${rec.name}: renewed on ${plan.name} (${cost} credits)`);
+        saveStore();
+        try { await enforce(x.userId); } catch (e) { log('Applying', rec.name, 'failed:', e.message); }
+        return send(res, 200, { ok: true, credits: r.credits, expires: rec.expires });
+      }
+      // ----- Where this reseller wants alerts (Telegram, Discord, ntfy or a web address) -----
+      if (url.pathname === '/reseller/notify' && req.method === 'PUT') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const type = String(body.type || '');
+        if (!type || type === 'off') { delete r.notify; saveStore(); return send(res, 200, { ok: true, notify: notifyPublic(r) }); }
+        if (!NOTIFY_TYPES.includes(type)) return send(res, 400, { error: 'Choose Telegram, Discord, ntfy or a web address.' });
+        const old = r.notify && r.notify.type === type ? r.notify : {};
+        const next = { type, token: body.token ? String(body.token).trim() : old.token, chat: body.chat ? String(body.chat).trim() : old.chat, url: body.url ? String(body.url).trim() : old.url, topic: body.topic ? String(body.topic).trim() : old.topic,
+          events: { ...NOTIFY_EVENTS, ...(r.notify && r.notify.events || {}) } };
+        if (body.events && typeof body.events === 'object') for (const k of Object.keys(NOTIFY_EVENTS)) if (k in body.events) next.events[k] = !!body.events[k];
+        const t = notifyTarget(next);
+        if (t.error) return send(res, 400, { error: t.error });
+        r.notify = next; saveStore();
+        return send(res, 200, { ok: true, notify: notifyPublic(r) });
+      }
+      if (url.pathname === '/reseller/notify/test' && req.method === 'POST') {
+        const t = notifyTarget(r.notify);
+        if (t.error) return send(res, 400, { error: r.notify ? t.error : 'Save where to send the alerts first.' });
+        const now = Date.now(), list = (notifyWindow.get(r.id) || []).filter((q) => now - q < 3600000);
+        if (list.length >= 30) return send(res, 429, { error: 'That is a lot of messages. Try again in a little while.' });
+        list.push(now); notifyWindow.set(r.id, list);
+        const out = await notifyPost(t, 'Aurora: test message', `This is a test from your Aurora reseller panel (${r.name}). If you can read it, alerts work.`, false);
+        if (!out.ok) return send(res, 502, { error: friendlyNotifyError(r.notify.type, out) });
+        return send(res, 200, { ok: true });
+      }
       // ----- Sub-resellers (guard 1.21.0) -----
       if (url.pathname === '/reseller/subs' && req.method === 'POST') {
         if (r.parent) return send(res, 403, { error: 'Sub-resellers can not add sub-resellers of their own.' });
@@ -2517,7 +2743,7 @@ async function handle(req, res) {
   }
   // One number for the Admin menu, and what is in it.
   if (url.pathname === '/admin-inbox' && req.method === 'GET') {
-    const pendingExt = (store.extensions || []).filter((e) => e.status === 'pending').length;
+    const pendingExt = (store.extensions || []).filter((e) => e.status === 'pending' && needsAdmin(e)).length;
     const requests = (store.creditRequests || []).filter((x) => x.status === 'pending').length;
     const tickets = (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length;
     const low = Object.values(resellerList()).filter((r) => r.status === 'active' && r.credits <= cfg.resellerLowCredits).map((r) => ({ id: r.id, name: r.name, credits: r.credits }));
@@ -2733,7 +2959,7 @@ async function handle(req, res) {
 
   // Extension requests, for Admin -> Users.
   if (url.pathname === '/extensions' && req.method === 'GET') {
-    const list = (store.extensions || []).map((x) => ({ ...x, currentExpires: store.users[x.userId]?.expires || null }));
+    const list = (store.extensions || []).map((x) => ({ ...x, currentExpires: store.users[x.userId]?.expires || null, resellerName: x.reseller && resellerList()[x.reseller] ? resellerList()[x.reseller].name : '', needsAdmin: needsAdmin(x) }));
     return send(res, 200, { pending: list.filter((x) => x.status === 'pending').reverse(), decided: list.filter((x) => x.status !== 'pending').slice(0, 30) });
   }
   const ex = url.pathname.match(/^\/extensions\/([\w-]{1,32})$/);
@@ -3022,6 +3248,7 @@ function start() {
   setInterval(tick, cfg.intervalSeconds * 1000);
   if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
   setTimeout(() => maybeSendSummary().catch(() => {}), 20000); setInterval(() => maybeSendSummary().catch(() => {}), 60000);
+  setTimeout(() => endingTick().catch(() => {}), 40000); setInterval(() => endingTick().catch(() => {}), 30 * 60000).unref();
   setTimeout(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 4000);
   setInterval(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 15000);
 }

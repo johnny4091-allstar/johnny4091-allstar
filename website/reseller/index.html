@@ -64,6 +64,19 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 .sr.open .act { display:flex; } .sr .act .row input { width:90px; }
 .subs-head { display:flex; gap:14px; flex-wrap:wrap; margin:6px 0 12px; } .stat { background:#0a1126; border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:120px; } .stat b { display:block; font-size:1.4rem; } .stat small { color:var(--muted); }
 .callout { margin:14px 0 0; padding:12px 14px; border-radius:10px; background:rgba(79,123,255,.1); border:1px solid #2f4a8f; color:#cfd6f5; font-size:.88rem; }
+.req { background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.req .top { display:flex; flex-wrap:wrap; gap:8px 16px; justify-content:space-between; align-items:center; }
+.req .nm { font-weight:800; } .req .meta { color:var(--muted); font-size:.85rem; }
+.req .quote { margin:10px 0 0; padding:8px 12px; border-left:3px solid var(--accent); background:#0a1126; border-radius:0 8px 8px 0; color:#cfd6f5; font-size:.9rem; }
+.req .act { display:flex; margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,.07); gap:8px; flex-wrap:wrap; align-items:center; }
+.req .act select { width:auto; min-width:220px; } .req .act input.msg2 { flex:1; min-width:160px; width:auto; }
+.badge { display:inline-block; min-width:22px; padding:2px 9px; margin-left:8px; border-radius:999px; background:var(--accent-grad); font-size:.75rem; font-weight:800; vertical-align:middle; text-align:center; }
+.chan { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 14px; }
+.chan .c { padding:8px 14px; border-radius:999px; border:1px solid var(--line); background:#0a1126; color:#cfd6f5; font:600 .85rem var(--font); cursor:pointer; }
+.chan .c[aria-pressed="true"] { background:#fff; color:#0a1126; border-color:#fff; }
+.evs { display:grid; gap:8px; margin:12px 0 4px; }
+#extsec { margin-bottom:18px; }
+.done-list { margin-top:10px; color:var(--muted); font-size:.85rem; display:grid; gap:4px; }
 @media (max-width:720px) { .hero,.grid { grid-template-columns:1fr; } .pill span { display:none; } }
 </style>
 </head>
@@ -88,6 +101,13 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <div class="card credits"><small>Signed in as <b id="who"></b> · Your credits</small><div class="n" id="cr">0</div><small>1 credit = 1 connection for 1 month</small><div><span class="low" id="low" hidden>Running low</span></div></div>
       <div class="card" id="askcard"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
         <div class="row"><input id="ask" type="number" min="1" placeholder="How many" inputmode="numeric"><button class="btn gray" id="askbtn" type="button">Ask</button></div><p class="msg ok" id="askmsg" hidden></p></div>
+    </div>
+
+    <div id="extsec" hidden>
+      <div class="tools"><h2>Extension requests<span class="badge" id="extbadge" hidden>0</span></h2></div>
+      <p class="sub" style="margin-top:-6px">Your customers ask for more time here. Approving renews them with the plan you pick, so it costs you credits like any renewal.</p>
+      <div class="list" id="extlist" aria-live="polite"></div>
+      <div class="done-list" id="extdone"></div>
     </div>
 
     <div class="card">
@@ -128,6 +148,22 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <div class="list" id="sublist" aria-live="polite"></div>
       <p class="demo">You see each sub-reseller's credits and how many customers they have. Their customers stay private to them (and to your provider).</p>
     </div>
+
+    <div class="tools"><h2>Notifications</h2></div>
+    <div class="card" id="notifycard">
+      <h2>Get alerts where you already are</h2><p class="sub">Aurora messages you when a customer asks for an extension. Pick where.</p>
+      <div class="chan" id="nchan" role="group" aria-label="Where to send alerts"></div>
+      <div class="grid" id="nfields"></div>
+      <p class="callout" id="nhelp"></p>
+      <div class="evs">
+        <label class="toggle"><input type="checkbox" id="ev-extension"> A customer asks for an extension</label>
+        <label class="toggle"><input type="checkbox" id="ev-lowCredits"> My credits are running low</label>
+        <label class="toggle"><input type="checkbox" id="ev-ending"> Customers whose access ends in 3 days (a daily message)</label>
+      </div>
+      <div class="row" style="margin-top:14px;flex-wrap:wrap"><button class="btn red" id="nsave" type="button">Save</button><button class="btn gray" id="ntest" type="button">Send a test message</button><button class="btn line" id="noff" type="button">Remove</button></div>
+      <p class="msg" id="nmsg" role="status" hidden></p>
+    </div>
+
     <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
     <div class="chips" id="chips" role="group" aria-label="Filter"></div>
     <div class="list" id="list" aria-live="polite"></div>
@@ -168,6 +204,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     if (!me) return;
     $('cr').textContent = me.credits; $('low').hidden = !me.low; $('who').textContent = me.name;
     $('subsec').hidden = !me.canAddSubs; $('askcard').hidden = !!me.parent;
+    renderExt(); if (!$('nfields').children.length || !$('nchan').__painted) { $('nchan').__painted = true; paintNotify(); } else { $('ntest').disabled = !(me.notify && me.notify.type); $('noff').hidden = !(me.notify && me.notify.type); }
     if (me.parent) $('who').textContent = me.name + ' (sub-reseller of ' + me.parent + ')';
     if (me.canAddSubs) { $('scmax').textContent = me.credits; renderSubs(); }
     $('trialnote').textContent = 'A free trial costs nothing (you have ' + me.trialsLeft + ' left today).';
@@ -207,6 +244,80 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       list.appendChild(el);
     });
   }
+  // ----- Extension requests -----
+  function fmtAt(t) { return t ? new Date(t).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
+  function renderExt() {
+    var ex = (me && me.extensions) || { pending: [], decided: [] }, list = $('extlist'), done = $('extdone');
+    var any = ex.pending.length || ex.decided.length;
+    $('extsec').hidden = !any;
+    $('extbadge').hidden = !ex.pending.length; $('extbadge').textContent = ex.pending.length;
+    list.innerHTML = '';
+    ex.pending.forEach(function (x) {
+      var el = document.createElement('div'); el.className = 'req';
+      var tag = x.expired ? '<span class="tag exp">Ended</span>' : (x.daysLeft != null && x.daysLeft <= 7 ? '<span class="tag soon">Ends in ' + x.daysLeft + ' day' + (x.daysLeft === 1 ? '' : 's') + '</span>' : '');
+      var opts = (me.plans || []).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === x.wantedPlanId ? ' selected' : '') + '>' + esc(p.name) + ' (' + p.credits + ' credits)</option>'; }).join('');
+      el.innerHTML = '<div class="top"><div><span class="nm">' + esc(x.full || x.name) + '</span>' + tag + '<div class="meta">' + esc(x.name) + ' · asked ' + esc(fmtAt(x.at)) + (x.wantedPlan ? ' · wants: ' + esc(x.wantedPlan) : ' · no plan chosen') + '</div></div>' +
+        '<div class="meta" style="text-align:right">' + (x.expires ? (x.expired ? 'Ended ' : 'Ends ') + esc(fmt(x.expires)) : 'No end date') + '</div></div>' +
+        (x.note ? '<div class="quote">\u201c' + esc(x.note) + '\u201d</div>' : '') +
+        '<div class="act"><select class="xp" aria-label="Plan to renew on">' + opts + '</select><input class="msg2" maxlength="200" placeholder="Message to them (optional)" aria-label="Message to the customer">' +
+        '<button class="btn red sm ok" type="button">Approve and renew</button><button class="btn line sm danger no" type="button">Deny</button><div class="note say" style="width:100%;font-size:.85rem" aria-live="polite"></div></div>';
+      var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
+      function decide(btn, what, body) {
+        if (busy) return; busy = true; btn.disabled = true;
+        api('POST', '/reseller/extensions/' + encodeURIComponent(x.id) + '/' + what, body).then(function (j) {
+          busy = false; btn.disabled = false;
+          if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
+          if (j.__status !== 200) return say(j.error || 'That did not work. Please try again.', true);
+          reload();
+        }).catch(function () { busy = false; btn.disabled = false; say('Could not reach Aurora. Check your connection.', true); });
+      }
+      el.querySelector('.ok').onclick = function () { var v = el.querySelector('.xp').value; if (!v) return say('You have no plans to renew on. Ask your provider.', true); decide(this, 'approve', { planId: v, message: el.querySelector('.msg2').value.trim() }); };
+      el.querySelector('.no').onclick = function () { decide(this, 'deny', { message: el.querySelector('.msg2').value.trim() }); };
+      list.appendChild(el);
+    });
+    done.innerHTML = ex.decided.slice(0, 5).map(function (x) { return '<div>' + esc(x.full || x.name) + ' · ' + (x.status === 'approved' ? 'approved' + (x.planName ? ' (' + esc(x.planName) + ')' : '') : 'denied') + ' · ' + esc(fmtAt(x.decidedAt)) + '</div>'; }).join('');
+    done.hidden = !ex.decided.length;
+  }
+
+  // ----- Notifications: where this reseller wants alerts -----
+  var NTYPES = [['telegram', 'Telegram'], ['discord', 'Discord'], ['ntfy', 'ntfy'], ['webhook', 'Other webhook']];
+  var NFIELDS = { telegram: [['token', 'Bot token', 'text', '123456789:AAH...'], ['chat', 'Chat ID', 'text', '-1001234567890']], discord: [['url', 'Webhook link', 'url', 'https://discord.com/api/webhooks/...']], ntfy: [['topic', 'Topic name', 'text', 'a long hard-to-guess name']], webhook: [['url', 'Web address (https://)', 'url', 'https://example.com/hook']] };
+  var NHELP = { telegram: 'Telegram: message @BotFather to make a bot and copy its token. Add the bot to your chat (or channel), send it a message, then paste the chat ID here.', discord: 'Discord: open your channel \u2192 Edit Channel \u2192 Integrations \u2192 Webhooks \u2192 New Webhook \u2192 Copy Webhook URL.', ntfy: 'ntfy: install the ntfy app, subscribe to a topic with a long random name, and type the same name here. Anyone who knows the name can read the alerts, so make it hard to guess.', webhook: 'Aurora sends a small JSON message (title, text) to this address. It must be a public https address.' };
+  var ntype = '';
+  function paintNotify() {
+    var n = (me && me.notify) || { type: '', events: {} };
+    if (!ntype && !$('nchan').__touched) ntype = n.type || 'telegram';
+    $('nchan').innerHTML = NTYPES.map(function (t) { return '<button class="c" type="button" data-t="' + t[0] + '" aria-pressed="' + (ntype === t[0]) + '">' + t[1] + (n.type === t[0] ? ' \u2713' : '') + '</button>'; }).join('');
+    var saved = n.type === ntype;
+    $('nfields').innerHTML = (NFIELDS[ntype] || []).map(function (f) { return '<div><label for="nf-' + f[0] + '">' + f[1] + '</label><input id="nf-' + f[0] + '" type="' + f[2] + '" autocomplete="off" placeholder="' + esc(saved ? 'Saved. Leave empty to keep it.' : f[3]) + '"></div>'; }).join('');
+    $('nhelp').textContent = (NHELP[ntype] || '') + (saved && n.hint ? '  Now: ' + n.hint + '.' : '');
+    ['extension', 'lowCredits', 'ending'].forEach(function (k) { $('ev-' + k).checked = !!(n.events && n.events[k]); });
+    $('ntest').disabled = !n.type; $('noff').hidden = !n.type;
+  }
+  $('nchan').addEventListener('click', function (e) { var b = e.target.closest('.c'); if (!b) return; ntype = b.getAttribute('data-t'); $('nchan').__touched = true; paintNotify(); });
+  function nsay(t, kind) { msg($('nmsg'), t, kind); }
+  function nsave() {
+    var body = { type: ntype, events: { extension: $('ev-extension').checked, lowCredits: $('ev-lowCredits').checked, ending: $('ev-ending').checked } };
+    (NFIELDS[ntype] || []).forEach(function (f) { var v = $('nf-' + f[0]).value.trim(); if (v) body[f[0]] = v; });
+    return api('PUT', '/reseller/notify', body).then(function (j) {
+      if (j.__status === 401) { out('Your sign-in ended. Please sign in again.'); return false; }
+      if (j.__status !== 200) { nsay(j.error || 'Could not save that.', 'err'); return false; }
+      if (me) me.notify = j.notify; paintNotify(); return true;
+    });
+  }
+  $('nsave').onclick = function () { if (busy) return; busy = true; nsave().then(function (ok) { busy = false; if (ok) nsay('Saved.', 'ok'); }).catch(function () { busy = false; nsay('Could not reach Aurora.', 'err'); }); };
+  $('ntest').onclick = function () {
+    if (busy) return; busy = true; $('ntest').disabled = true; nsay('Sending…', 'ok');
+    nsave().then(function (ok) {
+      if (!ok) { busy = false; $('ntest').disabled = false; return; }
+      return api('POST', '/reseller/notify/test', {}).then(function (j) { busy = false; $('ntest').disabled = false; nsay(j.__status === 200 ? 'Test sent. Check ' + (NTYPES.filter(function (t) { return t[0] === ntype; })[0] || [0, 'your app'])[1] + '.' : (j.error || 'The test failed.'), j.__status === 200 ? 'ok' : 'err'); });
+    }).catch(function () { busy = false; $('ntest').disabled = false; nsay('Could not reach Aurora.', 'err'); });
+  };
+  $('noff').onclick = function () {
+    if (busy) return; busy = true;
+    api('PUT', '/reseller/notify', { type: '' }).then(function (j) { busy = false; if (j.__status === 200) { if (me) me.notify = j.notify; ntype = ''; $('nchan').__touched = false; paintNotify(); nsay('Alerts are off.', 'ok'); } else nsay(j.error || 'Could not do that.', 'err'); }).catch(function () { busy = false; });
+  };
+
   var subOpen = null;
   function renderSubs() {
     var subs = me.subs || [], total = subs.reduce(function (n, s) { return n + s.customers; }, 0), list = $('sublist');
