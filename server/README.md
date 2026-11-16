@@ -402,6 +402,20 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.27.0
+
+Moderators.
+
+- An admin can flag an ordinary account as a moderator (`PUT /limits/<id>/mod {"on":true}`, in Admin → Users → the customer). Administrators and
+  resellers can't be moderators.
+- A moderator is **not** an Emby administrator, so Emby itself refuses everything else. In the guard, a moderator signs in with its own Emby token and
+  `modUser=<its id>`, and may use only: the inbox (support messages only), support, announcements, the plan names, the requests import status,
+  channel reports (read-only, never the provider login), usage, sharing (addresses shortened), sports, and a small read-only Emby window
+  (`/mod/emby`: the user list as id and name, the activity log without details, customers' feedback and problem notes, and removing a note).
+  Users, limits, resellers, credits, server health, updates, the audit log, plans, maintenance, the provider settings and Live TV settings are refused.
+- Changes a moderator makes are written in the audit log as "<name> (moderator)".
+- `/account` now says `mod: true` for a moderator, which is how the app shows the Admin menu with only the allowed pages.
+
 ## 1.26.0
 
 Renewal reminders.

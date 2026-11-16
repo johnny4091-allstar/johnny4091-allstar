@@ -188,7 +188,20 @@
 
   // keepalive lets a request finish even if the app is being closed or sent to the background.
   const API_TIMEOUT_MS = 30000;
+  const MOD_PREFS = /^\/DisplayPreferences\/(aurora-feedback|aurora-problems|aurora-playlog)$/;
   async function api(path, { params, method = 'GET', body, keepalive = false } = {}) {
+    if (state.isMod && !isAdmin()) {
+      const other = params && params.userId && params.userId !== state.userId;
+      const viaGuard = (method === 'GET' && (path === '/Users' || path === '/System/ActivityLog/Entries'))
+        || (MOD_PREFS.test(path) && other && (method === 'GET' || (method === 'POST' && !path.endsWith('playlog'))));
+      if (viaGuard) {
+        const q = { path };
+        if (other) q.target = params.userId;
+        if (params && params.StartIndex != null) q.StartIndex = params.StartIndex;
+        if (params && params.Limit != null) q.Limit = params.Limit;
+        return guard('/mod/emby', { method: method === 'POST' ? 'POST' : 'GET', params: q, body });
+      }
+    }
     // Kids mode needs each title's rating to filter on, whatever fields the caller asked for.
     if (method === 'GET' && kidsOn() && !/^\/(Sessions|System|Auth|DisplayPreferences)/.test(path)) params = { ...(params || {}), Fields: ((params && params.Fields) ? params.Fields + ',' : '') + 'OfficialRating' };
     const opts = { method, keepalive, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
@@ -250,7 +263,7 @@
     rowCache.clear(); // rows kept from before were not filtered
     const st = $('#profile-dropdown [data-action="settings"]');
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
-    $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isAdmin());
+    $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isStaff());
     $('#profile-dropdown [data-action="reseller"]')?.classList.toggle('hidden', on || !state.isReseller);
     document.documentElement.classList.toggle('reseller-only', resellerOnly());
     $('#profile-dropdown [data-action="settings"]')?.classList.toggle('hidden', resellerOnly());
@@ -978,7 +991,7 @@
       if (JSON.stringify(iptv.config) !== iptvBefore && /^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
     });
     updateRequestsLink();
-    $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isAdmin() || kidsOn());
+    $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isStaff() || kidsOn());
     // A reseller account only gets the Reseller panel (no content, Live TV or Requests). Known from last time, then checked with the guard;
     // the first time on this device the page waits a moment for the answer so nothing else flashes up.
     state.isReseller = store.get('ef.reseller.' + user.Id) === '1';
@@ -990,6 +1003,14 @@
         if (changed && state.userId === user.Id) { location.hash = is ? '#/reseller' : '#/home'; route(); }
       }).catch(() => {});
       if (!known) await Promise.race([check, new Promise((r) => setTimeout(r, 2500))]);
+    }
+    state.isMod = !isAdmin() && store.get('ef.mod.' + user.Id) === '1';
+    if (guardEnabled && !isAdmin()) {
+      guard('/account', { params: { userId: user.Id }, quick: true }).then((a) => {
+        const is = !!a.mod;
+        store.set('ef.mod.' + user.Id, is ? '1' : '0');
+        if (is !== state.isMod && state.userId === user.Id) { state.isMod = is; applyKidsUi(); if (!is && /^#\/admin/.test(location.hash)) location.hash = '#/home'; }
+      }).catch(() => {});
     }
     applyKidsUi();
     if (!resellerOnly()) syncDownloadLicense();
@@ -4950,6 +4971,7 @@
     if (quick && Date.now() < guardDownUntil) throw new Error('Aurora Guard is not answering');
     const url = new URL(guardUrl.replace(/\/+$/, '') + path);
     // Who is making a change, for the guard's audit log. A query value, not a header: an older guard's CORS check would refuse an unknown header and break every guard call.
+    if (state.isMod && !isAdmin()) params = { ...(params || {}), modUser: state.userId }; // a moderator proves who it is
     if (method !== 'GET') params = { ...(params || {}), by: String(state.user?.Name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40) };
     for (const [k, v] of Object.entries(params || {})) if (v != null) url.searchParams.set(k, v);
     let res;
@@ -5660,6 +5682,10 @@
   // isn't a server administrator, so the name check only decides who sees the menu item.
   const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
   const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
+  // A moderator (guard 1.27.0): an ordinary account the admin flagged. It gets only these Admin pages, and the guard refuses everything else.
+  const MOD_TABS = ['inbox', 'support', 'feedback', 'announce', 'requests', 'reports', 'sports', 'problems', 'activity', 'usage', 'sharing'];
+  const isMod = () => !!state.isMod && !isAdmin();
+  const isStaff = () => isAdmin() || isMod();
   // ----- Feedback -----
   // A viewer's note plus this device's app log, kept in their Emby display preferences ("aurora-feedback")
   // where the admin's Feedback tab reads it, and also sent to the server's client log as a copy.
@@ -5868,7 +5894,8 @@
   }
 
   function renderAdmin(page, tab, isCurrent) {
-    if (!isAdmin()) { location.replace('#/home'); return; }
+    if (!isStaff()) { location.replace('#/home'); return; }
+    if (isMod() && !MOD_TABS.includes(tab)) tab = 'inbox';
     if (!ADMIN_TABS.some(([id]) => id === tab)) tab = 'overview';
     page.innerHTML = `
       <div class="page-pad admin-page">
@@ -5896,7 +5923,8 @@
   function adminMenuHtml(tab) {
     const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
     const known = new Set(ADMIN_GROUPS.flatMap(([, ids]) => ids));
-    const groups = [...ADMIN_GROUPS, ['More', ADMIN_TABS.map(([id]) => id).filter((id) => !known.has(id))]];
+    const groups = [...ADMIN_GROUPS, ['More', ADMIN_TABS.map(([id]) => id).filter((id) => !known.has(id))]]
+      .map(([name, ids]) => [name, isMod() ? ids.filter((id) => MOD_TABS.includes(id)) : ids]).filter(([, ids]) => ids.length);
     const item = (id) => { const t = ADMIN_TABS.find(([x]) => x === id); return t ? `<a href="#/admin?tab=${id}" role="menuitem" class="admin-menu-item${id === tab ? ' active' : ''}">${esc(t[1])}</a>` : ''; };
     return `<div class="admin-menu">
       <button class="admin-menu-btn" data-admin-menu aria-haspopup="menu" aria-expanded="false"><span>${esc(label)}</span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg></button>
@@ -7708,7 +7736,7 @@
     const b = $('#bell-btn'), badge = $('#bell-badge');
     if (!b) return;
     b.classList.toggle('hidden', !inboxState.ok || kidsOn());
-    b.onclick = () => { location.hash = isAdmin() ? '#/admin?tab=inbox' : '#/inbox'; };
+    b.onclick = () => { location.hash = isStaff() ? '#/admin?tab=inbox' : '#/inbox'; };
     const n = inboxState.badge ?? inboxState.unread;
     badge.textContent = n > 9 ? '9+' : String(n);
     badge.classList.toggle('hidden', !n);
@@ -7733,7 +7761,7 @@
     try {
       const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });
       inboxState = { ...d, ok: true };
-      if (isAdmin()) { try { const a = await guard('/admin-inbox', { quick: true }); inboxState.badge = a.total; inboxState.adminTotal = a.total; } catch { /* older guard */ } }
+      if (isStaff()) { try { const a = await guard('/admin-inbox', { quick: true }); inboxState.badge = a.total; inboxState.adminTotal = a.total; } catch { /* older guard */ } }
     } catch { inboxState.ok = false; }
     paintBell(); paintBanners();
   }
@@ -7858,6 +7886,16 @@
   const guardTooOld = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.11.0 to use ${what} (copy the new aurora-guard.js and restart the task).` : esc(e.message));
   async function adminInbox(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Inbox');
+    if (isMod()) {
+      let tk;
+      try { tk = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="empty-msg">${esc(e.message)}</p></section>`; return; }
+      if (!isCurrent()) return;
+      const open = (tk.tickets || []).filter((t) => t.status === 'open');
+      body.innerHTML = `<div class="stat-grid">${statTile('Support messages', open.length, open.length ? 'waiting for an answer' : 'all answered', open.length ? 'bad' : '')}</div>
+        <section class="admin-card"><h2>Moderator</h2><p class="muted">You can answer customers, send announcements, and look at problems, feedback and activity. Users, resellers, credits and server settings stay with the administrator.</p>
+        <div class="m-actions"><a class="btn btn-white" href="#/admin?tab=support">Open support messages</a></div></section>`;
+      return;
+    }
     let inbox, reqs, tickets;
     try { [inbox, reqs, tickets] = await Promise.all([guard('/admin-inbox'), guard('/credit-requests'), guard('/support')]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="live-result bad">${guardTooOld(e, 'the Inbox')}</p></section>`; return; }
     if (!isCurrent()) return;
@@ -8543,6 +8581,12 @@
         <p class="muted">Paste it into Messenger, Text or WhatsApp. Aurora can't send those for you.</p>
         <div class="live-result" data-remind-result></div>
       </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && isAdmin() ? `<section class="admin-card">
+        <h2>Moderator</h2>
+        <label class="admin-check"><input type="checkbox" data-mod${lim?.mod ? ' checked' : ''}> Make ${esc(user.Name)} a moderator</label>
+        <p class="muted">A moderator gets an Admin menu with support messages, announcements, requests, channel reports, sports, and read-only problems, feedback, activity, usage and sharing. They never see Users, Resellers, credits, Server health, updates, plans, the TV provider login or the audit log, and the guard refuses those even if someone tries. They should have no end date, or the account switches off.</p>
+        <div class="live-result" data-mod-result></div>
+      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -8571,6 +8615,12 @@
       const on = ev.target.checked; ev.target.disabled = true;
       try { await guard(`/limits/${userId}/adult`, { method: 'PUT', body: { on } }); say('[data-adult-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
       catch (e) { ev.target.checked = !on; say('[data-adult-result]', e.status === 404 ? 'Update Aurora Guard to 1.23.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
+    $('[data-mod]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/mod`, { method: 'PUT', body: { on } }); say('[data-mod-result]', on ? `${esc(user.Name)} is a moderator now. They see the Admin menu next time Aurora opens.` : 'Not a moderator any more.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-mod-result]', e.status === 404 ? 'Update Aurora Guard to 1.27.0 first.' : esc(e.message), 'bad'); }
       ev.target.disabled = false;
     });
     $('[data-remind-save]', body)?.addEventListener('click', async () => {
@@ -8700,7 +8750,7 @@
         $('[data-f="plan"]', body).addEventListener('change', (e) => $('[data-by-hand]', body).classList.toggle('hidden', !!e.target.value));
       } catch { /* an older guard has no plans */ }
     }
-    const result = $('[data-result]', body);
+    const result = $('[data-result]', body) || document.createElement('div');
     const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
     $('[data-create]', body).addEventListener('click', async () => {
       const name = $('[data-f="name"]', body).value.trim();
@@ -8820,7 +8870,7 @@
       return;
     }
     let prov, rep;
-    try { [prov, rep] = await Promise.all([guard('/provider'), guard('/reports')]); } catch (e) {
+    try { [prov, rep] = await Promise.all([isAdmin() ? guard('/provider') : Promise.resolve(null), guard('/reports')]); } catch (e) {
       body.innerHTML = `<section class="admin-card"><h2>Channel reports</h2><p class="empty-msg">Couldn't reach Aurora Guard: ${esc(e.message)}. Channel reports need guard version 1.1.0 or newer on the server PC.</p></section>`;
       return;
     }
@@ -8833,7 +8883,7 @@
       <div class="muted">${esc(r.user)} · ${esc(r.device)}${r.note ? ' · ' + esc(r.note) : ''} · ${r.forwarded === 'sent' ? 'sent to the provider' : r.forwarded === 'failed' ? '<span class="pill bad">the provider did not accept it</span>' : r.forwarded === 'held' ? 'kept here, waiting for a second person to report it before it goes to the provider' : 'kept here only'}</div></div>
       <div class="admin-row-time">${esc(timeAgo(r.at))}</div></div>`;
     body.innerHTML = `
-      <section class="admin-card">
+      ${prov ? `<section class="admin-card">
         <h2>TV provider reporting</h2>
         <p class="muted">When a customer reports a channel (long-press it, or press Menu on the remote), or a channel keeps buffering, Aurora can pass the report to your TV provider's system. The API key is typed here once and kept only on the server PC (Aurora Guard): it is never sent to phones or TVs, and it is never shown again, only its last 4 characters.</p>
         <label class="admin-check"><input type="checkbox" data-pv="enabled"${prov.enabled ? ' checked' : ''}> Send reports to the provider</label>
@@ -8854,11 +8904,11 @@
           ${prov.keySet ? '<button class="btn btn-gray" data-removekey>Remove the key</button>' : ''}
         </div>
         <div class="live-result" data-result></div>
-      </section>
+      </section>` : ''}
       <section class="admin-card">
         <h2>Reported channels <small>${rep.total} ${rep.total === 1 ? 'report' : 'reports'} kept</small></h2>
         <div class="admin-list">${rep.channels.map(chRow).join('') || '<p class="muted">No reports yet.</p>'}</div>
-        ${rep.total ? '<div class="m-actions"><button class="btn btn-gray" data-clear>Clear the list</button></div>' : ''}
+        ${rep.total && isAdmin() ? '<div class="m-actions"><button class="btn btn-gray" data-clear>Clear the list</button></div>' : ''}
       </section>
       <section class="admin-card">
         <h2>Latest reports</h2>
@@ -8868,7 +8918,7 @@
     const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
     const val = (id) => $(`[data-pv="${id}"]`, body);
     const reload = () => setTimeout(() => { if (isCurrent()) adminReports(body, isCurrent); }, 1200);
-    $('[data-save]', body).addEventListener('click', async () => {
+    $('[data-save]', body)?.addEventListener('click', async () => {
       say('<div class="spinner"></div> Saving…');
       try {
         const payload = { enabled: val('enabled').checked, url: val('url').value.trim(), method: val('method').value, keyIn: val('keyIn').value, keyName: val('keyName').value.trim(), body: val('body').value };
@@ -8880,7 +8930,7 @@
         reload();
       } catch (e) { say("Couldn't save: " + esc(e.message), 'bad'); }
     });
-    $('[data-test]', body).addEventListener('click', async () => {
+    $('[data-test]', body)?.addEventListener('click', async () => {
       say('<div class="spinner"></div> Sending a test report… (save first if you changed anything)');
       try {
         const r = await guard('/provider/test', { method: 'POST' });

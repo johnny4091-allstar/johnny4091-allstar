@@ -1,3 +1,4 @@
+- New: moderators. In Admin → Users → a customer, make them a moderator. A moderator gets an Admin menu with support messages, announcements, requests, channel reports, sports, and read-only problems, feedback, activity, usage and sharing. Users, Resellers, credits, Server health, updates, plans and the TV provider login stay admin-only.
 - New: renewal reminders. Choose, per customer, how many days before the end they get the in-app reminder (with a default for everyone), and copy a ready-made message to send them. Resellers also pick how many days ahead their daily "ending soon" list covers.
 - New on iPhone: Live TV channels play in a full-screen player, with swipe up and down to change channel and a channel list.
 - Removed: the Review account switch in Admin → Users. Every account sees the same app.

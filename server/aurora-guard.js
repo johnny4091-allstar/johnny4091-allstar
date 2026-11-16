@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.26.0';
+const VERSION = '1.27.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -979,6 +979,62 @@ async function isAdminToken(token) {
   return ok;
 }
 
+// ---------- Moderators (guard 1.27.0) ----------
+// A moderator is an ordinary (not Emby administrator) account the admin flagged in Admin -> Users. The guard lets it use only the routes
+// listed here: support and messages, content, and read-only monitoring. Nothing about users, resellers, credits, server health, updates,
+// plans, the TV provider's login, or the audit log. Because the account is not an Emby administrator, Emby itself refuses everything else.
+const MOD_ROUTES = [
+  ['GET', /^\/admin-inbox$/],
+  ['GET', /^\/support$/], ['GET|POST|PUT', /^\/support\/[\w-]{1,32}(?:\/reply)?$/],
+  ['GET|POST', /^\/announcements$/], ['DELETE', /^\/announcements\/[\w-]{1,32}$/], ['GET', /^\/plans$/],
+  ['GET', /^\/requests-sync$/],
+  ['GET', /^\/reports$/],
+  ['GET', /^\/usage$/],
+  ['GET', /^\/sharing$/], ['DELETE', /^\/sharing\/[\w-]{1,64}$/],
+  ['GET', /^\/sports\/(?:status|aliases)$/], ['PUT', /^\/sports\/(?:settings|aliases)$/], ['POST', /^\/sports\/refresh$/],
+  ['POST', /^\/audit$/],
+  ['GET|POST', /^\/mod\/emby$/],
+];
+const modAllowed = (method, pathname) => MOD_ROUTES.some(([m, re]) => m.split('|').includes(method) && re.test(pathname));
+async function modOfToken(token, userId) {
+  const me = await userOfToken(token, userId);
+  if (!me || me.Policy?.IsAdministrator || me.Policy?.IsDisabled) return null;
+  const rec = store.users[me.Id];
+  return rec && rec.mod && !resellerOfUser(me.Id) ? me : null;
+}
+const maskIp = (ip) => { const t = String(ip || ''); const v4 = t.match(/^(\d+\.\d+)\.\d+\.\d+$/); return v4 ? v4[1] + '.x.x' : t ? t.slice(0, 4) + '…' : ''; };
+// What a moderator may read or write in Emby, through the guard (never the server's settings, users' details or devices).
+const MOD_EMBY_PREFS = /^aurora-(?:feedback|problems|playlog)$/;
+async function modEmby(req, url, res, body) {
+  const path = String(url.searchParams.get('path') || '');
+  const userId = String(url.searchParams.get('target') || '');
+  let m;
+  if (req.method === 'GET' && path === '/Users') {
+    const list = (await emby('GET', '/Users')) || [];
+    return send(res, 200, (Array.isArray(list) ? list : []).filter((u) => !(u.Policy && u.Policy.IsAdministrator)).map((u) => ({ Id: u.Id, Name: u.Name, Policy: { IsDisabled: !!(u.Policy && u.Policy.IsDisabled) } })));
+  }
+  if ((m = path.match(/^\/DisplayPreferences\/([\w-]{1,40})$/)) && MOD_EMBY_PREFS.test(m[1]) && /^[\w-]{1,64}$/.test(userId)) {
+    if (req.method === 'GET') return send(res, 200, await emby('GET', path, { query: { userId, client: 'aurora' } }));
+    if (req.method === 'POST' && m[1] !== 'aurora-playlog') {
+      const cfgText = body && body.CustomPrefs && typeof body.CustomPrefs.config === 'string' ? body.CustomPrefs.config : '';
+      if (cfgText.length > 400000) return send(res, 400, { error: 'Too large' });
+      const clean = { Id: m[1], Client: 'aurora', SortBy: 'SortName', SortOrder: 'Ascending', RememberIndexing: false, RememberSorting: false, ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false,
+        PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: cfgText } };
+      await emby('POST', path, { query: { userId, client: 'aurora' }, body: clean });
+      return send(res, 200, { ok: true });
+    }
+  }
+  if (req.method === 'GET' && path === '/System/ActivityLog/Entries') {
+    const start = Math.max(0, parseInt(url.searchParams.get('StartIndex'), 10) || 0), limit = Math.max(1, Math.min(200, parseInt(url.searchParams.get('Limit'), 10) || 100));
+    const out = await emby('GET', path, { query: { StartIndex: start, Limit: limit } });
+    return send(res, 200, { ...out, Items: ((out && out.Items) || []).map((e) => ({ ...e, Overview: undefined })) });
+  }
+  if (req.method === 'GET' && path === '/Sessions') {
+    const list = (await emby('GET', '/Sessions')) || [];
+    return send(res, 200, list.map((x) => ({ ...x, RemoteEndPoint: maskIp(x.RemoteEndPoint) })));
+  }
+  return send(res, 403, { error: "That isn't available to moderators." });
+}
 // Emby's session list, shared for 3 seconds: at peak time many clients ask "may I play?" at once, and each
 // answer would otherwise cost Emby its own /Sessions call. Signing in and the every-minute job always ask fresh,
 // so someone who has just signed out on another device isn't told it's still in use.
@@ -2164,6 +2220,7 @@ async function handle(req, res) {
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
+      mod: !!rec?.mod && !me.Policy?.IsAdministrator, // a moderator (guard 1.27.0)
       adult: !!rec?.adult, adultReset: rec?.adultReset || 0, // the adult Live TV categories switch (guard 1.23.0); adultReset changes whenever it is switched, which also clears the account's PIN
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
@@ -2759,12 +2816,16 @@ async function handle(req, res) {
 
   // Everything else: Emby administrators only.
   if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
-  let admin = false;
+  let admin = false, mod = null;
   try { admin = await isAdminToken(token); } catch (e) { return send(res, 502, { error: `Can't reach Emby to check who you are: ${e.message}` }); }
-  if (!admin) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }
+  if (!admin) {
+    try { mod = await modOfToken(token, url.searchParams.get('modUser')); } catch { mod = null; }
+    if (!mod) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }
+    if (!modAllowed(req.method, url.pathname)) return send(res, 403, { error: "That isn't available to moderators." });
+  }
 
   // Who changed what: every change made through the admin endpoints is written down with the admin's name (the app sends it).
-  const auditBy = String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
+  const auditBy = mod ? `${mod.Name} (moderator)`.slice(0, 40) : String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
   if (url.pathname === '/audit' && req.method === 'POST') {
     let body;
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
@@ -2772,6 +2833,11 @@ async function handle(req, res) {
     if (!text) return send(res, 400, { error: 'text is required' });
     recordAudit(auditBy, text); saveStore();
     return send(res, 200, { ok: true });
+  }
+  if (url.pathname === '/mod/emby') {
+    let body = null;
+    if (req.method === 'POST') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+    try { return await modEmby(req, url, res, body); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.message }); }
   }
   if (req.method !== 'GET') {
     const subjectId = (url.pathname.match(/^\/(?:limits|sharing)\/([\w-]{1,64})/) || [])[1];
@@ -2865,7 +2931,7 @@ async function handle(req, res) {
     const list = Object.entries(store.sharing || {}).map(([userId, rec]) => {
       const lv = sharingLevel(rec), week = Date.now() - 7 * 86400000;
       return { userId, name: rec.name, ...lv, limit: limitOf(userId), places: Object.values(rec.nets || {}).filter((v) => (v.at || 0) > week)
-        .sort((a, b) => b.at - a.at).map((v) => ({ ip: v.ip, local: !!v.local, device: v.device || '', last: new Date(v.at).toISOString(), seen: v.n })) };
+        .sort((a, b) => b.at - a.at).map((v) => ({ ip: mod ? maskIp(v.ip) : v.ip, local: !!v.local, device: v.device || '', last: new Date(v.at).toISOString(), seen: v.n })) };
     }).sort((a, b) => ({ likely: 0, watch: 1, ok: 2 }[a.level] - { likely: 0, watch: 1, ok: 2 }[b.level]) || (b.together - a.together) || (b.networks - a.networks));
     return send(res, 200, { list, networksAt: cfg.sharingNetworks, togetherAt: cfg.sharingSimultaneousMinutes });
   }
@@ -2961,6 +3027,7 @@ async function handle(req, res) {
     const requests = (store.creditRequests || []).filter((x) => x.status === 'pending').length;
     const tickets = (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length;
     const low = Object.values(resellerList()).filter((r) => r.status === 'active' && r.credits <= cfg.resellerLowCredits).map((r) => ({ id: r.id, name: r.name, credits: r.credits }));
+    if (mod) return send(res, 200, { total: tickets, extensions: 0, creditRequests: 0, tickets, lowResellers: [] });
     return send(res, 200, { total: pendingExt + requests + tickets + low.length, extensions: pendingExt, creditRequests: requests, tickets, lowResellers: low });
   }
 
@@ -3341,6 +3408,23 @@ async function handle(req, res) {
     rec.adult = on; rec.updated = Date.now();
     recordAudit(auditBy, `${on ? 'Switched on' : 'Switched off'} adult channels for ${user.Name}`); saveStore();
     return send(res, 200, { ok: true, adult: rec.adult });
+  }
+  // Make an account a moderator, or take it back (guard 1.27.0). Admins only.
+  const modm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/mod$/);
+  if (modm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${modm[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    const on = body.on === true;
+    if (on && user.Policy?.IsAdministrator) return send(res, 400, { error: 'That account is already an administrator.' });
+    if (on && resellerOfUser(user.Id)) return send(res, 400, { error: 'A reseller can\'t also be a moderator.' });
+    const rec = store.users[modm[1]] || (store.users[modm[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    if (on) rec.mod = true; else delete rec.mod;
+    rec.updated = Date.now();
+    identityCache.clear();
+    recordAudit(auditBy, `${on ? 'Made' : 'Removed'} ${user.Name} ${on ? 'a moderator' : 'as a moderator'}`); saveStore();
+    return send(res, 200, { ok: true, mod: !!rec.mod });
   }
   // Reminder days for one customer (guard 1.26.0): { days: [10, 5, 2] }, or { days: null } to use the default.
   const rmm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/remind$/);
