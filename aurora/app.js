@@ -6403,6 +6403,35 @@
           a free <strong>named</strong> Cloudflare Tunnel (with a Cloudflare account) keeps the same address, or Jellyseerr can be reached on your DuckDNS name
           the same way Emby is (for example https://emby4836.duckdns.org:5055, with that port forwarded on your router).</p>
       </section>`;
+    // Customers added by the admin, a reseller or a sub-reseller are imported into Seerr by the guard (1.24.0), so Requests works for them at once.
+    if (guardEnabled) {
+      const box = document.createElement('section');
+      box.className = 'admin-card';
+      body.append(box);
+      const paint = async (note) => {
+        let st = null;
+        try { st = await guard('/requests-sync', { quick: true }); } catch (e) { box.innerHTML = '<h2>Customers in Requests</h2><p class="muted">' + (e.status === 404 ? 'Update Aurora Guard to 1.24.0 to import customers into Seerr automatically.' : esc(e.message)) + '</p>'; return; }
+        if (!isCurrent()) return;
+        const last = st.last;
+        box.innerHTML = `<h2>Customers in Requests</h2>
+          <p class="muted">Every customer added by you, a reseller or a sub-reseller is imported into Seerr automatically, so they can use Requests straight away (Seerr's own limits still apply).</p>
+          ${st.configured ? `<dl class="admin-dl"><dt>Imported</dt><dd>${st.imported} ${st.imported === 1 ? 'customer' : 'customers'}${st.pending ? ` · <strong>${st.pending} waiting</strong>` : ''}${st.failed ? ` · ${st.failed} Seerr would not take` : ''}</dd>
+            ${last ? `<dt>Last check</dt><dd>${esc(timeAgo(last.at))}${last.error ? ` <span class="pill warn">${esc(last.error)}</span>` : ' <span class="pill">OK</span>'}</dd>` : ''}</dl>
+            <div class="m-actions"><button class="btn btn-gray" data-import-now>Import now</button></div>`
+            : `<p class="live-result bad">Not switched on yet. Add <code>"requestsApiKey": "..."</code> to the guard's config.json (Seerr → Settings → General → API Key) and restart the guard. If Seerr runs on the same PC, also add <code>"requestsUrl": "http://localhost:5055"</code>, which does not change like a quick tunnel does.</p>`}
+          <div class="live-result" data-import-result>${note || ''}</div>`;
+        $('[data-import-now]', box)?.addEventListener('click', async (e) => {
+          e.target.disabled = true;
+          const out = $('[data-import-result]', box);
+          out.className = 'live-result'; out.innerHTML = '<div class="spinner"></div> Importing…';
+          try {
+            const r = await guard('/requests-sync/run', { method: 'POST', body: {} });
+            paint(r.ok ? `<span class="good">${r.imported ? `Imported ${r.imported}.` : 'Everyone is already in Seerr.'}</span>` : `<span class="bad">${esc(r.error || 'It did not work.')}</span>`);
+          } catch (err) { out.className = 'live-result bad'; out.textContent = err.message; e.target.disabled = false; }
+        });
+      };
+      paint();
+    }
     const input = $('[data-f="server"]', body), on = $('[data-f="on"]', body), result = $('[data-result]', body);
     const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
     const value = () => { let v = input.value.trim().replace(/\/+$/, ''); if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v; return v; };
@@ -10767,21 +10796,21 @@
     try { target.scrollIntoView({ block: 'center' }); } catch { /* an old WebView */ }
     const wrap = document.createElement('div');
     wrap.id = 'own-kb';
-    wrap.className = 'ok-wrap';
+    wrap.className = 'okb-wrap';
     wrap.setAttribute('role', 'dialog');
     wrap.setAttribute('aria-modal', 'true');
     wrap.setAttribute('aria-label', label);
-    wrap.innerHTML = `<div class="ok">
-      <div class="ok-top"><span class="ok-label">${esc(label)}</span><div class="ok-val" data-ok-val></div></div>
-      <div class="ok-rows" data-ok-rows></div>
-      <div class="ok-actions"><span class="ok-hint">Arrows and OK on the remote. Back closes the keyboard.</span>
+    wrap.innerHTML = `<div class="okb">
+      <div class="okb-top"><span class="okb-label">${esc(label)}</span><div class="okb-val" data-okb-val></div></div>
+      <div class="okb-rows" data-okb-rows></div>
+      <div class="okb-actions"><span class="okb-hint">Arrows and OK on the remote. Back closes the keyboard.</span>
         <button type="button" class="btn btn-gray" data-ok-cancel>Cancel</button>
         <button type="button" class="btn btn-red" data-ok-done>${next ? 'Next' : 'Done'}</button></div></div>`;
     document.body.appendChild(wrap);
-    const valEl = $('[data-ok-val]', wrap), rowsEl = $('[data-ok-rows]', wrap);
+    const valEl = $('[data-okb-val]', wrap), rowsEl = $('[data-okb-rows]', wrap);
     const paintValue = () => {
       const v = st.target.value;
-      valEl.innerHTML = `<span>${esc(st.shown ? v : '•'.repeat(v.length))}</span><i class="ok-caret"></i>`;
+      valEl.innerHTML = `<span>${esc(st.shown ? v : '•'.repeat(v.length))}</span><i class="okb-caret"></i>`;
     };
     const set = (v) => {
       st.target.value = v.slice(0, st.max);
@@ -10789,12 +10818,12 @@
       paintValue();
     };
     const paintKeys = (focusKey) => {
-      rowsEl.innerHTML = OWN_KB_ROWS[st.layout].map((row) => `<div class="ok-row">${row.map((k) => {
+      rowsEl.innerHTML = OWN_KB_ROWS[st.layout].map((row) => `<div class="okb-row">${row.map((k) => {
         const fn = k.length > 1;
         const text = k === 'show' ? (st.shown ? 'Hide' : 'Show') : (OWN_KB_LABELS[k] || k);
-        return `<button type="button" class="ok-key${fn ? ' fn' : ''}${k === 'space' ? ' space' : ''}${k === 'shift' && st.layout === 'upper' ? ' on' : ''}${k === 'show' && !st.isPassword ? ' hidden' : ''}" data-k="${esc(k)}">${esc(text)}</button>`;
+        return `<button type="button" class="okb-key${fn ? ' fn' : ''}${k === 'space' ? ' space' : ''}${k === 'shift' && st.layout === 'upper' ? ' on' : ''}${k === 'show' && !st.isPassword ? ' hidden' : ''}" data-k="${esc(k)}">${esc(text)}</button>`;
       }).join('')}</div>`).join('');
-      if (focusKey) focusEl($(`[data-k="${CSS.escape(focusKey)}"]`, rowsEl) || $('.ok-key', rowsEl));
+      if (focusKey) focusEl($(`[data-k="${CSS.escape(focusKey)}"]`, rowsEl) || $('.okb-key', rowsEl));
     };
     const press = (k) => {
       const v = st.target.value;
