@@ -1957,3 +1957,96 @@ html.tv .tm-preview { width: 320px; }
 /* Adult tick beside each category in Admin -> Live TV */
 .cat-row .cat-adult { margin-left: auto; display: inline-flex; gap: .35rem; align-items: center; font-size: .75rem; color: var(--muted); padding-left: 1rem; }
 .cat-row .cat-adult input { accent-color: #e5384f; }
+
+/* ---------- Sports tab, new layout (sport rail, big game, leagues, schedule, one row of fixtures) ---------- */
+.sp2 { display: block; }
+.sp2.has-rail { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 1.2rem; align-items: start; }
+.sp2-rail { position: sticky; top: 92px; display: flex; flex-direction: column; gap: .7rem; align-items: center; padding: .7rem 0; border-radius: 18px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08); }
+.sp2-ri { width: 44px; height: 44px; border-radius: 13px; border: 0; background: transparent; font-size: 1.35rem; line-height: 1; display: grid; place-items: center; opacity: .65; cursor: pointer; color: inherit; }
+.sp2-ri:hover { opacity: 1; background: rgba(255,255,255,.08); }
+.sp2-ri.on { opacity: 1; background: var(--accent-grad); box-shadow: 0 6px 18px rgba(79,123,255,.4); }
+.kbd-nav .sp2-ri:focus { outline: 3px solid #fff; opacity: 1; }
+.sp2-main { min-width: 0; }
+.sp2-hero { position: relative; overflow: hidden; border-radius: 26px; padding: 1.4rem 1.6rem 1.2rem; min-height: 250px; background: radial-gradient(90% 120% at 100% 0%, rgba(122,92,255,.38), transparent 70%), radial-gradient(80% 120% at 0% 0%, rgba(42,212,208,.2), transparent 70%), var(--bg-2); border: 1px solid rgba(255,255,255,.1); }
+.sp2-hero > * { position: relative; }
+.sp2-ghost { position: absolute !important; right: -40px; top: -10px; opacity: .13; filter: blur(1px); pointer-events: none; }
+.sp2-ghost .sp-logo-wrap, .sp2-ghost .sp-crest { width: 340px; height: 340px; }
+.sp2-hl { max-width: 60%; }
+.sp2-crumb { font-size: .75rem; letter-spacing: .2em; font-weight: 700; color: #cfd6f5; }
+.sp2-pills { display: flex; flex-wrap: wrap; gap: .5rem; margin: .55rem 0 .5rem; align-items: center; }
+.sp2-pill { display: inline-flex; gap: .4rem; align-items: center; border-radius: 999px; padding: .22rem .75rem; font-size: .72rem; font-weight: 800; letter-spacing: .06em; background: rgba(255,255,255,.14); }
+.sp2-pill.live { background: var(--live); } .sp2-pill.soon { background: rgba(79,123,255,.55); } .sp2-pill.star { background: rgba(255,212,121,.2); color: #ffd479; }
+.sp2-pill.lg { letter-spacing: 0; font-size: .8rem; font-weight: 700; }
+.sp2-lgimg { width: 18px; height: 18px; object-fit: contain; flex: none; }
+.sp2-title { margin: 0; font-size: clamp(1.4rem, 2.6vw, 2.3rem); font-weight: 800; line-height: 1.12; text-shadow: 0 2px 14px rgba(0,0,0,.55); }
+.sp2-sub { margin: .5rem 0 .8rem; color: #cfd6f5; font-size: .95rem; }
+.sp2-hw { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+.sp2-watch { border: 0; border-radius: 999px; padding: .6rem 1.2rem; font: 700 .95rem var(--font); color: #fff; background: var(--accent-grad); cursor: pointer; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.sp2-btn { border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: .55rem 1.1rem; font: 600 .88rem var(--font); color: #fff; background: rgba(255,255,255,.1); cursor: pointer; }
+.sp2-btn.on { background: rgba(255,212,121,.2); color: #ffd479; border-color: rgba(255,212,121,.4); }
+.sp2-score { position: absolute !important; right: 1.4rem; top: 1.3rem; width: min(300px, 34%); border-radius: 20px; padding: .9rem 1rem; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.22); backdrop-filter: blur(8px); text-align: center; }
+.sp2-sr { display: flex; justify-content: space-between; align-items: center; gap: .6rem; }
+.sp2-sr strong { font-size: 1.9rem; font-weight: 800; color: #ff5a6e; letter-spacing: .03em; white-space: nowrap; } .sp2-sr strong.dim { font-size: 1.1rem; color: #b3b3b3; }
+.sp2-score .sp-logo-wrap, .sp2-score .sp-crest { width: 68px; height: 68px; }
+.sp2-sn { display: flex; justify-content: space-between; gap: .5rem; margin-top: .45rem; font-size: .72rem; color: #cfd6f5; }
+.sp2-sn span { flex: 1; } .sp2-sd { margin-top: .3rem; font-size: .8rem; color: #ffb3bb; font-weight: 700; }
+.sp2-mc { position: absolute !important; right: 1.4rem; bottom: 1rem; display: inline-flex; flex-direction: column; align-items: center; border: 1px solid #8aa4ff; border-radius: 999px; padding: .45rem 1.8rem; background: linear-gradient(100deg, #2f5bff, #4f7bff); color: #fff; font: 800 .8rem var(--font); letter-spacing: .14em; cursor: pointer; }
+.sp2-mc small { font-size: .62rem; letter-spacing: .06em; font-weight: 600; opacity: .85; }
+.sp-logo-wrap { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; }
+.sp-logo-wrap .sp-logo { width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 2px 4px rgba(0,0,0,.35)); }
+.sp2-sec { margin: 1.1rem 0 .5rem; font-size: .72rem; letter-spacing: .2em; font-weight: 800; color: var(--muted); }
+.sp2-lgs, .sp2-days { display: flex; gap: .55rem; overflow-x: auto; padding: .2rem .1rem .5rem; scrollbar-width: none; }
+.sp2-lgs::-webkit-scrollbar, .sp2-days::-webkit-scrollbar, .sp2-fxs::-webkit-scrollbar { display: none; }
+.sp2-lg { flex: none; display: inline-flex; gap: .5rem; align-items: center; border-radius: 999px; padding: .5rem 1.1rem; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.08); color: #e8ecf8; font: 700 .85rem var(--font); cursor: pointer; }
+.sp2-lg .sp2-lgimg { width: 20px; height: 20px; }
+.sp2-lg.on { background: #2f5bff; border-color: #8aa4ff; color: #fff; }
+.sp2-bar { display: flex; gap: 1rem; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.sp2-bar .sp-spoil { margin-left: auto; }
+.sp2-day { flex: none; min-width: 88px; text-align: center; border-radius: 999px; padding: .4rem .9rem; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.08); color: #e8ecf8; cursor: pointer; font-family: var(--font); }
+.sp2-day b { display: block; font-size: .72rem; letter-spacing: .04em; } .sp2-day span { font-size: .82rem; font-weight: 700; }
+.sp2-day em { font-style: normal; background: rgba(255,255,255,.2); border-radius: 999px; padding: 0 .4rem; font-size: .65rem; margin-left: .2rem; }
+.sp2-day.on { background: #2f5bff; border-color: #8aa4ff; color: #fff; }
+.sp2-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--live); margin-left: .3rem; }
+.sp2-fxs { display: flex; gap: .9rem; overflow-x: auto; padding: .3rem .2rem 1rem; scroll-snap-type: x proximity; scrollbar-width: none; }
+.sp2-fx { flex: 0 0 232px; scroll-snap-align: start; border-radius: 18px; padding: .65rem .8rem .75rem; background: rgba(14,21,48,.88); border: 1px solid rgba(255,255,255,.14); cursor: pointer; }
+.sp2-fx.sel { border: 2px solid #ff5a6e; box-shadow: 0 0 22px rgba(255,90,110,.3); padding: calc(.65rem - 1px) calc(.8rem - 1px) calc(.75rem - 1px); }
+.sp2-fx.post { opacity: .85; }
+.kbd-nav .sp2-fx:focus, .kbd-nav .sp2-lg:focus, .kbd-nav .sp2-day:focus, .kbd-nav .sp2-watch:focus, .kbd-nav .sp2-btn:focus, .kbd-nav .sp2-mc:focus { outline: 3px solid #fff; outline-offset: 2px; }
+.sp2-ftop { display: flex; gap: .4rem; align-items: center; }
+.sp2-st { font-size: .62rem; font-weight: 800; letter-spacing: .08em; padding: .15rem .55rem; border-radius: 999px; background: rgba(255,255,255,.16); }
+.sp2-st.live { background: rgba(229,56,79,.85); }
+.sp2-bell { margin-left: auto; font-size: .8rem; }
+.sp2-fmid { display: flex; justify-content: space-between; align-items: center; gap: .4rem; margin: .6rem 0 .45rem; min-height: 56px; }
+.sp2-fx .sp-logo-wrap, .sp2-fx .sp-crest { width: 56px; height: 56px; font-size: 1rem; border-radius: 50%; }
+.sp2-fmid strong { font-size: 1.25rem; font-weight: 800; color: #ff5a6e; white-space: nowrap; }
+.sp2-fx.pre .sp2-fmid strong { color: #b3b3b3; font-weight: 600; font-size: 1rem; }
+.sp2-ft { font-weight: 700; font-size: 1rem; line-height: 1.2; }
+.sp2-fnm { font-size: .8rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .sp2-fnm i { color: var(--muted); font-style: normal; font-weight: 500; }
+.sp2-fch { margin-top: .3rem; font-size: .72rem; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .sp2-fch i { color: var(--dim); font-style: normal; }
+.tv .sp2.has-rail { grid-template-columns: 84px minmax(0, 1fr); }
+.tv .sp2-ri { width: 58px; height: 58px; font-size: 1.7rem; }
+.tv .sp2-title { font-size: 2.3rem; } .tv .sp2-fx { flex-basis: 280px; } .tv .sp2-fmid strong { font-size: 1.5rem; }
+@media (max-width: 760px) {
+  .sp2.has-rail { grid-template-columns: 1fr; gap: .6rem; }
+  .sp2-rail { position: static; flex-direction: row; overflow-x: auto; padding: .4rem .6rem; justify-content: flex-start; scrollbar-width: none; }
+  .sp2-ri { flex: none; width: 40px; height: 40px; }
+  .sp2-hero { padding: 1rem; min-height: 0; }
+  .sp2-hl { max-width: none; }
+  .sp2-score { position: static !important; width: auto; margin-top: .8rem; }
+  .sp2-mc { position: static !important; margin-top: .8rem; }
+  .sp2-ghost .sp-logo-wrap, .sp2-ghost .sp-crest { width: 220px; height: 220px; }
+  .sp2-fx { flex-basis: 200px; }
+}
+/* TV: the whole Sports page fits on one screen, so the big game stays in view while the remote moves along the fixtures. */
+.tv .sp2 { margin-top: -.4rem; }
+.tv .sp2-hero { min-height: 176px; padding: .85rem 1.3rem .8rem; border-radius: 22px; }
+.tv .sp2-title { font-size: 1.85rem; } .tv .sp2-sub { margin: .3rem 0 .5rem; font-size: .88rem; } .tv .sp2-pills { margin: .35rem 0 .3rem; }
+.tv .sp2-score { top: .8rem; padding: .6rem .8rem; } .tv .sp2-score .sp-logo-wrap, .tv .sp2-score .sp-crest { width: 54px; height: 54px; } .tv .sp2-sr strong { font-size: 1.6rem; }
+.tv .sp2-sn { margin-top: .25rem; font-size: .66rem; } .tv .sp2-mc { bottom: .7rem; padding: .35rem 1.5rem; }
+.tv .sp2-sec { margin: .65rem 0 .25rem; font-size: .66rem; }
+.tv .sp2-lg { padding: .32rem .95rem; font-size: .78rem; } .tv .sp2-lg .sp2-lgimg { width: 17px; height: 17px; }
+.tv .sp2-day { min-width: 78px; padding: .28rem .7rem; } .tv .sp2-day b { font-size: .66rem; } .tv .sp2-day span { font-size: .74rem; }
+.tv .sp2-lgs, .tv .sp2-days { padding-bottom: .25rem; }
+.tv .sp2-fx { flex-basis: 250px; padding: .5rem .7rem .6rem; } .tv .sp2-fmid { margin: .35rem 0 .3rem; min-height: 46px; }
+.tv .sp2-fx .sp-logo-wrap, .tv .sp2-fx .sp-crest { width: 46px; height: 46px; font-size: .9rem; } .tv .sp2-fmid strong { font-size: 1.3rem; }
+.tv .sp-note { display: none; }
