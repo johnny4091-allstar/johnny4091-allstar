@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.23.0';
+const VERSION = '1.24.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -118,11 +118,18 @@ function loadConfig() {
     dryRun: false,
     // Where to send alerts (Discord webhook, ntfy.sh topic, or any web address that takes JSON). Blank = no alerts.
     alertWebhookUrl: '',
-    alertFormat: 'auto', // auto | discord | ntfy | json
+    alertFormat: 'auto', // auto | discord | ntfy | json | telegram
+    // Requests (Seerr, guard 1.24.0): every customer added by the admin, a reseller or a sub-reseller is imported into Seerr so they can use
+    // Requests at once. Needs Seerr's API key (Seerr -> Settings -> General -> API Key). requestsUrl is optional: blank uses the address
+    // set in Admin -> Requests, or aurora-config.json. Blank key = this is switched off.
+    requestsUrl: '',
+    requestsApiKey: '',
     dataDir: path.join(DIR, 'data'),
     ...raw,
   };
   cfg.alertWebhookUrl = String(cfg.alertWebhookUrl || '').trim();
+  cfg.requestsUrl = String(cfg.requestsUrl || '').trim().replace(/\/+$/, '');
+  cfg.requestsApiKey = String(cfg.requestsApiKey || '').trim();
   if (cfg.alertWebhookUrl && !/^https?:\/\/[^\s]+$/i.test(cfg.alertWebhookUrl)) {
     console.error('config.json: "alertWebhookUrl" must start with https:// or http://. Alerts are switched off.');
     cfg.alertWebhookUrl = '';
@@ -547,7 +554,106 @@ async function newEmbyAccount(name, password) {
     await emby('POST', `/Users/${u.Id}/Password`, { body: { Id: u.Id, ResetPassword: true } });
     await emby('POST', `/Users/${u.Id}/Password`, { body: { Id: u.Id, CurrentPw: '', NewPw: password } });
   } catch (e) { await emby('DELETE', `/Users/${u.Id}`).catch(() => {}); throw new Error('Could not set the password: ' + e.message); }
+  kickRequestsSync(); // a customer made here is imported into Seerr a few seconds later
   return u;
+}
+// ---------- Requests (Seerr) import (guard 1.24.0) ----------
+// Seerr only lets people use Requests once they exist in it. Every Emby account is a customer whoever added it (the admin in the
+// app, a reseller, a sub-reseller, a sign-up), so the guard looks for accounts Seerr doesn't have yet and imports them, a moment after a
+// customer is made here and every couple of minutes for the ones made elsewhere. Reseller accounts (panel only) are left out. The API key
+// is only ever sent to Seerr and is never written to the log.
+function plainRequest(address, { method = 'GET', headers = {}, body, timeoutMs = 15000 } = {}) {
+  return new Promise((resolve) => {
+    let settled = false, req = null, timer = null;
+    const done = (r) => { if (settled) return; settled = true; clearTimeout(timer); try { req && req.destroy(); } catch {} resolve(r); };
+    try {
+      const u = new URL(address);
+      const data = body === undefined ? null : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body));
+      const h = { 'User-Agent': `AuroraGuard/${VERSION}`, Accept: 'application/json', ...headers };
+      if (data) { h['Content-Type'] = h['Content-Type'] || 'application/json'; h['Content-Length'] = data.length; }
+      timer = setTimeout(() => done({ status: 0, text: '', error: 'timed out' }), timeoutMs);
+      req = (u.protocol === 'https:' ? https : http).request(u, { method, headers: h, timeout: timeoutMs - 1000 }, (r) => {
+        const chunks = []; let size = 0;
+        r.on('data', (c) => { size += c.length; if (size < 8 * 1024 * 1024) chunks.push(c); });
+        r.on('end', () => done({ status: r.statusCode, text: Buffer.concat(chunks).toString('utf8'), error: '' }));
+        r.on('error', (e) => done({ status: 0, text: '', error: e.message }));
+      });
+      req.on('timeout', () => done({ status: 0, text: '', error: 'timed out' }));
+      req.on('error', (e) => done({ status: 0, text: '', error: e.message }));
+      req.end(data || undefined);
+    } catch (e) { done({ status: 0, text: '', error: String((e && e.message) || e) }); }
+  });
+}
+let requestsRemote = { at: 0, url: '' };
+// Where Seerr is: config.json, else the address the admin set in the app (Admin -> Requests), else aurora-config.json in the repo.
+async function requestsBaseUrl() {
+  if (cfg.requestsUrl && /^https?:\/\//i.test(cfg.requestsUrl)) return cfg.requestsUrl;
+  try {
+    const users = await emby('GET', '/Users');
+    const admin = (users || []).find((u) => u.Policy && u.Policy.IsAdministrator);
+    if (admin) {
+      const prefs = await emby('GET', '/DisplayPreferences/aurora-requests', { query: { userId: admin.Id, client: 'aurora' } });
+      const c = prefs && prefs.CustomPrefs && prefs.CustomPrefs.config ? JSON.parse(prefs.CustomPrefs.config) : null;
+      if (c && /^https?:\/\//i.test(c.server || '')) return String(c.server).replace(/\/+$/, '');
+    }
+  } catch { /* try the next place */ }
+  if (Date.now() - requestsRemote.at < 10 * 60000) return requestsRemote.url;
+  requestsRemote = { at: Date.now(), url: '' };
+  const r = await plainRequest(`https://raw.githubusercontent.com/${cfg.updateRepo}/main/aurora-config.json`, { timeoutMs: 9000 });
+  try { const c = JSON.parse(r.text); if (/^https?:\/\//i.test(c.requestsServer || '')) requestsRemote.url = String(c.requestsServer).replace(/\/+$/, ''); } catch { /* none */ }
+  return requestsRemote.url;
+}
+const seerrCall = (base, method, apiPath, body) => plainRequest(base + '/api/v1' + apiPath, { method, headers: { 'X-Api-Key': cfg.requestsApiKey }, body });
+const requestsState = () => store.requestsSync || (store.requestsSync = { done: {}, failed: {}, last: null });
+let requestsRunning = false, requestsKickTimer = null;
+function kickRequestsSync() {
+  if (!cfg.requestsApiKey) return;
+  clearTimeout(requestsKickTimer);
+  requestsKickTimer = setTimeout(() => syncRequestsUsers().catch(() => {}), 4000);
+  if (requestsKickTimer.unref) requestsKickTimer.unref();
+}
+// Imports the customers Seerr doesn't have yet. Resolves {ok, error, imported, already, failed, pending}. Never throws.
+async function syncRequestsUsers(opts = {}) {
+  const st = requestsState();
+  const finish = (r) => { st.last = { at: Date.now(), ...r }; try { saveStore(); } catch { /* next time */ } return { ...st.last }; };
+  if (!cfg.requestsApiKey) return { ok: false, error: 'No "requestsApiKey" in config.json yet, so nothing is imported.', pending: 0 };
+  if (requestsRunning) return { ok: false, busy: true, error: 'An import is already running.' };
+  requestsRunning = true;
+  try {
+    const base = await requestsBaseUrl();
+    if (!base) return finish({ ok: false, error: 'The guard does not know where Seerr is. Set "requestsUrl" in config.json, or the address in Admin -> Requests.', imported: 0, already: 0, failed: 0, pending: 0 });
+    const users = (await emby('GET', '/Users')) || [];
+    const wanted = users.filter((u) => !(u.Policy && u.Policy.IsDisabled) && !resellerOfUser(u.Id));
+    const retryAfter = opts.force ? 0 : 3600000;
+    const todo = wanted.filter((u) => !st.done[u.Id] && !(st.failed[u.Id] && Date.now() - st.failed[u.Id].at < retryAfter));
+    if (!todo.length) return finish({ ok: true, error: '', imported: 0, already: 0, failed: Object.keys(st.failed).filter((id) => wanted.some((u) => u.Id === id)).length, pending: 0 });
+    // Who Seerr already has.
+    const have = new Set();
+    for (let skip = 0; skip < 5000; skip += 100) {
+      const r = await seerrCall(base, 'GET', `/user?take=100&skip=${skip}`);
+      if (r.status === 401 || r.status === 403) return finish({ ok: false, error: 'Seerr refused the API key. Copy it again from Seerr -> Settings -> General.', imported: 0, already: 0, failed: 0, pending: todo.length });
+      if (r.status < 200 || r.status >= 300) return finish({ ok: false, error: r.error ? `Could not reach Seerr (${r.error}).` : `Seerr answered ${r.status}.`, imported: 0, already: 0, failed: 0, pending: todo.length });
+      let page = [];
+      try { page = JSON.parse(r.text).results || []; } catch { /* none */ }
+      for (const x of page) if (x.jellyfinUserId) have.add(String(x.jellyfinUserId));
+      if (page.length < 100) break;
+    }
+    let already = 0, imported = 0, failed = 0;
+    const need = [];
+    for (const u of todo) { if (have.has(u.Id)) { st.done[u.Id] = Date.now(); delete st.failed[u.Id]; already++; } else need.push(u); }
+    const importIds = async (list) => {
+      const r = await seerrCall(base, 'POST', '/user/import-from-jellyfin', { jellyfinUserIds: list.map((u) => u.Id) });
+      if (r.status >= 200 && r.status < 300) { for (const u of list) { st.done[u.Id] = Date.now(); delete st.failed[u.Id]; } imported += list.length; return true; }
+      if (list.length === 1) { st.failed[list[0].Id] = { at: Date.now(), error: (r.error || `Seerr answered ${r.status}`).slice(0, 120) }; failed++; return false; }
+      for (const u of list) await importIds([u]); // find the one it cannot import
+      return false;
+    };
+    for (let i = 0; i < need.length; i += 20) await importIds(need.slice(i, i + 20));
+    if (imported) log('Requests: imported', imported, imported === 1 ? 'customer' : 'customers', 'into Seerr' + (failed ? `, ${failed} failed (will retry)` : ''));
+    return finish({ ok: failed === 0, error: failed ? `${failed} could not be imported (Seerr said no). They are tried again in an hour.` : '', imported, already, failed, pending: 0 });
+  } catch (e) {
+    return finish({ ok: false, error: String((e && e.message) || e).slice(0, 160), imported: 0, already: 0, failed: 0, pending: 0 });
+  } finally { requestsRunning = false; }
 }
 // A reseller account is for the panel only: nothing to watch, no Live TV, no downloads, even from other Emby apps.
 async function limitResellerAccount(userId) {
@@ -2591,6 +2697,20 @@ async function handle(req, res) {
       if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
     });
   }
+  // Requests (Seerr) import (admin): what is going on, and import now.
+  if (url.pathname === '/requests-sync' && req.method === 'GET') {
+    const st = requestsState();
+    let pending = null;
+    try {
+      const users = (await emby('GET', '/Users')) || [];
+      pending = users.filter((u) => !(u.Policy && u.Policy.IsDisabled) && !resellerOfUser(u.Id) && !st.done[u.Id]).length;
+    } catch { /* unknown */ }
+    return send(res, 200, { configured: !!cfg.requestsApiKey, imported: Object.keys(st.done).length, pending, failed: Object.keys(st.failed).length, last: st.last });
+  }
+  if (url.pathname === '/requests-sync/run' && req.method === 'POST') {
+    const r = await syncRequestsUsers({ force: true });
+    return send(res, 200, r);
+  }
   // Daily summary (admin): its settings, and send one now.
   if (url.pathname === '/summary' && req.method === 'GET') return send(res, 200, { enabled: summaryOn(), hour: Math.min(23, Math.max(0, Number(cfg.dailySummaryHour) || 0)), lastDay: (store.summary || {}).lastDay || '', webhook: !!cfg.alertWebhookUrl, off: cfg.dailySummary === false });
   if (url.pathname === '/summary/send' && req.method === 'POST') {
@@ -3271,6 +3391,7 @@ function start() {
   setInterval(tick, cfg.intervalSeconds * 1000);
   if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
   setTimeout(() => maybeSendSummary().catch(() => {}), 20000); setInterval(() => maybeSendSummary().catch(() => {}), 60000);
+  setTimeout(() => syncRequestsUsers().catch(() => {}), 25000); setInterval(() => syncRequestsUsers().catch(() => {}), 2 * 60000).unref();
   setTimeout(() => endingTick().catch(() => {}), 40000); setInterval(() => endingTick().catch(() => {}), 30 * 60000).unref();
   setTimeout(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 4000);
   setInterval(() => pollSports(false).catch((e) => log('Sports scores failed:', e.message)), 15000);
