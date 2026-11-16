@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.25.1';
+const VERSION = '1.26.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -495,28 +495,43 @@ function notifyReseller(r, event, title, text, urgent) {
 // What the panel may see of a reseller's setting: never the secret itself.
 function notifyPublic(r) {
   const n = r.notify;
-  if (!n || !n.type) return { type: '', events: { ...NOTIFY_EVENTS } };
+  if (!n || !n.type) return { type: '', events: { ...NOTIFY_EVENTS }, endingDays: cleanDays(n && n.endingDays, 4) || [3] };
   let hint = '';
   if (n.type === 'telegram') hint = `Bot ${maskTail(String(n.token || '').split(':')[0], 3)}:${maskTail(String(n.token || '').split(':')[1] || '')} \u00b7 chat ${n.chat || ''}`;
   else if (n.type === 'discord') { try { hint = 'Discord webhook ' + maskTail(new URL(n.url).pathname.split('/').pop(), 4); } catch { hint = 'Discord webhook'; } }
   else if (n.type === 'ntfy') hint = `ntfy topic ${n.topic}`;
   else { try { hint = 'Webhook at ' + new URL(n.url).host; } catch { hint = 'Webhook'; } }
-  return { type: n.type, hint, events: { ...NOTIFY_EVENTS, ...(n.events || {}) } };
+  return { type: n.type, hint, events: { ...NOTIFY_EVENTS, ...(n.events || {}) }, endingDays: cleanDays(n.endingDays, 4) || [3] };
 }
 // A reseller's customers whose access ends in three days, once a day after 9 AM, to the resellers who asked for it.
 async function endingTick() {
   const now = new Date();
   if (now.getHours() < 9) return;
-  const today = localDay(now), target3 = addDays(today, 3);
+  const today = localDay(now);
   let changed = false;
   for (const r of Object.values(resellerList())) {
     if (r.status !== 'active' || !r.notify || !r.notify.events || !r.notify.events.ending || r.endingDay === today) continue;
     r.endingDay = today; changed = true;
-    const list = Object.values(store.users).filter((u) => u.reseller === r.id && u.expires === target3 && !u.hold);
-    if (list.length) notifyReseller(r, 'ending', `Aurora: ${list.length} ${list.length === 1 ? 'customer ends' : 'customers end'} in 3 days`, list.slice(0, 15).map((u) => `- ${(u.contact && u.contact.full) || u.name} (${u.name})`).join('\n') + (list.length > 15 ? `\n...and ${list.length - 15} more` : '') + '\nRenew them in your reseller panel.');
+    for (const n of (cleanDays(r.notify.endingDays, 4) || [3]).slice().sort((x, y) => x - y)) {
+    const list = Object.values(store.users).filter((u) => u.reseller === r.id && u.expires === addDays(today, n) && !u.hold);
+    const when = n === 1 ? 'tomorrow' : `in ${n} days`;
+    if (list.length) notifyReseller(r, 'ending', `Aurora: ${list.length} ${list.length === 1 ? 'customer ends' : 'customers end'} ${when}`, list.slice(0, 15).map((u) => `- ${(u.contact && u.contact.full) || u.name} (${u.name})`).join('\n') + (list.length > 15 ? `\n...and ${list.length - 15} more` : '') + '\nRenew them in your reseller panel.');
+    }
   }
   if (changed) saveStore();
 }
+
+// ----- Reminder days (guard 1.26.0) -----
+// How many days before the end date a customer is reminded in the app. Each account may have its own list; others use the default
+// the admin set, else 7, 3 and 1.
+const REMIND_FALLBACK = [7, 3, 1];
+function cleanDays(v, max = 5) {
+  if (!Array.isArray(v)) return null;
+  const out = [...new Set(v.map((x) => Math.round(Number(x))).filter((x) => x >= 1 && x <= 60))].sort((a, b) => b - a);
+  return out.length && out.length <= max ? out : null;
+}
+const remindDefault = () => cleanDays(store.remindDefault) || REMIND_FALLBACK;
+const remindDaysOf = (rec) => cleanDays(rec && rec.remind) || remindDefault();
 
 function publicReseller(r) {
   const customers = Object.values(store.users).filter((u) => u.reseller === r.id).length;
@@ -528,6 +543,7 @@ function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
     trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    remind: cleanDays(rec.remind), remindDefault: remindDefault(),
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
@@ -694,7 +710,11 @@ async function inboxFor(me) {
   if (rec?.expires && !me.Policy?.IsAdministrator) {
     const d = daysUntil(rec.expires), end = new Date(rec.expires + 'T23:59:59').getTime();
     if (d < 0) items.push({ id: `plan:${rec.expires}:x`, type: 'plan', level: 'bad', title: 'Your access has ended', text: 'Ask for more time to keep watching.', at: end, action: 'renew' });
-    else { const b = d <= 1 ? 1 : d <= 3 ? 3 : d <= 7 ? 7 : 0; if (b) items.push({ id: `plan:${rec.expires}:${b}`, type: 'plan', level: b <= 3 ? 'warn' : 'info', title: d <= 1 ? 'Your plan ends today or tomorrow' : `Your plan ends in ${d} days`, text: `${rec.plan?.name ? rec.plan.name + ' · ' : ''}ends ${rec.expires}`, at: end - b * 86400000, action: 'renew' }); }
+    else {
+      // The smallest reminder day that covers today (e.g. with 10, 5 and 2: 8 days left is the 10-day reminder, 4 days the 5-day one).
+      const days = remindDaysOf(rec).slice().sort((x, y) => x - y), n = days.find((x) => d <= x) || 0;
+      if (n) items.push({ id: `plan:${rec.expires}:${n}`, type: 'plan', level: n <= 3 ? 'warn' : 'info', title: d <= 1 ? 'Your plan ends today or tomorrow' : `Your plan ends in ${d} days`, text: `${rec.plan?.name ? rec.plan.name + ' \u00b7 ' : ''}ends ${rec.expires}`, at: end - n * 86400000, action: 'renew' });
+    }
   }
   const isReseller = !!resellerOfUser(me.Id);
   const nt = isReseller ? { n: 0 } : await newTitlesNote();
@@ -2404,6 +2424,7 @@ async function handle(req, res) {
         const next = { type, token: body.token ? String(body.token).trim() : old.token, chat: body.chat ? String(body.chat).trim() : old.chat, url: body.url ? String(body.url).trim() : old.url, topic: body.topic ? String(body.topic).trim() : old.topic,
           events: { ...NOTIFY_EVENTS, ...(r.notify && r.notify.events || {}) } };
         if (body.events && typeof body.events === 'object') for (const k of Object.keys(NOTIFY_EVENTS)) if (k in body.events) next.events[k] = !!body.events[k];
+        next.endingDays = 'endingDays' in body ? cleanDays(body.endingDays, 4) || [3] : (r.notify && r.notify.endingDays) || [3];
         const t = notifyTarget(next);
         if (t.error) return send(res, 400, { error: t.error });
         r.notify = next; saveStore();
@@ -2548,7 +2569,7 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|adult))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|adult|remind))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
@@ -2560,6 +2581,14 @@ async function handle(req, res) {
           rec.vod = body.on === true; rec.updated = Date.now();
           recordAudit(by, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${rec.name}`); saveStore();
           return send(res, 200, { ok: true, vod: rec.vod });
+        }
+        // When this customer is reminded in the app that their plan is ending (guard 1.26.0).
+        if (act === 'remind' && req.method === 'POST') {
+          if (body.days === null) delete rec.remind;
+          else { const days = cleanDays(body.days); if (!days) return send(res, 400, { error: 'Give 1 to 5 reminder days, each between 1 and 60.' }); rec.remind = days; }
+          rec.updated = Date.now();
+          recordAudit(by, rec.remind ? `Set reminders for ${rec.name} to ${rec.remind.join(', ')} days before the end` : `Reminders for ${rec.name} follow the default`); saveStore();
+          return send(res, 200, { ok: true, remind: rec.remind || null });
         }
         // Adult Live TV categories for this customer (guard 1.23.0). Whoever switches it on vouches that the customer is an adult.
         if (act === 'adult' && req.method === 'POST') {
@@ -3053,7 +3082,7 @@ async function handle(req, res) {
 
   if (url.pathname === '/limits' && req.method === 'GET') {
     return send(res, 200, {
-      defaultLimit: cfg.defaultLimit, dryRun: !!cfg.dryRun, users: store.users,
+      defaultLimit: cfg.defaultLimit, dryRun: !!cfg.dryRun, users: store.users, remindDefault: remindDefault(),
       disabledByGuard: store.disabledByGuard, lastRun, intervalSeconds: cfg.intervalSeconds,
       migrated: !!store.migratedOldLimits,
     });
@@ -3312,6 +3341,30 @@ async function handle(req, res) {
     rec.adult = on; rec.updated = Date.now();
     recordAudit(auditBy, `${on ? 'Switched on' : 'Switched off'} adult channels for ${user.Name}`); saveStore();
     return send(res, 200, { ok: true, adult: rec.adult });
+  }
+  // Reminder days for one customer (guard 1.26.0): { days: [10, 5, 2] }, or { days: null } to use the default.
+  const rmm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/remind$/);
+  if (rmm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${rmm[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    const rec = store.users[rmm[1]] || (store.users[rmm[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    if (body.days === null) delete rec.remind;
+    else { const days = cleanDays(body.days); if (!days) return send(res, 400, { error: 'Give 1 to 5 reminder days, each between 1 and 60.' }); rec.remind = days; }
+    rec.updated = Date.now();
+    recordAudit(auditBy, rec.remind ? `Set reminders for ${user.Name} to ${rec.remind.join(', ')} days before the end` : `Reminders for ${user.Name} follow the default`); saveStore();
+    return send(res, 200, { ok: true, remind: rec.remind || null, remindDefault: remindDefault() });
+  }
+  // The default for everyone who has no list of their own.
+  if (url.pathname === '/remind-default' && (req.method === 'PUT' || req.method === 'GET')) {
+    if (req.method === 'GET') return send(res, 200, { days: remindDefault() });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (body.days === null) delete store.remindDefault;
+    else { const days = cleanDays(body.days); if (!days) return send(res, 400, { error: 'Give 1 to 5 reminder days, each between 1 and 60.' }); store.remindDefault = days; }
+    recordAudit(auditBy, `Set the default reminder days to ${remindDefault().join(', ')}`); saveStore();
+    return send(res, 200, { ok: true, days: remindDefault() });
   }
   if (url.pathname === '/vod/all' && req.method === 'POST') {
     let body;

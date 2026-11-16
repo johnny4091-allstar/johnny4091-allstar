@@ -4981,6 +4981,30 @@
   const expiryEnd = (d) => new Date(`${d}T23:59:59`).getTime(); // the account works until the end of that day
   const isExpired = (lim) => !!lim?.expires && Date.now() > expiryEnd(lim.expires);
   const fmtDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  // ----- Renewal reminders (guard 1.26.0) -----
+  // "10, 5 2" -> [10, 5, 2] (1 to 5 days, each 1 to 60), or null when it isn't a usable list.
+  function parseRemindDays(text) {
+    const list = [...new Set(String(text || '').split(/[^0-9]+/).filter(Boolean).map(Number))].filter((n) => n >= 1 && n <= 60).sort((a, b) => b - a);
+    return list.length && list.length <= 5 ? list : null;
+  }
+  // A ready-made message to send to a customer from Messenger, Text or WhatsApp (nothing is sent from here).
+  function renewalMessage(name, expires) {
+    const first = String(name || '').trim().split(/\s+/)[0] || 'there';
+    if (!expires) return `Hi ${first}, a quick note about your Aurora plan. Reply here if you need anything.`;
+    const left = Math.ceil((new Date(`${expires}T23:59:59`).getTime() - Date.now()) / 86400000);
+    const d = new Date(`${expires}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    if (left < 0) return `Hi ${first}, your Aurora plan ended on ${d}. Reply here to renew and get back to watching.`;
+    if (left === 0) return `Hi ${first}, your Aurora plan ends today (${d}). Reply here to renew.`;
+    return `Hi ${first}, your Aurora plan ends on ${d} (${left === 1 ? 'tomorrow' : 'in ' + left + ' days'}). Reply here to renew.`;
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back below */ }
+    try {
+      const t = document.createElement('textarea');
+      t.value = text; t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select();
+      const ok = document.execCommand('copy'); t.remove(); return !!ok;
+    } catch { return false; }
+  }
   const exemptFromLimits = (user) => !!user?.Policy?.IsAdministrator || ADMIN_NAMES.includes((user?.Name || '').toLowerCase());
 
   // The devices (unique DeviceIds) signed in to an account that talked to Emby in the last few minutes,
@@ -8502,6 +8526,23 @@
         <p class="muted">Only switch this on for adults. They see a locked Adult row in Live TV and choose a 4-digit PIN to open it. It never shows in the iPhone or Apple TV apps. Switching it on or off also clears their PIN. Tag which categories are adult in Admin → Live TV.</p>
         <div class="live-result" data-adult-result></div>
       </section>` : ''}
+      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
+        <h2>Renewal reminders</h2>
+        <p class="muted">${esc(user.Name)} sees a notice in the app when their plan is this many days from ending. ${lim?.remind ? '' : 'Right now they follow the default.'}</p>
+        <div>
+          <label class="admin-field"><span>Remind them, days before the end</span><input type="text" data-remind value="${esc((lim?.remind || '').toString().replace(/,/g, ', '))}" placeholder="${esc((g?.remindDefault || [7, 3, 1]).join(', '))}" inputmode="numeric"></label>
+          <div class="m-actions"><button class="btn btn-primary" data-remind-save>Save</button> <button class="btn btn-gray" data-remind-default>Use the default</button></div>
+          <details><summary>Change the default for everyone</summary>
+            <label class="admin-field"><span>Default days</span><input type="text" data-remind-all value="${esc((g?.remindDefault || [7, 3, 1]).join(', '))}" inputmode="numeric"></label>
+            <div class="m-actions"><button class="btn btn-gray" data-remind-all-save>Save the default</button></div>
+          </details>
+        </div>
+        <h3 class="users-sub">A message to send them</h3>
+        <textarea class="remind-text" data-remind-text rows="3">${esc(renewalMessage(lim?.contact?.full || user.Name, lim?.expires))}</textarea>
+        <div class="m-actions"><button class="btn btn-gray" data-remind-copy>Copy message</button></div>
+        <p class="muted">Paste it into Messenger, Text or WhatsApp. Aurora can't send those for you.</p>
+        <div class="live-result" data-remind-result></div>
+      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -8531,6 +8572,27 @@
       try { await guard(`/limits/${userId}/adult`, { method: 'PUT', body: { on } }); say('[data-adult-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
       catch (e) { ev.target.checked = !on; say('[data-adult-result]', e.status === 404 ? 'Update Aurora Guard to 1.23.0 first.' : esc(e.message), 'bad'); }
       ev.target.disabled = false;
+    });
+    $('[data-remind-save]', body)?.addEventListener('click', async () => {
+      const days = parseRemindDays($('[data-remind]', body).value);
+      if (!days) return say('[data-remind-result]', 'Type 1 to 5 numbers of days, like 10, 5, 2.', 'bad');
+      try { await guard(`/limits/${userId}/remind`, { method: 'PUT', body: { days } }); say('[data-remind-result]', `Saved: ${days.join(', ')} days before the end.`, 'good'); }
+      catch (e) { say('[data-remind-result]', e.status === 404 ? 'Update Aurora Guard to 1.26.0 first.' : esc(e.message), 'bad'); }
+    });
+    $('[data-remind-default]', body)?.addEventListener('click', async () => {
+      try { await guard(`/limits/${userId}/remind`, { method: 'PUT', body: { days: null } }); $('[data-remind]', body).value = ''; say('[data-remind-result]', 'They follow the default now.', 'good'); }
+      catch (e) { say('[data-remind-result]', esc(e.message), 'bad'); }
+    });
+    $('[data-remind-all-save]', body)?.addEventListener('click', async () => {
+      const days = parseRemindDays($('[data-remind-all]', body).value);
+      if (!days) return say('[data-remind-result]', 'Type 1 to 5 numbers of days, like 7, 3, 1.', 'bad');
+      try { await guard('/remind-default', { method: 'PUT', body: { days } }); say('[data-remind-result]', `The default is now ${days.join(', ')} days. Customers with their own list keep it.`, 'good'); }
+      catch (e) { say('[data-remind-result]', e.status === 404 ? 'Update Aurora Guard to 1.26.0 first.' : esc(e.message), 'bad'); }
+    });
+    $('[data-remind-copy]', body)?.addEventListener('click', async () => {
+      const t = $('[data-remind-text]', body).value;
+      if (await copyText(t)) say('[data-remind-result]', 'Copied. Paste it into your message.', 'good');
+      else say('[data-remind-result]', 'Could not copy here. Select the text above and copy it.', 'bad');
     });
     $('[data-vod]', body)?.addEventListener('change', async (ev) => {
       const on = ev.target.checked; ev.target.disabled = true;

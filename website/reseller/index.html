@@ -158,7 +158,8 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <div class="evs">
         <label class="toggle"><input type="checkbox" id="ev-extension"> A customer asks for an extension</label>
         <label class="toggle"><input type="checkbox" id="ev-lowCredits"> My credits are running low</label>
-        <label class="toggle"><input type="checkbox" id="ev-ending"> Customers whose access ends in 3 days (a daily message)</label>
+        <label class="toggle"><input type="checkbox" id="ev-ending"> Customers whose access is about to end (a daily message)</label>
+        <div style="margin:6px 0 0 30px"><label for="ev-days" style="display:block;font-size:.85rem;color:var(--muted,#9aa3c7)">Days ahead (up to 4 numbers, like 7, 3, 1)</label><input id="ev-days" type="text" inputmode="numeric" value="3" style="width:160px" aria-label="Days ahead"></div>
       </div>
       <div class="row" style="margin-top:14px;flex-wrap:wrap"><button class="btn red" id="nsave" type="button">Save</button><button class="btn gray" id="ntest" type="button">Send a test message</button><button class="btn line" id="noff" type="button">Remove</button></div>
       <p class="msg" id="nmsg" role="status" hidden></p>
@@ -178,6 +179,23 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
   try { session = JSON.parse(sessionStorage.getItem('aurora.reseller') || 'null'); } catch (e) { session = null; }
   function keep() { try { if (session) sessionStorage.setItem('aurora.reseller', JSON.stringify(session)); else sessionStorage.removeItem('aurora.reseller'); } catch (e) { /* private window */ } }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function uniqDays(text) {
+    var seen = {}, list = String(text || '').split(/[^0-9]+/).filter(Boolean).map(Number).filter(function (n) { if (n < 1 || n > 60 || seen[n]) return false; seen[n] = 1; return true; }).sort(function (a, b) { return b - a; });
+    return list.length && list.length <= 5 ? list : null;
+  }
+  function renewalMessage(name, expires) {
+    var first = String(name || '').trim().split(/\s+/)[0] || 'there';
+    if (!expires) return 'Hi ' + first + ', a quick note about your Aurora plan. Reply here if you need anything.';
+    var left = Math.ceil((new Date(expires + 'T23:59:59').getTime() - Date.now()) / 86400000);
+    var d = new Date(expires + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    if (left < 0) return 'Hi ' + first + ', your Aurora plan ended on ' + d + '. Reply here to renew and get back to watching.';
+    if (left === 0) return 'Hi ' + first + ', your Aurora plan ends today (' + d + '). Reply here to renew.';
+    return 'Hi ' + first + ', your Aurora plan ends on ' + d + ' (' + (left === 1 ? 'tomorrow' : 'in ' + left + ' days') + '). Reply here to renew.';
+  }
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; });
+    try { var t = document.createElement('textarea'); t.value = text; t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select(); var ok = document.execCommand('copy'); t.remove(); return Promise.resolve(!!ok); } catch (e) { return Promise.resolve(false); }
+  }
   function fmt(d) { return d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'No end date'; }
   function api(method, path, body) {
     var h = {}; if (body) h['Content-Type'] = 'application/json';
@@ -220,7 +238,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div></div>' +
         '<div class="meta" style="text-align:right">' + esc(c.planName || '') + '<br>' + esc(ends) + '</div></div>' +
         '<div class="act"><select class="rp" aria-label="Renew plan">' + planOptions() + '</select><button class="btn red sm renew" type="button">Renew</button><button class="btn line sm pw" type="button">Reset password</button>' +
-        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm danger del" type="button">Delete</button>' +
+        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm danger del" type="button">Delete</button>' +
         (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
@@ -240,6 +258,18 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.querySelector('.ad').onclick = function () { var b = this; if (!c.adult && !confirm('Turn on adult channels for ' + (c.full || c.name) + '? Only do this if they are an adult. They choose a PIN to open them.')) return; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/adult', { on: !c.adult }, function () { reload(); }); };
       el.querySelector('.vd').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/vod', { on: !c.vod }, function () { reload(); }); };
       el.querySelector('.hd').onclick = function () { var b = this; act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/hold', { hold: !c.hold }, function () { reload(); }); };
+      el.querySelector('.rm').onclick = function () {
+        var b = this, cur = c.remind ? c.remind.join(', ') : '';
+        var t = prompt('How many days before the end should ' + (c.full || c.name) + ' be reminded in the app?\nType up to 5 numbers, like 10, 5, 2. Leave empty to use the default (' + (c.remindDefault || [7, 3, 1]).join(', ') + ').', cur);
+        if (t === null) return;
+        var days = t.trim() ? uniqDays(t) : null;
+        if (t.trim() && !days) return say('Type 1 to 5 numbers between 1 and 60, like 10, 5, 2.', true);
+        act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/remind', { days: days }, function () { reload(); });
+      };
+      el.querySelector('.cm').onclick = function () {
+        var text = renewalMessage(c.full || c.name, c.expires);
+        copyText(text).then(function (ok) { say(ok ? 'Copied. Paste it into Messenger, Text or WhatsApp: ' + text : 'Could not copy here. Copy this: ' + text, !ok); });
+      };
       var del = el.querySelector('.del');
       del.onclick = function () { del.textContent = 'Tap again to delete'; del.onclick = function () { act(del, 'DELETE', '/reseller/customers/' + encodeURIComponent(c.id), null, function () { openId = null; reload(); }); }; };
       list.appendChild(el);
@@ -293,12 +323,16 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     $('nfields').innerHTML = (NFIELDS[ntype] || []).map(function (f) { return '<div><label for="nf-' + f[0] + '">' + f[1] + '</label><input id="nf-' + f[0] + '" type="' + f[2] + '" autocomplete="off" placeholder="' + esc(saved ? 'Saved. Leave empty to keep it.' : f[3]) + '"></div>'; }).join('');
     $('nhelp').textContent = (NHELP[ntype] || '') + (saved && n.hint ? '  Now: ' + n.hint + '.' : '');
     ['extension', 'lowCredits', 'ending'].forEach(function (k) { $('ev-' + k).checked = !!(n.events && n.events[k]); });
+    $('ev-days').value = (n.endingDays || [3]).join(', ');
     $('ntest').disabled = !n.type; $('noff').hidden = !n.type;
   }
   $('nchan').addEventListener('click', function (e) { var b = e.target.closest('.c'); if (!b) return; ntype = b.getAttribute('data-t'); $('nchan').__touched = true; paintNotify(); });
   function nsay(t, kind) { msg($('nmsg'), t, kind); }
   function nsave() {
     var body = { type: ntype, events: { extension: $('ev-extension').checked, lowCredits: $('ev-lowCredits').checked, ending: $('ev-ending').checked } };
+    var ed = $('ev-days').value.trim() ? uniqDays($('ev-days').value) : [3];
+    if (!ed || ed.length > 4) { nsay('Days ahead: type 1 to 4 numbers between 1 and 60, like 7, 3, 1.', 'err'); return Promise.resolve(false); }
+    body.endingDays = ed;
     (NFIELDS[ntype] || []).forEach(function (f) { var v = $('nf-' + f[0]).value.trim(); if (v) body[f[0]] = v; });
     return api('PUT', '/reseller/notify', body).then(function (j) {
       if (j.__status === 401) { out('Your sign-in ended. Please sign in again.'); return false; }
