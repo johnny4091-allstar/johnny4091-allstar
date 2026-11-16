@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="MainScene" extends="Scene">
+  <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+  <children>
+    <Rectangle id="bg" width="1280" height="720" color="0x070C1CFF" />
+
+    <Group id="signin" visible="false">
+      <Label id="siTitle" translation="[0,70]" width="1280" horizAlign="center" text="AURORA" color="0xFFFFFFFF" />
+      <Label id="siSub" translation="[0,125]" width="1280" horizAlign="center" text="Sign in with your Aurora username and password" color="0xAAB4D4FF" />
+      <Button id="btnUser" translation="[400,200]" minWidth="480" text="Username" />
+      <Button id="btnPass" translation="[400,280]" minWidth="480" text="Password" />
+      <Button id="btnSignIn" translation="[400,360]" minWidth="480" text="Sign in" />
+      <Label id="siMsg" translation="[240,450]" width="800" horizAlign="center" wrap="true" color="0xFF6B6BFF" />
+    </Group>
+
+    <Group id="app" visible="false">
+      <Label id="appTitle" translation="[40,30]" text="AURORA" color="0x2AD4D0FF" />
+      <LabelList id="menu" translation="[40,100]" itemSize="[240,50]" numRows="4" />
+      <LabelList id="list2" translation="[300,100]" itemSize="[340,50]" numRows="11" visible="false" />
+      <PosterGrid id="grid" translation="[300,90]" basePosterSize="[170,255]" itemSpacing="[20,20]" numColumns="5" numRows="2" caption1NumLines="1" />
+      <Label id="status" translation="[300,330]" width="900" wrap="true" color="0xAAB4D4FF" />
+    </Group>
+
+    <Video id="video" translation="[0,0]" width="1280" height="720" visible="false" />
+    <Label id="banner" translation="[40,600]" width="1200" visible="false" color="0xFFFFFFFF" />
+  </children>
+</component>

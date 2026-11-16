@@ -1,0 +1,32 @@
+name: Build Aurora Roku channel
+
+# Checks the Roku channel's code and packs it into aurora-roku.zip (download it from the run's Artifacts).
+# The zip is what you sideload onto a Roku in developer mode, and what you "package" there for the Roku Channel Store (see roku/README.md).
+on:
+  push:
+    paths:
+      - 'roku/**'
+      - '.github/workflows/aurora-roku.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  roku:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Check the code
+        run: npx --yes brighterscript@0.73.8 --rootDir roku --noEmit --createPackage false
+      - name: Pack the channel
+        run: |
+          cd roku
+          zip -r ../aurora-roku.zip manifest source components images -x '*.DS_Store'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aurora-roku
+          path: aurora-roku.zip
