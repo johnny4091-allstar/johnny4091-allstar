@@ -46,6 +46,7 @@ struct MainTabs: View {
             HomeView().tabItem { Text("Home") }
             LibraryView(type: "Movie", title: "Movies").tabItem { Text("Movies") }
             LibraryView(type: "Series", title: "TV Shows").tabItem { Text("TV Shows") }
+            LiveTVView().tabItem { Text("Live TV") }
             SettingsView().tabItem { Text("Settings") }
         }
     }
@@ -86,7 +87,7 @@ struct SignInView: View {
             VStack(spacing: 18) {
                 // The server is already filled in. Customers never need to see it; "Use a different server" is for the rare exception.
                 if showServer {
-                    TextField("Server address", text: $server)
+                    TextField("Other server (leave empty for Aurora)", text: $server)
                         .textContentType(.URL)
                         .focused($focus, equals: .server)
                         .modifier(FieldBox(focused: focus == .server))
@@ -118,7 +119,6 @@ struct SignInView: View {
         }
         .padding(60)
         .onAppear {
-            if server.isEmpty { server = session.lastServer }
             if focus == nil { focus = .username }
         }
     }
@@ -127,7 +127,8 @@ struct SignInView: View {
         busy = true
         message = nil
         do {
-            try await session.signIn(server: server, username: username, password: password)
+            // The address is never shown: empty means the usual Aurora server.
+            try await session.signIn(server: server.trimmingCharacters(in: .whitespaces).isEmpty ? session.lastServer : server, username: username, password: password)
         } catch {
             message = (error as? EmbyError)?.errorDescription ?? "Couldn't reach the server. Check your internet and try again."
         }
@@ -142,7 +143,6 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 24) {
             Text("Settings").font(.largeTitle).bold()
             Text("Signed in as \(session.userName)")
-            if let server = session.client?.server { Text("Server: \(server)").foregroundColor(.secondary) }
             Text("Aurora for Apple TV \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "") (\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""))")
                 .foregroundColor(.secondary)
             Button("Sign out") { session.signOut() }

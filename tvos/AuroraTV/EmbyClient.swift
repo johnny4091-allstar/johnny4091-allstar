@@ -131,7 +131,7 @@ final class EmbyClient {
 
     // MARK: Requests
 
-    private func request(_ path: String, query: [String: String] = [:], method: String = "GET", body: Any? = nil) async throws -> Data {
+    func request(_ path: String, query: [String: String] = [:], method: String = "GET", body: Any? = nil) async throws -> Data {
         var components = URLComponents(string: server + "/emby" + path)
         if !query.isEmpty { components?.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
         guard let url = components?.url else { throw EmbyError.badAddress }
