@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.24.0';
+const VERSION = '1.25.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1504,7 +1504,12 @@ function getJson(address, timeoutMs = 9000) {
 }
 const hex6 = (v) => (/^[0-9a-f]{6}$/i.test(String(v || '')) ? '#' + String(v).toLowerCase() : '');
 // One ESPN scoreboard event -> the shape the app uses. Written defensively: any missing piece just stays empty.
-function normalizeSportsEvent(ev, key) {
+// Team and league pictures come from ESPN's own image servers only: nothing else is ever passed on to the apps.
+function logoUrl(v) {
+  try { const u = new URL(String(v || '')); return u.protocol === 'https:' && /(^|\.)espncdn\.com$/i.test(u.hostname) ? u.toString().slice(0, 200) : ''; } catch { return ''; }
+}
+const leagueLogoOf = (data) => { try { const l = data.leagues && data.leagues[0]; const lg = (l.logos || []).find((x) => x && x.href && !/dark/i.test((x.rel || []).join(' '))) || (l.logos || [])[0]; return logoUrl(lg && lg.href); } catch { return ''; } };
+function normalizeSportsEvent(ev, key, lgLogo) {
   const L = SPORTS_LEAGUES[key], comp = (ev.competitions && ev.competitions[0]) || {};
   const cs = Array.isArray(comp.competitors) ? comp.competitors : [];
   const side = (c) => c && {
@@ -1513,6 +1518,7 @@ function normalizeSportsEvent(ev, key) {
     short: String((c.team && c.team.shortDisplayName) || (c.athlete && c.athlete.shortName) || (c.team && c.team.name) || '').slice(0, 40),
     abbr: String((c.team && c.team.abbreviation) || '').slice(0, 6),
     color: hex6(c.team && c.team.color),
+    logo: logoUrl((c.team && c.team.logo) || (c.athlete && c.athlete.flag && c.athlete.flag.href)),
     score: c.score === undefined || c.score === null ? '' : String(c.score).slice(0, 6),
     record: String((c.records && c.records[0] && c.records[0].summary) || '').slice(0, 12),
     winner: !!c.winner,
@@ -1526,7 +1532,8 @@ function normalizeSportsEvent(ev, key) {
   for (const b of Array.isArray(comp.geoBroadcasts) ? comp.geoBroadcasts : []) if (b && b.media && b.media.shortName) names.add(String(b.media.shortName).slice(0, 30));
   const state = ['pre', 'in', 'post'].includes(st.state) ? st.state : 'pre';
   return {
-    id: key + ':' + String(ev.id || ''), league: key, leagueName: L.name, group: L.group,
+    id: key + ':' + String(ev.id || ''), league: key, leagueName: L.name, group: L.group, sport: String(L.path).split('/')[0], lgLogo: lgLogo || '',
+    venue: String((comp.venue && comp.venue.fullName) || '').slice(0, 60),
     name: String(ev.name || '').slice(0, 120), short: String(ev.shortName || '').slice(0, 40),
     start: Date.parse(ev.date) || 0, state,
     detail: String(st.shortDetail || st.detail || '').slice(0, 40), clock: String((ev.status && ev.status.displayClock) || '').slice(0, 10),
@@ -1537,7 +1544,8 @@ async function pollSportsLeague(key) {
   const L = SPORTS_LEAGUES[key], rec = sportsState.leagues[key] || (sportsState.leagues[key] = { games: [], at: 0, ok: false, error: '', nextAt: 0 });
   try {
     const data = await getJson(`${cfg.scoresBase.replace(/\/+$/, '')}/apis/site/v2/sports/${L.path}/scoreboard`);
-    rec.games = (Array.isArray(data.events) ? data.events : []).map((ev) => normalizeSportsEvent(ev, key)).filter((g) => g.start);
+    const lgLogo = leagueLogoOf(data);
+    rec.games = (Array.isArray(data.events) ? data.events : []).map((ev) => normalizeSportsEvent(ev, key, lgLogo)).filter((g) => g.start);
     rec.ok = true; rec.error = ''; rec.at = Date.now();
   } catch (e) { rec.ok = false; rec.error = e.message; }
   const hot = rec.games.some((g) => g.state === 'in' || (g.state === 'pre' && g.start - Date.now() < 30 * 60000 && g.start > Date.now() - 60000));
@@ -1575,6 +1583,32 @@ function shared(key, make) {
 const sportsBase = () => cfg.scoresBase.replace(/\/+$/, '');
 const trim = (v, n) => String(v == null ? '' : v).slice(0, n);
 function sportsDay(dateStr) { return shared('day:' + dateStr, () => sportsDayLoad(dateStr)); }
+// When the games over the next days start (just times, sport and league), so the day chips can show how many games each day has.
+// One call per league for the whole range, kept 15 minutes.
+async function sportsStartsLoad(fromStr, days) {
+  const c = sportsCfg(), now = Date.now();
+  const hit = sportsExtra.starts && sportsExtra.starts[fromStr + ':' + days];
+  if (hit && now - hit.at < 15 * 60000) return hit.list;
+  const d0 = new Date(Date.UTC(+fromStr.slice(0, 4), +fromStr.slice(4, 6) - 1, +fromStr.slice(6, 8)));
+  const d1 = new Date(d0.getTime() + (days - 1) * 86400000);
+  const ymd = (d) => `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  const keys = c.leagues.slice(), out = [];
+  const work = async () => {
+    while (keys.length) {
+      const key = keys.shift(), L = SPORTS_LEAGUES[key];
+      try {
+        const data = await getJson(`${sportsBase()}/apis/site/v2/sports/${L.path}/scoreboard?dates=${ymd(d0)}-${ymd(d1)}&limit=400`);
+        for (const ev of Array.isArray(data.events) ? data.events : []) { const t = Date.parse(ev.date); if (t) out.push([t, String(L.path).split('/')[0], key]); }
+      } catch { /* that league has nothing for these days */ }
+    }
+  };
+  await Promise.all([work(), work(), work(), work()]);
+  out.sort((a, b) => a[0] - b[0]);
+  sportsExtra.starts = sportsExtra.starts || {};
+  sportsExtra.starts[fromStr + ':' + days] = { at: now, list: out };
+  const old = Object.keys(sportsExtra.starts); if (old.length > 6) delete sportsExtra.starts[old[0]];
+  return out;
+}
 async function sportsDayLoad(dateStr) {
   const c = sportsCfg(), now = Date.now(), out = [];
   const hit = sportsExtra.days[dateStr];
@@ -1585,7 +1619,8 @@ async function sportsDayLoad(dateStr) {
       const key = keys.shift(), L = SPORTS_LEAGUES[key];
       try {
         const data = await getJson(`${sportsBase()}/apis/site/v2/sports/${L.path}/scoreboard?dates=${dateStr}`);
-        for (const ev of Array.isArray(data.events) ? data.events : []) { const g = normalizeSportsEvent(ev, key); if (g.start) out.push(g); }
+        const lgLogo = leagueLogoOf(data);
+        for (const ev of Array.isArray(data.events) ? data.events : []) { const g = normalizeSportsEvent(ev, key, lgLogo); if (g.start) out.push(g); }
       } catch { /* that league has nothing for the day */ }
     }
   };
@@ -2129,6 +2164,16 @@ async function handle(req, res) {
     const c = sportsCfg();
     if (!c.enabled) return send(res, 200, { enabled: false, games: [] });
     try { return send(res, 200, { enabled: true, date: d, games: await sportsDay(d) }); } catch (e) { return send(res, 502, { error: `Can't load that day: ${e.message}` }); }
+  }
+  if (url.pathname === '/sports/starts' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    const f = String(url.searchParams.get('from') || ''), n = Math.max(1, Math.min(8, Number(url.searchParams.get('days')) || 7));
+    if (!/^20\d{6}$/.test(f)) return send(res, 400, { error: 'Give the date as YYYYMMDD' });
+    const diff = (Date.UTC(+f.slice(0, 4), +f.slice(4, 6) - 1, +f.slice(6, 8)) - Date.now()) / 86400000;
+    if (diff < -2 || diff > 3) return send(res, 400, { error: 'That start day is out of range' });
+    if (!sportsCfg().enabled) return send(res, 200, { enabled: false, starts: [] });
+    try { return send(res, 200, { enabled: true, starts: await shared('starts:' + f + ':' + n, () => sportsStartsLoad(f, n)) }); } catch (e) { return send(res, 502, { error: `Can't load the schedule: ${e.message}` }); }
   }
   if (url.pathname === '/sports/game' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));

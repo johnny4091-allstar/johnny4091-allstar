@@ -3621,7 +3621,32 @@
     return cards.sort((a, b) => a.start - b.start);
   }
 
+  // ----- Sports: sports, icons and team logos -----
+  const SPORT_ORDER = ['basketball', 'football', 'baseball', 'hockey', 'soccer', 'mma', 'racing'];
+  const SPORT_NAME = { basketball: 'BASKETBALL', football: 'FOOTBALL', baseball: 'BASEBALL', hockey: 'HOCKEY', soccer: 'SOCCER', mma: 'FIGHTING', racing: 'RACING', other: 'SPORT' };
+  const SPORT_ICON = { basketball: '\u{1F3C0}', football: '\u{1F3C8}', baseball: '⚾', hockey: '\u{1F3D2}', soccer: '⚽', mma: '\u{1F94A}', racing: '\u{1F3CE}️', other: '\u{1F3C5}' };
+  // Games found only in the channel guide have a group name instead of a sport.
+  const SPORT_OF_GROUP = { NFL: 'football', NBA: 'basketball', MLB: 'baseball', NHL: 'hockey', Soccer: 'soccer', UFC: 'mma', 'UFC & Fights': 'mma', Racing: 'racing' };
+  // A team's picture (from ESPN, through the guard), or its coloured badge with the letters when there is none or it does not load.
+  function sportsLogo(t, cls = '') {
+    const abbr = (t.abbr || t.short || t.name || '?').slice(0, 3), col = /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : '#2b3566';
+    if (!/^https:\/\/[\w.-]*espncdn\.com\//i.test(t.logo || '')) return `<span class="sp-crest ${cls}" style="background:${col}">${esc(abbr)}</span>`;
+    return `<span class="sp-logo-wrap ${cls}"><img class="sp-logo" src="${esc(t.logo)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-fb="${esc(abbr)}" data-col="${col}"></span>`;
+  }
+  let sportsLogoWatch = false;
+  function watchSportsLogos() {
+    if (sportsLogoWatch) return;
+    sportsLogoWatch = true;
+    // A picture that does not load becomes the badge; a league picture that does not load just goes.
+    document.addEventListener('error', (e) => {
+      const el = e.target;
+      if (!el || !el.classList) return;
+      if (el.classList.contains('sp-logo')) { const w = el.parentElement; if (w && w.closest('.sp2-ghost')) { w.closest('.sp2-ghost').remove(); return; } if (w) { w.className = w.className.replace('sp-logo-wrap', 'sp-crest'); w.style.background = el.dataset.col || '#2b3566'; w.textContent = el.dataset.fb || ''; } }
+      else if (el.classList.contains('sp2-lgimg')) el.remove();
+    }, true);
+  }
   async function renderIptvSports(body, isCurrent) {
+    watchSportsLogos();
     body.innerHTML = '<div class="spinner"></div>';
     let S;
     try {
@@ -3633,6 +3658,8 @@
     const myTeams = profile?.teams || [], myLeagues = profile?.leagues || [];
     const isMine = (c) => c.teams.some((t) => myTeams.some((m) => m.lg === t.lg && String(m.id) === String(t.id)));
     let league = store.get('ef.sports.league') || 'All';
+    let sport = store.get('ef.sports.sport') || 'all';
+    let pickedKey = null, heroCard = null, heroRender = null, weekStarts = null; // the game shown big; what draws it; the week's start times
     let cards = sportsCards(S);
     let dayOff = 0;                      // 0 = today (guide + feed), 1..6 = a later day (feed only)
     const dayCache = new Map();          // 'YYYYMMDD' -> games from Aurora Guard
@@ -3647,51 +3674,61 @@
       cards = dayOff ? sportsCards({ ...S, events: [], feed: { games: dayGames || [] } }) : sportsCards(S);
       const target = dayAt(dayOff).toDateString();
       const visible = dayOff ? cards.filter((c) => new Date(c.start).toDateString() === target) : cards.filter((c) => c.state === 'post' ? c.start > now - 5 * 3600000 : c.end > now);
-      const counts = new Map();
-      for (const c of visible) counts.set(c.league, (counts.get(c.league) || 0) + 1);
-      const mineN = visible.filter(isMine).length, favN = visible.filter((c) => c.chans.some((ch) => isIptvFav(ch))).length;
-      let names = SPORT_LEAGUES.map(([n]) => n).concat('Other').filter((n) => counts.has(n));
+      const sportOf = (c) => (c.feed && c.feed.sport) || SPORT_OF_GROUP[c.league] || 'other';
+      const lgNameOf = (c) => (c.feed ? c.feed.leagueName : c.league);
+      const isFavCh = (c) => c.chans.some((ch) => isIptvFav(ch));
+      const spCount = new Map();
+      for (const c of visible) spCount.set(sportOf(c), (spCount.get(sportOf(c)) || 0) + 1);
+      const sportKeys = [...SPORT_ORDER.filter((k) => spCount.has(k)), ...[...spCount.keys()].filter((k) => !SPORT_ORDER.includes(k))];
+      if (sport !== 'all' && !spCount.has(sport)) sport = 'all';
+      const inSport = visible.filter((c) => sport === 'all' || sportOf(c) === sport);
+      const lgCount = new Map(), lgLogoOf = new Map();
+      for (const c of inSport) { const n = lgNameOf(c); lgCount.set(n, (lgCount.get(n) || 0) + 1); if (c.feed && c.feed.lgLogo && !lgLogoOf.has(n)) lgLogoOf.set(n, c.feed.lgLogo); }
+      const mineN = inSport.filter(isMine).length, favN = inSport.filter(isFavCh).length;
+      let names = [...lgCount.keys()];
       names = [...names.filter((n) => myLeagues.includes(n)), ...names.filter((n) => !myLeagues.includes(n))];
-      if (league !== 'All' && league !== '__mine' && league !== '__fav' && !counts.has(league)) league = 'All';
+      if (league !== 'All' && league !== '__mine' && league !== '__fav' && !lgCount.has(league)) league = 'All';
       if (league === '__mine' && !mineN) league = 'All';
       if (league === '__fav' && !favN) league = 'All';
-      const shown = visible.filter((c) => league === 'All' || (league === '__mine' ? isMine(c) : league === '__fav' ? c.chans.some((ch) => isIptvFav(ch)) : c.league === league));
-      // The big game at the top (today only): a live one of your teams, any live one, then your next one, then the next to start.
+      const shown = inSport.filter((c) => league === 'All' || (league === '__mine' ? isMine(c) : league === '__fav' ? isFavCh(c) : lgNameOf(c) === league));
+      // One row of games: live first, then the ones still to come (today: the next 14 hours), then the finished ones.
+      const ord = (c) => (c.state === 'in' ? 0 : c.state === 'pre' ? 1 : 2);
+      const fixtures = shown.filter((c) => dayOff || c.state !== 'pre' || c.start < now + 14 * 3600000).sort((a, b) => ord(a) - ord(b) || a.start - b.start);
+      // The big game at the top: the one you moved to, else a live one of your teams, any live one, then your next, then the next to start.
       const scored = (c) => !!(c.feed && c.feed.home && c.feed.away);
-      const hero = dayOff ? null : shown.find((c) => c.state === 'in' && scored(c) && isMine(c)) || shown.find((c) => c.state === 'in' && scored(c)) || shown.find((c) => c.state === 'pre' && scored(c) && isMine(c) && c.start < now + 14 * 3600000) || shown.find((c) => c.state === 'pre' && scored(c) && c.start < now + 14 * 3600000) || null;
-      const rest = shown.filter((c) => c !== hero);
-      const live = rest.filter((c) => c.state === 'in'), soon = rest.filter((c) => c.state === 'pre' && (dayOff || c.start < now + 14 * 3600000)), done = rest.filter((c) => c.state === 'post');
-      const chip = (id, label) => `<button class="chip${league === id ? ' active' : ''}" data-league="${esc(id)}">${esc(label)}</button>`;
-      const crest = (t) => `<span class="sp-crest" style="background:${t.color || '#2b3566'}">${esc((t.abbr || t.short || t.name || '?').slice(0, 3))}</span>`;
-      const side = (t, c) => `<div class="sp-row">${crest(t)}<span class="sp-tn">${esc(t.short || t.name)}</span>${c.state === 'pre' ? `<span class="sp-rec">${esc(t.record || '')}</span>` : spoil ? '<span class="sp-sc hide">–</span>' : `<span class="sp-sc${c.state === 'post' && t.winner ? ' win' : ''}">${esc(t.score || '0')}</span>`}</div>`;
-      const bestTag = (c) => c.chans.length ? `<span class="sp-best${c.likely ? ' likely' : ''}">${c.likely ? 'Likely' : 'Best match'}</span>` : '';
-      const card = (c) => {
-        const ci = cards.indexOf(c), g = c.feed, t = !g && sportTeams(c.title), pct = Math.max(0, Math.min(100, Math.round(100 * (now - c.start) / Math.max(1, c.end - c.start))));
-        const main = c.chans[0], net = g && g.broadcasts && g.broadcasts[0];
-        const status = c.state === 'in' ? `<span class="sp-live">LIVE${g && !spoil && g.detail ? ' · ' + esc(g.detail) : ''}</span>` : c.state === 'post' ? '<span class="sp-when">Final</span>' : `<span class="sp-when">${dayOff ? '' : ''}${esc(clockTime(c.start))}${dayOff ? '' : ' · ' + esc(untilText(c.start))}</span>`;
-        const teams = g && g.home && g.away ? side(g.away, c) + side(g.home, c) : t ? `<div class="sp-team">${esc(t[0])}</div><div class="sp-team">${esc(t[1])}</div>` : `<div class="sp-title">${esc(g ? g.name : c.title)}</div>`;
-        const bell = c.state === 'pre' ? `<button class="sp-bell${hasReminder(c.key) ? ' on' : ''}" data-bell="${ci}" aria-label="Remind me" aria-pressed="${hasReminder(c.key)}">${hasReminder(c.key) ? '\u{1F514} Reminding' : '\u{1F514} Remind me'}</button>` : '';
-        const col = (g && g.away && g.away.color) || '#4f7bff', col2 = (g && g.home && g.home.color) || '#9a6bff';
-        return `<div class="sp-card ${c.state === 'in' ? 'is-live' : c.state === 'post' ? 'is-done' : ''}" role="button" tabindex="0" data-game="${ci}" style="--t1:${/^#[0-9a-f]{6}$/i.test(col) ? col : '#4f7bff'};--t2:${/^#[0-9a-f]{6}$/i.test(col2) ? col2 : '#9a6bff'}">
-          <div class="sp-top"><span class="sp-lg">${esc(g ? g.leagueName : c.league)}${isMine(c) ? ' <b class="sp-star">★</b>' : ''}</span>${status}</div>
-          ${teams}
-          ${c.state === 'in' && !g ? `<div class="sp-prog"><span style="width:${pct}%"></span></div>` : ''}
-          <div class="sp-foot"><span class="sp-ch">${main ? `${net && !c.likely ? `<i class="sp-net">${esc(net.slice(0, 6))}</i>` : ''}${main.num ? `<b>${esc(main.num)}</b> ` : ''}<span>${esc(main.name)}</span>` : '<i class="sp-none">Not on your channels</i>'}</span>${bestTag(c)}${main && c.state !== 'post' ? `<button class="sp-watch" data-watch="${ci}" aria-label="Watch now">▶</button>` : ''}</div>
-          ${bell ? `<div class="sp-act">${bell}</div>` : ''}
-        </div>`;
+      const auto = fixtures.find((c) => c.state === 'in' && scored(c) && isMine(c)) || fixtures.find((c) => c.state === 'in' && scored(c)) || fixtures.find((c) => c.state === 'pre' && scored(c) && isMine(c)) || fixtures.find((c) => c.state === 'pre' && scored(c)) || fixtures.find(scored) || fixtures[0] || null;
+      heroCard = (pickedKey && fixtures.find((c) => c.key === pickedKey)) || auto;
+      const spoilTxt = (c) => (c.state !== 'pre' && spoil);
+      const heroInner = (c) => {
+        if (!c) return '';
+        const g = c.feed, ci = cards.indexOf(c), main = c.chans[0], two = !!(g && g.home && g.away);
+        const pill = c.state === 'in' ? '<span class="sp2-pill live">● LIVE NOW</span>' : c.state === 'post' ? '<span class="sp2-pill">FINAL</span>' : '<span class="sp2-pill soon">UP NEXT</span>';
+        const lgl = lgLogoOf.get(lgNameOf(c)) || (g && g.lgLogo) || '';
+        const title = two ? `${g.away.name} vs ${g.home.name}` : (g ? g.name : c.title);
+        const sub = [new Date(c.start).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }), clockTime(c.start), g && g.venue].filter(Boolean).join(' · ');
+        const mid = !two ? '' : c.state === 'pre' ? `<strong>${esc(clockTime(c.start))}</strong>` : spoilTxt(c) ? '<strong class="dim">Hidden</strong>' : `<strong>${esc(g.away.score || '0')} – ${esc(g.home.score || '0')}</strong>`;
+        const scoreCard = two ? `<div class="sp2-score"><div class="sp2-sr">${sportsLogo(g.away, 'big')}${mid}${sportsLogo(g.home, 'big')}</div><div class="sp2-sn"><span>${esc(g.away.name)}</span><span>${esc(g.home.name)}</span></div>${c.state === 'in' && !spoilTxt(c) && g.detail ? `<div class="sp2-sd">${esc(g.detail)}</div>` : ''}</div>` : '';
+        const ghost = two && g.home.logo ? `<span class="sp2-ghost" aria-hidden="true">${sportsLogo(g.home, 'huge')}</span>` : '';
+        const watchBtns = main ? `<button class="sp2-watch" data-watch="${ci}">▶ Watch on ${esc(main.name)}</button>${c.chans.length > 1 ? `<button class="sp2-btn" data-sheet="${ci}" data-tab="channels">${c.chans.length - 1} more</button>` : ''}` : '<span class="sp-none">Not on your channels</span>';
+        const bell = c.state === 'pre' ? `<button class="sp2-btn${hasReminder(c.key) ? ' on' : ''}" data-bell="${ci}" aria-pressed="${hasReminder(c.key)}">${hasReminder(c.key) ? '\u{1F514} Reminding' : '\u{1F514} Remind me'}</button>` : '';
+        return `${ghost}<div class="sp2-hl"><div class="sp2-crumb">${esc(SPORT_NAME[sportOf(c)] || 'SPORT')} · ${esc(lgNameOf(c))}</div>
+          <div class="sp2-pills">${pill}<span class="sp2-pill lg">${lgl ? `<img class="sp2-lgimg" src="${esc(lgl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}${esc(lgNameOf(c))}</span>${isMine(c) ? '<span class="sp2-pill star">★ your team</span>' : ''}</div>
+          <h2 class="sp2-title">${esc(title)}</h2><div class="sp2-sub">${esc(sub)}</div>
+          <div class="sp2-hw">${watchBtns}${bell}</div></div>${scoreCard}
+          <button class="sp2-mc" data-sheet="${ci}" data-tab="stats">▾ MATCH CENTER<small>Stats · Plays · Standings</small></button>`;
       };
-      const heroHtml = (c) => {
-        const g = c.feed, main = c.chans[0], ci = cards.indexOf(c);
-        const mid = c.state === 'pre' ? `<div class="sp-hsc">${esc(clockTime(c.start))}</div><div class="sp-hclock">${esc(untilText(c.start))}</div>`
-          : spoil ? '<div class="sp-hsc dim">Hidden</div><div class="sp-hclock">In progress</div>'
-          : `<div class="sp-hsc">${esc(g.away.score || '0')}<span>–</span>${esc(g.home.score || '0')}</div><div class="sp-hclock">${esc(g.detail || '')}</div>`;
-        const tm = (t) => `<div class="sp-htm">${crest(t).replace('sp-crest', 'sp-crest big')}<b>${esc(t.short || t.name)}</b><small>${esc(t.record || '')}${isMine({ teams: [{ lg: g.league, id: t.id }] }) ? ' ★ your team' : ''}</small></div>`;
-        return `<div class="sp-hero" role="button" tabindex="0" data-game="${ci}" style="${heroBg(g.away.color, g.home.color)}">
-          <div class="sp-hl">${c.state === 'in' ? '<span class="sp-livepill">Live</span>' : '<span class="sp-when">Up next</span>'}<span>${esc(g.leagueName)}</span></div>
-          <div class="sp-hb">${tm(g.away)}<div>${mid}</div>${tm(g.home)}</div>
-          <div class="sp-hw">${main ? `<button class="sp-hbtn" data-watch="${ci}">▶ Watch on ${esc(main.name)}</button>${c.chans.length > 1 ? `<button class="sp-hmore" data-sheet="${ci}" data-tab="channels">${c.chans.length - 1} more</button>` : ''}` : `<span class="sp-none">Not on your channels</span>`}</div>
-        </div>`;
+      heroRender = heroInner;
+      const fxCard = (c) => {
+        const ci = cards.indexOf(c), g = c.feed, two = !!(g && g.home && g.away), main = c.chans[0];
+        const st = c.state === 'in' ? `<span class="sp2-st live">${spoil || !g || !g.detail ? 'LIVE' : 'LIVE · ' + esc(g.detail)}</span>` : c.state === 'post' ? '<span class="sp2-st">FINAL</span>' : `<span class="sp2-st">${esc(clockTime(c.start))}</span>`;
+        const mid = two ? `${sportsLogo(g.away)}<strong>${c.state === 'pre' ? 'vs' : spoilTxt(c) ? '–' : `${esc(g.away.score || '0')} – ${esc(g.home.score || '0')}`}</strong>${sportsLogo(g.home)}` : `<div class="sp2-ft">${esc(g ? g.name : c.title)}</div>`;
+        const nm = two ? `${esc(g.away.short || g.away.name)} <i>vs</i> ${esc(g.home.short || g.home.name)}` : '';
+        return `<div class="sp2-fx ${c.state}${heroCard === c ? ' sel' : ''}" role="button" tabindex="0" data-game="${ci}">
+          <div class="sp2-ftop">${st}${isMine(c) ? '<b class="sp-star">★</b>' : ''}${c.state === 'pre' && hasReminder(c.key) ? '<span class="sp2-bell">\u{1F514}</span>' : ''}</div>
+          <div class="sp2-fmid">${mid}</div><div class="sp2-fnm">${nm}</div>
+          <div class="sp2-fch">${main ? `▶ ${main.num ? esc(main.num) + ' ' : ''}${esc(main.name)}` : '<i>Not on your channels</i>'}</div></div>`;
       };
+      const lgBtn = (id, label, logo) => `<button class="sp2-lg${league === id ? ' on' : ''}" data-league="${esc(id)}">${logo ? `<img class="sp2-lgimg" src="${esc(logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}${esc(label)}</button>`;
       const teamRow = (m) => {
         const mine = visible.filter((c) => c.teams.some((t) => t.lg === m.lg && String(t.id) === String(m.id)));
         const g = mine.find((c) => c.state === 'in') || mine.find((c) => c.state === 'pre');
@@ -3699,22 +3736,37 @@
         return `<span class="sp-tm"><span class="sp-crest" style="background:#2b3566">${esc((m.abbr || m.name).slice(0, 3))}</span>${esc(m.short || m.name)} · ${esc(txt)}</span>`;
       };
       const anyLive = cards.some((c) => c.state === 'in');
-      const days = Array.from({ length: 7 }, (_, i) => { const d = dayAt(i); return `<button class="sp-day${i === dayOff ? ' on' : ''}" data-day="${i}"><small>${i ? esc(d.toLocaleDateString([], { weekday: 'short' })) : 'Today'}</small><b>${d.getDate()}</b>${i === 0 && anyLive ? '<i></i>' : ''}</button>`; }).join('');
+      // How many games each day has (from the guard's week schedule, once it has arrived), for the sport shown.
+      const countFor = (i) => {
+        if (!weekStarts) return null;
+        const a = dayAt(i); a.setHours(0, 0, 0, 0);
+        const from = a.getTime(), to = from + 86400000;
+        return weekStarts.filter((s) => s[0] >= from && s[0] < to && (sport === 'all' || s[1] === sport)).length;
+      };
+      const days = Array.from({ length: 7 }, (_, i) => {
+        const d = dayAt(i), n = countFor(i);
+        return `<button class="sp2-day${i === dayOff ? ' on' : ''}" data-day="${i}"><b>${i ? esc(d.toLocaleDateString([], { weekday: 'short' }).toUpperCase()) : 'TODAY'}${n != null ? ` <em>${n}</em>` : ''}${i === 0 && anyLive ? '<i class="sp2-dot"></i>' : ''}</b><span>${d.getDate()} ${esc(d.toLocaleDateString([], { month: 'short' }))}</span></button>`;
+      }).join('');
       const loadingDay = dayOff && !dayGames;
-      body.innerHTML = `<div class="sp">
-        <div class="sp-bar">${S.feed ? `<div class="sp-days" role="group" aria-label="Day">${days}</div>` : ''}
-          ${S.feed ? `<button class="sp-spoil" role="switch" aria-checked="${spoil}" data-spoiler><span>Spoiler-free</span><i class="sp-sw${spoil ? ' on' : ''}"><b></b></i></button>` : ''}</div>
-        <div class="chip-row sp-chips">${chip('All', 'All')}${mineN ? chip('__mine', `★ My teams · ${mineN}`) : ''}${favN ? chip('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => chip(n, `${n} · ${counts.get(n)}`)).join('')}</div>
-        ${league === 'All' && !dayOff && myTeams.length ? `<div class="sp-teams"><span class="sp-lab">Your teams</span>${myTeams.slice(0, 8).map(teamRow).join('')}</div>` : ''}
-        ${hero ? heroHtml(hero) : ''}
-        ${loadingDay ? '<div class="spinner"></div>' : ''}
-        ${live.length ? `<h2 class="sp-h"><span class="sp-dot"></span>Live now <small>${live.length} ${live.length === 1 ? 'game' : 'games'}</small></h2><div class="sp-grid">${live.map(card).join('')}</div>` : ''}
-        ${soon.length ? `<h2 class="sp-h">${dayOff ? esc(dayAt(dayOff).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' })) : 'Starting soon'} <small>${dayOff ? soon.length + (soon.length === 1 ? ' game' : ' games') : 'next 14 hours'}</small></h2><div class="sp-grid">${soon.map(card).join('')}</div>` : ''}
-        ${done.length ? `<h2 class="sp-h">Finished <small>${dayOff ? 'that day' : 'last few hours'}</small></h2><div class="sp-grid">${done.map(card).join('')}</div>` : ''}
-        ${!loadingDay && !hero && !live.length && !soon.length && !done.length ? `<p class="empty-msg">${dayOff ? 'No games found for this day.' : S.guide || S.feed || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : 'Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link.'}</p>` : ''}
-        <p class="muted sp-note">${S.feed ? 'Scores come from Aurora; channels are found in your TV guide, so names and times are only as good as the guide.' : S.guide ? 'Found in your channel guide, so names and times are only as good as the guide.' : "Showing what's on now. The full schedule needs the Aurora app and a TV guide."}</p>
+      const rail = sportKeys.length > 1 || sport !== 'all'
+        ? `<nav class="sp2-rail" aria-label="Sport">${['all', ...sportKeys].map((k) => `<button class="sp2-ri${sport === k ? ' on' : ''}" data-sport="${esc(k)}" title="${esc(k === 'all' ? 'All sports' : SPORT_NAME[k] || k)}" aria-label="${esc(k === 'all' ? 'All sports' : SPORT_NAME[k] || k)}" aria-pressed="${sport === k}">${k === 'all' ? '★' : SPORT_ICON[k] || '\u{1F3C5}'}</button>`).join('')}</nav>` : '';
+      body.innerHTML = `<div class="sp sp2${rail ? ' has-rail' : ''}">
+        ${rail}
+        <div class="sp2-main">
+          ${heroCard ? `<section class="sp2-hero" data-hero>${heroInner(heroCard)}</section>` : ''}
+          <div class="sp2-sec">LEAGUES</div>
+          <div class="sp2-lgs">${lgBtn('All', 'All')}${mineN ? lgBtn('__mine', `★ My teams · ${mineN}`) : ''}${favN ? lgBtn('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => lgBtn(n, `${n}${lgCount.get(n) > 1 ? ' · ' + lgCount.get(n) : ''}`, lgLogoOf.get(n))).join('')}</div>
+          ${S.feed ? `<div class="sp2-sec">SCHEDULE</div><div class="sp2-bar"><div class="sp2-days" role="group" aria-label="Day">${days}</div>
+            <button class="sp-spoil" role="switch" aria-checked="${spoil}" data-spoiler><span>Spoiler-free</span><i class="sp-sw${spoil ? ' on' : ''}"><b></b></i></button></div>` : ''}
+          ${league === 'All' && !dayOff && myTeams.length ? `<div class="sp-teams"><span class="sp-lab">Your teams</span>${myTeams.slice(0, 8).map(teamRow).join('')}</div>` : ''}
+          <div class="sp2-sec">FIXTURES${dayOff ? ` · ${esc(dayAt(dayOff).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }))}` : ''}</div>
+          ${loadingDay ? '<div class="spinner"></div>' : ''}
+          ${fixtures.length ? `<div class="sp2-fxs">${fixtures.map(fxCard).join('')}</div>` : ''}
+          ${!loadingDay && !fixtures.length ? `<p class="empty-msg">${dayOff ? 'No games found for this day.' : S.guide || S.feed || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : 'Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link.'}</p>` : ''}
+          <p class="muted sp-note">${S.feed ? 'Scores come from Aurora; channels are found in your TV guide, so names and times are only as good as the guide.' : S.guide ? 'Found in your channel guide, so names and times are only as good as the guide.' : "Showing what's on now. The full schedule needs the Aurora app and a TV guide."}</p>
+        </div>
       </div>`;
-      const first = $('.sp-hero, .sp-card', body);
+      const first = $('.sp2-fx.sel', body) || $('.sp2-fx', body);
       if (nav.on && first && !body.contains(document.activeElement)) focusEl(first);
       return true;
     };
@@ -3759,7 +3811,7 @@
         : spoil ? '<div class="sp-hsc dim">Hidden</div><div class="sp-hclock">Spoiler-free is on</div>'
         : `<div class="sp-hsc">${esc(g.away.score || '0')}<span>–</span>${esc(g.home.score || '0')}</div><div class="sp-hclock">${c.state === 'post' ? 'Final' : esc(g.detail || '')}</div>`;
       const tm = (t) => `<div class="sp-htm">${crest2(t)}<b>${esc(t.short || t.name)}</b><small>${esc(t.record || '')}</small></div>`;
-      const crest2 = (t) => `<span class="sp-crest big" style="background:${t.color || '#2b3566'}">${esc((t.abbr || t.short || t.name || '?').slice(0, 3))}</span>`;
+      const crest2 = (t) => sportsLogo(t, 'big');
       const d = sheet.data;
       let pane = '';
       if (sheet.tab === 'stats') {
@@ -3845,6 +3897,8 @@
       const b = $('[data-sheet-watch]', content); if (nav.on && b) focusEl(b);
     };
     body.addEventListener('click', async (e) => {
+      const spt = e.target.closest('[data-sport]');
+      if (spt) { sport = spt.dataset.sport; league = 'All'; pickedKey = null; store.set('ef.sports.sport', sport); store.set('ef.sports.league', league); draw(); const b = $(`[data-sport="${CSS.escape(sport)}"]`, body); if (nav.on && b) focusEl(b); return; }
       const lg = e.target.closest('[data-league]');
       if (lg) { league = lg.dataset.league; store.set('ef.sports.league', league); draw(); const b = $(`[data-league="${CSS.escape(league)}"]`, body); if (nav.on && b) focusEl(b); return; }
       if (e.target.closest('[data-spoiler]')) { sportsPrefs.spoilerFree = !sportsPrefs.spoilerFree; saveSportsPrefs(); draw(); const b = $('[data-spoiler]', body); if (nav.on && b) focusEl(b); return; }
@@ -3870,6 +3924,23 @@
       if (card) openSheet(Number(card.dataset.game));
     });
     draw();
+    // The big game at the top follows the game the remote (or the mouse) is on, without redrawing the page.
+    const pointHero = (e) => {
+      const fx = e.target.closest && e.target.closest('.sp2-fx');
+      const c = fx && cards[Number(fx.dataset.game)];
+      const box = $('[data-hero]', body);
+      if (!c || !box || c === heroCard || !heroRender) return;
+      heroCard = c; pickedKey = c.key;
+      box.innerHTML = heroRender(c);
+      $$('.sp2-fx', body).forEach((el) => el.classList.toggle('sel', cards[Number(el.dataset.game)] === c));
+    };
+    body.addEventListener('focusin', pointHero);
+    body.addEventListener('mouseover', pointHero);
+    // How many games each day has, for the day chips (one call for the whole week).
+    if (S.feed && guardEnabled) {
+      guard('/sports/starts', { params: { userId: state.userId, from: dayKey(0), days: 7 }, quick: true })
+        .then((r) => { if (Array.isArray(r.starts)) { weekStarts = r.starts; draw(); } }).catch(() => { /* the chips just show no number */ });
+    }
     // Keep "live now / starting soon", scores and progress true while the page is open.
     let tick = 0;
     const timer = routeInterval(async () => {
@@ -3878,7 +3949,7 @@
       if (++tick % 2 === 0 && guardEnabled && S.feed) { const f = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null); if (f?.enabled) S.feed = f; }
       const focused = document.activeElement?.closest?.('[data-game]')?.dataset.game;
       if (!draw()) { clearInterval(timer); return; }
-      if (focused != null && nav.on && !sheetOpen()) { const el = $(`.sp-card[data-game="${focused}"], .sp-hero[data-game="${focused}"]`, body); if (el) focusEl(el); }
+      if (focused != null && nav.on && !sheetOpen()) { const el = $(`.sp2-fx[data-game="${focused}"]`, body); if (el) focusEl(el); }
       if (sheetOpen()) { const c = sheetCard(); if (c && c.state !== 'pre' && tick % 2 === 0 && !sheet.loading) { sheet.loading = false; const g = c.feed; if (g) guard('/sports/game', { params: { userId: state.userId, league: g.league, id: String(g.id).split(':')[1] }, quick: true }).then((r) => { if (sheet) { sheet.data = r; paintSheet(); } }).catch(() => {}); } else paintSheet(); }
       else if (sheet) sheet = null;
     }, 30000);
