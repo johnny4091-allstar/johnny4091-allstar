@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.22.0';
+const VERSION = '1.23.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -520,7 +520,7 @@ function publicReseller(r) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, vod: !!rec.vod, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
@@ -1992,6 +1992,7 @@ async function handle(req, res) {
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
+      adult: !!rec?.adult, adultReset: rec?.adultReset || 0, // the adult Live TV categories switch (guard 1.23.0); adultReset changes whenever it is switched, which also clears the account's PIN
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
         && mine.filter((x) => Date.now() - x.at < 30 * 86400000).length < MAX_REQUESTS_PER_MONTH,
@@ -2385,7 +2386,7 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|adult))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
@@ -2397,6 +2398,14 @@ async function handle(req, res) {
           rec.vod = body.on === true; rec.updated = Date.now();
           recordAudit(by, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${rec.name}`); saveStore();
           return send(res, 200, { ok: true, vod: rec.vod });
+        }
+        // Adult Live TV categories for this customer (guard 1.23.0). Whoever switches it on vouches that the customer is an adult.
+        if (act === 'adult' && req.method === 'POST') {
+          const on = body.on === true;
+          if (!!rec.adult !== on) rec.adultReset = Date.now();
+          rec.adult = on; rec.updated = Date.now();
+          recordAudit(by, `${on ? 'Switched on' : 'Switched off'} adult channels for ${rec.name}`); saveStore();
+          return send(res, 200, { ok: true, adult: rec.adult });
         }
         // Put a customer on hold (sign-in is switched off and their devices are signed out; the end date keeps running), or release them.
         if (act === 'hold' && req.method === 'POST') {
@@ -3113,6 +3122,20 @@ async function handle(req, res) {
     rec.vod = body.on === true; rec.updated = Date.now();
     recordAudit(auditBy, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${user.Name}`); saveStore();
     return send(res, 200, { ok: true, vod: rec.vod });
+  }
+  // Adult Live TV categories for one customer (guard 1.23.0). Switching it either way also clears their PIN (they choose a new one).
+  const am = url.pathname.match(/^\/limits\/([\w-]{1,64})\/adult$/);
+  if (am && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${am[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    const rec = store.users[am[1]] || (store.users[am[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    const on = body.on === true;
+    if (!!rec.adult !== on) rec.adultReset = Date.now();
+    rec.adult = on; rec.updated = Date.now();
+    recordAudit(auditBy, `${on ? 'Switched on' : 'Switched off'} adult channels for ${user.Name}`); saveStore();
+    return send(res, 200, { ok: true, adult: rec.adult });
   }
   if (url.pathname === '/vod/all' && req.method === 'POST') {
     let body;

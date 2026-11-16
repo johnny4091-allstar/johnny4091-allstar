@@ -2034,7 +2034,7 @@
   // The admin sets the source in the Admin dashboard. It's saved into every account's Aurora settings on the
   // Emby server (display preferences), so each customer's app picks it up when they sign in.
   const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
-  const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null };
+  const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null, catNames: new Map() };
   const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
   const showLiveLink = () => hasLiveTv() || iptvOn();
 
@@ -2220,9 +2220,88 @@
     // view; admins always see everything. (It limits what the app lists; the provider's own address still works for anyone
     // who has it.)
     const mine = planCategories();
-    if (!mine || cfg !== iptv.config) return base;
-    return (id) => mine.has(String(id)) && (!base || base(id));
+    if (cfg !== iptv.config) return base;
+    // Adult categories (Admin -> Live TV tags them) are shown only to an account that has the switch on and has entered its PIN.
+    // They are shown even when the plan or the admin's choice leaves them out: the switch is what decides.
+    const isAdult = adultTest(cfg), allowAdult = adultUnlocked();
+    return (id) => {
+      if (isAdult(id)) return allowAdult;
+      if (mine && !mine.has(String(id))) return false;
+      return !base || base(id);
+    };
   }
+  // ----- Adult categories (guard 1.23.0) -----
+  // Which categories are adult: the ones the admin ticked in Admin -> Live TV (cfg.adultCats), or, until then, any named like Adult, XXX or 18+.
+  const ADULT_NAME = /(adult(?!\s*swim)|xxx|18\s*\+|\+\s*18|porn|erotic|nsfw|hentai|playboy|\bsex\b|\bsexy\b)/i;
+  const adultKey = () => 'ef.adult.' + state.userId;
+  const adultSwitchOn = () => !window.AuroraIOS && store.get(adultKey()) === '1'; // never in the Apple apps
+  let adultUnlockedAt = 0;
+  const adultUnlocked = () => isAdmin() || (adultSwitchOn() && Date.now() - adultUnlockedAt < 30 * 60000);
+  const adultIdsKey = () => 'ef.adultIds.' + state.userId;
+  function adultTest(cfg) {
+    const explicit = Array.isArray(cfg?.adultCats) ? new Set(cfg.adultCats.map(String)) : null;
+    let known = new Set();
+    try { known = new Set(JSON.parse(store.get(adultIdsKey()) || '[]')); } catch { /* none */ }
+    const cache = new Map();
+    return (id) => {
+      const k = String(id);
+      if (cache.has(k)) return cache.get(k);
+      const hit = explicit ? explicit.has(k) : (known.has(k) || ADULT_NAME.test(iptv.catNames.get(k) ?? k));
+      cache.set(k, hit);
+      return hit;
+    };
+  }
+  // Remembers which category ids are adult (names are only known once the list is loaded; channels and favorites carry just the id).
+  function rememberAdult(cfg, cats) {
+    if (cfg !== iptv.config) return;
+    const explicit = Array.isArray(cfg.adultCats) ? new Set(cfg.adultCats.map(String)) : null;
+    const ids = cats.filter((c) => (explicit ? explicit.has(String(c.id)) : ADULT_NAME.test(c.name || ''))).map((c) => String(c.id));
+    store.set(adultIdsKey(), JSON.stringify(ids));
+  }
+  // What the guard says about this account's switch. A change clears the PIN (they choose a new one) and refreshes Live TV.
+  function applyAdultFlag(a) {
+    if (!a || a.admin) return;
+    const next = a.adult ? '1' : '0';
+    const resetKey = 'ef.adult.reset.' + state.userId;
+    let changed = store.get(adultKey()) !== next;
+    if ((a.adultReset || 0) > Number(store.get(resetKey) || 0)) {
+      store.set(resetKey, String(a.adultReset));
+      store.set('ef.adult.pin.' + state.userId, '');
+      if (profile?.adultPin) saveProfile({ adultPin: '' });
+      adultUnlockedAt = 0;
+      changed = true;
+    }
+    if (!changed) return;
+    store.set(adultKey(), next);
+    adultUnlockedAt = 0;
+    resetIptvCaches();
+    if (/^#\/(livetv|mylist|home)/.test(location.hash)) route();
+  }
+  const adultPinHash = (pin) => { let h = 2166136261; for (const c of 'aurora-adult:' + state.userId + ':' + pin) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
+  const adultPinStored = () => profile?.adultPin || store.get('ef.adult.pin.' + state.userId) || '';
+  // The locked "Adult" row in Live TV: opens (PIN) or locks again.
+  async function adultToggle() {
+    if (adultUnlocked() && !isAdmin()) { adultUnlockedAt = 0; resetIptvCaches(); toast('Adult channels are locked', 2000); route(); return; }
+    let hash = adultPinStored();
+    if (!hash) {
+      const a = await pinPad('Choose a PIN', 'You will need it to open adult channels. Pick 4 digits.');
+      if (!a) return;
+      const b = await pinPad('Type it again', 'Enter the same 4 digits to confirm.');
+      if (!b) return;
+      if (a !== b) { toast("The two PINs didn't match. Try again.", 3000); return; }
+      hash = adultPinHash(a);
+      store.set('ef.adult.pin.' + state.userId, hash);
+      saveProfile({ adultPin: hash });
+    } else {
+      const pin = await pinPad('Adult channels', 'Enter your PIN.');
+      if (pin == null) return;
+      if (adultPinHash(pin) !== hash) { toast('Wrong PIN', 2500); return; }
+    }
+    adultUnlockedAt = Date.now();
+    resetIptvCaches();
+    route();
+  }
+  const adultRow = () => (adultSwitchOn() && !isAdmin() ? [{ id: '__adult', name: adultUnlocked() ? '\u{1F513} Adult (tap to lock)' : '\u{1F512} Adult', adultRow: true }] : []);
   const planCatsKey = () => 'ef.planCats.' + state.userId;
   function planCategories() {
     try { const v = JSON.parse(store.get(planCatsKey()) || 'null'); return Array.isArray(v) ? new Set(v.map(String)) : null; } catch { return null; }
@@ -2239,7 +2318,7 @@
     if (!guardEnabled || !state.userId || !state.apiKey) return;
     try {
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
-      applyPlanCategories(a.admin ? null : a.categories);
+      applyPlanCategories(a.admin ? null : a.categories); applyAdultFlag(a);
       setProviderAllowed(!a.admin && !!a.vod);
     } catch { /* keep what is known */ }
   }
@@ -2252,6 +2331,7 @@
         const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000, { saved: true, liveOnly: true, maxAge: LIST_MAX_AGE });
         if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) throw new Error("That address didn't return an M3U playlist.");
         const parsed = parseM3u(text);
+        rememberAdult(cfg, [...parsed.groups.keys()].map((n) => ({ id: n, name: n })));
         const ok = catFilter(cfg);
         const groups = ok ? new Map([...parsed.groups].filter(([name]) => ok(name))) : parsed.groups;
         const all = ok ? parsed.all.filter((ch) => ok(ch.group)) : parsed.all;
@@ -2259,6 +2339,7 @@
       }
       const cats = await xtJson(cfg, { action: 'get_live_categories' }, { saved: true, maxAge: LIST_MAX_AGE });
       if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
+      if (cfg === iptv.config) { iptv.catNames = new Map(cats.map((c) => [String(c.category_id), c.category_name || ''])); rememberAdult(cfg, cats.map((c) => ({ id: c.category_id, name: c.category_name }))); }
       const ok = catFilter(cfg);
       return {
         categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })).filter((c) => !ok || ok(c.id)),
@@ -2471,7 +2552,10 @@
     try {
       const r = JSON.parse(store.get('ef.iptv.recent.' + state.userId) || '{}');
       const same = r.s ? r.s === recentSource() : r.v === (iptv.config?.v || 0);
-      return same ? r.list || [] : [];
+      if (!same) return [];
+      // A channel from a category this account can't see (adult, or left out of the plan) is not listed either.
+      const ok = iptv.config ? catFilter(iptv.config) : null;
+      return (r.list || []).filter((c) => !ok || c.group === undefined || c.group === '' || ok(c.group));
     } catch { return []; }
   }
   // Channels are told apart by their stream number or address, not by their position in the list (which changes).
@@ -2882,10 +2966,11 @@
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
       ...sortByProfileCats(src.categories),
+      ...adultRow(),
     ];
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
-    if (!cats.some((c) => c.id === current)) current = cats[0].id;
+    if (current === '__adult' || !cats.some((c) => c.id === current)) current = cats[0].id;
     // A small live picture beside the details (Android app only): the channel you pick keeps playing while you browse the guide.
     const previewOn = !!nativeApp?.previewStart && getPref('guidePreview') !== 'off';
     const CH_W = nav.tv ? 260 : (window.innerWidth < 600 ? 120 : 220);
@@ -3213,6 +3298,7 @@
     root.addEventListener('click', (e) => { if (groupsEl.classList.contains('open') && !e.target.closest('.tm-groups, .tm-group-btn')) closeGroups(false); });
 
     const openCat = async (id, focus) => {
+      if (id === '__adult') { adultToggle(); return; }
       const t = ++token;
       current = id;
       store.set('ef.iptv.group', id);
@@ -3812,10 +3898,11 @@
       ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
       ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
       ...sortByProfileCats(src.categories),
+      ...adultRow(),
     ];
     if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
     let current = store.get('ef.iptv.group');
-    if (!cats.some((c) => c.id === current)) current = cats[0].id;
+    if (current === '__adult' || !cats.some((c) => c.id === current)) current = cats[0].id;
     body.innerHTML = `
       <div class="iptv-layout">
         <nav class="iptv-cats" data-nav-zone>${cats.map((c) => `<button class="iptv-cat${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">
@@ -3845,6 +3932,7 @@
       drawMore();
     };
     const openCat = async (id, { focus = false } = {}) => {
+      if (id === '__adult') { adultToggle(); return; }
       const t = ++token;
       current = id;
       store.set('ef.iptv.group', id);
@@ -5097,7 +5185,7 @@
         return;
       }
       if (!isCurrent() || !section.isConnected) return;
-      applyPlanCategories(a.admin ? null : a.categories);
+      applyPlanCategories(a.admin ? null : a.categories); applyAdultFlag(a);
       setProviderAllowed(!a.admin && !!a.vod);
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
@@ -6457,6 +6545,7 @@
     // ----- Category picker -----
     // hidden: ids switched off; cats: the provider's full list once loaded (null until then).
     let cats = null, catsFor = '', hidden = new Set((cfg.catsHidden || []).map(String)), autoNew = Array.isArray(cfg.catsHidden);
+    let adultSel = null; // the ids ticked as adult once the provider's list is loaded
     const pickEl = $('.cat-pick', body), listEl = $('.cat-list', body), summary = $('[data-cat-summary]', body);
     const sourceOf = (c) => (c.type === 'm3u' ? c.m3uUrl : `${c.server}|${c.username}`);
     const sameSource = () => { const d = rawDraft(); return d.type === cfg.type && sourceOf(d) === sourceOf(cfg); };
@@ -6474,7 +6563,8 @@
       const q = $('[data-cat-filter]', body).value.trim().toLowerCase();
       listEl.innerHTML = cats.filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => `
         <label class="cat-row"><input type="checkbox" data-id="${esc(c.id)}"${hidden.has(c.id) ? '' : ' checked'}>
-          <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</label>`).join('') || '<p class="muted">No categories match.</p>';
+          <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}<span class="cat-adult" title="Adult: hidden from everyone except accounts with the Adult channels switch on"><input type="checkbox" data-adult-id="${esc(c.id)}"${adultSel && adultSel.has(c.id) ? ' checked' : ''}> Adult</span></label>`).join('') || '<p class="muted">No categories match.</p>';
+      $$('input[data-adult-id]', listEl).forEach((cb) => { cb.addEventListener('click', (e) => e.stopPropagation()); cb.addEventListener('change', () => { if (cb.checked) adultSel.add(cb.dataset.adultId); else adultSel.delete(cb.dataset.adultId); }); });
       $$('input[data-id]', listEl).forEach((cb) => cb.addEventListener('change', () => {
         if (cb.checked) hidden.delete(cb.dataset.id); else hidden.add(cb.dataset.id);
         showSummary();
@@ -6496,6 +6586,8 @@
         } else if (!cats && !sameSource()) hidden = new Set();
         cats = fresh;
         catsFor = sourceOf(d);
+        // Adult: the ones ticked before (same provider), else any named like Adult, XXX or 18+.
+        adultSel = Array.isArray(cfg.adultCats) && sameSource() ? new Set(cfg.adultCats.map(String)) : new Set(fresh.filter((c) => ADULT_NAME.test(c.name || '')).map((c) => c.id));
         $('[data-cat-auto]', body).checked = autoNew;
         paintCats();
         showSummary();
@@ -6524,7 +6616,9 @@
       if (cats && catsFor === sourceOf(d)) {
         if (hidden.size && autoNew) d.catsHidden = [...hidden];
         else if (hidden.size) d.catsShown = cats.filter((c) => !hidden.has(c.id)).map((c) => c.id);
+        if (adultSel) d.adultCats = [...adultSel];
       } else if (sameSource()) {
+        if (cfg.adultCats) d.adultCats = cfg.adultCats;
         // Not opened this time: keep the choice already saved.
         if (cfg.catsShown) d.catsShown = cfg.catsShown;
         if (cfg.catsHidden) d.catsHidden = cfg.catsHidden;
@@ -8302,6 +8396,12 @@
         <p class="muted">Their Movies and TV Shows pages show the provider's titles instead of your library. Saved straight away. It uses your TV provider's connections, like Live TV.</p>
         <div class="live-result" data-vod-result></div>
       </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && iptvOn() ? `<section class="admin-card">
+        <h2>Adult channels</h2>
+        <label class="admin-check"><input type="checkbox" data-adult${lim?.adult ? ' checked' : ''}> Let ${esc(user.Name)} open the adult Live TV categories</label>
+        <p class="muted">Only switch this on for adults. They see a locked Adult row in Live TV and choose a 4-digit PIN to open it. It never shows in the iPhone or Apple TV apps. Switching it on or off also clears their PIN. Tag which categories are adult in Admin → Live TV.</p>
+        <div class="live-result" data-adult-result></div>
+      </section>` : ''}
       <section class="admin-card">
         <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
         <div class="admin-list">${devices.map((d) => `<div class="admin-row">
@@ -8326,6 +8426,12 @@
     const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
     const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
 
+    $('[data-adult]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/adult`, { method: 'PUT', body: { on } }); say('[data-adult-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-adult-result]', e.status === 404 ? 'Update Aurora Guard to 1.23.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
     $('[data-vod]', body)?.addEventListener('change', async (ev) => {
       const on = ev.target.checked; ev.target.disabled = true;
       try { await guard(`/limits/${userId}/vod`, { method: 'PUT', body: { on } }); say('[data-vod-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }

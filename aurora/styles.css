@@ -1953,3 +1953,7 @@ html.tv .tm-preview { width: 320px; }
 .ok-actions { display: flex; gap: 12px; justify-content: flex-end; align-items: center; margin-top: 12px; }
 .ok-actions .btn { min-width: 140px; justify-content: center; }
 .ok-hint { color: var(--dim); font-size: .85rem; margin-right: auto; }
+
+/* Adult tick beside each category in Admin -> Live TV */
+.cat-row .cat-adult { margin-left: auto; display: inline-flex; gap: .35rem; align-items: center; font-size: .75rem; color: var(--muted); padding-left: 1rem; }
+.cat-row .cat-adult input { accent-color: #e5384f; }
