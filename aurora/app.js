@@ -5105,7 +5105,7 @@
       const endText = a.expires ? `${fmtDay(a.expires)}${a.expired ? '' : ` · ${a.daysLeft <= 0 ? 'ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left'}`}` : 'No end date';
       const r = a.request;
       let reqHtml = '';
-      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}${r.wantedPlan ? ` (${esc(r.wantedPlan)})` : ''}. The admin will review it.</p>`;
+      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}${r.wantedPlan ? ` (${esc(r.wantedPlan)})` : ''}. ${r.to === 'reseller' ? 'Your reseller' : 'The admin'} will review it.</p>`;
       else if (r?.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note good">Your extension was approved${r.newExpires ? `: access now runs until ${esc(fmtDay(r.newExpires))}` : ''}.${r.message ? ' ' + esc(r.message) : ''}</p>`;
       else if (r?.status === 'denied' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note bad">Your last request wasn't approved.${r.message ? ' ' + esc(r.message) : ' Please contact the admin.'}</p>`;
       let offered = [];
@@ -6104,7 +6104,7 @@
 
     // Waiting extension requests (Aurora Guard 1.4.0+), up top where the admin looks first.
     let waiting = 0;
-    if (guardEnabled) { try { waiting = (await guard('/extensions', { quick: true })).pending.length; } catch { /* older or unreachable guard */ } }
+    if (guardEnabled) { try { waiting = (await guard('/extensions', { quick: true })).pending.filter((x) => x.needsAdmin !== false).length; } catch { /* older or unreachable guard */ } }
     if (!isCurrent()) return;
     body.innerHTML = `
       ${waiting ? `<a class="admin-card ext-banner" href="#/admin?tab=users"><strong>${waiting} extension ${waiting === 1 ? 'request' : 'requests'} waiting</strong> <span class="muted">Tap to review and approve</span></a>` : ''}
@@ -7946,7 +7946,7 @@
   function extensionsCardHtml(ext, plans) {
     if (!ext || (!ext.pending?.length && !ext.decided?.length)) return '';
     const row = (x) => `<div class="admin-row ext-row" data-ext="${esc(x.id)}"><div class="admin-row-main">
-        <strong>${esc(x.name)}</strong> <span class="pill warn">Asked for more time</span>
+        <strong>${esc(x.name)}</strong> <span class="pill warn">Asked for more time</span>${x.resellerName ? ` <span class="pill">Reseller: ${esc(x.resellerName)}${x.needsAdmin === false ? ' is handling it' : ' (suspended)'}</span>` : ''}
         <div class="muted">${x.currentExpires ? `Ends ${esc(fmtDay(x.currentExpires))}${isExpired({ expires: x.currentExpires }) ? ' (expired)' : ''}` : 'No end date set'} · asked ${esc(timeAgo(x.at))}</div>
         ${x.wantedPlanName ? `<div class="ext-note">Wants: ${esc(x.wantedPlanName)}</div>` : ''}
         ${x.note ? `<div class="ext-note">"${esc(x.note)}"</div>` : ''}
@@ -7958,7 +7958,7 @@
     const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.planName ? esc(x.planName) : x.days + ' days'}, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
         <div class="admin-row-time">${esc(timeAgo(x.decidedAt))}</div></div>`;
     return `<section class="admin-card ext-card">
-      <h2>Extension requests <small>${ext.pending.length ? `${ext.pending.length} waiting` : 'None waiting'}</small></h2>
+      <h2>Extension requests <small>${ext.pending.filter((x) => x.needsAdmin !== false).length ? `${ext.pending.filter((x) => x.needsAdmin !== false).length} waiting for you` : 'None waiting for you'}${ext.pending.some((x) => x.needsAdmin === false) ? ` · ${ext.pending.filter((x) => x.needsAdmin === false).length} with resellers` : ''}</small></h2>
       <div class="admin-list">${ext.pending.map(row).join('') || '<p class="muted">Nobody is waiting for an answer.</p>'}</div>
       ${ext.decided.length ? `<details class="conn-list"><summary>Recent decisions</summary><div class="admin-list">${ext.decided.slice(0, 10).map(done).join('')}</div></details>` : ''}
     </section>`;
