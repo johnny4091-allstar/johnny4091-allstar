@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.29.0';
+const VERSION = '1.29.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2040,7 +2040,8 @@ async function checkForUpdate() {
 }
 function publicUpdate() {
   const backups = (() => { try { return fs.readdirSync(BACKUP_DIR).filter((f) => /^aurora-guard-[\d.]+\.js$/.test(f)).sort((a, b) => versionGreater(a.replace(/^aurora-guard-|\.js$/g, ''), b.replace(/^aurora-guard-|\.js$/g, '')) ? -1 : 1); } catch { return []; } })();
-  const last = (store.update || {}).lastApplied || null;
+  // The record of the last update only counts while that update is what is running (a file replaced by hand makes it stale).
+  const rec0 = (store.update || {}).lastApplied || null, last = rec0 && rec0.to === VERSION ? rec0 : null;
   return { current: VERSION, latest: updateInfo.latest || '', available: !!updateInfo.latest && versionGreater(updateInfo.latest, VERSION), notes: updateInfo.notes, checkedAt: updateInfo.checkedAt, error: updateInfo.error,
     enabled: cfg.updateCheck !== false, run: { ...updateRun, steps: UPDATE_STEPS }, lastApplied: last, canGoBack: !!(last && last.backup && backups.includes(last.backup)), platform: process.platform };
 }
@@ -2089,7 +2090,7 @@ async function applyUpdate(by) {
   } catch (e) { fail(Math.max(0, updateRun.step), e.message); }
 }
 async function rollbackUpdate(by) {
-  const last = (store.update || {}).lastApplied;
+  const rec0 = (store.update || {}).lastApplied, last = rec0 && rec0.to === VERSION ? rec0 : null;
   updateRun = { busy: true, kind: 'rollback', step: 0, error: '', finishedAt: 0 };
   try {
     const src = path.join(BACKUP_DIR, (last && last.backup) || '');

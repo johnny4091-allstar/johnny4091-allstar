@@ -2070,3 +2070,7 @@ html.tv .tm-preview { width: 320px; }
   .tm-grid .guide-ch-name { font-size: .82rem; -webkit-line-clamp: 3; }
   .iptv-layout { grid-template-columns: 1fr; }
 }
+
+/* Status page message: the box takes the full width on a phone, with Save and Clear below it. */
+.st-note-row { flex-wrap: wrap; gap: .6rem; align-items: center; }
+.st-note-input { flex: 1 1 280px; min-width: 0; width: 100%; }
