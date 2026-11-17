@@ -145,6 +145,11 @@ public class LivePlayerActivity extends Activity {
         boolean fav, favInitial;
         /** The same channel in the other format (MPEG-TS / HLS), tried when the first keeps failing. */
         boolean triedOther;
+        /** Backup addresses for this channel (another provider's copy of it), tried in order when the main one keeps failing. */
+        final java.util.List<String> alts = new java.util.ArrayList<>();
+        /** The main address, and how many backups have been used since the channel was tuned. */
+        String baseUrl = "";
+        int altUsed;
     }
 
     @Override
@@ -162,6 +167,9 @@ public class LivePlayerActivity extends Activity {
                 Channel c = new Channel();
                 c.name = o.optString("name", "Channel");
                 c.url = o.optString("url", "");
+                c.baseUrl = c.url;
+                JSONArray altArr = o.optJSONArray("alts");
+                if (altArr != null) for (int ai = 0; ai < altArr.length() && ai < 3; ai++) { String au = altArr.optString(ai, ""); if (!au.isEmpty()) c.alts.add(au); }
                 c.logo = o.optString("logo", "");
                 c.num = o.optString("num", "");
                 c.now = o.optString("now", "");
@@ -338,6 +346,8 @@ public class LivePlayerActivity extends Activity {
         handler.removeCallbacks(retryRunnable);
         status.setVisibility(View.GONE);
         Channel c = channels.get(index);
+        // Every time a channel is tuned its main address is tried first (a backup is only for while the main one is down).
+        if (c.altUsed > 0) { c.url = c.baseUrl; c.altUsed = 0; c.triedOther = false; }
         wasReady = false; // a new channel loading isn't a stall
         tunedAt = android.os.SystemClock.elapsedRealtime();
         awaitingStart = true;
@@ -457,6 +467,20 @@ public class LivePlayerActivity extends Activity {
             status.setVisibility(View.VISIBLE);
             player.setMediaItem(mediaItem(other));
             handler.postDelayed(retryRunnable, 1000);
+            return;
+        }
+        if (retries >= 3 && c.altUsed < c.alts.size()) {
+            // The main address keeps failing (and its other format did not help): switch to the next backup and give it a fresh run.
+            String alt = c.alts.get(c.altUsed++);
+            c.url = alt;
+            c.triedOther = false;
+            retries = 0;
+            failureCounted = false;
+            failed = false;
+            status.setText("Switching to a backup…");
+            status.setVisibility(View.VISIBLE);
+            player.setMediaItem(mediaItem(alt));
+            handler.postDelayed(retryRunnable, 500);
             return;
         }
         if (retries <= MAX_RETRIES) {

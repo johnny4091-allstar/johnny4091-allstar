@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.29.1';
+const VERSION = '1.30.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -999,19 +999,30 @@ function chanItemFrom(b, old) {
   const o = old || {};
   const pick = (k, f) => (b[k] !== undefined ? f(b[k]) : o[k] || '');
   const item = { id: o.id, cat: o.cat, name: pick('name', (v) => chanText(v, 80)), url: pick('url', chanUrl), logo: pick('logo', (v) => { const t = chanUrl(v); return t; }), num: pick('num', chanNum), epgId: pick('epgId', (v) => chanText(v, 80)), on: b.on !== undefined ? b.on !== false : o.on !== false };
+  if (Array.isArray(o.backups) && o.backups.length) item.backups = o.backups; // editing a channel keeps its backups
   return item;
 }
 const chanBump = () => { const c = chanStore(); c.v = (c.v || 1) + 1; };
+// Backups: other stream addresses for the same channel, tried in order when the first one stops working. A backup picked from one of your other
+// providers carries that provider's login in its address, so the editor views (admins and moderators) show only its label.
+const CHAN_MAX_BACKUPS = 3;
+const backupsStripped = (e) => (Array.isArray(e.backups) ? { ...e, backups: e.backups.map((b) => ({ label: b.label || '', ...(b.src ? { src: b.src } : { url: b.url }) })) } : e);
+const backupsOf = (x) => (Array.isArray(x && x.backups) ? x.backups : []);
+const backupView = (b, all) => (all ? (b.src ? { label: b.label || '', src: b.src } : { label: b.label || '', url: b.url }) : { label: b.label || '', url: b.url });
 function chanPublic(all) {
   const c = chanStore();
   const cats = c.cats.map((x) => ({ id: x.id, name: x.name, adult: !!x.adult }));
-  const items = (all ? c.items : c.items.filter((i) => i.on !== false)).map((i) => ({ id: i.id, cat: i.cat, name: i.name, url: i.url, logo: i.logo, num: i.num, epgId: i.epgId, on: i.on !== false }));
-  return { v: c.v || 1, cats, items, edits: c.edits || {} };
+  const items = (all ? c.items : c.items.filter((i) => i.on !== false)).map((i) => ({ id: i.id, cat: i.cat, name: i.name, url: i.url, logo: i.logo, num: i.num, epgId: i.epgId, on: i.on !== false, backups: backupsOf(i).map((b) => backupView(b, all)) }));
+  const edits = {};
+  for (const [k, e] of Object.entries(c.edits || {})) edits[k] = Array.isArray(e.backups) ? { ...e, backups: e.backups.map((b) => backupView(b, all)) } : e;
+  return { v: c.v || 1, cats, items, edits };
 }
 // The provider's channels for the fix list on the website: read here, with the Live TV settings an administrator saved, and cached for 10 minutes.
 // Only names, numbers, groups and pictures go out (never the provider's address or login).
-let providerCache = { key: '', at: 0, list: null };
-async function providerChannels() {
+const providerCache = new Map(); // src -> { key, at, list }
+const provWithScheme = (a) => (/^https?:\/\//i.test(a) ? a : 'http://' + a).replace(/\/+$/, '');
+// The Live TV settings the administrator saved in the app (the main provider).
+async function mainProviderConfig() {
   const users = (await emby('GET', '/Users')) || [];
   const admin = users.find((u) => u.Policy && u.Policy.IsAdministrator);
   if (!admin) throw new Error('No administrator account was found.');
@@ -1020,13 +1031,14 @@ async function providerChannels() {
   let c = null;
   try { c = JSON.parse(prefs && prefs.CustomPrefs && prefs.CustomPrefs.config || 'null'); } catch { c = null; }
   if (!c || !c.type) throw new Error('Live TV is not set up yet (Admin -> Live TV).');
-  const key = JSON.stringify([c.type, c.server, c.username, c.m3uUrl, c.v]);
-  if (providerCache.key === key && Date.now() - providerCache.at < 600000 && providerCache.list) return providerCache.list;
+  return c;
+}
+// Reads one provider's live channels. Each channel: { key, name, num, group, logo, url } (url is for the guard only and never leaves it for the editors).
+async function readProviderList(c) {
   const headers = c.userAgent ? { 'User-Agent': String(c.userAgent) } : {};
-  const withScheme = (a) => (/^https?:\/\//i.test(a) ? a : 'http://' + a).replace(/\/+$/, '');
   let list = [];
   if (c.type === 'm3u') {
-    const r = await plainRequest(withScheme(String(c.m3uUrl || '')), { headers, timeoutMs: 60000 });
+    const r = await plainRequest(provWithScheme(String(c.m3uUrl || '')), { headers, timeoutMs: 60000 });
     if (r.status !== 200 || !/#EXT/.test(String(r.text || '').slice(0, 5000))) throw new Error("The provider's playlist did not answer.");
     let name = '', logo = '', group = '', num = '', have = false;
     const attr = (line, k) => { const m = line.match(new RegExp(k + '="([^"]*)"', 'i')); return m ? m[1] : ''; };
@@ -1036,18 +1048,32 @@ async function providerChannels() {
         logo = attr(line, 'tvg-logo'); group = attr(line, 'group-title'); num = attr(line, 'tvg-chno');
         let q = false, cut = -1; for (let i = 0; i < line.length; i++) { if (line[i] === '"') q = !q; else if (line[i] === ',' && !q) { cut = i; break; } }
         name = (cut >= 0 ? line.slice(cut + 1) : '').trim() || attr(line, 'tvg-name'); have = true;
-      } else if (line && !line.startsWith('#') && have) { list.push({ key: 'n:' + name, name: name || 'Channel', num, group: group || 'Channels', logo }); have = false; }
+      } else if (line && !line.startsWith('#') && have) { list.push({ key: 'n:' + name, name: name || 'Channel', num, group: group || 'Channels', logo, url: line }); have = false; }
     }
   } else {
-    const base = withScheme(String(c.server || '')) + '/player_api.php?username=' + encodeURIComponent(c.username || '') + '&password=' + encodeURIComponent(c.password || '');
+    const root = provWithScheme(String(c.server || ''));
+    const base = root + '/player_api.php?username=' + encodeURIComponent(c.username || '') + '&password=' + encodeURIComponent(c.password || '');
     const [st, cats] = await Promise.all([plainRequest(base + '&action=get_live_streams', { headers, timeoutMs: 60000 }), plainRequest(base + '&action=get_live_categories', { headers, timeoutMs: 30000 })]);
     let streams, cl;
     try { streams = JSON.parse(st.text); cl = JSON.parse(cats.text); } catch { streams = null; }
-    if (!Array.isArray(streams)) throw new Error('The provider did not accept the saved login.');
+    if (!Array.isArray(streams)) throw new Error('The provider did not accept the login.');
     const names = new Map((Array.isArray(cl) ? cl : []).map((x) => [String(x.category_id), String(x.category_name || '')]));
-    list = streams.map((x) => ({ key: 'x' + x.stream_id, name: String(x.name || 'Channel'), num: x.num != null ? String(x.num) : '', group: names.get(String(x.category_id)) || '', logo: String(x.stream_icon || '') }));
+    list = streams.map((x) => ({ key: 'x' + x.stream_id, name: String(x.name || 'Channel'), num: x.num != null ? String(x.num) : '', group: names.get(String(x.category_id)) || '', logo: String(x.stream_icon || ''),
+      url: `${root}/live/${encodeURIComponent(c.username || '')}/${encodeURIComponent(c.password || '')}/${x.stream_id}.m3u8` }));
   }
-  providerCache = { key, at: Date.now(), list };
+  return list;
+}
+const backupProviders = () => { const c = chanStore(); if (!Array.isArray(c.providers)) c.providers = []; return c.providers; };
+async function providerChannels(src = 'main') {
+  let cfgOf, label;
+  if (src === 'main') cfgOf = await mainProviderConfig();
+  else { cfgOf = backupProviders().find((x) => x.id === src); if (!cfgOf) throw new Error('That provider is not set up.'); }
+  label = src;
+  const key = JSON.stringify([cfgOf.type, cfgOf.server, cfgOf.username, cfgOf.password, cfgOf.m3uUrl, cfgOf.v]);
+  const hit = providerCache.get(label);
+  if (hit && hit.key === key && Date.now() - hit.at < 600000) return hit.list;
+  const list = await readProviderList(cfgOf);
+  providerCache.set(label, { key, at: Date.now(), list });
   return list;
 }
 
@@ -1061,11 +1087,81 @@ async function chanRoutes(req, url, res, auditBy) {
   if (p === '/channels/all' && m === 'GET') { send(res, 200, chanPublic(true)); return true; }
   if (p === '/channels/provider' && m === 'GET') {
     const q = chanText(url.searchParams.get('q'), 60).toLowerCase(), limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit'), 10) || 40));
+    const src = String(url.searchParams.get('src') || 'main');
     let list;
-    try { list = await providerChannels(); } catch (e) { send(res, 502, { error: e.message }); return true; }
+    try { list = await providerChannels(src); } catch (e) { send(res, 502, { error: e.message }); return true; }
     const hit = q ? list.filter((x) => x.name.toLowerCase().includes(q) || x.num === q || x.group.toLowerCase().includes(q)) : list;
-    send(res, 200, { total: list.length, matches: hit.length, items: hit.slice(0, limit).map((x) => ({ ...x, edit: (c.edits || {})['k' + x.key] || null })) });
+    send(res, 200, { total: list.length, matches: hit.length, items: hit.slice(0, limit).map((x) => ({ key: x.key, name: x.name, num: x.num, group: x.group, logo: x.logo, edit: src === 'main' ? ((c.edits || {})['k' + x.key] ? backupsStripped((c.edits || {})['k' + x.key]) : null) : null })) });
     return true;
+  }
+  // The providers a backup can come from (names only): the main one, and the other providers the administrator added.
+  if (p === '/channels/sources' && m === 'GET') {
+    send(res, 200, { sources: [{ id: 'main', name: 'Main provider' }, ...backupProviders().map((x) => ({ id: x.id, name: x.name }))] });
+    return true;
+  }
+  // Other providers (administrators only: they hold a login). Never returned with their password.
+  if (p === '/channels/providers' && m === 'GET') {
+    send(res, 200, { providers: backupProviders().map((x) => ({ id: x.id, name: x.name, type: x.type, host: (() => { try { return new URL(provWithScheme(x.type === 'm3u' ? x.m3uUrl : x.server)).host; } catch { return ''; } })(), username: x.username || '' })) });
+    return true;
+  }
+  if (p === '/channels/providers' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const type = b.type === 'm3u' ? 'm3u' : 'xtream';
+    const rec = { id: crypto.randomBytes(5).toString('hex'), name: chanText(b.name, 40), type, server: chanText(b.server, 200), username: chanText(b.username, 80), password: String(b.password || '').slice(0, 120), m3uUrl: chanUrl(b.m3uUrl), userAgent: chanText(b.userAgent, 120), v: 1 };
+    if (!rec.name) { send(res, 400, { error: 'Give the provider a name.' }); return true; }
+    if (type === 'xtream' && (!rec.server || !rec.username)) { send(res, 400, { error: 'An Xtream provider needs a server address and a username.' }); return true; }
+    if (type === 'm3u' && !rec.m3uUrl) { send(res, 400, { error: 'An M3U provider needs the playlist address (http or https).' }); return true; }
+    if (type === 'xtream' && rec.server && /\s/.test(rec.server)) { send(res, 400, { error: 'The server address has spaces in it.' }); return true; }
+    if (backupProviders().length >= 3) { send(res, 400, { error: 'Aurora keeps up to 3 other providers.' }); return true; }
+    let list;
+    try { list = await readProviderList(rec); } catch (e) { send(res, 400, { error: `Couldn't read that provider: ${e.message}` }); return true; }
+    backupProviders().push(rec); providerCache.set(rec.id, { key: JSON.stringify([rec.type, rec.server, rec.username, rec.password, rec.m3uUrl, rec.v]), at: Date.now(), list });
+    saveStore(); send(res, 200, { ok: true, id: rec.id, channels: list.length }); return true;
+  }
+  let pr;
+  if ((pr = p.match(/^\/channels\/providers\/([0-9a-f]{10})$/)) && m === 'DELETE') {
+    const id = pr[1];
+    c.providers = backupProviders().filter((x) => x.id !== id); providerCache.delete(id);
+    const drop = (x) => { if (Array.isArray(x.backups)) { x.backups = x.backups.filter((bk) => bk.src !== id); if (!x.backups.length) delete x.backups; } };
+    c.items.forEach(drop);
+    for (const k of Object.keys(c.edits || {})) { drop(c.edits[k]); if (!Object.keys(c.edits[k]).length) delete c.edits[k]; }
+    return done();
+  }
+  // Add a backup stream to a channel of yours ({ item: id }) or to a provider channel ({ key: 'x101' }): a pasted link, or a channel found in another provider.
+  if (p === '/channels/backup' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    let target;
+    if (b.item) { target = c.items.find((x) => x.id === b.item); if (!target) { send(res, 404, { error: 'No such channel.' }); return true; } }
+    else if (chanKeyOk(String(b.key || ''))) { if (!c.edits) c.edits = {}; target = c.edits['k' + b.key] || (c.edits['k' + b.key] = {}); }
+    else { send(res, 400, { error: 'Pick a channel.' }); return true; }
+    let rec;
+    if (b.src && b.ref) {
+      let list;
+      try { list = await providerChannels(String(b.src)); } catch (e) { send(res, 502, { error: e.message }); return true; }
+      const f = list.find((x) => x.key === String(b.ref));
+      if (!f) { send(res, 404, { error: 'That channel is not in the provider any more.' }); return true; }
+      const srcName = b.src === 'main' ? 'Main provider' : ((backupProviders().find((x) => x.id === b.src) || {}).name || 'Provider');
+      rec = { label: chanText(`${srcName}: ${f.name}`, 90), url: f.url, src: String(b.src), ref: f.key };
+    } else {
+      const u = chanUrl(b.url);
+      if (!u) { send(res, 400, { error: 'The backup address must start with http:// or https:// and have no spaces.' }); return true; }
+      rec = { label: chanText(b.label, 90) || 'Backup link', url: u };
+    }
+    const list = Array.isArray(target.backups) ? target.backups : [];
+    if (list.length >= CHAN_MAX_BACKUPS) { send(res, 400, { error: `A channel can have up to ${CHAN_MAX_BACKUPS} backups.` }); if (!Object.keys(target).length && b.key) delete c.edits['k' + b.key]; return true; }
+    if (list.some((x) => x.url === rec.url)) { send(res, 409, { error: 'That backup is already there.' }); return true; }
+    target.backups = [...list, rec];
+    return done();
+  }
+  if (p === '/channels/backup' && m === 'DELETE') {
+    const i = parseInt(url.searchParams.get('i'), 10);
+    const item = url.searchParams.get('item'), key = url.searchParams.get('key');
+    const target = item ? c.items.find((x) => x.id === item) : (chanKeyOk(String(key || '')) ? (c.edits || {})['k' + key] : null);
+    if (!target || !Array.isArray(target.backups) || !(i >= 0 && i < target.backups.length)) { send(res, 404, { error: 'No such backup.' }); return true; }
+    target.backups.splice(i, 1);
+    if (!target.backups.length) delete target.backups;
+    if (key && c.edits && !Object.keys(c.edits['k' + key] || {}).length) delete c.edits['k' + key];
+    return done();
   }
   let r;
   if (p === '/channels/cats' && m === 'POST') {
@@ -1096,7 +1192,7 @@ async function chanRoutes(req, url, res, auditBy) {
     if (!item.name) { send(res, 400, { error: 'Give the channel a name.' }); return true; }
     if (!item.url) { send(res, 400, { error: 'The stream address must start with http:// or https:// and have no spaces.' }); return true; }
     if (c.items.length >= CHAN_LIMITS.items) { send(res, 400, { error: 'That is the most channels Aurora can keep.' }); return true; }
-    c.items.push(item); return done({ item });
+    c.items.push(item); return done({ item: { ...item, backups: undefined } });
   }
   if (p === '/channels/items/bulk' && m === 'POST') {
     const b = await readJson(); if (!b) return true;
@@ -1122,7 +1218,7 @@ async function chanRoutes(req, url, res, auditBy) {
       if (b.cat !== undefined) { if (!c.cats.some((x) => x.id === b.cat)) { send(res, 400, { error: 'No such category.' }); return true; } next.cat = b.cat; }
       if (!next.name) { send(res, 400, { error: 'Give the channel a name.' }); return true; }
       if (!next.url) { send(res, 400, { error: 'The stream address must start with http:// or https:// and have no spaces.' }); return true; }
-      c.items[i] = next; return done({ item: next });
+      c.items[i] = next; return done({ item: { ...next, backups: undefined } });
     }
   }
   if (p === '/channels/edit' && m === 'PUT') {
@@ -1131,6 +1227,7 @@ async function chanRoutes(req, url, res, auditBy) {
     if (!chanKeyOk(key)) { send(res, 400, { error: 'That channel cannot be edited.' }); return true; }
     const k = 'k' + key, old = (c.edits && c.edits[k]) || {};
     const e = { ...old };
+    if (Array.isArray(old.backups)) e.backups = old.backups;
     if (b.name !== undefined) { const t = chanText(b.name, 80); if (t) e.name = t; else delete e.name; }
     if (b.logo !== undefined) { const t = chanUrl(b.logo); if (t) e.logo = t; else delete e.logo; }
     if (b.url !== undefined) { const t = chanUrl(b.url); if (t) e.url = t; else delete e.url; }
@@ -1139,7 +1236,7 @@ async function chanRoutes(req, url, res, auditBy) {
     if (b.hidden !== undefined) { if (b.hidden === true) e.hidden = true; else delete e.hidden; }
     if (!c.edits) c.edits = {};
     if (Object.keys(e).length) { if (!c.edits[k] && Object.keys(c.edits).length >= CHAN_LIMITS.edits) { send(res, 400, { error: 'That is the most fixes Aurora can keep.' }); return true; } c.edits[k] = e; } else delete c.edits[k];
-    return done({ edit: c.edits[k] || null });
+    return done({ edit: c.edits[k] ? backupsStripped(c.edits[k]) : null });
   }
   if (p === '/channels/edit' && m === 'DELETE') {
     const key = String(url.searchParams.get('key') || '');
@@ -1165,7 +1262,7 @@ const MOD_ROUTES = [
   ['GET', /^\/sports\/(?:status|aliases)$/], ['PUT', /^\/sports\/(?:settings|aliases)$/], ['POST', /^\/sports\/refresh$/],
   ['POST', /^\/audit$/],
   ['GET|POST', /^\/mod\/emby$/],
-  ['GET|POST|PUT|DELETE', /^\/channels\/(?:all|provider|cats|cats\/[0-9a-f]{10}|items|items\/bulk|items\/[0-9a-f]{10}|edit)$/],
+  ['GET|POST|PUT|DELETE', /^\/channels\/(?:all|provider|sources|backup|cats|cats\/[0-9a-f]{10}|items|items\/bulk|items\/[0-9a-f]{10}|edit)$/],
 ];
 const modAllowed = (method, pathname) => MOD_ROUTES.some(([m, re]) => m.split('|').includes(method) && re.test(pathname));
 async function modOfToken(token, userId) {
@@ -1448,6 +1545,9 @@ function describeChange(req, url, subject) {
   if (p === '/channels/items' && m === 'POST') return `Added the channel ${chanText(b.name, 60)}`;
   if (p === '/channels/items/bulk' && m === 'POST') return `Imported ${(Array.isArray(b.items) ? b.items.length : 0)} channels from a playlist`;
   if ((r = p.match(/^\/channels\/items\/[0-9a-f]{10}$/))) return m === 'DELETE' ? 'Deleted a channel' : `Changed the channel ${chanText(b.name, 60)}`.trim();
+  if (p === '/channels/backup') return m === 'DELETE' ? 'Removed a backup stream from a channel' : `Added a backup stream to a channel${b.src ? ' from another provider' : ''}`;
+  if (p === '/channels/providers' && m === 'POST') return `Added the backup provider ${chanText(b.name, 40)}`;
+  if (/^\/channels\/providers\//.test(p) && m === 'DELETE') return 'Removed a backup provider';
   if (p === '/channels/edit') return m === 'DELETE' ? 'Removed a fix on a provider channel' : (b.hidden === true ? 'Hid a provider channel' : b.hidden === false ? 'Showed a provider channel again' : `Fixed the provider channel ${chanText(b.name, 60)}`.trim());
   if (p === '/update/apply' || p === '/update/rollback' || p === '/update/check' || p === '/summary/send') return '';
   if (p === '/discounts' && m === 'POST') return `Made the discount code ${String(b.code || '').toUpperCase() || '(generated)'} (${b.type === 'usd' ? '$' + b.value : b.value + '%'} off)`;

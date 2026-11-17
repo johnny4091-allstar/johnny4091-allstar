@@ -109,6 +109,17 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     <div class="card section"><h2>Channel editor</h2><p class="sub">Add your own channels, import a playlist, and fix the provider's channels (rename, new picture, number, guide ID, another stream, or hide). Changes reach every customer's Live TV within a few minutes. Adult categories stay behind the adult switch and PIN and never show in the iPhone or Apple TV apps.</p>
       <p class="msg" id="gmsg" role="status" hidden></p></div>
 
+    <div class="card section" id="provcard" hidden><h2>Other providers <span class="pillx" id="pcount">0</span></h2>
+      <p class="sub">Add your other TV providers here. Then any channel can use a channel from one of them as a backup: if the main one stops working, the app switches to the backup by itself. Only administrators see this card (it holds the provider's login).</p>
+      <div id="provs"></div>
+      <div class="grid" style="margin-top:14px">
+        <div><label for="pv-name">Name</label><input id="pv-name" placeholder="e.g. Provider B"></div>
+        <div><label for="pv-type">Kind</label><select id="pv-type"><option value="xtream">Xtream login</option><option value="m3u">M3U playlist link</option></select></div>
+        <div class="full" id="pv-x"><div class="grid"><div><label for="pv-server">Server address</label><input id="pv-server" placeholder="http://provider.example.com:8080"></div><div><label for="pv-user">Username</label><input id="pv-user" autocomplete="off"></div><div><label for="pv-pass">Password</label><input id="pv-pass" type="password" autocomplete="new-password"></div></div></div>
+        <div class="full" id="pv-m" hidden><label for="pv-m3u">Playlist address</label><input id="pv-m3u" placeholder="https://provider.example.com/playlist.m3u"></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="btn red" id="addprov" type="button">Add provider</button></div><p class="msg" id="pvmsg" role="status" hidden></p></div>
+
     <div class="card section"><h2>Your categories</h2><div id="cats"></div>
       <div class="grid" style="margin-top:14px"><div><label for="catname">New category</label><input id="catname" placeholder="e.g. My channels"></div>
         <div style="align-self:end"><label class="toggle"><input type="checkbox" id="catadult"> Adult category</label></div></div>
@@ -143,7 +154,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 (function () {
   var $ = function (i) { return document.getElementById(i); };
   var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
-  var session = null, cu = { cats: [], items: [], edits: {} }, busy = false, fcat = '', fq = '', pTimer = null, pSeq = 0;
+  var session = null, cu = { cats: [], items: [], edits: {} }, busy = false, fcat = '', fq = '', pTimer = null, pSeq = 0, sources = [], provs = [], bk = null, bkTimer = null, bkSeq = 0;
   try { session = JSON.parse(sessionStorage.getItem('aurora.channels') || 'null'); } catch (e) { session = null; }
   function keep() { try { if (session) sessionStorage.setItem('aurora.channels', JSON.stringify(session)); else sessionStorage.removeItem('aurora.channels'); } catch (e) { /* private window */ } }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -167,7 +178,10 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       if (j.__status === 401 || j.__status === 403) { out('Your sign-in ended, or this account is not an administrator or moderator.'); return false; }
       if (j.__status === 404) { say('Update Aurora Guard to 1.29.0 (or newer) first.', 'err'); return false; }
       if (j.__status !== 200) { say(j.error || 'Could not load the channels.', 'err'); return false; }
-      cu = j; paint(); return true;
+      cu = j; paint();
+      api('GET', '/channels/sources').then(function (r) { if (r.__status === 200) sources = r.sources || []; });
+      if (!session.mod) api('GET', '/channels/providers').then(function (r) { if (r.__status === 200) { provs = r.providers || []; paintProvs(); } });
+      return true;
     }).catch(function () { say('Could not reach the Aurora Guard. Check your connection.', 'err'); return false; });
   }
   function act(method, path, body) {
@@ -194,7 +208,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     $('items').innerHTML = list.slice(0, 200).map(function (i) {
       return '<div class="chrow" data-item="' + esc(i.id) + '"><div><span class="nm">' + esc(i.name) + '</span>' + (i.on === false ? '<span class="pillx">off</span>' : '') +
         '<div class="meta">' + esc(catName(i.cat)) + (i.num ? ' \u00b7 #' + esc(i.num) : '') + ' \u00b7 ' + esc(i.url.length > 80 ? i.url.slice(0, 80) + '\u2026' : i.url) + '</div></div>' +
-        '<div class="btns"><button class="btn line sm" data-edit>Edit</button><button class="btn line sm" data-toggle>' + (i.on === false ? 'Turn on' : 'Turn off') + '</button><button class="btn line sm danger" data-del>Delete</button></div><div class="editbox" hidden></div></div>';
+        '<div class="btns"><button class="btn line sm" data-edit>Edit</button><button class="btn line sm" data-backups>Backups' + (i.backups && i.backups.length ? ' (' + i.backups.length + ')' : '') + '</button><button class="btn line sm" data-toggle>' + (i.on === false ? 'Turn on' : 'Turn off') + '</button><button class="btn line sm danger" data-del>Delete</button></div><div class="editbox" hidden></div></div>';
     }).join('') || '<div class="empty">' + (cu.items.length ? 'No channels match.' : 'No channels of your own yet. Add one above, or import a playlist.') + '</div>';
   }
 
@@ -210,9 +224,47 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
         var e = c.edit || {};
         return '<div class="chrow" data-key="' + esc(c.key) + '" data-orig="' + esc(c.name) + '" data-onum="' + esc(c.num) + '"><div><span class="nm">' + esc(e.name || c.name) + '</span>' + (c.edit ? '<span class="pillx warn">fixed</span>' : '') + (e.hidden ? '<span class="pillx">hidden</span>' : '') +
           '<div class="meta">' + (c.num ? '#' + esc(c.num) + ' \u00b7 ' : '') + (e.name ? 'was ' + esc(c.name) + ' \u00b7 ' : '') + esc(c.group) + '</div></div>' +
-          '<div class="btns"><button class="btn line sm" data-pfix>Fix</button><button class="btn line sm" data-phide>' + (e.hidden ? 'Show' : 'Hide') + '</button>' + (c.edit ? '<button class="btn line sm" data-pundo>Undo fixes</button>' : '') + '</div><div class="editbox" hidden></div></div>';
+          '<div class="btns"><button class="btn line sm" data-pfix>Fix</button><button class="btn line sm" data-backups>Backups' + (e.backups && e.backups.length ? ' (' + e.backups.length + ')' : '') + '</button><button class="btn line sm" data-phide>' + (e.hidden ? 'Show' : 'Hide') + '</button>' + (c.edit ? '<button class="btn line sm" data-pundo>Undo fixes</button>' : '') + '</div><div class="editbox" hidden></div></div>';
       }).join('');
     }).catch(function () { msg($('pmsg'), 'Could not reach the Aurora Guard.', 'err'); });
+  }
+
+  function paintProvs() {
+    $('provcard').hidden = !!(session && session.mod);
+    $('pcount').textContent = provs.length;
+    $('provs').innerHTML = provs.map(function (p) {
+      return '<div class="chrow" data-prov="' + esc(p.id) + '"><div><span class="nm">' + esc(p.name) + '</span><span class="pillx">' + (p.type === 'm3u' ? 'M3U' : 'Xtream') + '</span><div class="meta">' + esc(p.host) + (p.username ? ' · ' + esc(p.username) : '') + '</div></div><div class="btns"><button class="btn line sm danger" data-delprov>Remove</button></div></div>';
+    }).join('') || '<div class="empty">No other providers yet.</div>';
+  }
+  function backupsFor(t) { if (t.item) { var it = cu.items.filter(function (x) { return x.id === t.item; })[0]; return (it && it.backups) || []; } var e = cu.edits['k' + t.key]; return (e && e.backups) || []; }
+  function bkQuery(t) { return t.item ? 'item=' + encodeURIComponent(t.item) : 'key=' + encodeURIComponent(t.key); }
+  function bkHtml(t) {
+    var list = backupsFor(t);
+    var h = '<div class="full"><label>Backups: tried in order when this channel stops working</label>';
+    h += list.length ? list.map(function (b, i) { return '<div class="chrow"><div><span class="nm">' + (i + 1) + '. ' + esc(b.label) + '</span>' + (b.url ? '<div class="meta">' + esc(b.url.length > 80 ? b.url.slice(0, 80) + '…' : b.url) + '</div>' : '') + '</div><div class="btns"><button class="btn line sm danger" data-bkdel="' + i + '">Remove</button></div></div>'; }).join('') : '<p class="sub">No backups yet.</p>';
+    if (list.length < 3) {
+      h += '<div class="grid" style="margin-top:10px"><div><label>Find it in another provider</label><select data-bksrc>' + sources.map(function (x) { return '<option value="' + esc(x.id) + '">' + esc(x.name) + '</option>'; }).join('') + '</select></div><div><label>Channel name</label><input data-bkq placeholder="e.g. ESPN 2"></div></div><div data-bkres></div>' +
+        '<div class="grid" style="margin-top:10px"><div><label>Or paste a stream link</label><input data-bkurl placeholder="https://.../stream.m3u8"></div><div><label>Name (optional)</label><input data-bklabel placeholder="e.g. Other CDN"></div></div><div class="row" style="margin-top:10px"><button class="btn red sm" data-bkadd>Add this link</button></div>';
+    }
+    return h + '</div>';
+  }
+  function renderBk(row) { var box = row.querySelector('.editbox'); box.innerHTML = bkHtml(bk); box.hidden = false; }
+  function reopenBk() {
+    if (!bk) return;
+    var row = bk.item ? document.querySelector('[data-item="' + bk.item + '"]') : document.querySelector('[data-key="' + bk.key + '"]');
+    if (row) renderBk(row);
+  }
+  function bkAct(method, path, body) {
+    return act(method, path, body).then(function (j) { if (j) { if (bk && bk.key) { searchProv(); setTimeout(reopenBk, 400); } else reopenBk(); } return j; });
+  }
+  function bkSearch(row) {
+    var box = row.querySelector('.editbox'), q = box.querySelector('[data-bkq]').value.trim(), src = box.querySelector('[data-bksrc]').value, res = box.querySelector('[data-bkres]'), seq = ++bkSeq;
+    if (!q) { res.innerHTML = ''; return; }
+    api('GET', '/channels/provider?src=' + encodeURIComponent(src) + '&q=' + encodeURIComponent(q) + '&limit=8').then(function (j) {
+      if (seq !== bkSeq) return;
+      if (j.__status !== 200) { res.innerHTML = '<p class="msg err">' + esc(j.error || 'Could not read that provider.') + '</p>'; return; }
+      res.innerHTML = (j.items.map(function (c) { return '<div class="chrow"><div><span class="nm">' + esc(c.name) + '</span><div class="meta">' + (c.num ? '#' + esc(c.num) + ' · ' : '') + esc(c.group) + '</div></div><div class="btns"><button class="btn line sm" data-bkuse="' + esc(c.key) + '" data-src="' + esc(src) + '">Use as backup</button></div></div>'; }).join('')) || '<p class="sub">No match.</p>';
+    }).catch(function () { res.innerHTML = '<p class="msg err">Could not reach the Aurora Guard.</p>'; });
   }
 
   function openEditor(row, html, save) {
@@ -227,6 +279,20 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
   document.addEventListener('click', function (ev) {
     var t = ev.target.closest('button'); if (!t || !session) return;
     var cat = t.closest('[data-cat]'), item = t.closest('[data-item]'), prow = t.closest('[data-key]');
+    var brow = t.closest('[data-item],[data-key]');
+    if (t.hasAttribute('data-backups') && brow) {
+      var nt = brow.hasAttribute('data-item') ? { item: brow.getAttribute('data-item') } : { key: brow.getAttribute('data-key') };
+      var box0 = brow.querySelector('.editbox');
+      if (!box0.hidden && bk && JSON.stringify(bk) === JSON.stringify(nt)) { box0.hidden = true; bk = null; return; }
+      bk = nt; renderBk(brow); return;
+    }
+    if (brow && bk && brow.querySelector('.editbox') && !brow.querySelector('.editbox').hidden && (t.hasAttribute('data-bkdel') || t.hasAttribute('data-bkuse') || t.hasAttribute('data-bkadd'))) {
+      if (t.hasAttribute('data-bkdel')) bkAct('DELETE', '/channels/backup?' + bkQuery(bk) + '&i=' + t.getAttribute('data-bkdel'));
+      else if (t.hasAttribute('data-bkuse')) bkAct('POST', '/channels/backup', Object.assign({ src: t.getAttribute('data-src'), ref: t.getAttribute('data-bkuse') }, bk));
+      else { var bx = brow.querySelector('.editbox'); bkAct('POST', '/channels/backup', Object.assign({ url: bx.querySelector('[data-bkurl]').value, label: bx.querySelector('[data-bklabel]').value }, bk)); }
+      return;
+    }
+    if (t.hasAttribute('data-delprov')) { var pr = t.closest('[data-prov]'); if (pr && confirm('Remove this provider? Backups that use it are removed too.')) { api('DELETE', '/channels/providers/' + pr.getAttribute('data-prov')).then(function (j) { if (j.__status === 200) load(); else msg($('pvmsg'), j.error || 'That did not work.', 'err'); }); } return; }
     if (cat) {
       var c = cu.cats.filter(function (x) { return x.id === cat.getAttribute('data-cat'); })[0];
       if (t.hasAttribute('data-rename')) { var n = prompt('New name for this category', c.name); if (n && n.trim()) act('PUT', '/channels/cats/' + c.id, { name: n }); }
@@ -254,6 +320,20 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       else if (t.hasAttribute('data-pundo')) act('DELETE', '/channels/edit?key=' + encodeURIComponent(key)).then(searchProv);
     }
   });
+  document.addEventListener('input', function (ev) {
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-bkq')) { var row = ev.target.closest('[data-item],[data-key]'); clearTimeout(bkTimer); bkTimer = setTimeout(function () { bkSearch(row); }, 350); }
+  });
+  document.addEventListener('change', function (ev) { if (ev.target.hasAttribute && ev.target.hasAttribute('data-bksrc')) { var row = ev.target.closest('[data-item],[data-key]'); bkSearch(row); } });
+  $('pv-type').onchange = function () { $('pv-x').hidden = this.value === 'm3u'; $('pv-m').hidden = this.value !== 'm3u'; };
+  $('addprov').onclick = function () {
+    var b = $('addprov'); b.disabled = true; msg($('pvmsg'), 'Checking the provider...', '');
+    api('POST', '/channels/providers', { name: $('pv-name').value, type: $('pv-type').value, server: $('pv-server').value, username: $('pv-user').value, password: $('pv-pass').value, m3uUrl: $('pv-m3u').value }).then(function (j) {
+      b.disabled = false;
+      if (j.__status !== 200) return msg($('pvmsg'), j.error || 'That did not work.', 'err');
+      ['pv-name', 'pv-server', 'pv-user', 'pv-pass', 'pv-m3u'].forEach(function (i) { $(i).value = ''; });
+      msg($('pvmsg'), 'Added. It has ' + j.channels + ' channels.', 'ok'); load();
+    }).catch(function () { b.disabled = false; msg($('pvmsg'), 'Could not reach the Aurora Guard.', 'err'); });
+  };
   $('f-cat').onchange = function () { fcat = this.value; paint(); };
   $('f-q').oninput = function () { fq = this.value.trim().toLowerCase(); paint(); };
   $('p-q').oninput = function () { clearTimeout(pTimer); pTimer = setTimeout(searchProv, 350); };
