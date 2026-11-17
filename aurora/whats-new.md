@@ -1,3 +1,7 @@
+- New: a channel editor on the website for administrators and moderators (the same as Admin → Channels in the app), at /channels/ on the Aurora website.
+- Live TV: channel names in the guide's left column are now shown in full (wider column, two lines, bigger text), and the details panel names the channel in large type. The category list on the Channels tab is wider too.
+- New: Admin → Channels (admins and moderators). Add your own categories and channels, import an M3U playlist, and fix the provider's channels: rename, new picture, number, guide ID, another stream address, or hide. Changes reach every customer's Live TV within a few minutes.
+- New: moderators. In Admin → Users → a customer, make them a moderator. A moderator gets an Admin menu with support messages, announcements, requests, channel reports, sports, and read-only problems, feedback, activity, usage and sharing. Users, Resellers, credits, Server health, updates, plans and the TV provider login stay admin-only.
 - New: renewal reminders. Choose, per customer, how many days before the end they get the in-app reminder (with a default for everyone), and copy a ready-made message to send them. Resellers also pick how many days ahead their daily "ending soon" list covers.
 - New on iPhone: Live TV channels play in a full-screen player, with swipe up and down to change channel and a channel list.
 - Removed: the Review account switch in Admin → Users. Every account sees the same app.

@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.26.0';
+const VERSION = '1.29.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -979,6 +979,234 @@ async function isAdminToken(token) {
   return ok;
 }
 
+// ---------- Channels (guard 1.28.0) ----------
+// Your own channels and fixes, kept here and added to the provider's list in every app (like the channel manager in an IPTV panel):
+//   cats:  your own categories            { id, name, adult }
+//   items: your own channels              { id, cat, name, url, logo, num, epgId, on }
+//   edits: fixes to the provider's channels, by key (x<stream id>, or n:<name> for a playlist): { name, logo, num, epgId, url, hidden }
+// Anything an admin or moderator changes bumps "v", so apps pick it up within a few minutes.
+const CHAN_LIMITS = { cats: 80, items: 4000, edits: 4000 };
+const chanStore = () => { if (!store.channels) store.channels = { v: 1, cats: [], items: [], edits: {} }; return store.channels; };
+const chanText = (v, max) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+function chanUrl(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t || t.length > 600 || /\s/.test(t)) return '';
+  try { const u = new URL(t); return u.protocol === 'http:' || u.protocol === 'https:' ? t : ''; } catch { return ''; }
+}
+const chanKeyOk = (k) => typeof k === 'string' && k.length >= 2 && k.length <= 160 && !/[\u0000-\u001f]/.test(k);
+const chanNum = (v) => { const t = chanText(v, 8); return /^\d{0,6}$/.test(t) ? t : ''; };
+function chanItemFrom(b, old) {
+  const o = old || {};
+  const pick = (k, f) => (b[k] !== undefined ? f(b[k]) : o[k] || '');
+  const item = { id: o.id, cat: o.cat, name: pick('name', (v) => chanText(v, 80)), url: pick('url', chanUrl), logo: pick('logo', (v) => { const t = chanUrl(v); return t; }), num: pick('num', chanNum), epgId: pick('epgId', (v) => chanText(v, 80)), on: b.on !== undefined ? b.on !== false : o.on !== false };
+  return item;
+}
+const chanBump = () => { const c = chanStore(); c.v = (c.v || 1) + 1; };
+function chanPublic(all) {
+  const c = chanStore();
+  const cats = c.cats.map((x) => ({ id: x.id, name: x.name, adult: !!x.adult }));
+  const items = (all ? c.items : c.items.filter((i) => i.on !== false)).map((i) => ({ id: i.id, cat: i.cat, name: i.name, url: i.url, logo: i.logo, num: i.num, epgId: i.epgId, on: i.on !== false }));
+  return { v: c.v || 1, cats, items, edits: c.edits || {} };
+}
+// The provider's channels for the fix list on the website: read here, with the Live TV settings an administrator saved, and cached for 10 minutes.
+// Only names, numbers, groups and pictures go out (never the provider's address or login).
+let providerCache = { key: '', at: 0, list: null };
+async function providerChannels() {
+  const users = (await emby('GET', '/Users')) || [];
+  const admin = users.find((u) => u.Policy && u.Policy.IsAdministrator);
+  if (!admin) throw new Error('No administrator account was found.');
+  let prefs;
+  try { prefs = await emby('GET', '/DisplayPreferences/aurora-livetv', { query: { userId: admin.Id, client: 'aurora' } }); } catch { prefs = null; }
+  let c = null;
+  try { c = JSON.parse(prefs && prefs.CustomPrefs && prefs.CustomPrefs.config || 'null'); } catch { c = null; }
+  if (!c || !c.type) throw new Error('Live TV is not set up yet (Admin -> Live TV).');
+  const key = JSON.stringify([c.type, c.server, c.username, c.m3uUrl, c.v]);
+  if (providerCache.key === key && Date.now() - providerCache.at < 600000 && providerCache.list) return providerCache.list;
+  const headers = c.userAgent ? { 'User-Agent': String(c.userAgent) } : {};
+  const withScheme = (a) => (/^https?:\/\//i.test(a) ? a : 'http://' + a).replace(/\/+$/, '');
+  let list = [];
+  if (c.type === 'm3u') {
+    const r = await plainRequest(withScheme(String(c.m3uUrl || '')), { headers, timeoutMs: 60000 });
+    if (r.status !== 200 || !/#EXT/.test(String(r.text || '').slice(0, 5000))) throw new Error("The provider's playlist did not answer.");
+    let name = '', logo = '', group = '', num = '', have = false;
+    const attr = (line, k) => { const m = line.match(new RegExp(k + '="([^"]*)"', 'i')); return m ? m[1] : ''; };
+    for (const raw of String(r.text).split(/\r?\n/)) {
+      const line = raw.trim();
+      if (line.startsWith('#EXTINF')) {
+        logo = attr(line, 'tvg-logo'); group = attr(line, 'group-title'); num = attr(line, 'tvg-chno');
+        let q = false, cut = -1; for (let i = 0; i < line.length; i++) { if (line[i] === '"') q = !q; else if (line[i] === ',' && !q) { cut = i; break; } }
+        name = (cut >= 0 ? line.slice(cut + 1) : '').trim() || attr(line, 'tvg-name'); have = true;
+      } else if (line && !line.startsWith('#') && have) { list.push({ key: 'n:' + name, name: name || 'Channel', num, group: group || 'Channels', logo }); have = false; }
+    }
+  } else {
+    const base = withScheme(String(c.server || '')) + '/player_api.php?username=' + encodeURIComponent(c.username || '') + '&password=' + encodeURIComponent(c.password || '');
+    const [st, cats] = await Promise.all([plainRequest(base + '&action=get_live_streams', { headers, timeoutMs: 60000 }), plainRequest(base + '&action=get_live_categories', { headers, timeoutMs: 30000 })]);
+    let streams, cl;
+    try { streams = JSON.parse(st.text); cl = JSON.parse(cats.text); } catch { streams = null; }
+    if (!Array.isArray(streams)) throw new Error('The provider did not accept the saved login.');
+    const names = new Map((Array.isArray(cl) ? cl : []).map((x) => [String(x.category_id), String(x.category_name || '')]));
+    list = streams.map((x) => ({ key: 'x' + x.stream_id, name: String(x.name || 'Channel'), num: x.num != null ? String(x.num) : '', group: names.get(String(x.category_id)) || '', logo: String(x.stream_icon || '') }));
+  }
+  providerCache = { key, at: Date.now(), list };
+  return list;
+}
+
+// Routes for admins and moderators (called after the sign-in check). Returns true when it answered.
+async function chanRoutes(req, url, res, auditBy) {
+  const p = url.pathname, m = req.method;
+  if (!/^\/channels(?:\/|$)/.test(p)) return false;
+  const c = chanStore();
+  const readJson = async () => { try { return await readBody(req); } catch (e) { send(res, 400, { error: e.message }); return null; } };
+  const done = (extra = {}) => { chanBump(); saveStore(); send(res, 200, { ok: true, v: c.v, ...extra }); return true; };
+  if (p === '/channels/all' && m === 'GET') { send(res, 200, chanPublic(true)); return true; }
+  if (p === '/channels/provider' && m === 'GET') {
+    const q = chanText(url.searchParams.get('q'), 60).toLowerCase(), limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get('limit'), 10) || 40));
+    let list;
+    try { list = await providerChannels(); } catch (e) { send(res, 502, { error: e.message }); return true; }
+    const hit = q ? list.filter((x) => x.name.toLowerCase().includes(q) || x.num === q || x.group.toLowerCase().includes(q)) : list;
+    send(res, 200, { total: list.length, matches: hit.length, items: hit.slice(0, limit).map((x) => ({ ...x, edit: (c.edits || {})['k' + x.key] || null })) });
+    return true;
+  }
+  let r;
+  if (p === '/channels/cats' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const name = chanText(b.name, 60);
+    if (!name) { send(res, 400, { error: 'Give the category a name.' }); return true; }
+    if (c.cats.length >= CHAN_LIMITS.cats) { send(res, 400, { error: 'That is the most categories Aurora can keep.' }); return true; }
+    if (c.cats.some((x) => x.name.toLowerCase() === name.toLowerCase())) { send(res, 409, { error: 'There is already a category with that name.' }); return true; }
+    const cat = { id: crypto.randomBytes(5).toString('hex'), name, adult: b.adult === true };
+    c.cats.push(cat); return done({ cat });
+  }
+  if ((r = p.match(/^\/channels\/cats\/([0-9a-f]{10})$/))) {
+    const cat = c.cats.find((x) => x.id === r[1]);
+    if (!cat) { send(res, 404, { error: 'No such category.' }); return true; }
+    if (m === 'DELETE') { c.cats = c.cats.filter((x) => x.id !== cat.id); c.items = c.items.filter((i) => i.cat !== cat.id); return done(); }
+    if (m === 'PUT') {
+      const b = await readJson(); if (!b) return true;
+      if (b.name !== undefined) { const name = chanText(b.name, 60); if (!name) { send(res, 400, { error: 'Give the category a name.' }); return true; } if (c.cats.some((x) => x !== cat && x.name.toLowerCase() === name.toLowerCase())) { send(res, 409, { error: 'There is already a category with that name.' }); return true; } cat.name = name; }
+      if (b.adult !== undefined) cat.adult = b.adult === true;
+      return done({ cat });
+    }
+  }
+  if (p === '/channels/items' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const cat = c.cats.find((x) => x.id === b.cat);
+    if (!cat) { send(res, 400, { error: 'Pick a category first.' }); return true; }
+    const item = chanItemFrom(b); item.id = crypto.randomBytes(5).toString('hex'); item.cat = cat.id;
+    if (!item.name) { send(res, 400, { error: 'Give the channel a name.' }); return true; }
+    if (!item.url) { send(res, 400, { error: 'The stream address must start with http:// or https:// and have no spaces.' }); return true; }
+    if (c.items.length >= CHAN_LIMITS.items) { send(res, 400, { error: 'That is the most channels Aurora can keep.' }); return true; }
+    c.items.push(item); return done({ item });
+  }
+  if (p === '/channels/items/bulk' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const cat = c.cats.find((x) => x.id === b.cat);
+    if (!cat) { send(res, 400, { error: 'Pick a category first.' }); return true; }
+    const list = (Array.isArray(b.items) ? b.items : []).slice(0, 1000);
+    let added = 0, skipped = 0;
+    for (const x of list) {
+      const item = chanItemFrom(x || {}); item.id = crypto.randomBytes(5).toString('hex'); item.cat = cat.id;
+      if (!item.name || !item.url || c.items.length >= CHAN_LIMITS.items) { skipped++; continue; }
+      c.items.push(item); added++;
+    }
+    if (!added) { send(res, 400, { error: 'No usable channels found (each needs a name and an http(s) address).' }); return true; }
+    return done({ added, skipped });
+  }
+  if ((r = p.match(/^\/channels\/items\/([0-9a-f]{10})$/))) {
+    const i = c.items.findIndex((x) => x.id === r[1]);
+    if (i < 0) { send(res, 404, { error: 'No such channel.' }); return true; }
+    if (m === 'DELETE') { c.items.splice(i, 1); return done(); }
+    if (m === 'PUT') {
+      const b = await readJson(); if (!b) return true;
+      const next = chanItemFrom(b, c.items[i]);
+      if (b.cat !== undefined) { if (!c.cats.some((x) => x.id === b.cat)) { send(res, 400, { error: 'No such category.' }); return true; } next.cat = b.cat; }
+      if (!next.name) { send(res, 400, { error: 'Give the channel a name.' }); return true; }
+      if (!next.url) { send(res, 400, { error: 'The stream address must start with http:// or https:// and have no spaces.' }); return true; }
+      c.items[i] = next; return done({ item: next });
+    }
+  }
+  if (p === '/channels/edit' && m === 'PUT') {
+    const b = await readJson(); if (!b) return true;
+    const key = String(b.key || '');
+    if (!chanKeyOk(key)) { send(res, 400, { error: 'That channel cannot be edited.' }); return true; }
+    const k = 'k' + key, old = (c.edits && c.edits[k]) || {};
+    const e = { ...old };
+    if (b.name !== undefined) { const t = chanText(b.name, 80); if (t) e.name = t; else delete e.name; }
+    if (b.logo !== undefined) { const t = chanUrl(b.logo); if (t) e.logo = t; else delete e.logo; }
+    if (b.url !== undefined) { const t = chanUrl(b.url); if (t) e.url = t; else delete e.url; }
+    if (b.num !== undefined) { const t = chanNum(b.num); if (t) e.num = t; else delete e.num; }
+    if (b.epgId !== undefined) { const t = chanText(b.epgId, 80); if (t) e.epgId = t; else delete e.epgId; }
+    if (b.hidden !== undefined) { if (b.hidden === true) e.hidden = true; else delete e.hidden; }
+    if (!c.edits) c.edits = {};
+    if (Object.keys(e).length) { if (!c.edits[k] && Object.keys(c.edits).length >= CHAN_LIMITS.edits) { send(res, 400, { error: 'That is the most fixes Aurora can keep.' }); return true; } c.edits[k] = e; } else delete c.edits[k];
+    return done({ edit: c.edits[k] || null });
+  }
+  if (p === '/channels/edit' && m === 'DELETE') {
+    const key = String(url.searchParams.get('key') || '');
+    if (!chanKeyOk(key)) { send(res, 400, { error: 'That channel cannot be edited.' }); return true; }
+    if (c.edits) delete c.edits['k' + key];
+    return done();
+  }
+  send(res, 404, { error: 'Not found' }); return true;
+}
+
+// ---------- Moderators (guard 1.27.0) ----------
+// A moderator is an ordinary (not Emby administrator) account the admin flagged in Admin -> Users. The guard lets it use only the routes
+// listed here: support and messages, content, and read-only monitoring. Nothing about users, resellers, credits, server health, updates,
+// plans, the TV provider's login, or the audit log. Because the account is not an Emby administrator, Emby itself refuses everything else.
+const MOD_ROUTES = [
+  ['GET', /^\/admin-inbox$/],
+  ['GET', /^\/support$/], ['GET|POST|PUT', /^\/support\/[\w-]{1,32}(?:\/reply)?$/],
+  ['GET|POST', /^\/announcements$/], ['DELETE', /^\/announcements\/[\w-]{1,32}$/], ['GET', /^\/plans$/],
+  ['GET', /^\/requests-sync$/],
+  ['GET', /^\/reports$/],
+  ['GET', /^\/usage$/],
+  ['GET', /^\/sharing$/], ['DELETE', /^\/sharing\/[\w-]{1,64}$/],
+  ['GET', /^\/sports\/(?:status|aliases)$/], ['PUT', /^\/sports\/(?:settings|aliases)$/], ['POST', /^\/sports\/refresh$/],
+  ['POST', /^\/audit$/],
+  ['GET|POST', /^\/mod\/emby$/],
+  ['GET|POST|PUT|DELETE', /^\/channels\/(?:all|provider|cats|cats\/[0-9a-f]{10}|items|items\/bulk|items\/[0-9a-f]{10}|edit)$/],
+];
+const modAllowed = (method, pathname) => MOD_ROUTES.some(([m, re]) => m.split('|').includes(method) && re.test(pathname));
+async function modOfToken(token, userId) {
+  const me = await userOfToken(token, userId);
+  if (!me || me.Policy?.IsAdministrator || me.Policy?.IsDisabled) return null;
+  const rec = store.users[me.Id];
+  return rec && rec.mod && !resellerOfUser(me.Id) ? me : null;
+}
+const maskIp = (ip) => { const t = String(ip || ''); const v4 = t.match(/^(\d+\.\d+)\.\d+\.\d+$/); return v4 ? v4[1] + '.x.x' : t ? t.slice(0, 4) + '…' : ''; };
+// What a moderator may read or write in Emby, through the guard (never the server's settings, users' details or devices).
+const MOD_EMBY_PREFS = /^aurora-(?:feedback|problems|playlog)$/;
+async function modEmby(req, url, res, body) {
+  const path = String(url.searchParams.get('path') || '');
+  const userId = String(url.searchParams.get('target') || '');
+  let m;
+  if (req.method === 'GET' && path === '/Users') {
+    const list = (await emby('GET', '/Users')) || [];
+    return send(res, 200, (Array.isArray(list) ? list : []).filter((u) => !(u.Policy && u.Policy.IsAdministrator)).map((u) => ({ Id: u.Id, Name: u.Name, Policy: { IsDisabled: !!(u.Policy && u.Policy.IsDisabled) } })));
+  }
+  if ((m = path.match(/^\/DisplayPreferences\/([\w-]{1,40})$/)) && MOD_EMBY_PREFS.test(m[1]) && /^[\w-]{1,64}$/.test(userId)) {
+    if (req.method === 'GET') return send(res, 200, await emby('GET', path, { query: { userId, client: 'aurora' } }));
+    if (req.method === 'POST' && m[1] !== 'aurora-playlog') {
+      const cfgText = body && body.CustomPrefs && typeof body.CustomPrefs.config === 'string' ? body.CustomPrefs.config : '';
+      if (cfgText.length > 400000) return send(res, 400, { error: 'Too large' });
+      const clean = { Id: m[1], Client: 'aurora', SortBy: 'SortName', SortOrder: 'Ascending', RememberIndexing: false, RememberSorting: false, ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false,
+        PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: cfgText } };
+      await emby('POST', path, { query: { userId, client: 'aurora' }, body: clean });
+      return send(res, 200, { ok: true });
+    }
+  }
+  if (req.method === 'GET' && path === '/System/ActivityLog/Entries') {
+    const start = Math.max(0, parseInt(url.searchParams.get('StartIndex'), 10) || 0), limit = Math.max(1, Math.min(200, parseInt(url.searchParams.get('Limit'), 10) || 100));
+    const out = await emby('GET', path, { query: { StartIndex: start, Limit: limit } });
+    return send(res, 200, { ...out, Items: ((out && out.Items) || []).map((e) => ({ ...e, Overview: undefined })) });
+  }
+  if (req.method === 'GET' && path === '/Sessions') {
+    const list = (await emby('GET', '/Sessions')) || [];
+    return send(res, 200, list.map((x) => ({ ...x, RemoteEndPoint: maskIp(x.RemoteEndPoint) })));
+  }
+  return send(res, 403, { error: "That isn't available to moderators." });
+}
 // Emby's session list, shared for 3 seconds: at peak time many clients ask "may I play?" at once, and each
 // answer would otherwise cost Emby its own /Sessions call. Signing in and the every-minute job always ask fresh,
 // so someone who has just signed out on another device isn't told it's still in use.
@@ -1215,6 +1443,12 @@ function describeChange(req, url, subject) {
     const x = (store.extensions || []).find((e) => e.id === r[1]);
     return `${b.action === 'deny' ? 'Denied' : 'Approved'} an extension request from ${x ? x.name : 'a customer'}${b.action !== 'deny' && b.days ? ` (${plural(b.days, 'day')})` : ''}`;
   }
+  if (p === '/channels/cats' && m === 'POST') return `Added the channel category ${chanText(b.name, 60)}`;
+  if ((r = p.match(/^\/channels\/cats\/[0-9a-f]{10}$/))) return m === 'DELETE' ? 'Deleted a channel category and its channels' : 'Changed a channel category';
+  if (p === '/channels/items' && m === 'POST') return `Added the channel ${chanText(b.name, 60)}`;
+  if (p === '/channels/items/bulk' && m === 'POST') return `Imported ${(Array.isArray(b.items) ? b.items.length : 0)} channels from a playlist`;
+  if ((r = p.match(/^\/channels\/items\/[0-9a-f]{10}$/))) return m === 'DELETE' ? 'Deleted a channel' : `Changed the channel ${chanText(b.name, 60)}`.trim();
+  if (p === '/channels/edit') return m === 'DELETE' ? 'Removed a fix on a provider channel' : (b.hidden === true ? 'Hid a provider channel' : b.hidden === false ? 'Showed a provider channel again' : `Fixed the provider channel ${chanText(b.name, 60)}`.trim());
   if (p === '/update/apply' || p === '/update/rollback' || p === '/update/check' || p === '/summary/send') return '';
   if (p === '/discounts' && m === 'POST') return `Made the discount code ${String(b.code || '').toUpperCase() || '(generated)'} (${b.type === 'usd' ? '$' + b.value : b.value + '%'} off)`;
   if ((r = p.match(/^\/discounts\/([A-Za-z0-9]{3,20})$/))) return m === 'DELETE' ? `Deleted the discount code ${r[1].toUpperCase()}` : `Switched the discount code ${r[1].toUpperCase()} ${b.on ? 'on' : 'off'}`;
@@ -2164,6 +2398,7 @@ async function handle(req, res) {
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
+      mod: !!rec?.mod && !me.Policy?.IsAdministrator, // a moderator (guard 1.27.0)
       adult: !!rec?.adult, adultReset: rec?.adultReset || 0, // the adult Live TV categories switch (guard 1.23.0); adultReset changes whenever it is switched, which also clears the account's PIN
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
@@ -2248,7 +2483,7 @@ async function handle(req, res) {
       if (!u.Policy?.IsAdministrator) { noteFailure(ip); emby('POST', '/Sessions/Logout', { token: login.r.AccessToken }).catch(() => {}); /* don't leave a session behind for a non-admin */ return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
       return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name });
     }
-    return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name, admin: !!u.Policy?.IsAdministrator, reseller: !!resellerOfUser(u.Id) });
+    return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name, admin: !!u.Policy?.IsAdministrator, reseller: !!resellerOfUser(u.Id), mod: !u.Policy?.IsAdministrator && !!(store.users[u.Id] && store.users[u.Id].mod) });
   }
   if (url.pathname === '/signup' && req.method === 'POST') {
     let body;
@@ -2757,14 +2992,25 @@ async function handle(req, res) {
     return send(res, 200, statsFor(me.Id));
   }
 
+  // The channels admins and moderators added or fixed: every signed-in account reads them, so every app can show them (guard 1.28.0).
+  if (url.pathname === '/channels' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, chanPublic(false));
+  }
+
   // Everything else: Emby administrators only.
   if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
-  let admin = false;
+  let admin = false, mod = null;
   try { admin = await isAdminToken(token); } catch (e) { return send(res, 502, { error: `Can't reach Emby to check who you are: ${e.message}` }); }
-  if (!admin) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }
+  if (!admin) {
+    try { mod = await modOfToken(token, url.searchParams.get('modUser')); } catch { mod = null; }
+    if (!mod) { noteFailure(ip); return send(res, 403, { error: 'Emby administrators only' }); }
+    if (!modAllowed(req.method, url.pathname)) return send(res, 403, { error: "That isn't available to moderators." });
+  }
 
   // Who changed what: every change made through the admin endpoints is written down with the admin's name (the app sends it).
-  const auditBy = String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
+  const auditBy = mod ? `${mod.Name} (moderator)`.slice(0, 40) : String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
   if (url.pathname === '/audit' && req.method === 'POST') {
     let body;
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
@@ -2772,6 +3018,11 @@ async function handle(req, res) {
     if (!text) return send(res, 400, { error: 'text is required' });
     recordAudit(auditBy, text); saveStore();
     return send(res, 200, { ok: true });
+  }
+  if (url.pathname === '/mod/emby') {
+    let body = null;
+    if (req.method === 'POST') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+    try { return await modEmby(req, url, res, body); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.message }); }
   }
   if (req.method !== 'GET') {
     const subjectId = (url.pathname.match(/^\/(?:limits|sharing)\/([\w-]{1,64})/) || [])[1];
@@ -2782,6 +3033,7 @@ async function handle(req, res) {
       if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
     });
   }
+  if (await chanRoutes(req, url, res, auditBy)) return;
   // Requests (Seerr) import (admin): what is going on, and import now.
   if (url.pathname === '/requests-sync' && req.method === 'GET') {
     const st = requestsState();
@@ -2865,7 +3117,7 @@ async function handle(req, res) {
     const list = Object.entries(store.sharing || {}).map(([userId, rec]) => {
       const lv = sharingLevel(rec), week = Date.now() - 7 * 86400000;
       return { userId, name: rec.name, ...lv, limit: limitOf(userId), places: Object.values(rec.nets || {}).filter((v) => (v.at || 0) > week)
-        .sort((a, b) => b.at - a.at).map((v) => ({ ip: v.ip, local: !!v.local, device: v.device || '', last: new Date(v.at).toISOString(), seen: v.n })) };
+        .sort((a, b) => b.at - a.at).map((v) => ({ ip: mod ? maskIp(v.ip) : v.ip, local: !!v.local, device: v.device || '', last: new Date(v.at).toISOString(), seen: v.n })) };
     }).sort((a, b) => ({ likely: 0, watch: 1, ok: 2 }[a.level] - { likely: 0, watch: 1, ok: 2 }[b.level]) || (b.together - a.together) || (b.networks - a.networks));
     return send(res, 200, { list, networksAt: cfg.sharingNetworks, togetherAt: cfg.sharingSimultaneousMinutes });
   }
@@ -2961,6 +3213,7 @@ async function handle(req, res) {
     const requests = (store.creditRequests || []).filter((x) => x.status === 'pending').length;
     const tickets = (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length;
     const low = Object.values(resellerList()).filter((r) => r.status === 'active' && r.credits <= cfg.resellerLowCredits).map((r) => ({ id: r.id, name: r.name, credits: r.credits }));
+    if (mod) return send(res, 200, { total: tickets, extensions: 0, creditRequests: 0, tickets, lowResellers: [] });
     return send(res, 200, { total: pendingExt + requests + tickets + low.length, extensions: pendingExt, creditRequests: requests, tickets, lowResellers: low });
   }
 
@@ -3341,6 +3594,23 @@ async function handle(req, res) {
     rec.adult = on; rec.updated = Date.now();
     recordAudit(auditBy, `${on ? 'Switched on' : 'Switched off'} adult channels for ${user.Name}`); saveStore();
     return send(res, 200, { ok: true, adult: rec.adult });
+  }
+  // Make an account a moderator, or take it back (guard 1.27.0). Admins only.
+  const modm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/mod$/);
+  if (modm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${modm[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    const on = body.on === true;
+    if (on && user.Policy?.IsAdministrator) return send(res, 400, { error: 'That account is already an administrator.' });
+    if (on && resellerOfUser(user.Id)) return send(res, 400, { error: 'A reseller can\'t also be a moderator.' });
+    const rec = store.users[modm[1]] || (store.users[modm[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    if (on) rec.mod = true; else delete rec.mod;
+    rec.updated = Date.now();
+    identityCache.clear();
+    recordAudit(auditBy, `${on ? 'Made' : 'Removed'} ${user.Name} ${on ? 'a moderator' : 'as a moderator'}`); saveStore();
+    return send(res, 200, { ok: true, mod: !!rec.mod });
   }
   // Reminder days for one customer (guard 1.26.0): { days: [10, 5, 2] }, or { days: null } to use the default.
   const rmm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/remind$/);

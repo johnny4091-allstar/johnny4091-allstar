@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Channels</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<script src="../config.js"></script>
+<style>
+@font-face { font-family: 'Inter'; src: url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight: 100 900; font-display: swap; }
+/* Same look as the Aurora app and website. A credits header, an add-customer card, then the customer list with filters. */
+:root { --bg:#070c1c; --bg-2:#0e1530; --bg-3:#1b2549; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --live:#e5384f; --green:#46d369; --amber:#ffd479;
+  --accent-grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased;
+  background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
+.wrap { max-width:1020px; margin:0 auto; padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); padding-bottom:60px; }
+h1,h2,h3 { margin:0; line-height:1.15; }
+:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.bar { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-block:16px; }
+.pill { display:flex; align-items:center; gap:.9rem; padding:.45rem 1.1rem; border-radius:999px; background:rgba(12,19,44,.76); border:1px solid rgba(255,255,255,.09); }
+.pill svg { height:20px; width:auto; display:block; }
+.pill span { font-size:.8rem; color:#cfd6f5; letter-spacing:.06em; text-transform:uppercase; font-weight:600; }
+.btn { border:0; border-radius:4px; padding:.65rem 1.3rem; font:700 .95rem var(--font); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:.4rem; color:#fff; }
+.btn.red { background:var(--accent-grad); text-shadow:0 1px 2px rgba(0,0,0,.35); } .btn.gray { background:rgba(109,109,110,.7); } .btn.line { background:none; border:1px solid var(--line); color:#e5e5e5; }
+.btn.sm { padding:.4rem .8rem; font-size:.8rem; } .btn:hover { filter:brightness(1.12); } .btn.danger { color:#ff8d9b; }
+.card { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:22px; }
+.card h2 { font-size:1.25rem; font-weight:800; margin-bottom:4px; } .sub { color:var(--muted); font-size:.9rem; margin:0 0 16px; }
+label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
+input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; } input::placeholder { color:#6d78a6; }
+.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 16px; } .full { grid-column:1/-1; }
+.row { display:flex; gap:8px; } .row input { min-width:0; } .row .btn { flex:none; }
+.hero { display:grid; grid-template-columns:1.3fr 1fr; gap:16px; margin-bottom:16px; }
+.credits { background:radial-gradient(70% 140% at 8% 0%,rgba(42,212,208,.2),transparent 70%),radial-gradient(60% 140% at 100% 0%,rgba(122,92,255,.3),transparent 70%),var(--bg-2); }
+.credits .n { font-size:3.4rem; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; } .credits small { color:var(--muted); }
+.low { display:inline-block; margin-top:10px; padding:4px 10px; border-radius:999px; font-size:.75rem; font-weight:700; background:rgba(255,212,121,.14); color:var(--amber); }
+.msg { margin-top:12px; font-size:.92rem; } .msg.ok { color:var(--green); } .msg.err { color:#ff8d9b; }
+.toggle { display:flex; gap:10px; align-items:flex-start; font-weight:400; color:var(--muted); font-size:.9rem; }
+.toggle input { width:auto; margin-top:4px; accent-color:#4f7bff; }
+.made { margin-top:16px; padding:16px; border-radius:12px; border:1px solid #2f4a8f; background:#0a1126; display:flex; flex-wrap:wrap; gap:12px; justify-content:space-between; align-items:center; }
+.made b { font-size:1.05rem; letter-spacing:.04em; } .made small { display:block; color:var(--muted); }
+.tools { display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center; margin:28px 0 12px; } .tools h2 { font-size:1.25rem; font-weight:800; }
+.chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+.chip { padding:7px 13px; border:1px solid var(--line); border-radius:999px; background:#0a1126; color:#cfd6f5; font:600 .85rem var(--font); cursor:pointer; }
+.chip[aria-pressed="true"] { background:#fff; color:#0a1126; border-color:#fff; }
+.list { display:grid; gap:10px; }
+.cust { background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.cust .top { display:flex; flex-wrap:wrap; gap:8px 16px; justify-content:space-between; align-items:center; }
+.cust .nm { font-weight:800; } .cust .meta { color:var(--muted); font-size:.85rem; }
+.tag { display:inline-block; padding:3px 9px; border-radius:999px; font-size:.7rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-left:6px; vertical-align:middle; }
+.tag.on { background:rgba(70,211,105,.15); color:var(--green); } .tag.soon { background:rgba(255,212,121,.14); color:var(--amber); } .tag.exp { background:rgba(229,56,79,.15); color:#ff8d9b; }
+.tag.trial { background:rgba(79,123,255,.2); color:#9db4ff; } .tag.hold { background:rgba(255,255,255,.08); color:var(--muted); }
+.act { display:none; margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,.07); gap:8px; flex-wrap:wrap; align-items:center; } .cust.open .act { display:flex; }
+.act select { width:auto; } .act .note { width:100%; color:var(--muted); font-size:.85rem; }
+.empty { padding:26px; text-align:center; color:var(--muted); border:1px dashed var(--line); border-radius:12px; }
+.demo { margin-top:22px; font-size:.8rem; color:var(--dim); }
+.login { max-width:420px; margin:40px auto; } .login .btn { width:100%; margin-top:18px; } .login label { margin-top:14px; }
+.sr { background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.sr .top { display:flex; flex-wrap:wrap; gap:8px 16px; justify-content:space-between; align-items:center; cursor:pointer; }
+.sr .nums { display:flex; gap:22px; color:var(--muted); font-size:.85rem; } .sr .nums b { color:#fff; font-size:1.05rem; display:block; }
+.sr.open .act { display:flex; } .sr .act .row input { width:90px; }
+.subs-head { display:flex; gap:14px; flex-wrap:wrap; margin:6px 0 12px; } .stat { background:#0a1126; border:1px solid var(--line); border-radius:10px; padding:10px 14px; min-width:120px; } .stat b { display:block; font-size:1.4rem; } .stat small { color:var(--muted); }
+.callout { margin:14px 0 0; padding:12px 14px; border-radius:10px; background:rgba(79,123,255,.1); border:1px solid #2f4a8f; color:#cfd6f5; font-size:.88rem; }
+.req { background:var(--bg-2); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+.req .top { display:flex; flex-wrap:wrap; gap:8px 16px; justify-content:space-between; align-items:center; }
+.req .nm { font-weight:800; } .req .meta { color:var(--muted); font-size:.85rem; }
+.req .quote { margin:10px 0 0; padding:8px 12px; border-left:3px solid var(--accent); background:#0a1126; border-radius:0 8px 8px 0; color:#cfd6f5; font-size:.9rem; }
+.req .act { display:flex; margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,.07); gap:8px; flex-wrap:wrap; align-items:center; }
+.req .act select { width:auto; min-width:220px; } .req .act input.msg2 { flex:1; min-width:160px; width:auto; }
+.badge { display:inline-block; min-width:22px; padding:2px 9px; margin-left:8px; border-radius:999px; background:var(--accent-grad); font-size:.75rem; font-weight:800; vertical-align:middle; text-align:center; }
+.chan { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 14px; }
+.chan .c { padding:8px 14px; border-radius:999px; border:1px solid var(--line); background:#0a1126; color:#cfd6f5; font:600 .85rem var(--font); cursor:pointer; }
+.chan .c[aria-pressed="true"] { background:#fff; color:#0a1126; border-color:#fff; }
+.evs { display:grid; gap:8px; margin:12px 0 4px; }
+#extsec { margin-bottom:18px; }
+.done-list { margin-top:10px; color:var(--muted); font-size:.85rem; display:grid; gap:4px; }
+@media (max-width:720px) { .hero,.grid { grid-template-columns:1fr; } .pill span { display:none; } }
+
+.chrow { display:flex; flex-wrap:wrap; gap:8px 14px; justify-content:space-between; align-items:center; padding:12px 0; border-bottom:1px solid rgba(255,255,255,.07); }
+.chrow:last-child { border-bottom:0; } .chrow .nm { font-weight:700; } .chrow .meta { color:var(--muted); font-size:.85rem; word-break:break-all; }
+.chrow .btns { display:flex; flex-wrap:wrap; gap:8px; } .editbox { width:100%; margin-top:10px; padding:14px; border-radius:10px; background:#0a1126; border:1px solid var(--line); }
+.pillx { display:inline-block; padding:2px 8px; border-radius:999px; font-size:.7rem; font-weight:700; margin-left:6px; background:rgba(255,255,255,.1); color:var(--muted); vertical-align:middle; }
+.pillx.warn { background:rgba(255,212,121,.14); color:var(--amber); }
+.section { margin-bottom:18px; } textarea { width:100%; padding:11px 12px; border-radius:6px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; min-height:110px; }
+.who { color:var(--muted); font-size:.85rem; margin:0 0 14px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="bar">
+    <div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Channels</span></div>
+    <button class="btn line sm" id="out" hidden>Sign out</button>
+  </div>
+
+  <div class="card login" id="login">
+    <h2>Channels sign in</h2><p class="sub">For administrators and moderators. Use your Aurora username and password (the same ones you use in the app).</p>
+    <label for="lu">Username</label><input id="lu" autocomplete="username">
+    <label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password" placeholder="Your password">
+    <button class="btn red" id="go" type="button">Sign in</button>
+    <p class="msg err" id="lerr" role="alert" hidden></p>
+  </div>
+
+  <div id="app" hidden>
+    <p class="who" id="who"></p>
+    <div class="card section"><h2>Channel editor</h2><p class="sub">Add your own channels, import a playlist, and fix the provider's channels (rename, new picture, number, guide ID, another stream, or hide). Changes reach every customer's Live TV within a few minutes. Adult categories stay behind the adult switch and PIN and never show in the iPhone or Apple TV apps.</p>
+      <p class="msg" id="gmsg" role="status" hidden></p></div>
+
+    <div class="card section"><h2>Your categories</h2><div id="cats"></div>
+      <div class="grid" style="margin-top:14px"><div><label for="catname">New category</label><input id="catname" placeholder="e.g. My channels"></div>
+        <div style="align-self:end"><label class="toggle"><input type="checkbox" id="catadult"> Adult category</label></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn red" id="addcat" type="button">Add category</button></div></div>
+
+    <div class="card section"><h2>Add a channel</h2>
+      <div class="grid">
+        <div><label for="a-cat">Category</label><select id="a-cat" class="catsel"></select></div>
+        <div><label for="a-name">Channel name</label><input id="a-name" placeholder="e.g. My Sports"></div>
+        <div class="full"><label for="a-url">Stream address</label><input id="a-url" placeholder="https://.../stream.m3u8"></div>
+        <div><label for="a-logo">Picture address (optional)</label><input id="a-logo" placeholder="https://.../logo.png"></div>
+        <div><label for="a-num">Number (optional)</label><input id="a-num" placeholder="101"></div>
+        <div class="full"><label for="a-epg">Guide ID (optional)</label><input id="a-epg" placeholder="matches the TV guide"></div>
+      </div>
+      <div class="row" style="margin-top:12px"><button class="btn red" id="additem" type="button">Add channel</button></div></div>
+
+    <div class="card section"><h2>Import a playlist (M3U)</h2><p class="sub">Paste a playlist or choose a file. Every channel in it is added to the category you pick.</p>
+      <div class="grid"><div><label for="i-cat">Category</label><select id="i-cat" class="catsel"></select></div><div><label for="i-file">File</label><input id="i-file" type="file" accept=".m3u,.m3u8,.txt,text/plain"></div>
+        <div class="full"><label for="i-text">Playlist</label><textarea id="i-text" placeholder="#EXTM3U&#10;#EXTINF:-1 tvg-logo=&quot;...&quot;,Channel name&#10;https://..."></textarea></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn red" id="import" type="button">Import</button></div><p class="msg" id="imsg" role="status" hidden></p></div>
+
+    <div class="card section"><h2>Your channels <span class="pillx" id="count">0</span></h2>
+      <div class="grid" style="margin-bottom:8px"><div><label for="f-cat">Show</label><select id="f-cat"></select></div><div><label for="f-q">Search</label><input id="f-q" placeholder="Channel name"></div></div>
+      <div id="items"></div></div>
+
+    <div class="card section"><h2>Fix the provider's channels</h2><p class="sub">Search the provider's list, then rename a channel, change its picture or number, point it at the right guide listing, play another stream instead, or hide it. The fix stays when the provider updates its list.</p>
+      <label for="p-q">Search</label><input id="p-q" placeholder="Type a name, a number or a group (for example Detroit or ESPN)">
+      <p class="msg" id="pmsg" role="status" hidden></p><div id="prov"></div></div>
+  </div>
+</div>
+<script>
+(function () {
+  var $ = function (i) { return document.getElementById(i); };
+  var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
+  var session = null, cu = { cats: [], items: [], edits: {} }, busy = false, fcat = '', fq = '', pTimer = null, pSeq = 0;
+  try { session = JSON.parse(sessionStorage.getItem('aurora.channels') || 'null'); } catch (e) { session = null; }
+  function keep() { try { if (session) sessionStorage.setItem('aurora.channels', JSON.stringify(session)); else sessionStorage.removeItem('aurora.channels'); } catch (e) { /* private window */ } }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function api(method, path, body) {
+    var h = {}; if (body) h['Content-Type'] = 'application/json';
+    if (session) h['X-Emby-Token'] = session.token;
+    var q = (path.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(session ? session.name : '') + (session && session.mod ? '&modUser=' + encodeURIComponent(session.userId) : '');
+    return fetch(G + path + q, { method: method, headers: h, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
+  }
+  function msg(el, text, kind) { el.hidden = !text; el.textContent = text || ''; el.className = 'msg ' + (kind || ''); }
+  function show(inn) { $('login').hidden = inn; $('app').hidden = !inn; $('out').hidden = !inn; }
+  function out(text) { session = null; keep(); show(false); if (text) msg($('lerr'), text, 'err'); }
+  function say(text, kind) { msg($('gmsg'), text, kind); }
+  function catName(id) { var c = cu.cats.filter(function (x) { return x.id === id; })[0]; return c ? c.name : ''; }
+  function catOptions(sel) { return cu.cats.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === sel ? ' selected' : '') + '>' + esc(c.name) + '</option>'; }).join(''); }
+  function field(k, label, val, ph) { return '<div><label>' + esc(label) + '</label><input data-k="' + k + '" value="' + esc(val || '') + '" placeholder="' + esc(ph || '') + '" autocomplete="off"></div>'; }
+
+  function load() {
+    return api('GET', '/channels/all').then(function (j) {
+      if (j.__status === 401 || j.__status === 403) { out('Your sign-in ended, or this account is not an administrator or moderator.'); return false; }
+      if (j.__status === 404) { say('Update Aurora Guard to 1.29.0 (or newer) first.', 'err'); return false; }
+      if (j.__status !== 200) { say(j.error || 'Could not load the channels.', 'err'); return false; }
+      cu = j; paint(); return true;
+    }).catch(function () { say('Could not reach the Aurora Guard. Check your connection.', 'err'); return false; });
+  }
+  function act(method, path, body) {
+    if (busy) return Promise.resolve(null); busy = true;
+    return api(method, path, body).then(function (j) {
+      busy = false;
+      if (j.__status === 401 || j.__status === 403) { out('Your sign-in ended. Please sign in again.'); return null; }
+      if (j.__status !== 200) { say(j.error || 'That did not work.', 'err'); return null; }
+      say('', ''); return load().then(function () { return j; });
+    }).catch(function () { busy = false; say('Could not reach the Aurora Guard.', 'err'); return null; });
+  }
+
+  function paint() {
+    $('who').textContent = 'Signed in as ' + session.name + (session.mod ? ' (moderator)' : ' (administrator)');
+    $('cats').innerHTML = cu.cats.map(function (c) {
+      var n = cu.items.filter(function (i) { return i.cat === c.id; }).length;
+      return '<div class="chrow" data-cat="' + esc(c.id) + '"><div><span class="nm">' + esc(c.name) + '</span><span class="pillx">' + n + ' channels</span>' + (c.adult ? '<span class="pillx warn">adult</span>' : '') + '</div>' +
+        '<div class="btns"><button class="btn line sm" data-rename>Rename</button><button class="btn line sm" data-adult>' + (c.adult ? 'Not adult' : 'Mark adult') + '</button><button class="btn line sm danger" data-delcat>Delete</button></div></div>';
+    }).join('') || '<div class="empty">No categories yet. Make one first (for example "My channels").</div>';
+    [].forEach.call(document.querySelectorAll('.catsel'), function (s) { var keep = s.value; s.innerHTML = catOptions(keep); if (keep) s.value = keep; });
+    $('f-cat').innerHTML = '<option value="">All categories</option>' + catOptions(fcat); $('f-cat').value = fcat;
+    $('count').textContent = cu.items.length;
+    var list = cu.items.filter(function (i) { return (!fcat || i.cat === fcat) && (!fq || i.name.toLowerCase().indexOf(fq) >= 0); });
+    $('items').innerHTML = list.slice(0, 200).map(function (i) {
+      return '<div class="chrow" data-item="' + esc(i.id) + '"><div><span class="nm">' + esc(i.name) + '</span>' + (i.on === false ? '<span class="pillx">off</span>' : '') +
+        '<div class="meta">' + esc(catName(i.cat)) + (i.num ? ' \u00b7 #' + esc(i.num) : '') + ' \u00b7 ' + esc(i.url.length > 80 ? i.url.slice(0, 80) + '\u2026' : i.url) + '</div></div>' +
+        '<div class="btns"><button class="btn line sm" data-edit>Edit</button><button class="btn line sm" data-toggle>' + (i.on === false ? 'Turn on' : 'Turn off') + '</button><button class="btn line sm danger" data-del>Delete</button></div><div class="editbox" hidden></div></div>';
+    }).join('') || '<div class="empty">' + (cu.items.length ? 'No channels match.' : 'No channels of your own yet. Add one above, or import a playlist.') + '</div>';
+  }
+
+  function searchProv() {
+    var q = $('p-q').value.trim(), seq = ++pSeq;
+    if (!q) { $('prov').innerHTML = ''; msg($('pmsg'), '', ''); return; }
+    msg($('pmsg'), 'Searching...', '');
+    api('GET', '/channels/provider?q=' + encodeURIComponent(q) + '&limit=40').then(function (j) {
+      if (seq !== pSeq) return;
+      if (j.__status !== 200) { msg($('pmsg'), j.error || 'Could not read the provider\'s channels.', 'err'); $('prov').innerHTML = ''; return; }
+      msg($('pmsg'), j.matches + ' of ' + j.total + ' channels match' + (j.matches > j.items.length ? ' (showing ' + j.items.length + ', type more to narrow it down)' : '') + '.', '');
+      $('prov').innerHTML = j.items.map(function (c) {
+        var e = c.edit || {};
+        return '<div class="chrow" data-key="' + esc(c.key) + '" data-orig="' + esc(c.name) + '" data-onum="' + esc(c.num) + '"><div><span class="nm">' + esc(e.name || c.name) + '</span>' + (c.edit ? '<span class="pillx warn">fixed</span>' : '') + (e.hidden ? '<span class="pillx">hidden</span>' : '') +
+          '<div class="meta">' + (c.num ? '#' + esc(c.num) + ' \u00b7 ' : '') + (e.name ? 'was ' + esc(c.name) + ' \u00b7 ' : '') + esc(c.group) + '</div></div>' +
+          '<div class="btns"><button class="btn line sm" data-pfix>Fix</button><button class="btn line sm" data-phide>' + (e.hidden ? 'Show' : 'Hide') + '</button>' + (c.edit ? '<button class="btn line sm" data-pundo>Undo fixes</button>' : '') + '</div><div class="editbox" hidden></div></div>';
+      }).join('');
+    }).catch(function () { msg($('pmsg'), 'Could not reach the Aurora Guard.', 'err'); });
+  }
+
+  function openEditor(row, html, save) {
+    var box = row.querySelector('.editbox');
+    if (!box.hidden) { box.hidden = true; return; }
+    box.innerHTML = '<div class="grid">' + html + '</div><div class="row" style="margin-top:12px"><button class="btn red sm" data-save>Save</button><button class="btn line sm" data-cancel>Cancel</button></div>';
+    box.hidden = false;
+    box.querySelector('[data-cancel]').onclick = function () { box.hidden = true; };
+    box.querySelector('[data-save]').onclick = function () { var get = function (k) { var el = box.querySelector('[data-k="' + k + '"]'); return el ? el.value : ''; }; save(get); };
+  }
+
+  document.addEventListener('click', function (ev) {
+    var t = ev.target.closest('button'); if (!t || !session) return;
+    var cat = t.closest('[data-cat]'), item = t.closest('[data-item]'), prow = t.closest('[data-key]');
+    if (cat) {
+      var c = cu.cats.filter(function (x) { return x.id === cat.getAttribute('data-cat'); })[0];
+      if (t.hasAttribute('data-rename')) { var n = prompt('New name for this category', c.name); if (n && n.trim()) act('PUT', '/channels/cats/' + c.id, { name: n }); }
+      else if (t.hasAttribute('data-adult')) act('PUT', '/channels/cats/' + c.id, { adult: !c.adult });
+      else if (t.hasAttribute('data-delcat')) { var k = cu.items.filter(function (i) { return i.cat === c.id; }).length; if (confirm('Delete "' + c.name + '"?' + (k ? ' Its ' + k + ' channels will be deleted too.' : ''))) act('DELETE', '/channels/cats/' + c.id); }
+      return;
+    }
+    if (item) {
+      var it = cu.items.filter(function (x) { return x.id === item.getAttribute('data-item'); })[0];
+      if (t.hasAttribute('data-toggle')) act('PUT', '/channels/items/' + it.id, { on: it.on === false });
+      else if (t.hasAttribute('data-del')) { if (confirm('Delete "' + it.name + '"? It disappears from every customer\'s Live TV.')) act('DELETE', '/channels/items/' + it.id); }
+      else if (t.hasAttribute('data-edit')) openEditor(item, '<div><label>Category</label><select data-k="cat">' + catOptions(it.cat) + '</select></div>' + field('name', 'Name', it.name) + '<div class="full"><label>Stream address</label><input data-k="url" value="' + esc(it.url) + '"></div>' + field('logo', 'Picture address', it.logo) + field('num', 'Number', it.num) + field('epgId', 'Guide ID', it.epgId),
+        function (get) { act('PUT', '/channels/items/' + it.id, { cat: get('cat'), name: get('name'), url: get('url'), logo: get('logo'), num: get('num'), epgId: get('epgId') }); });
+      return;
+    }
+    if (prow) {
+      var key = prow.getAttribute('data-key');
+      if (t.hasAttribute('data-pfix')) {
+        api('GET', '/channels/provider?q=' + encodeURIComponent(prow.getAttribute('data-orig')) + '&limit=5').then(function (j) {
+          var found = (j.items || []).filter(function (x) { return x.key === key; })[0] || {}, e = found.edit || {};
+          openEditor(prow, field('name', 'Name', e.name, prow.getAttribute('data-orig')) + field('logo', 'Picture address', e.logo) + field('num', 'Number', e.num, prow.getAttribute('data-onum')) + field('epgId', 'Guide ID', e.epgId) + '<div class="full"><label>Play this stream instead (optional)</label><input data-k="url" value="' + esc(e.url || '') + '" placeholder="Leave empty to use the provider\'s"></div><p class="sub full">Leave a box empty to keep the provider\'s value.</p>',
+            function (get) { act('PUT', '/channels/edit', { key: key, name: get('name'), logo: get('logo'), num: get('num'), epgId: get('epgId'), url: get('url') }).then(searchProv); });
+        });
+      } else if (t.hasAttribute('data-phide')) { var hide = t.textContent.trim() === 'Hide'; act('PUT', '/channels/edit', { key: key, hidden: hide }).then(searchProv); }
+      else if (t.hasAttribute('data-pundo')) act('DELETE', '/channels/edit?key=' + encodeURIComponent(key)).then(searchProv);
+    }
+  });
+  $('f-cat').onchange = function () { fcat = this.value; paint(); };
+  $('f-q').oninput = function () { fq = this.value.trim().toLowerCase(); paint(); };
+  $('p-q').oninput = function () { clearTimeout(pTimer); pTimer = setTimeout(searchProv, 350); };
+  $('addcat').onclick = function () { act('POST', '/channels/cats', { name: $('catname').value, adult: $('catadult').checked }).then(function (j) { if (j) { $('catname').value = ''; $('catadult').checked = false; } }); };
+  $('additem').onclick = function () {
+    act('POST', '/channels/items', { cat: $('a-cat').value, name: $('a-name').value, url: $('a-url').value, logo: $('a-logo').value, num: $('a-num').value, epgId: $('a-epg').value }).then(function (j) {
+      if (j) { ['a-name', 'a-url', 'a-logo', 'a-num', 'a-epg'].forEach(function (i) { $(i).value = ''; }); say('Channel added.', 'ok'); }
+    });
+  };
+  // A small M3U reader: name, address, picture, number and guide id from each entry.
+  function parseM3u(text) {
+    var out2 = [], info = null;
+    String(text).split(/\r?\n/).forEach(function (raw) {
+      var line = raw.trim(); if (!line) return;
+      if (line.indexOf('#EXTINF') === 0) {
+        var a = function (k) { var m = line.match(new RegExp(k + '="([^"]*)"', 'i')); return m ? m[1] : ''; };
+        var q = false, cut = -1; for (var i = 0; i < line.length; i++) { if (line[i] === '"') q = !q; else if (line[i] === ',' && !q) { cut = i; break; } }
+        info = { name: (cut >= 0 ? line.slice(cut + 1) : '').trim() || a('tvg-name'), logo: a('tvg-logo'), num: a('tvg-chno'), epgId: a('tvg-id') };
+      } else if (line.charAt(0) !== '#' && info) { if (/^https?:\/\//i.test(line)) out2.push({ name: info.name, url: line, logo: info.logo, num: info.num, epgId: info.epgId }); info = null; }
+    });
+    return out2;
+  }
+  $('i-file').onchange = function () { var f = this.files && this.files[0]; if (!f) return; if (f.size > 8 * 1048576) return msg($('imsg'), 'That file is too large (8 MB at most).', 'err'); var r = new FileReader(); r.onload = function () { $('i-text').value = r.result; }; r.readAsText(f); };
+  $('import').onclick = function () {
+    var text = $('i-text').value; if (text.indexOf('#EXTINF') < 0) return msg($('imsg'), 'That does not look like an M3U playlist.', 'err');
+    var list = parseM3u(text); if (!list.length) return msg($('imsg'), 'No channels with an http(s) address found.', 'err');
+    msg($('imsg'), 'Importing ' + list.length + ' channels...', '');
+    var added = 0, skipped = 0, i = 0, cat = $('i-cat').value;
+    (function next() {
+      if (i >= list.length) { $('i-text').value = ''; load(); return msg($('imsg'), 'Added ' + added + ' channels' + (skipped ? ', skipped ' + skipped + ' without a usable address' : '') + '.', 'ok'); }
+      api('POST', '/channels/items/bulk', { cat: cat, items: list.slice(i, i + 500) }).then(function (j) {
+        if (j.__status !== 200) return msg($('imsg'), j.error || 'Import failed.', 'err');
+        added += j.added; skipped += j.skipped; i += 500; next();
+      }).catch(function () { msg($('imsg'), 'Could not reach the Aurora Guard.', 'err'); });
+    })();
+  };
+
+  function login() {
+    var u = $('lu').value.trim(), p = $('lp').value, err = $('lerr');
+    if (!u || !p) return msg(err, 'Enter your username and password.', 'err');
+    if (!G) return msg(err, 'The Guard address is not set in config.js.', 'err');
+    var b = $('go'); b.disabled = true; msg(err, '', '');
+    fetch(G + '/site-login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); })
+      .then(function (j) {
+        b.disabled = false;
+        if (j.__status !== 200) return msg(err, j.error || 'Could not sign in.', 'err');
+        if (!j.admin && !j.mod) return msg(err, 'Only administrators and moderators can open this page.', 'err');
+        session = { token: j.token, userId: j.userId, name: j.name, mod: !!j.mod && !j.admin }; keep(); $('lp').value = ''; show(true); load();
+      }).catch(function () { b.disabled = false; msg(err, 'Could not reach the Aurora Guard. Check your connection.', 'err'); });
+  }
+  $('go').onclick = login; $('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
+  $('out').onclick = function () { out(''); };
+  if (session && session.token) { show(true); load(); } else show(false);
+})();
+</script>
+</body>
+</html>
