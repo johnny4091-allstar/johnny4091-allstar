@@ -102,6 +102,7 @@ public class LivePlayerActivity extends Activity {
     /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
     private boolean failed;
     private int failedChannels, failedCode;
+    private boolean backupShown; // the "backup stream" note has been shown for this channel
     private boolean failureCounted; // this channel's failure is already counted (OK to retry doesn't count it again)
     private String failedName = "";
     private long bufferingSince;
@@ -282,6 +283,8 @@ public class LivePlayerActivity extends Activity {
                     failureCounted = false;
                     bufferingSince = 0;
                     status.setVisibility(View.GONE);
+                    // Playing from a backup: say so on the channel banner, once.
+                    if (!channels.isEmpty() && channels.get(index).altUsed > 0 && !backupShown) { backupShown = true; showBanner(); }
                 } else if (state == Player.STATE_BUFFERING) {
                     if (bufferingSince == 0) bufferingSince = System.currentTimeMillis();
                 } else if (state == Player.STATE_ENDED) {
@@ -342,6 +345,7 @@ public class LivePlayerActivity extends Activity {
         retries = 0;
         failed = false;
         failureCounted = false;
+        backupShown = false;
         bufferingSince = 0;
         handler.removeCallbacks(retryRunnable);
         status.setVisibility(View.GONE);
@@ -412,13 +416,20 @@ public class LivePlayerActivity extends Activity {
     };
 
     /** A stream can stall without any error (the provider stops sending but keeps the connection open). */
-    private static final long WATCHDOG_MS = 5000;
+    private static final long WATCHDOG_MS = 2000;
+    /** A channel that has a backup waits this long without a picture before switching to it (instead of the full stall time). */
+    private static final long BACKUP_STALL_MS = 8000;
     private long stallMs = 25000; // the page can set it (Admin → Playback)
+    private long stallLimit() {
+        if (channels.isEmpty()) return stallMs;
+        Channel c = channels.get(index);
+        return c.altUsed < c.alts.size() ? Math.min(stallMs, BACKUP_STALL_MS) : stallMs;
+    }
     private final Runnable watchdog = new Runnable() {
         @Override public void run() {
             if (player == null) return;
             if (player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING
-                    && bufferingSince > 0 && System.currentTimeMillis() - bufferingSince > stallMs) {
+                    && bufferingSince > 0 && System.currentTimeMillis() - bufferingSince > stallLimit()) {
                 retryAfterError(null);
             }
             handler.postDelayed(this, WATCHDOG_MS);
@@ -435,6 +446,14 @@ public class LivePlayerActivity extends Activity {
             if (t instanceof HttpDataSource.InvalidResponseCodeException) return ((HttpDataSource.InvalidResponseCodeException) t).responseCode;
         }
         return 0;
+    }
+
+    /** The stream could not even be fetched (refused, unreachable, timed out): a backup should take over at once. */
+    private static boolean sourceFailed(Throwable t) {
+        for (int depth = 0; t != null && depth < 8; t = t.getCause(), depth++) {
+            if (t instanceof HttpDataSource.HttpDataSourceException) return true;
+        }
+        return false;
     }
 
     /** What a provider's refusal usually means, in words the viewer can act on. */
@@ -469,8 +488,8 @@ public class LivePlayerActivity extends Activity {
             handler.postDelayed(retryRunnable, 1000);
             return;
         }
-        if (retries >= 3 && c.altUsed < c.alts.size()) {
-            // The main address keeps failing (and its other format did not help): switch to the next backup and give it a fresh run.
+        if ((code != 0 || (error != null && sourceFailed(error)) || retries >= 2) && c.altUsed < c.alts.size()) {
+            // A provider refusal (any HTTP answer) switches at once; anything else after one quick retry. The next backup gets a fresh run.
             String alt = c.alts.get(c.altUsed++);
             c.url = alt;
             c.triedOther = false;
@@ -480,7 +499,7 @@ public class LivePlayerActivity extends Activity {
             status.setText("Switching to a backup…");
             status.setVisibility(View.VISIBLE);
             player.setMediaItem(mediaItem(alt));
-            handler.postDelayed(retryRunnable, 500);
+            handler.postDelayed(retryRunnable, 200);
             return;
         }
         if (retries <= MAX_RETRIES) {
@@ -752,8 +771,9 @@ public class LivePlayerActivity extends Activity {
         }
         bannerNow.setText(c.now.isEmpty() ? "" : "Now: " + c.now + (c.next.isEmpty() ? "" : "     Next: " + c.next));
         bannerNow.setVisibility(c.now.isEmpty() ? View.GONE : View.VISIBLE);
-        bannerGroup.setText(group.toUpperCase());
-        bannerGroup.setVisibility(group.isEmpty() ? View.GONE : View.VISIBLE);
+        String groupLine = (c.altUsed > 0 ? "BACKUP STREAM" + (group.isEmpty() ? "" : "   \u00b7   ") : "") + group.toUpperCase();
+        bannerGroup.setText(groupLine);
+        bannerGroup.setVisibility(groupLine.isEmpty() ? View.GONE : View.VISIBLE);
         bannerLogo.setImageDrawable(null);
         loadLogo(c.logo, bannerLogo);
         banner.animate().cancel();
