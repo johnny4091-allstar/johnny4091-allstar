@@ -402,6 +402,20 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.28.0
+
+Your own channels, and fixes to the provider's (Admin → Channels, for admins and moderators).
+
+- The guard keeps: categories (`cats`), channels of your own (`items`: name, stream address, picture, number, guide ID, on/off), and fixes to provider channels
+  (`edits`, keyed `x<stream id>` for an Xtream provider or `n:<name>` for a playlist: name, picture, number, guide ID, another stream address, hidden).
+  Stream and picture addresses must be http(s) without spaces.
+- `GET /channels` (any signed-in account) gives the enabled channels, categories and fixes; the apps merge them into the provider's list. Every change
+  bumps `v`, so apps pick it up within about three minutes. Admin and moderator routes: `GET /channels/all`, `POST /channels/cats`, `PUT|DELETE /channels/cats/<id>`,
+  `POST /channels/items`, `POST /channels/items/bulk` (import, up to 1000 at a time), `PUT|DELETE /channels/items/<id>`, `PUT /channels/edit`, `DELETE /channels/edit?key=`.
+- A category can be marked adult: it follows the adult switch and PIN like the provider's adult categories, and is never shown in the iPhone or Apple TV apps.
+- Limits: 80 categories, 4000 channels, 4000 fixes. Changes are written in the audit log.
+- Not in the native Apple TV app yet (it reads the provider's list only); the Android, Fire TV, iPhone and website apps show them.
+
 ## 1.27.0
 
 Moderators.

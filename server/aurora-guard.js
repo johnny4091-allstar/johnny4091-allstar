@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.27.0';
+const VERSION = '1.28.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -979,6 +979,126 @@ async function isAdminToken(token) {
   return ok;
 }
 
+// ---------- Channels (guard 1.28.0) ----------
+// Your own channels and fixes, kept here and added to the provider's list in every app (like the channel manager in an IPTV panel):
+//   cats:  your own categories            { id, name, adult }
+//   items: your own channels              { id, cat, name, url, logo, num, epgId, on }
+//   edits: fixes to the provider's channels, by key (x<stream id>, or n:<name> for a playlist): { name, logo, num, epgId, url, hidden }
+// Anything an admin or moderator changes bumps "v", so apps pick it up within a few minutes.
+const CHAN_LIMITS = { cats: 80, items: 4000, edits: 4000 };
+const chanStore = () => { if (!store.channels) store.channels = { v: 1, cats: [], items: [], edits: {} }; return store.channels; };
+const chanText = (v, max) => String(v == null ? '' : v).replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+function chanUrl(v) {
+  const t = String(v == null ? '' : v).trim();
+  if (!t || t.length > 600 || /\s/.test(t)) return '';
+  try { const u = new URL(t); return u.protocol === 'http:' || u.protocol === 'https:' ? t : ''; } catch { return ''; }
+}
+const chanKeyOk = (k) => typeof k === 'string' && k.length >= 2 && k.length <= 160 && !/[\u0000-\u001f]/.test(k);
+const chanNum = (v) => { const t = chanText(v, 8); return /^\d{0,6}$/.test(t) ? t : ''; };
+function chanItemFrom(b, old) {
+  const o = old || {};
+  const pick = (k, f) => (b[k] !== undefined ? f(b[k]) : o[k] || '');
+  const item = { id: o.id, cat: o.cat, name: pick('name', (v) => chanText(v, 80)), url: pick('url', chanUrl), logo: pick('logo', (v) => { const t = chanUrl(v); return t; }), num: pick('num', chanNum), epgId: pick('epgId', (v) => chanText(v, 80)), on: b.on !== undefined ? b.on !== false : o.on !== false };
+  return item;
+}
+const chanBump = () => { const c = chanStore(); c.v = (c.v || 1) + 1; };
+function chanPublic(all) {
+  const c = chanStore();
+  const cats = c.cats.map((x) => ({ id: x.id, name: x.name, adult: !!x.adult }));
+  const items = (all ? c.items : c.items.filter((i) => i.on !== false)).map((i) => ({ id: i.id, cat: i.cat, name: i.name, url: i.url, logo: i.logo, num: i.num, epgId: i.epgId, on: i.on !== false }));
+  return { v: c.v || 1, cats, items, edits: c.edits || {} };
+}
+// Routes for admins and moderators (called after the sign-in check). Returns true when it answered.
+async function chanRoutes(req, url, res, auditBy) {
+  const p = url.pathname, m = req.method;
+  if (!/^\/channels(?:\/|$)/.test(p)) return false;
+  const c = chanStore();
+  const readJson = async () => { try { return await readBody(req); } catch (e) { send(res, 400, { error: e.message }); return null; } };
+  const done = (extra = {}) => { chanBump(); saveStore(); send(res, 200, { ok: true, v: c.v, ...extra }); return true; };
+  if (p === '/channels/all' && m === 'GET') { send(res, 200, chanPublic(true)); return true; }
+  let r;
+  if (p === '/channels/cats' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const name = chanText(b.name, 60);
+    if (!name) { send(res, 400, { error: 'Give the category a name.' }); return true; }
+    if (c.cats.length >= CHAN_LIMITS.cats) { send(res, 400, { error: 'That is the most categories Aurora can keep.' }); return true; }
+    if (c.cats.some((x) => x.name.toLowerCase() === name.toLowerCase())) { send(res, 409, { error: 'There is already a category with that name.' }); return true; }
+    const cat = { id: crypto.randomBytes(5).toString('hex'), name, adult: b.adult === true };
+    c.cats.push(cat); return done({ cat });
+  }
+  if ((r = p.match(/^\/channels\/cats\/([0-9a-f]{10})$/))) {
+    const cat = c.cats.find((x) => x.id === r[1]);
+    if (!cat) { send(res, 404, { error: 'No such category.' }); return true; }
+    if (m === 'DELETE') { c.cats = c.cats.filter((x) => x.id !== cat.id); c.items = c.items.filter((i) => i.cat !== cat.id); return done(); }
+    if (m === 'PUT') {
+      const b = await readJson(); if (!b) return true;
+      if (b.name !== undefined) { const name = chanText(b.name, 60); if (!name) { send(res, 400, { error: 'Give the category a name.' }); return true; } if (c.cats.some((x) => x !== cat && x.name.toLowerCase() === name.toLowerCase())) { send(res, 409, { error: 'There is already a category with that name.' }); return true; } cat.name = name; }
+      if (b.adult !== undefined) cat.adult = b.adult === true;
+      return done({ cat });
+    }
+  }
+  if (p === '/channels/items' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const cat = c.cats.find((x) => x.id === b.cat);
+    if (!cat) { send(res, 400, { error: 'Pick a category first.' }); return true; }
+    const item = chanItemFrom(b); item.id = crypto.randomBytes(5).toString('hex'); item.cat = cat.id;
+    if (!item.name) { send(res, 400, { error: 'Give the channel a name.' }); return true; }
+    if (!item.url) { send(res, 400, { error: 'The stream address must start with http:// or https:// and have no spaces.' }); return true; }
+    if (c.items.length >= CHAN_LIMITS.items) { send(res, 400, { error: 'That is the most channels Aurora can keep.' }); return true; }
+    c.items.push(item); return done({ item });
+  }
+  if (p === '/channels/items/bulk' && m === 'POST') {
+    const b = await readJson(); if (!b) return true;
+    const cat = c.cats.find((x) => x.id === b.cat);
+    if (!cat) { send(res, 400, { error: 'Pick a category first.' }); return true; }
+    const list = (Array.isArray(b.items) ? b.items : []).slice(0, 1000);
+    let added = 0, skipped = 0;
+    for (const x of list) {
+      const item = chanItemFrom(x || {}); item.id = crypto.randomBytes(5).toString('hex'); item.cat = cat.id;
+      if (!item.name || !item.url || c.items.length >= CHAN_LIMITS.items) { skipped++; continue; }
+      c.items.push(item); added++;
+    }
+    if (!added) { send(res, 400, { error: 'No usable channels found (each needs a name and an http(s) address).' }); return true; }
+    return done({ added, skipped });
+  }
+  if ((r = p.match(/^\/channels\/items\/([0-9a-f]{10})$/))) {
+    const i = c.items.findIndex((x) => x.id === r[1]);
+    if (i < 0) { send(res, 404, { error: 'No such channel.' }); return true; }
+    if (m === 'DELETE') { c.items.splice(i, 1); return done(); }
+    if (m === 'PUT') {
+      const b = await readJson(); if (!b) return true;
+      const next = chanItemFrom(b, c.items[i]);
+      if (b.cat !== undefined) { if (!c.cats.some((x) => x.id === b.cat)) { send(res, 400, { error: 'No such category.' }); return true; } next.cat = b.cat; }
+      if (!next.name) { send(res, 400, { error: 'Give the channel a name.' }); return true; }
+      if (!next.url) { send(res, 400, { error: 'The stream address must start with http:// or https:// and have no spaces.' }); return true; }
+      c.items[i] = next; return done({ item: next });
+    }
+  }
+  if (p === '/channels/edit' && m === 'PUT') {
+    const b = await readJson(); if (!b) return true;
+    const key = String(b.key || '');
+    if (!chanKeyOk(key)) { send(res, 400, { error: 'That channel cannot be edited.' }); return true; }
+    const k = 'k' + key, old = (c.edits && c.edits[k]) || {};
+    const e = { ...old };
+    if (b.name !== undefined) { const t = chanText(b.name, 80); if (t) e.name = t; else delete e.name; }
+    if (b.logo !== undefined) { const t = chanUrl(b.logo); if (t) e.logo = t; else delete e.logo; }
+    if (b.url !== undefined) { const t = chanUrl(b.url); if (t) e.url = t; else delete e.url; }
+    if (b.num !== undefined) { const t = chanNum(b.num); if (t) e.num = t; else delete e.num; }
+    if (b.epgId !== undefined) { const t = chanText(b.epgId, 80); if (t) e.epgId = t; else delete e.epgId; }
+    if (b.hidden !== undefined) { if (b.hidden === true) e.hidden = true; else delete e.hidden; }
+    if (!c.edits) c.edits = {};
+    if (Object.keys(e).length) { if (!c.edits[k] && Object.keys(c.edits).length >= CHAN_LIMITS.edits) { send(res, 400, { error: 'That is the most fixes Aurora can keep.' }); return true; } c.edits[k] = e; } else delete c.edits[k];
+    return done({ edit: c.edits[k] || null });
+  }
+  if (p === '/channels/edit' && m === 'DELETE') {
+    const key = String(url.searchParams.get('key') || '');
+    if (!chanKeyOk(key)) { send(res, 400, { error: 'That channel cannot be edited.' }); return true; }
+    if (c.edits) delete c.edits['k' + key];
+    return done();
+  }
+  send(res, 404, { error: 'Not found' }); return true;
+}
+
 // ---------- Moderators (guard 1.27.0) ----------
 // A moderator is an ordinary (not Emby administrator) account the admin flagged in Admin -> Users. The guard lets it use only the routes
 // listed here: support and messages, content, and read-only monitoring. Nothing about users, resellers, credits, server health, updates,
@@ -994,6 +1114,7 @@ const MOD_ROUTES = [
   ['GET', /^\/sports\/(?:status|aliases)$/], ['PUT', /^\/sports\/(?:settings|aliases)$/], ['POST', /^\/sports\/refresh$/],
   ['POST', /^\/audit$/],
   ['GET|POST', /^\/mod\/emby$/],
+  ['GET|POST|PUT|DELETE', /^\/channels\/(?:all|cats|cats\/[0-9a-f]{10}|items|items\/bulk|items\/[0-9a-f]{10}|edit)$/],
 ];
 const modAllowed = (method, pathname) => MOD_ROUTES.some(([m, re]) => m.split('|').includes(method) && re.test(pathname));
 async function modOfToken(token, userId) {
@@ -1271,6 +1392,12 @@ function describeChange(req, url, subject) {
     const x = (store.extensions || []).find((e) => e.id === r[1]);
     return `${b.action === 'deny' ? 'Denied' : 'Approved'} an extension request from ${x ? x.name : 'a customer'}${b.action !== 'deny' && b.days ? ` (${plural(b.days, 'day')})` : ''}`;
   }
+  if (p === '/channels/cats' && m === 'POST') return `Added the channel category ${chanText(b.name, 60)}`;
+  if ((r = p.match(/^\/channels\/cats\/[0-9a-f]{10}$/))) return m === 'DELETE' ? 'Deleted a channel category and its channels' : 'Changed a channel category';
+  if (p === '/channels/items' && m === 'POST') return `Added the channel ${chanText(b.name, 60)}`;
+  if (p === '/channels/items/bulk' && m === 'POST') return `Imported ${(Array.isArray(b.items) ? b.items.length : 0)} channels from a playlist`;
+  if ((r = p.match(/^\/channels\/items\/[0-9a-f]{10}$/))) return m === 'DELETE' ? 'Deleted a channel' : `Changed the channel ${chanText(b.name, 60)}`.trim();
+  if (p === '/channels/edit') return m === 'DELETE' ? 'Removed a fix on a provider channel' : (b.hidden === true ? 'Hid a provider channel' : b.hidden === false ? 'Showed a provider channel again' : `Fixed the provider channel ${chanText(b.name, 60)}`.trim());
   if (p === '/update/apply' || p === '/update/rollback' || p === '/update/check' || p === '/summary/send') return '';
   if (p === '/discounts' && m === 'POST') return `Made the discount code ${String(b.code || '').toUpperCase() || '(generated)'} (${b.type === 'usd' ? '$' + b.value : b.value + '%'} off)`;
   if ((r = p.match(/^\/discounts\/([A-Za-z0-9]{3,20})$/))) return m === 'DELETE' ? `Deleted the discount code ${r[1].toUpperCase()}` : `Switched the discount code ${r[1].toUpperCase()} ${b.on ? 'on' : 'off'}`;
@@ -2814,6 +2941,13 @@ async function handle(req, res) {
     return send(res, 200, statsFor(me.Id));
   }
 
+  // The channels admins and moderators added or fixed: every signed-in account reads them, so every app can show them (guard 1.28.0).
+  if (url.pathname === '/channels' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    return send(res, 200, chanPublic(false));
+  }
+
   // Everything else: Emby administrators only.
   if (tooManyFailures(ip)) return send(res, 429, { error: 'Too many failed attempts. Try again in a few minutes.' });
   let admin = false, mod = null;
@@ -2848,6 +2982,7 @@ async function handle(req, res) {
       if (text) { recordAudit(auditBy, text); try { saveStore(); } catch (e) { log('Could not save the audit log:', e.message); } }
     });
   }
+  if (await chanRoutes(req, url, res, auditBy)) return;
   // Requests (Seerr) import (admin): what is going on, and import now.
   if (url.pathname === '/requests-sync' && req.method === 'GET') {
     const st = requestsState();

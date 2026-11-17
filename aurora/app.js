@@ -2183,7 +2183,49 @@
     const text = await iptvText(xtUrl(cfg, params), cfg, 60000, opts);
     try { return JSON.parse(text); } catch { throw new Error("The TV provider's answer wasn't understood. Check the server address."); }
   }
+  // ----- Your own channels and fixes (guard 1.28.0) -----
+  // Admins and moderators add channels and fix the provider's in Admin -> Channels. The guard keeps them; every app reads them here.
+  let customCh = null; // { v, cats, items, edits, at }
+  async function loadCustomChannels(force = false) {
+    if (!guardEnabled || kidsOn()) return null;
+    if (!force && customCh && Date.now() - customCh.at < 180000) return customCh;
+    try { customCh = { ...(await guard('/channels', { params: { userId: state.userId }, quick: true })), at: Date.now() }; } catch { /* keep what we had, or nothing */ }
+    return customCh;
+  }
+  // A provider channel with the fixes applied (name, logo, number, guide id, stream address, hidden).
+  function editedChannel(ch, key) {
+    ch.editKey = key;
+    const e = customCh && customCh.edits && customCh.edits['k' + key];
+    if (!e) return ch;
+    ch.edited = true;
+    if (e.name) { ch.origName = ch.name; ch.name = e.name; }
+    if (e.logo) ch.logo = e.logo;
+    if (e.num) ch.num = e.num;
+    if (e.epgId) ch.epgId = e.epgId;
+    if (e.url) { ch.origUrl = ch.url; ch.url = e.url; }
+    if (e.hidden) ch.hidden = true;
+    return ch;
+  }
+  // Adds the admin's own categories and channels to a loaded source.
+  function mergeCustom(src, cfg) {
+    if (cfg !== iptv.config || !customCh) return src;
+    const unlocked = adultUnlocked();
+    for (const cat of customCh.cats || []) {
+      if (cat.adult && !unlocked) continue;
+      const id = 'c_' + cat.id;
+      const chans = (customCh.items || []).filter((i) => i.cat === cat.id).map((i) => ({ id: 'c' + i.id, custom: true, name: i.name, logo: i.logo || '', num: i.num || '', group: id, epgId: i.epgId || '', url: i.url, editKey: '' }));
+      if (!chans.length) continue;
+      if (!src.categories.some((c) => c.id === id)) src.categories.push({ id, name: cat.name, count: chans.length, custom: true });
+      src.groups.set(id, chans);
+      if (src.all) src.all.push(...chans); else (src.customAll = src.customAll || []).push(...chans);
+    }
+    return src;
+  }
   function xtChannel(cfg, st) {
+    const ch = xtChannelRaw(cfg, st);
+    return cfg === iptv.config ? editedChannel(ch, 'x' + st.stream_id) : ch;
+  }
+  function xtChannelRaw(cfg, st) {
     const ext = cfg.format === 'hls' || window.AuroraIOS ? 'm3u8' : 'ts'; // an iPhone plays HLS, not raw MPEG-TS
     return {
       id: 'x' + st.stream_id, streamId: st.stream_id, name: st.name || 'Channel', logo: st.stream_icon || '',
@@ -2345,7 +2387,8 @@
   }
 
   async function iptvSource(cfg = iptv.config) {
-    const key = `src:${cfg.type}:${cfg.v || 0}`;
+    if (cfg === iptv.config) await loadCustomChannels();
+    const key = `src:${cfg.type}:${cfg.v || 0}:${cfg === iptv.config && customCh ? customCh.v : 0}:${adultUnlocked() ? 1 : 0}`;
     if (iptv.lists.has(key)) return iptv.lists.get(key);
     const p = (async () => {
       if (cfg.type === 'm3u') {
@@ -2354,18 +2397,21 @@
         const parsed = parseM3u(text);
         rememberAdult(cfg, [...parsed.groups.keys()].map((n) => ({ id: n, name: n })));
         const ok = catFilter(cfg);
+        if (cfg === iptv.config && customCh) for (const ch of parsed.all) editedChannel(ch, 'n:' + ch.name);
+        const rawAll = ok ? parsed.all.filter((ch) => ok(ch.group)) : parsed.all;
         const groups = ok ? new Map([...parsed.groups].filter(([name]) => ok(name))) : parsed.groups;
-        const all = ok ? parsed.all.filter((ch) => ok(ch.group)) : parsed.all;
-        return { categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, guideUrl: parsed.guideUrl };
+        for (const [name, list] of groups) groups.set(name, list.filter((ch) => !ch.hidden));
+        const all = rawAll.filter((ch) => !ch.hidden);
+        return mergeCustom({ categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, rawAll, guideUrl: parsed.guideUrl }, cfg);
       }
       const cats = await xtJson(cfg, { action: 'get_live_categories' }, { saved: true, maxAge: LIST_MAX_AGE });
       if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
       if (cfg === iptv.config) { iptv.catNames = new Map(cats.map((c) => [String(c.category_id), c.category_name || ''])); rememberAdult(cfg, cats.map((c) => ({ id: c.category_id, name: c.category_name }))); }
       const ok = catFilter(cfg);
-      return {
+      return mergeCustom({
         categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })).filter((c) => !ok || ok(c.id)),
         groups: new Map(), all: null,
-      };
+      }, cfg);
     })();
     iptv.lists.set(key, p);
     p.catch(() => iptv.lists.delete(key));
@@ -2380,7 +2426,7 @@
       const ok = catFilter(cfg);
       if (ok && !ok(catId)) return [];
       const list = await xtJson(cfg, { action: 'get_live_streams', category_id: catId }, { saved: true, maxAge: LIST_MAX_AGE });
-      const chans = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
+      const chans = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st)).filter((c) => !c.hidden);
       src.groups.set(catId, chans);
       return chans;
     }
@@ -2392,7 +2438,8 @@
     if (!src.all) {
       const list = await xtJson(cfg, { action: 'get_live_streams' }, { saved: true, maxAge: LIST_MAX_AGE });
       const ok = catFilter(cfg);
-      src.all = (Array.isArray(list) ? list : []).filter((st) => !ok || ok(st.category_id)).map((st) => xtChannel(cfg, st));
+      src.all = (Array.isArray(list) ? list : []).filter((st) => !ok || ok(st.category_id)).map((st) => xtChannel(cfg, st)).filter((c) => !c.hidden);
+      if (src.customAll) src.all.push(...src.customAll);
     }
     return src.all;
   }
@@ -5683,7 +5730,7 @@
   const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
   const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
   // A moderator (guard 1.27.0): an ordinary account the admin flagged. It gets only these Admin pages, and the guard refuses everything else.
-  const MOD_TABS = ['inbox', 'support', 'feedback', 'announce', 'requests', 'reports', 'sports', 'problems', 'activity', 'usage', 'sharing'];
+  const MOD_TABS = ['inbox', 'support', 'feedback', 'announce', 'requests', 'reports', 'channels', 'sports', 'problems', 'activity', 'usage', 'sharing'];
   const isMod = () => !!state.isMod && !isAdmin();
   const isStaff = () => isAdmin() || isMod();
   // ----- Feedback -----
@@ -5867,7 +5914,7 @@
     });
   }
 
-  const ADMIN_TABS = [['overview', 'Overview'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support'], ['maintenance', 'Maintenance mode']];
+  const ADMIN_TABS = [['overview', 'Overview'], ['channels', 'Channels'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support'], ['maintenance', 'Maintenance mode']];
   const DAY = 86400000;
 
   function timeAgo(date) {
@@ -5908,7 +5955,7 @@
       </div>`;
     const body = $('[data-admin-body]', page);
     $('[data-admin-refresh]', page).addEventListener('click', () => route());
-    ({ overview: adminOverview, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport, maintenance: adminMaintenance })[tab](body, isCurrent);
+    ({ overview: adminOverview, channels: adminChannels, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport, maintenance: adminMaintenance })[tab](body, isCurrent);
     bindAdminMenu(page);
     autoFocus($('[data-admin-menu]', page));
   }
@@ -5917,7 +5964,7 @@
   const ADMIN_GROUPS = [
     ['Dashboard', ['inbox', 'overview', 'support', 'problems', 'feedback']],
     ['Customers', ['users', 'plans', 'resellers', 'announce', 'devices', 'usage', 'sharing']],
-    ['Live TV & Requests', ['livetv', 'sports', 'requests', 'reports']],
+    ['Live TV & Requests', ['livetv', 'channels', 'sports', 'requests', 'reports']],
     ['Server', ['maintenance', 'server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
   ];
   function adminMenuHtml(tab) {
@@ -8864,6 +8911,178 @@
 
 
   // ----- Admin → Channel reports: the provider's API key, and what customers reported -----
+  // ----- Admin -> Channels: add your own channels and fix the provider's (guide v1.28.0) -----
+  async function adminChannels(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Channels');
+    let cu, provList = null, provLoading = false;
+    const load = async () => { cu = await guard('/channels/all'); };
+    try { await load(); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Channels</h2><p class="empty-msg">${e.status === 404 ? 'Update Aurora Guard to 1.28.0 first.' : esc(e.message)}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const catName = (id) => (cu.cats.find((c) => c.id === id) || {}).name || '';
+    const catOptions = (sel) => cu.cats.map((c) => `<option value="${esc(c.id)}"${c.id === sel ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+    let filterCat = '', q = '', pq = '';
+    const field = (k, label, val = '', ph = '', type = 'text') => `<label class="admin-field"><span>${esc(label)}</span><input type="${type}" data-k="${k}" value="${esc(val)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
+    const say = (sel, html, cls = '') => { const el = $(sel, body); if (el) { el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; } };
+    const changed = async () => { customCh = null; resetIptvCaches(); await load(); };
+    const call = async (path, method, payload, msgSel) => {
+      try { const r = await guard(path, { method, body: payload }); await changed(); return r; }
+      catch (e) { say(msgSel || '[data-chan-result]', esc(e.message), 'bad'); return null; }
+    };
+
+    const itemRow = (i) => `<div class="admin-row chan-row" data-item="${esc(i.id)}"><div class="admin-row-main"><strong>${esc(i.name)}</strong>${i.on === false ? ' <span class="pill">off</span>' : ''}
+        <div class="muted">${esc(catName(i.cat))}${i.num ? ' · #' + esc(i.num) : ''} · ${esc(i.url.length > 70 ? i.url.slice(0, 70) + '…' : i.url)}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit-item>Edit</button><button class="btn btn-gray" data-toggle-item>${i.on === false ? 'Turn on' : 'Turn off'}</button><button class="btn btn-gray" data-del-item>Delete</button></div>
+        <div class="chan-edit hidden" data-edit-box></div></div>`;
+    const provRow = (c) => `<div class="admin-row chan-row" data-pkey="${esc(c.editKey)}"><div class="admin-row-main"><strong>${esc(c.name)}</strong>${c.edited ? ' <span class="pill warn">fixed</span>' : ''}${c.hidden ? ' <span class="pill">hidden</span>' : ''}
+        <div class="muted">${c.num ? '#' + esc(c.num) + ' · ' : ''}${c.origName ? 'was ' + esc(c.origName) + ' · ' : ''}${esc(String(c.group))}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit-prov>Fix</button><button class="btn btn-gray" data-hide-prov>${c.hidden ? 'Show' : 'Hide'}</button>${c.edited ? '<button class="btn btn-gray" data-undo-prov>Undo fixes</button>' : ''}</div>
+        <div class="chan-edit hidden" data-edit-box></div></div>`;
+
+    const paintLists = () => {
+      const list = cu.items.filter((i) => (!filterCat || i.cat === filterCat) && (!q || i.name.toLowerCase().includes(q)));
+      $('[data-items]', body).innerHTML = list.slice(0, 200).map(itemRow).join('') || `<p class="muted">${cu.items.length ? 'No channels match.' : 'No channels of your own yet. Add one above, or import a playlist.'}</p>`;
+      $('[data-count]', body).textContent = `${cu.items.length}`;
+      $('[data-cats]', body).innerHTML = cu.cats.map((c) => `<div class="admin-row" data-cat="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.name)}</strong> <span class="pill">${cu.items.filter((i) => i.cat === c.id).length} channels</span>${c.adult ? ' <span class="pill warn">adult</span>' : ''}</div>
+        <div class="plan-actions"><button class="btn btn-gray" data-rename-cat>Rename</button><button class="btn btn-gray" data-adult-cat>${c.adult ? 'Not adult' : 'Mark adult'}</button><button class="btn btn-gray" data-del-cat>Delete</button></div></div>`).join('') || '<p class="muted">No categories yet. Make one first (for example "My channels").</p>';
+      for (const sel of $$('[data-catsel]', body)) { const keep = sel.value; sel.innerHTML = catOptions(keep || ''); if (keep) sel.value = keep; }
+      const fc = $('[data-filter-cat]', body); if (fc) { fc.innerHTML = '<option value="">All categories</option>' + catOptions(filterCat); fc.value = filterCat; }
+      paintProv();
+    };
+    const paintProv = () => {
+      const box = $('[data-prov]', body);
+      if (!box) return;
+      if (!provList) { box.innerHTML = provLoading ? '<div class="spinner"></div>' : '<div class="m-actions"><button class="btn btn-gray" data-load-prov>Load the provider\'s channels</button></div>'; return; }
+      const list = provList.filter((c) => !pq || c.name.toLowerCase().includes(pq) || String(c.num).includes(pq));
+      box.innerHTML = `<label class="admin-field"><span>Search the provider's ${provList.length} channels</span><input type="text" data-prov-q value="${esc(pq)}" placeholder="Type a name or number"></label>
+        <div class="admin-list">${list.slice(0, 40).map(provRow).join('') || '<p class="muted">No match.</p>'}</div>${list.length > 40 ? `<p class="muted">Showing 40 of ${list.length}. Type more to narrow it down.</p>` : ''}`;
+    };
+
+    body.innerHTML = `
+      <section class="admin-card"><h2>Channels <small>your own channels and fixes, for every customer</small></h2>
+        <p class="muted">Like a channel manager: add channels of your own, import a playlist, and fix the provider's channels (rename, new picture, number, guide, another stream, or hide). Changes reach the apps within a few minutes. Adult categories stay behind the adult switch and PIN, and never show in the iPhone or Apple TV apps.</p>
+        <div class="live-result" data-chan-result></div></section>
+      <section class="admin-card"><h2>Your categories</h2>
+        <div class="admin-list" data-cats></div>
+        <div class="plan-grid">${field('catname', 'New category', '', 'e.g. My channels')}
+          <label class="admin-check"><input type="checkbox" data-catadult> Adult category</label></div>
+        <div class="m-actions"><button class="btn btn-white" data-add-cat>Add category</button></div></section>
+      <section class="admin-card"><h2>Add a channel</h2>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Category</span><select data-k="cat" data-catsel>${catOptions('')}</select></label>
+          ${field('name', 'Channel name', '', 'e.g. My Sports')}
+          ${field('url', 'Stream address', '', 'https://…/stream.m3u8')}
+          ${field('logo', 'Picture address (optional)', '', 'https://…/logo.png')}
+          ${field('num', 'Number (optional)', '', '101')}
+          ${field('epgId', 'Guide ID (optional)', '', 'matches the TV guide')}
+        </div>
+        <div class="m-actions"><button class="btn btn-white" data-add-item>Add channel</button></div></section>
+      <section class="admin-card"><h2>Import a playlist (M3U)</h2>
+        <p class="muted">Paste an M3U playlist, or choose a file. Every channel in it is added to the category you pick.</p>
+        <label class="admin-field"><span>Category</span><select data-catsel data-imp-cat>${catOptions('')}</select></label>
+        <label class="admin-field"><span>Playlist</span><textarea rows="5" data-imp-text placeholder="#EXTM3U&#10;#EXTINF:-1 tvg-logo=&quot;…&quot; group-title=&quot;…&quot;,Channel name&#10;https://…"></textarea></label>
+        <div class="m-actions"><input type="file" data-imp-file accept=".m3u,.m3u8,.txt,text/plain"><button class="btn btn-white" data-import>Import</button></div>
+        <div class="live-result" data-imp-result></div></section>
+      <section class="admin-card"><h2>Your channels <small data-count>${cu.items.length}</small></h2>
+        <div class="plan-grid"><label class="admin-field"><span>Show</span><select data-filter-cat><option value="">All categories</option>${catOptions('')}</select></label>
+          <label class="admin-field"><span>Search</span><input type="text" data-q placeholder="Channel name"></label></div>
+        <div class="admin-list" data-items></div></section>
+      <section class="admin-card"><h2>Fix the provider's channels</h2>
+        <p class="muted">Rename a channel, change its picture or number, point it at the right guide listing, play another stream instead, or hide it. The fix stays when the provider updates its list.</p>
+        <div data-prov></div></section>`;
+    paintLists();
+
+    const itemOf = (el) => cu.items.find((i) => i.id === el.closest('[data-item]')?.dataset.item);
+    const editBox = (row, html, onSave) => {
+      const box = $('[data-edit-box]', row);
+      if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+      box.innerHTML = html + '<div class="m-actions"><button class="btn btn-white" data-save-edit>Save</button><button class="btn btn-gray" data-cancel-edit>Cancel</button></div>';
+      box.classList.remove('hidden');
+      $('[data-cancel-edit]', box).addEventListener('click', () => box.classList.add('hidden'));
+      $('[data-save-edit]', box).addEventListener('click', async () => { const get = (k) => $(`[data-k="${k}"]`, box).value; if (await onSave(get)) { paintLists(); } });
+    };
+
+    body.addEventListener('input', (ev) => {
+      if (ev.target.matches('[data-q]')) { q = ev.target.value.trim().toLowerCase(); paintLists(); const el = $('[data-q]', body); el.focus(); el.setSelectionRange(q.length, q.length); }
+      if (ev.target.matches('[data-prov-q]')) { pq = ev.target.value.trim().toLowerCase(); paintProv(); const el = $('[data-prov-q]', body); el.focus(); el.setSelectionRange(pq.length, pq.length); }
+    });
+    body.addEventListener('change', (ev) => { if (ev.target.matches('[data-filter-cat]')) { filterCat = ev.target.value; paintLists(); } });
+    body.addEventListener('click', async (ev) => {
+      const t = ev.target.closest('button'); if (!t) return;
+      if (t.matches('[data-add-cat]')) {
+        const name = $('[data-k="catname"]', body).value;
+        if (await call('/channels/cats', 'POST', { name, adult: $('[data-catadult]', body).checked })) { $('[data-k="catname"]', body).value = ''; $('[data-catadult]', body).checked = false; say('[data-chan-result]', 'Category added.', 'good'); paintLists(); }
+        return;
+      }
+      const cat = t.closest('[data-cat]');
+      if (cat && t.matches('[data-rename-cat]')) { const c = cu.cats.find((x) => x.id === cat.dataset.cat); const n = prompt('New name for this category', c.name); if (n && n.trim() && await call(`/channels/cats/${c.id}`, 'PUT', { name: n })) paintLists(); return; }
+      if (cat && t.matches('[data-adult-cat]')) { const c = cu.cats.find((x) => x.id === cat.dataset.cat); if (await call(`/channels/cats/${c.id}`, 'PUT', { adult: !c.adult })) paintLists(); return; }
+      if (cat && t.matches('[data-del-cat]')) {
+        const c = cu.cats.find((x) => x.id === cat.dataset.cat), n = cu.items.filter((i) => i.cat === c.id).length;
+        if (!await confirmAction(`Delete "${c.name}"?`, n ? `Its ${n} channels will be deleted too.` : 'It has no channels.', 'Delete')) return;
+        if (await call(`/channels/cats/${c.id}`, 'DELETE')) paintLists();
+        return;
+      }
+      if (t.matches('[data-add-item]')) {
+        const get = (k) => $(`[data-k="${k}"]`, body).value;
+        const r = await call('/channels/items', 'POST', { cat: get('cat'), name: get('name'), url: get('url'), logo: get('logo'), num: get('num'), epgId: get('epgId') });
+        if (r) { for (const k of ['name', 'url', 'logo', 'num', 'epgId']) $(`[data-k="${k}"]`, body).value = ''; say('[data-chan-result]', 'Channel added.', 'good'); paintLists(); }
+        return;
+      }
+      if (t.matches('[data-import]')) {
+        const text = $('[data-imp-text]', body).value, catId = $('[data-imp-cat]', body).value;
+        if (!/#EXTINF/.test(text)) return say('[data-imp-result]', 'That does not look like an M3U playlist.', 'bad');
+        const chans = parseM3u(text).all.filter((c) => /^https?:\/\//i.test(c.url)).map((c) => ({ name: c.name, url: c.url, logo: c.logo, num: c.num, epgId: c.epgId }));
+        if (!chans.length) return say('[data-imp-result]', 'No channels with an http(s) address found.', 'bad');
+        say('[data-imp-result]', '<div class="spinner"></div>');
+        let added = 0, skipped = 0;
+        for (let i = 0; i < chans.length; i += 500) {
+          const r = await call('/channels/items/bulk', 'POST', { cat: catId, items: chans.slice(i, i + 500) }, '[data-imp-result]');
+          if (!r) return; added += r.added; skipped += r.skipped;
+        }
+        $('[data-imp-text]', body).value = '';
+        say('[data-imp-result]', `Added ${added} channels${skipped ? `, skipped ${skipped} without a usable address` : ''}.`, 'good'); paintLists();
+        return;
+      }
+      if (t.matches('[data-load-prov]')) {
+        provLoading = true; paintProv();
+        try {
+          const cfg = iptv.config;
+          if (!iptvOn(cfg)) throw new Error('Live TV is not set up yet (Admin → Live TV).');
+          if (cfg.type === 'xtream') {
+            const list = await xtJson(cfg, { action: 'get_live_streams' }, { saved: true, maxAge: LIST_MAX_AGE });
+            provList = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
+          } else { const src = await iptvSource(cfg); provList = src.rawAll || src.all || []; }
+        } catch (e) { provList = null; say('[data-chan-result]', esc(e.message), 'bad'); }
+        provLoading = false; paintProv();
+        return;
+      }
+      const row = t.closest('[data-item]');
+      if (row) {
+        const it = itemOf(t);
+        if (t.matches('[data-edit-item]')) {
+          editBox(row, `<div class="plan-grid"><label class="admin-field"><span>Category</span><select data-k="cat">${catOptions(it.cat)}</select></label>${field('name', 'Name', it.name)}${field('url', 'Stream address', it.url)}${field('logo', 'Picture address', it.logo)}${field('num', 'Number', it.num)}${field('epgId', 'Guide ID', it.epgId)}</div>`,
+            async (get) => !!(await call(`/channels/items/${it.id}`, 'PUT', { cat: get('cat'), name: get('name'), url: get('url'), logo: get('logo'), num: get('num'), epgId: get('epgId') })));
+        } else if (t.matches('[data-toggle-item]')) { if (await call(`/channels/items/${it.id}`, 'PUT', { on: it.on === false })) paintLists(); }
+        else if (t.matches('[data-del-item]')) { if (await confirmAction(`Delete "${it.name}"?`, 'It disappears from every customer\'s Live TV.', 'Delete') && await call(`/channels/items/${it.id}`, 'DELETE')) paintLists(); }
+        return;
+      }
+      const prow = t.closest('[data-pkey]');
+      if (prow) {
+        const key = prow.dataset.pkey, c = provList.find((x) => x.editKey === key), e0 = (cu.edits['k' + key]) || {};
+        const refreshProv = () => { if (iptv.config?.type === 'xtream') provList = provList.map((x) => (x.editKey === key ? xtChannelUpdate(x, cu.edits['k' + key]) : x)); paintProv(); };
+        if (t.matches('[data-edit-prov]')) {
+          editBox(prow, `<div class="plan-grid">${field('name', 'Name', e0.name || '', c.origName || c.name)}${field('logo', 'Picture address', e0.logo || '')}${field('num', 'Number', e0.num || '', c.origNum || c.num || '')}${field('epgId', 'Guide ID', e0.epgId || '', c.epgId || '')}${field('url', 'Play this stream instead', e0.url || '', 'Leave empty to use the provider\'s')}</div><p class="muted">Leave a box empty to keep the provider's value.</p>`,
+            async (get) => { const r = await call('/channels/edit', 'PUT', { key, name: get('name'), logo: get('logo'), num: get('num'), epgId: get('epgId'), url: get('url') }); if (r) refreshProv(); return !!r; });
+        } else if (t.matches('[data-hide-prov]')) { const r = await call('/channels/edit', 'PUT', { key, hidden: !c.hidden }); if (r) refreshProv(); }
+        else if (t.matches('[data-undo-prov]')) { const r = await call(`/channels/edit?key=${encodeURIComponent(key)}`, 'DELETE'); if (r) refreshProv(); }
+      }
+    });
+    // the picked file becomes the pasted text
+    $('[data-imp-file]', body).addEventListener('change', async (ev) => { const f = ev.target.files && ev.target.files[0]; if (!f) return; if (f.size > 8 * 1048576) return say('[data-imp-result]', 'That file is too large (8 MB at most).', 'bad'); $('[data-imp-text]', body).value = await f.text(); });
+    // after a fix, show it in the list straight away
+    function xtChannelUpdate(x, e) { const y = { ...x }; if (!e) { y.edited = false; y.hidden = false; if (y.origName) { y.name = y.origName; y.origName = ''; } return y; } y.edited = true; y.hidden = !!e.hidden; if (e.name) { y.origName = y.origName || y.name; y.name = e.name; } else if (y.origName) { y.name = y.origName; y.origName = ''; } if (e.num) y.num = e.num; return y; }
+  }
+
   async function adminReports(body, isCurrent) {
     if (!guardEnabled) {
       body.innerHTML = '<section class="admin-card"><h2>Channel reports</h2><p class="muted">Aurora Guard is switched off, and it is what keeps the provider key and the reports. Switch it on (see server/README.md), then come back.</p></section>';
