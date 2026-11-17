@@ -303,6 +303,9 @@ public class LivePlayerActivity extends Activity {
             }
 
             @Override
+            public void onRenderedFirstFrame() { frameShown = true; }
+
+            @Override
             public void onPlayerError(PlaybackException error) {
                 retryAfterError(error);
             }
@@ -363,6 +366,8 @@ public class LivePlayerActivity extends Activity {
         if (c.altUsed > 0) { c.url = c.baseUrl; c.altUsed = 0; c.triedOther = false; }
         if (httpFactory != null) httpFactory.setUserAgent(userAgent);
         wasReady = false; // a new channel loading isn't a stall
+        frameShown = false;
+        loadStartedAt = System.currentTimeMillis();
         tunedAt = android.os.SystemClock.elapsedRealtime();
         awaitingStart = true;
         player.setMediaItem(mediaItem(c.url));
@@ -429,6 +434,9 @@ public class LivePlayerActivity extends Activity {
     private static final long WATCHDOG_MS = 2000;
     /** A channel that has a backup waits this long without a picture before switching to it (instead of the full stall time). */
     private static final long BACKUP_STALL_MS = 8000;
+    private static final long NO_PICTURE_MS = 12000;
+    private boolean stallSwitch = false, frameShown = false;
+    private long loadStartedAt = 0;
     private long stallMs = 25000; // the page can set it (Admin → Playback)
     private long stallLimit() {
         if (channels.isEmpty()) return stallMs;
@@ -438,9 +446,19 @@ public class LivePlayerActivity extends Activity {
     private final Runnable watchdog = new Runnable() {
         @Override public void run() {
             if (player == null) return;
+            Channel wc = channels.isEmpty() ? null : channels.get(index);
+            boolean backupLeft = wc != null && wc.altUsed < wc.alts.size();
             if (player.getPlayWhenReady() && player.getPlaybackState() == Player.STATE_BUFFERING
                     && bufferingSince > 0 && System.currentTimeMillis() - bufferingSince > stallLimit()) {
+                stallSwitch = backupLeft; // no picture for 8 s and a backup waiting: switch now, no second try of the dead main address
                 retryAfterError(null);
+                stallSwitch = false;
+            } else if (backupLeft && !frameShown && player.getPlayWhenReady() && loadStartedAt > 0
+                    && System.currentTimeMillis() - loadStartedAt > NO_PICTURE_MS) {
+                // "Playing" (or stuck on something that isn't video) but still no picture: the same as a dead stream.
+                stallSwitch = true;
+                retryAfterError(null);
+                stallSwitch = false;
             }
             handler.postDelayed(this, WATCHDOG_MS);
         }
@@ -504,7 +522,9 @@ public class LivePlayerActivity extends Activity {
             handler.postDelayed(retryRunnable, 1000);
             return;
         }
-        if ((code != 0 || (error != null && sourceFailed(error)) || retries >= 2) && c.altUsed < c.alts.size()) {
+        if ((stallSwitch || code != 0 || (error != null && sourceFailed(error)) || retries >= 2) && c.altUsed < c.alts.size()) {
+            frameShown = false;
+            loadStartedAt = System.currentTimeMillis();
             // A provider refusal (any HTTP answer) switches at once; anything else after one quick retry. The next backup gets a fresh run.
             String alt = c.alts.get(c.altUsed++);
             c.url = alt;
