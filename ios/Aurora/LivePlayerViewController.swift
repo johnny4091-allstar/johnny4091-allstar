@@ -319,6 +319,8 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         case .playing:
             spinner.stopAnimating()
             statusLabel.isHidden = true
+            // Playing from a backup: say so where the channel number or group is shown.
+            if altUsed > 0 { numberLabel.text = "BACKUP STREAM" }
             // The retries start fresh only once a channel has played steadily: one that keeps dropping must still give up.
             stableWork?.cancel()
             let work = DispatchWorkItem { [weak self] in self?.retries = 0 }

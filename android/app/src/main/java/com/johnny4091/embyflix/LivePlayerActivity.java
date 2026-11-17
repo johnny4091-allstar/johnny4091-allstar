@@ -102,6 +102,7 @@ public class LivePlayerActivity extends Activity {
     /** Gave up the quick retries; still trying now and then until the viewer picks something else. */
     private boolean failed;
     private int failedChannels, failedCode;
+    private boolean backupShown; // the "backup stream" note has been shown for this channel
     private boolean failureCounted; // this channel's failure is already counted (OK to retry doesn't count it again)
     private String failedName = "";
     private long bufferingSince;
@@ -282,6 +283,8 @@ public class LivePlayerActivity extends Activity {
                     failureCounted = false;
                     bufferingSince = 0;
                     status.setVisibility(View.GONE);
+                    // Playing from a backup: say so on the channel banner, once.
+                    if (!channels.isEmpty() && channels.get(index).altUsed > 0 && !backupShown) { backupShown = true; showBanner(); }
                 } else if (state == Player.STATE_BUFFERING) {
                     if (bufferingSince == 0) bufferingSince = System.currentTimeMillis();
                 } else if (state == Player.STATE_ENDED) {
@@ -342,6 +345,7 @@ public class LivePlayerActivity extends Activity {
         retries = 0;
         failed = false;
         failureCounted = false;
+        backupShown = false;
         bufferingSince = 0;
         handler.removeCallbacks(retryRunnable);
         status.setVisibility(View.GONE);
@@ -752,8 +756,9 @@ public class LivePlayerActivity extends Activity {
         }
         bannerNow.setText(c.now.isEmpty() ? "" : "Now: " + c.now + (c.next.isEmpty() ? "" : "     Next: " + c.next));
         bannerNow.setVisibility(c.now.isEmpty() ? View.GONE : View.VISIBLE);
-        bannerGroup.setText(group.toUpperCase());
-        bannerGroup.setVisibility(group.isEmpty() ? View.GONE : View.VISIBLE);
+        String groupLine = (c.altUsed > 0 ? "BACKUP STREAM" + (group.isEmpty() ? "" : "   \u00b7   ") : "") + group.toUpperCase();
+        bannerGroup.setText(groupLine);
+        bannerGroup.setVisibility(groupLine.isEmpty() ? View.GONE : View.VISIBLE);
         bannerLogo.setImageDrawable(null);
         loadLogo(c.logo, bannerLogo);
         banner.animate().cancel();
