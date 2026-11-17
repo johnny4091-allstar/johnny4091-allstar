@@ -3041,7 +3041,7 @@
     if (current === '__adult' || !cats.some((c) => c.id === current)) current = cats[0].id;
     // A small live picture beside the details (Android app only): the channel you pick keeps playing while you browse the guide.
     const previewOn = !!nativeApp?.previewStart && getPref('guidePreview') !== 'off';
-    const CH_W = nav.tv ? 260 : (window.innerWidth < 600 ? 120 : 220);
+    const CH_W = nav.tv ? 380 : (window.innerWidth < 600 ? 160 : 320);
     const start = new Date();
     start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
     const end = new Date(start.getTime() + GUIDE_HOURS * 3600000);
