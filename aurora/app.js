@@ -9414,7 +9414,7 @@
       try { current = (await guard('/service-status', { params: { userId: state.userId } })).note?.text || ''; } catch { return; }
       if (!isCurrent()) return;
       noteBox.innerHTML = `<section class="admin-card"><h2>Message on the Status page <small>Customers see it at the top of Settings → Status</small></h2>
-        <div class="admin-row"><input type="text" class="st-note-input" data-note maxlength="200" placeholder="For example: Maintenance tonight 2–3 AM" value="${esc(current)}"> <button class="btn btn-white" data-note-save>Save</button> <button class="btn btn-gray" data-note-clear>Clear</button></div>
+        <div class="admin-row st-note-row"><input type="text" class="st-note-input" data-note maxlength="200" placeholder="For example: Maintenance tonight 2–3 AM" value="${esc(current)}"> <button class="btn btn-white" data-note-save>Save</button> <button class="btn btn-gray" data-note-clear>Clear</button></div>
         <p class="muted" data-note-result></p></section>`;
       const save = async (text) => {
         try { await guard('/status-note', { method: 'PUT', body: { text } }); $('[data-note]', noteBox).value = text; $('[data-note-result]', noteBox).textContent = text ? 'Saved. Customers will see it now.' : 'Cleared.'; }
