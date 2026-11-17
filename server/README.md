@@ -402,6 +402,12 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.29.0
+
+- The website's channel editor (`/channels/` on the Aurora website) for administrators and moderators. `/site-login` now also says `mod: true` for a moderator.
+- `GET /channels/provider?q=&limit=` (administrators and moderators): the guard reads the provider's channel list with the Live TV settings an administrator saved
+  (cached 10 minutes) and returns names, numbers, groups and pictures only, with any fix next to each channel. The website needs no provider login this way.
+
 ## 1.28.0
 
 Your own channels, and fixes to the provider's (Admin → Channels, for admins and moderators).
