@@ -8,8 +8,15 @@ struct LiveChannel {
     let number: String
     let now: String
     let logo: String
+    /// Backup addresses for this channel (another provider's copy of it), tried in order when the main one keeps failing.
+    let alts: [String]
+
+    init(copy other: LiveChannel, url: String) {
+        name = other.name; self.url = url; number = other.number; now = other.now; logo = other.logo; alts = other.alts
+    }
 
     init(_ json: [String: Any]) {
+        alts = ((json["alts"] as? [String]) ?? []).filter { !$0.isEmpty }.prefix(3).map { $0 }
         logo = (json["logo"] as? String) ?? ""
         url = (json["url"] as? String) ?? ""
         name = (json["name"] as? String) ?? "Channel"
@@ -52,6 +59,8 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     private var endObserver: NSObjectProtocol?
     private var visited: [Int] = []
     private var failures = 0
+    private var altUsed = 0          // backups used since this channel was tuned
+    private var currentURL = ""      // the address being played (the main one, or a backup)
     private var lastFailedName = ""
     private var closed = false
 
@@ -212,6 +221,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         stableWork?.cancel()
         reportWork?.cancel()
         retries = 0
+        altUsed = 0 // the main address is always tried first
         index = newIndex
         if visited.last != newIndex { visited.append(newIndex) }
         let channel = channels[newIndex]
@@ -237,6 +247,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     }
 
     private func start(_ channel: LiveChannel) {
+        currentURL = channel.url
         guard let url = LivePlayerViewController.playableURL(channel.url) else { return fail(channel, "This channel's address isn't valid.") }
         spinner.startAnimating()
         var options: [String: Any] = [:]
@@ -259,7 +270,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     }
 
     private func itemFailed(_ channel: LiveChannel, _ error: Error?) {
-        guard !closed, channels.indices.contains(index), channels[index].url == channel.url else { return }
+        guard !closed, channels.indices.contains(index), currentURL == channel.url else { return }
         // The player reports one failure in two ways: only the first one counts.
         if retryPending { return }
         stableWork?.cancel()
@@ -270,11 +281,22 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
             let work = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
                 self.retryPending = false
-                guard !self.closed, self.channels.indices.contains(self.index), self.channels[self.index].url == channel.url else { return }
+                guard !self.closed, self.channels.indices.contains(self.index), self.currentURL == channel.url else { return }
                 self.start(channel)
             }
             retryWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+            return
+        }
+        // Still failing: try the next backup, if the channel has one, with a fresh set of retries.
+        let alts = channels[index].alts
+        if altUsed < alts.count {
+            let next = LiveChannel(copy: channels[index], url: alts[altUsed])
+            altUsed += 1
+            retries = 0
+            statusLabel.text = "Switching to a backup…"
+            statusLabel.isHidden = false
+            start(next)
             return
         }
         let isTS = channel.url.lowercased().contains(".ts") && LivePlayerViewController.playableURL(channel.url)?.absoluteString == channel.url

@@ -402,6 +402,18 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.30.0
+
+Backup streams for channels.
+
+- Every channel (your own, or a provider's with a fix) can have up to 3 backups: `backups: [{ label, url, src? }]`. A backup is a pasted link, or a channel
+  picked from another provider (`src` is that provider's id; its address carries that provider's login, so the editors only ever see its label).
+- Other providers: `GET|POST /channels/providers`, `DELETE /channels/providers/<id>` (administrators only; the login is checked on the way in and never
+  returned). `GET /channels/sources` (administrators and moderators) lists provider names. `GET /channels/provider?src=<id|main>&q=` searches any of them.
+- Backups: `POST /channels/backup { item | key, src + ref | url + label }`, `DELETE /channels/backup?item=<id>|key=<key>&i=<n>`.
+- `GET /channels` (customers) carries the backup addresses with each channel; the apps give them to the player, which switches after the main address has
+  failed its retries (and its other format), then gives the backup a fresh run. The main address is tried first again the next time the channel is tuned.
+
 ## 1.29.0
 
 - The website's channel editor (`/channels/` on the Aurora website) for administrators and moderators. `/site-login` now also says `mod: true` for a moderator.

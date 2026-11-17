@@ -2198,6 +2198,7 @@
     const e = customCh && customCh.edits && customCh.edits['k' + key];
     if (!e) return ch;
     ch.edited = true;
+    if (Array.isArray(e.backups) && e.backups.length) ch.alts = e.backups.map((b) => b.url).filter(Boolean);
     if (e.name) { ch.origName = ch.name; ch.name = e.name; }
     if (e.logo) ch.logo = e.logo;
     if (e.num) ch.num = e.num;
@@ -2213,7 +2214,7 @@
     for (const cat of customCh.cats || []) {
       if (cat.adult && !unlocked) continue;
       const id = 'c_' + cat.id;
-      const chans = (customCh.items || []).filter((i) => i.cat === cat.id).map((i) => ({ id: 'c' + i.id, custom: true, name: i.name, logo: i.logo || '', num: i.num || '', group: id, epgId: i.epgId || '', url: i.url, editKey: '' }));
+      const chans = (customCh.items || []).filter((i) => i.cat === cat.id).map((i) => ({ id: 'c' + i.id, custom: true, name: i.name, logo: i.logo || '', num: i.num || '', group: id, epgId: i.epgId || '', url: i.url, editKey: '', alts: (i.backups || []).map((b) => b.url).filter(Boolean) }));
       if (!chans.length) continue;
       if (!src.categories.some((c) => c.id === id)) src.categories.push({ id, name: cat.name, count: chans.length, custom: true });
       src.groups.set(id, chans);
@@ -2712,8 +2713,8 @@
     lastLive = { name: ch.name, t: Date.now() };
     store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
     nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
-      ? { name: c.name, url: c.url, logo: channelLogo(c), num: c.num, now: iptvNowCached(c), ...nowNextFields(c), fav: isIptvFav(c) }
-      : { name: c.name, url: c.url, logo: c.logo || '', num: c.num, now: '', fav: isIptvFav(c) }))),
+      ? { name: c.name, url: c.url, alts: c.alts || [], logo: channelLogo(c), num: c.num, now: iptvNowCached(c), ...nowNextFields(c), fav: isIptvFav(c) }
+      : { name: c.name, url: c.url, alts: c.alts || [], logo: c.logo || '', num: c.num, now: '', fav: isIptvFav(c) }))),
       index - from, groupName || '', iptv.config?.userAgent || '',
       // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
       JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
