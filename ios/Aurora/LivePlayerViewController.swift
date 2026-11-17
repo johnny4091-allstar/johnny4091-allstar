@@ -61,6 +61,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     private var failures = 0
     private var altUsed = 0          // backups used since this channel was tuned
     private var currentURL = ""      // the address being played (the main one, or a backup)
+    private var startWatch: DispatchWorkItem? // switches to a backup when nothing plays soon after a start
     private var lastFailedName = ""
     private var closed = false
 
@@ -267,6 +268,16 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         }
         player.replaceCurrentItem(with: item)
         player.play()
+        // A channel with a backup left does not wait long: no picture after 8 seconds counts as a failure.
+        startWatch?.cancel()
+        if altUsed < channels[index].alts.count {
+            let watch = DispatchWorkItem { [weak self] in
+                guard let self = self, !self.closed, self.currentURL == channel.url, self.player.timeControlStatus != .playing else { return }
+                self.itemFailed(channel, nil)
+            }
+            startWatch = watch
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: watch)
+        }
     }
 
     private func itemFailed(_ channel: LiveChannel, _ error: Error?) {
@@ -274,8 +285,9 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         // The player reports one failure in two ways: only the first one counts.
         if retryPending { return }
         stableWork?.cancel()
-        // A provider often fails once and works a moment later: try again a few times before saying so.
-        if retries < 3 {
+        // A provider often fails once and works a moment later: try again a few times before saying so. With a backup left, one quick retry only.
+        let hasBackup = altUsed < channels[index].alts.count
+        if retries < (hasBackup ? 1 : 3) {
             retries += 1
             retryPending = true
             let work = DispatchWorkItem { [weak self] in
@@ -285,7 +297,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
                 self.start(channel)
             }
             retryWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + (hasBackup ? 1.0 : 2.0), execute: work)
             return
         }
         // Still failing: try the next backup, if the channel has one, with a fresh set of retries.
@@ -319,6 +331,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         case .playing:
             spinner.stopAnimating()
             statusLabel.isHidden = true
+            startWatch?.cancel()
             // Playing from a backup: say so where the channel number or group is shown.
             if altUsed > 0 { numberLabel.text = "BACKUP STREAM" }
             // The retries start fresh only once a channel has played steadily: one that keeps dropping must still give up.
