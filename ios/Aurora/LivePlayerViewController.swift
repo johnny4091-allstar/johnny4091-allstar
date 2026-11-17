@@ -252,7 +252,9 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         guard let url = LivePlayerViewController.playableURL(channel.url) else { return fail(channel, "This channel's address isn't valid.") }
         spinner.startAnimating()
         var options: [String: Any] = [:]
-        if !userAgent.isEmpty { options["AVURLAssetHTTPHeaderFieldsKey"] = ["User-Agent": userAgent] }
+        // The provider's special user agent is for the provider only: a backup (another service) is asked for like an ordinary player.
+        let onMain = url.host == URL(string: channels[index].url)?.host
+        if !userAgent.isEmpty && onMain { options["AVURLAssetHTTPHeaderFieldsKey"] = ["User-Agent": userAgent] }
         let asset = AVURLAsset(url: url, options: options.isEmpty ? nil : options)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = 6

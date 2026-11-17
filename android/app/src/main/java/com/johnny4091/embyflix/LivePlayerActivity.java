@@ -226,12 +226,21 @@ public class LivePlayerActivity extends Activity {
         return mb * 1024 * 1024;
     }
 
+    /** The address a backup stream is asked for with: a backup is usually another service (a network's own server, another provider) that
+     *  can refuse the main provider's special name, so it is asked for like an ordinary player. */
+    private static final String BACKUP_USER_AGENT = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
+    private DefaultHttpDataSource.Factory httpFactory;
+
     private void buildPlayer() {
+        boolean anyBackups = false;
+        for (Channel ch : channels) if (!ch.alts.isEmpty()) { anyBackups = true; break; }
+        // With backups on offer a dead address should not hold things up for long.
         DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
                 .setUserAgent(userAgent)
                 .setAllowCrossProtocolRedirects(true)
-                .setConnectTimeoutMs(15000)
-                .setReadTimeoutMs(20000);
+                .setConnectTimeoutMs(anyBackups ? 8000 : 15000)
+                .setReadTimeoutMs(anyBackups ? 12000 : 20000);
+        httpFactory = http;
         // Live video arrives in real time, so the cushion built up before playback starts (and again after a
         // stall) is all there is to ride out a slow moment. 2 seconds was too little; the viewer picks the size
         // in Settings → Playback → Live TV buffer (Medium by default), trading channel-change speed for smoothness.
@@ -352,6 +361,7 @@ public class LivePlayerActivity extends Activity {
         Channel c = channels.get(index);
         // Every time a channel is tuned its main address is tried first (a backup is only for while the main one is down).
         if (c.altUsed > 0) { c.url = c.baseUrl; c.altUsed = 0; c.triedOther = false; }
+        if (httpFactory != null) httpFactory.setUserAgent(userAgent);
         wasReady = false; // a new channel loading isn't a stall
         tunedAt = android.os.SystemClock.elapsedRealtime();
         awaitingStart = true;
@@ -465,6 +475,8 @@ public class LivePlayerActivity extends Activity {
         return null;
     }
     private String providerNote = "";
+    /** The channel on screen is playing from a backup address. */
+    private boolean c0Backup() { return !channels.isEmpty() && channels.get(index).altUsed > 0; }
 
     // Live streams drop now and then; reconnect, and if a channel keeps failing try it in the other format.
     private void retryAfterError(PlaybackException error) {
@@ -475,6 +487,10 @@ public class LivePlayerActivity extends Activity {
         int code = error == null ? 0 : httpCode(error);
         String hint = providerHint(code);
         providerNote = hint == null ? "" : "\n" + hint;
+        if (c0Backup()) {
+            String detail = error == null ? "" : error.getErrorCodeName();
+            providerNote = "\nThe backup stream " + (code != 0 ? "answered " + code : "could not be played") + (detail.isEmpty() ? "" : " (" + detail + ")") + ".";
+        }
         handler.removeCallbacks(retryRunnable);
         Channel c = channels.get(index);
         String other = c.triedOther ? null : otherFormat(c.url);
@@ -492,6 +508,7 @@ public class LivePlayerActivity extends Activity {
             // A provider refusal (any HTTP answer) switches at once; anything else after one quick retry. The next backup gets a fresh run.
             String alt = c.alts.get(c.altUsed++);
             c.url = alt;
+            if (httpFactory != null) httpFactory.setUserAgent(BACKUP_USER_AGENT);
             c.triedOther = false;
             retries = 0;
             failureCounted = false;
