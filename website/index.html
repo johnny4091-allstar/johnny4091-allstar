@@ -360,6 +360,17 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
         <a class="btn btn-red" id="apk" href="https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk" rel="noopener" download>Download for Android</a>
         <p class="small">Or use the Downloader code <span data-dl>2873179</span> on your phone too.</p>
       </div>
+      <div class="panel" id="iospanel">
+        <span class="tag">iPhone and iPad</span>
+        <h3>Install with TestFlight</h3>
+        <p class="sub2">Aurora for iPhone and iPad is installed through Apple's free TestFlight app.</p>
+        <ol class="steps">
+          <li>Install <strong>TestFlight</strong> from the App Store.</li>
+          <li>Tap the button below, then choose Accept and Install.</li>
+          <li>Open Aurora and sign in.</li>
+        </ol>
+        <a class="btn btn-red" id="testflight" href="https://testflight.apple.com/join/appxqJyp" rel="noopener">Get Aurora on TestFlight</a>
+      </div>
       <div class="panel" id="webcard" hidden>
         <span class="tag">Web browser</span>
         <h3>Watch on a computer</h3>
@@ -413,6 +424,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
   [].forEach.call(document.querySelectorAll('[data-dl]'), function (e) { if (C.downloaderCode) e.textContent = C.downloaderCode; });
   var dl = document.querySelector('.code'); if (dl && C.downloaderCode) dl.setAttribute('aria-label', 'Downloader code ' + String(C.downloaderCode).split('').join(' '));
   if (C.apkUrl) $('apk').href = C.apkUrl;
+  if (C.testflightUrl) $('testflight').href = C.testflightUrl; else if (C.testflightUrl === '') $('iospanel').hidden = true;
   if (C.webAppUrl) { $('weblink').href = C.webAppUrl; $('webcard').hidden = false; }
   if (C.contact) { $('ask').hidden = false; $('contact').textContent = 'Contact: ' + C.contact; }
 

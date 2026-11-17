@@ -4,6 +4,8 @@ window.AURORA_SITE = {
   guardUrl: 'https://emby4836.duckdns.org:8922',
   // The Android app file.
   apkUrl: 'https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk',
+  // The TestFlight link for the iPhone and iPad app. Leave blank to hide that card.
+  testflightUrl: 'https://testflight.apple.com/join/appxqJyp',
   // The code people type into the Downloader app on their TV.
   downloaderCode: '2873179',
   // Address of Aurora in a browser, for "Open on the web". Leave blank to hide that card.
