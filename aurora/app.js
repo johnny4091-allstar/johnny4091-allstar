@@ -8915,8 +8915,12 @@
   // ----- Admin -> Channels: add your own channels and fix the provider's (guide v1.28.0) -----
   async function adminChannels(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Channels');
-    let cu, provList = null, provLoading = false;
-    const load = async () => { cu = await guard('/channels/all'); };
+    let cu, provList = null, provLoading = false, sources = [], provs = [], bk = null, bkSeq = 0;
+    const load = async () => {
+      cu = await guard('/channels/all');
+      try { sources = (await guard('/channels/sources')).sources || []; } catch { /* an older guard */ }
+      if (isAdmin()) { try { provs = (await guard('/channels/providers')).providers || []; } catch { provs = []; } paintProvs(); }
+    };
     try { await load(); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Channels</h2><p class="empty-msg">${e.status === 404 ? 'Update Aurora Guard to 1.28.0 first.' : esc(e.message)}</p></section>`; return; }
     if (!isCurrent()) return;
     const catName = (id) => (cu.cats.find((c) => c.id === id) || {}).name || '';
@@ -8932,13 +8936,44 @@
 
     const itemRow = (i) => `<div class="admin-row chan-row" data-item="${esc(i.id)}"><div class="admin-row-main"><strong>${esc(i.name)}</strong>${i.on === false ? ' <span class="pill">off</span>' : ''}
         <div class="muted">${esc(catName(i.cat))}${i.num ? ' · #' + esc(i.num) : ''} · ${esc(i.url.length > 70 ? i.url.slice(0, 70) + '…' : i.url)}</div></div>
-        <div class="plan-actions"><button class="btn btn-gray" data-edit-item>Edit</button><button class="btn btn-gray" data-toggle-item>${i.on === false ? 'Turn on' : 'Turn off'}</button><button class="btn btn-gray" data-del-item>Delete</button></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit-item>Edit</button><button class="btn btn-gray" data-backups>Backups${i.backups && i.backups.length ? ` (${i.backups.length})` : ''}</button><button class="btn btn-gray" data-toggle-item>${i.on === false ? 'Turn on' : 'Turn off'}</button><button class="btn btn-gray" data-del-item>Delete</button></div>
         <div class="chan-edit hidden" data-edit-box></div></div>`;
     const provRow = (c) => `<div class="admin-row chan-row" data-pkey="${esc(c.editKey)}"><div class="admin-row-main"><strong>${esc(c.name)}</strong>${c.edited ? ' <span class="pill warn">fixed</span>' : ''}${c.hidden ? ' <span class="pill">hidden</span>' : ''}
         <div class="muted">${c.num ? '#' + esc(c.num) + ' · ' : ''}${c.origName ? 'was ' + esc(c.origName) + ' · ' : ''}${esc(String(c.group))}</div></div>
-        <div class="plan-actions"><button class="btn btn-gray" data-edit-prov>Fix</button><button class="btn btn-gray" data-hide-prov>${c.hidden ? 'Show' : 'Hide'}</button>${c.edited ? '<button class="btn btn-gray" data-undo-prov>Undo fixes</button>' : ''}</div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit-prov>Fix</button><button class="btn btn-gray" data-backups>Backups${(cu.edits['k' + c.editKey] || {}).backups?.length ? ` (${cu.edits['k' + c.editKey].backups.length})` : ''}</button><button class="btn btn-gray" data-hide-prov>${c.hidden ? 'Show' : 'Hide'}</button>${c.edited ? '<button class="btn btn-gray" data-undo-prov>Undo fixes</button>' : ''}</div>
         <div class="chan-edit hidden" data-edit-box></div></div>`;
 
+    function paintProvs() {
+      const box = $('[data-provs]', body); if (!box) return;
+      $('[data-pcount]', body).textContent = provs.length;
+      box.innerHTML = provs.map((p) => `<div class="admin-row" data-pvrow="${esc(p.id)}"><div class="admin-row-main"><strong>${esc(p.name)}</strong> <span class="pill">${p.type === 'm3u' ? 'M3U' : 'Xtream'}</span><div class="muted">${esc(p.host)}${p.username ? ' · ' + esc(p.username) : ''}</div></div><div class="plan-actions"><button class="btn btn-gray" data-del-prov>Remove</button></div></div>`).join('') || '<p class="muted">No other providers yet.</p>';
+    }
+    const bkTarget = (row) => (row.dataset.item ? { item: row.dataset.item } : { key: row.dataset.pkey });
+    const bkList = (t) => (t.item ? (cu.items.find((x) => x.id === t.item) || {}).backups : (cu.edits['k' + t.key] || {}).backups) || [];
+    const bkQuery = (t) => (t.item ? `item=${encodeURIComponent(t.item)}` : `key=${encodeURIComponent(t.key)}`);
+    function bkHtml(t) {
+      const list = bkList(t);
+      return `<p class="muted">Backups: tried in order when this channel stops working</p>` +
+        (list.length ? list.map((b, i) => `<div class="admin-row"><div class="admin-row-main"><strong>${i + 1}. ${esc(b.label)}</strong>${b.url ? `<div class="muted">${esc(b.url.length > 80 ? b.url.slice(0, 80) + '…' : b.url)}</div>` : ''}</div><div class="plan-actions"><button class="btn btn-gray" data-bkdel="${i}">Remove</button></div></div>`).join('') : '<p class="muted">No backups yet.</p>') +
+        (list.length < 3 ? `<div class="plan-grid"><label class="admin-field"><span>Find it in another provider</span><select data-bksrc>${sources.map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select></label>${field('bkq', 'Channel name', '', 'e.g. ESPN 2')}</div><div data-bkres></div>
+          <div class="plan-grid">${field('bkurl', 'Or paste a stream link', '', 'https://…/stream.m3u8')}${field('bklabel', 'Name (optional)', '', 'e.g. Other CDN')}</div><div class="m-actions"><button class="btn btn-white" data-bkadd>Add this link</button></div>` : '');
+    }
+    const renderBk = (row) => { const box = $('[data-edit-box]', row); box.innerHTML = bkHtml(bk); box.classList.remove('hidden'); };
+    const reopenBk = () => { if (!bk) return; const row = bk.item ? $(`[data-item="${CSS.escape(bk.item)}"]`, body) : $(`[data-pkey="${CSS.escape(bk.key)}"]`, body); if (row) renderBk(row); };
+    const bkAct = async (method, path, payload) => {
+      const r = await call(path, method, payload);
+      if (r) { if (bk && bk.key) { provList = provList && provList.map((x) => x); paintProv(); setTimeout(reopenBk, 50); } else { paintLists(); reopenBk(); } }
+      return r;
+    };
+    const bkSearch = async (row) => {
+      const box = $('[data-edit-box]', row), q = $('[data-k="bkq"]', box).value.trim(), src = $('[data-bksrc]', box).value, res = $('[data-bkres]', box), seq = ++bkSeq;
+      if (!q) { res.innerHTML = ''; return; }
+      try {
+        const j = await guard('/channels/provider', { params: { src, q, limit: 8 } });
+        if (seq !== bkSeq) return;
+        res.innerHTML = j.items.map((c) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(c.name)}</strong><div class="muted">${c.num ? '#' + esc(c.num) + ' · ' : ''}${esc(c.group)}</div></div><div class="plan-actions"><button class="btn btn-gray" data-bkuse="${esc(c.key)}" data-src="${esc(src)}">Use as backup</button></div></div>`).join('') || '<p class="muted">No match.</p>';
+      } catch (e) { res.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+    };
     const paintLists = () => {
       const list = cu.items.filter((i) => (!filterCat || i.cat === filterCat) && (!q || i.name.toLowerCase().includes(q)));
       $('[data-items]', body).innerHTML = list.slice(0, 200).map(itemRow).join('') || `<p class="muted">${cu.items.length ? 'No channels match.' : 'No channels of your own yet. Add one above, or import a playlist.'}</p>`;
@@ -8947,7 +8982,7 @@
         <div class="plan-actions"><button class="btn btn-gray" data-rename-cat>Rename</button><button class="btn btn-gray" data-adult-cat>${c.adult ? 'Not adult' : 'Mark adult'}</button><button class="btn btn-gray" data-del-cat>Delete</button></div></div>`).join('') || '<p class="muted">No categories yet. Make one first (for example "My channels").</p>';
       for (const sel of $$('[data-catsel]', body)) { const keep = sel.value; sel.innerHTML = catOptions(keep || ''); if (keep) sel.value = keep; }
       const fc = $('[data-filter-cat]', body); if (fc) { fc.innerHTML = '<option value="">All categories</option>' + catOptions(filterCat); fc.value = filterCat; }
-      paintProv();
+      paintProv(); paintProvs();
     };
     const paintProv = () => {
       const box = $('[data-prov]', body);
@@ -8962,6 +8997,13 @@
       <section class="admin-card"><h2>Channels <small>your own channels and fixes, for every customer</small></h2>
         <p class="muted">Like a channel manager: add channels of your own, import a playlist, and fix the provider's channels (rename, new picture, number, guide, another stream, or hide). Changes reach the apps within a few minutes. Adult categories stay behind the adult switch and PIN, and never show in the iPhone or Apple TV apps.</p>
         <div class="live-result" data-chan-result></div></section>
+      ${isAdmin() ? `<section class="admin-card"><h2>Other providers <small data-pcount>0</small></h2>
+        <p class="muted">Add your other TV providers. Any channel can then use a channel from one of them as a backup: if the main one stops working, the app switches to the backup by itself. Only administrators see this (it holds the provider's login).</p>
+        <div class="admin-list" data-provs></div>
+        <div class="plan-grid">${field('pvname', 'Name', '', 'e.g. Provider B')}
+          <label class="admin-field"><span>Kind</span><select data-k="pvtype"><option value="xtream">Xtream login</option><option value="m3u">M3U playlist link</option></select></label>
+          ${field('pvserver', 'Server address', '', 'http://provider.example.com:8080')}${field('pvuser', 'Username')}${field('pvpass', 'Password', '', '', 'password')}${field('pvm3u', 'Playlist address (M3U only)', '', 'https://provider.example.com/playlist.m3u')}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add-prov>Add provider</button></div><div class="live-result" data-pv-result></div></section>` : ''}
       <section class="admin-card"><h2>Your categories</h2>
         <div class="admin-list" data-cats></div>
         <div class="plan-grid">${field('catname', 'New category', '', 'e.g. My channels')}
@@ -9007,8 +9049,35 @@
       if (ev.target.matches('[data-prov-q]')) { pq = ev.target.value.trim().toLowerCase(); paintProv(); const el = $('[data-prov-q]', body); el.focus(); el.setSelectionRange(pq.length, pq.length); }
     });
     body.addEventListener('change', (ev) => { if (ev.target.matches('[data-filter-cat]')) { filterCat = ev.target.value; paintLists(); } });
+    let bkTimer = null;
+    body.addEventListener('input', (ev) => { if (ev.target.matches('[data-k="bkq"]')) { const row = ev.target.closest('[data-item],[data-pkey]'); clearTimeout(bkTimer); bkTimer = setTimeout(() => bkSearch(row), 350); } });
+    body.addEventListener('change', (ev) => { if (ev.target.matches('[data-bksrc]')) bkSearch(ev.target.closest('[data-item],[data-pkey]')); });
     body.addEventListener('click', async (ev) => {
       const t = ev.target.closest('button'); if (!t) return;
+      if (t.matches('[data-add-prov]')) {
+        const get = (k) => $(`[data-k="${k}"]`, body).value;
+        say('[data-pv-result]', '<div class="spinner"></div> Checking the provider…');
+        const r = await call('/channels/providers', 'POST', { name: get('pvname'), type: get('pvtype'), server: get('pvserver'), username: get('pvuser'), password: get('pvpass'), m3uUrl: get('pvm3u') }, '[data-pv-result]');
+        if (r) { for (const k of ['pvname', 'pvserver', 'pvuser', 'pvpass', 'pvm3u']) $(`[data-k="${k}"]`, body).value = ''; say('[data-pv-result]', `Added. It has ${r.channels} channels.`, 'good'); }
+        return;
+      }
+      if (t.matches('[data-del-prov]')) {
+        const pr = t.closest('[data-pvrow]');
+        if (await confirmAction('Remove this provider?', 'Backups that use it are removed too.', 'Remove') && await call(`/channels/providers/${pr.dataset.pvrow}`, 'DELETE')) { paintProvs(); paintLists(); }
+        return;
+      }
+      const brow = t.closest('[data-item],[data-pkey]');
+      if (t.matches('[data-backups]') && brow) {
+        const nt = bkTarget(brow), box0 = $('[data-edit-box]', brow);
+        if (!box0.classList.contains('hidden') && bk && JSON.stringify(bk) === JSON.stringify(nt)) { box0.classList.add('hidden'); bk = null; return; }
+        bk = nt; renderBk(brow); return;
+      }
+      if (brow && bk && (t.matches('[data-bkdel]') || t.matches('[data-bkuse]') || t.matches('[data-bkadd]')) && !$('[data-edit-box]', brow).classList.contains('hidden')) {
+        if (t.matches('[data-bkdel]')) await bkAct('DELETE', `/channels/backup?${bkQuery(bk)}&i=${t.dataset.bkdel}`);
+        else if (t.matches('[data-bkuse]')) await bkAct('POST', '/channels/backup', { ...bk, src: t.dataset.src, ref: t.dataset.bkuse });
+        else { const bx = $('[data-edit-box]', brow); await bkAct('POST', '/channels/backup', { ...bk, url: $('[data-k="bkurl"]', bx).value, label: $('[data-k="bklabel"]', bx).value }); }
+        return;
+      }
       if (t.matches('[data-add-cat]')) {
         const name = $('[data-k="catname"]', body).value;
         if (await call('/channels/cats', 'POST', { name, adult: $('[data-catadult]', body).checked })) { $('[data-k="catname"]', body).value = ''; $('[data-catadult]', body).checked = false; say('[data-chan-result]', 'Category added.', 'good'); paintLists(); }
