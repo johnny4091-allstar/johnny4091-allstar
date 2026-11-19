@@ -63,6 +63,13 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     private var currentURL = ""      // the address being played (the main one, or a backup)
     private var startWatch: DispatchWorkItem? // switches to a backup when nothing plays soon after a start
     private var lastFailedName = ""
+    // How the viewing went, reported to the guard when the player closes (stalls while watching, how fast channels started).
+    private let openedAt = Date()
+    private var tunedAt = Date()
+    private var awaitingFirstPicture = false
+    private var wasPlaying = false
+    private var stallCount = 0
+    private var startCount = 0, startSumMs = 0, startMaxMs = 0, slowStartCount = 0
     private var closed = false
 
     init(channels: [LiveChannel], index: Int, group: String, userAgent: String, report: String, onClose: @escaping (Int, [String: Any]) -> Void) {
@@ -223,6 +230,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         reportWork?.cancel()
         retries = 0
         altUsed = 0 // the main address is always tried first
+        tunedAt = Date(); awaitingFirstPicture = true; wasPlaying = false // timing a fresh channel (not a retry)
         index = newIndex
         if visited.last != newIndex { visited.append(newIndex) }
         let channel = channels[newIndex]
@@ -331,6 +339,13 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
     private func playbackStateChanged(_ status: AVPlayer.TimeControlStatus) {
         switch status {
         case .playing:
+            if awaitingFirstPicture {
+                awaitingFirstPicture = false
+                let ms = Int(Date().timeIntervalSince(tunedAt) * 1000)
+                startCount += 1; startSumMs += ms; startMaxMs = max(startMaxMs, ms)
+                if ms > 8000 { slowStartCount += 1 }
+            }
+            wasPlaying = true
             spinner.stopAnimating()
             statusLabel.isHidden = true
             startWatch?.cancel()
@@ -343,6 +358,7 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
             DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: work)
             showBars(autoHide: true)
         case .waitingToPlayAtSpecifiedRate:
+            if wasPlaying { stallCount += 1; wasPlaying = false } // it was playing and stopped to buffer
             if statusLabel.isHidden { spinner.startAnimating() }
         default:
             break
@@ -436,7 +452,9 @@ final class LivePlayerViewController: UIViewController, UITableViewDataSource, U
         player.replaceCurrentItem(with: nil)
         UIApplication.shared.isIdleTimerDisabled = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        let stats: [String: Any] = ["visited": Array(visited.dropLast()), "failed": failures, "failedName": lastFailedName]
+        let stats: [String: Any] = ["visited": Array(visited.dropLast()), "failed": failures, "failedName": lastFailedName,
+                                    "stalls": stallCount, "minutes": Int(Date().timeIntervalSince(openedAt) / 60), "starts": startCount,
+                                    "startAvg": startCount == 0 ? 0 : startSumMs / startCount, "startMax": startMaxMs, "startSlow": slowStartCount, "buffer": "medium"]
         let ended = index
         dismiss(animated: true) { self.onClose(ended, stats) }
     }
