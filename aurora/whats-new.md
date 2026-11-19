@@ -1,3 +1,4 @@
+- The Admin PIN now also locks Admin → Users, next to Resellers and credit requests. Needs Aurora Guard 1.36.0.
 - New: add an administrator or a moderator at any time from Admin → Users ("Admins and moderators"), and remove them again. Who is an administrator is now decided by Emby's administrator switch, not a fixed list of names. Needs Aurora Guard 1.35.0.
 - New: Reseller PIN. Lock Admin → Resellers and credit requests behind a 4-digit PIN so another administrator can't open them. Set it in Admin → Resellers. Needs Aurora Guard 1.34.0.
 - New for resellers: see a customer's playback quality (is it their internet, their settings or the provider?), see and remove a single device, send a notice to their own customers, and set contact details (WhatsApp, phone, email) that their customers see under Help & support. Needs Aurora Guard 1.33.0.
