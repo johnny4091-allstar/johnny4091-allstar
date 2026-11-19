@@ -7866,7 +7866,15 @@
     if (!isCurrent()) return;
     const open = t && t.status === 'open';
     const dg = helpDiag();
+    // The reseller's own contact details (guard 1.33.0), when this customer has a reseller who set them.
+    let sup = null;
+    try { sup = (await guard('/account', { params: { userId: state.userId }, quick: true })).support || null; } catch { sup = null; }
+    if (!isCurrent()) return;
+    const digits = (v) => String(v || '').replace(/[^\d]/g, '');
+    const supHtml = sup ? `<section class="settings-section"><h2>${esc(sup.name || 'Your provider')}</h2>${sup.note ? `<p class="muted">${esc(sup.note)}</p>` : ''}
+        <div class="m-actions">${sup.whatsapp && digits(sup.whatsapp).length >= 7 ? `<a class="btn btn-white" href="https://wa.me/${digits(sup.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}${sup.phone ? `<a class="btn btn-gray" href="tel:${esc(sup.phone.replace(/[^\d+]/g, ''))}">Call ${esc(sup.phone)}</a>` : ''}${sup.email ? `<a class="btn btn-gray" href="mailto:${esc(sup.email)}">Email</a>` : ''}</div></section>` : '';
     root.innerHTML = `${head}
+      ${supHtml}
       <section class="settings-section"><h2>Quick answers</h2>
         <details class="faq"><summary>Why did my video quality drop?</summary><p>Aurora lowers the quality when your connection is slow, so the picture doesn't keep stopping. Move closer to the router, or choose a lower quality in Settings.</p></details>
         <details class="faq"><summary>A channel won't load or keeps freezing</summary><p>Open <a href="#/status">Status</a> and press <strong>Check now</strong>. It tells you if it is just you or everyone. If other channels work, try the same game on another channel.</p></details>
@@ -8056,6 +8064,21 @@
       ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
         <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
         <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
+      <section class="admin-card"><h2>Notice for your customers</h2>
+        <p class="muted">It shows at the top of the app for your customers only, for as long as you choose. Good for maintenance, price changes or new channels.</p>
+        <label class="admin-field"><span>Message (200 characters)</span><input type="text" data-nt-text maxlength="200" placeholder="e.g. Aurora will restart tonight at 10pm. Back in 10 minutes."></label>
+        <div class="plan-grid"><label class="admin-field"><span>Look</span><select data-nt-level><option value="info">Information</option><option value="warn">Heads up</option><option value="bad">Problem</option></select></label>
+          <label class="admin-field"><span>Show it for</span><select data-nt-hours><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option></select></label></div>
+        <div class="m-actions"><button class="btn btn-white" data-nt-send>Send</button></div><div class="live-result" data-nt-result></div>
+        <h3 class="users-sub">Showing now</h3><div class="admin-list" data-nt-list><p class="muted">Nothing showing.</p></div></section>
+      <section class="admin-card"><h2>Your contact details</h2>
+        <p class="muted">Your customers see these under Help &amp; support, so they reach you with questions. Leave a box empty to hide it.</p>
+        <div class="plan-grid"><label class="admin-field"><span>Name</span><input type="text" data-sp="name" maxlength="40" value="${esc(d.support?.name || '')}" placeholder="e.g. Alpha Support"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-sp="phone" maxlength="30" inputmode="tel" value="${esc(d.support?.phone || '')}" placeholder="+1 555 123 4567"></label>
+          <label class="admin-field"><span>WhatsApp number</span><input type="text" data-sp="whatsapp" maxlength="30" inputmode="tel" value="${esc(d.support?.whatsapp || '')}" placeholder="+15551234567"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-sp="email" maxlength="80" inputmode="email" value="${esc(d.support?.email || '')}" placeholder="help@example.com"></label></div>
+        <label class="admin-field"><span>A short note</span><input type="text" data-sp="note" maxlength="120" value="${esc(d.support?.note || '')}" placeholder="e.g. Replies 9am to 9pm"></label>
+        <div class="m-actions"><button class="btn btn-white" data-sp-save>Save</button></div><div class="live-result" data-sp-result></div></section>
       <section class="admin-card"><h2>Watching now <small data-wcount>0</small></h2>
         <p class="muted">What your customers are playing right now. It updates by itself every 20 seconds.</p>
         <div class="admin-list" data-watchlist><p class="muted">Nobody is watching right now.</p></div></section>
@@ -8131,6 +8154,7 @@
         </div>
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
         <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
+        <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button></div><div class="res-extra hidden" data-extra></div>
         <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
       $('[data-cancel]', form).addEventListener('click', closeForm);
       const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
@@ -8150,6 +8174,38 @@
       $('[data-out]', form).addEventListener('click', async () => {
         try { const x = await guard(path('/signout'), { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
       });
+      // Playback quality and devices for this customer (guard 1.33.0).
+      const extra = $('[data-extra]', form);
+      const showExtra = (kind, html) => { extra.classList.remove('hidden'); extra.dataset.kind = kind; extra.innerHTML = html; };
+      $('[data-pq]', form).addEventListener('click', async () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'q') { extra.classList.add('hidden'); return; }
+        showExtra('q', '<div class="spinner"></div>');
+        try {
+          const q2 = await guard(path('/quality'), { params: { userId: state.userId } });
+          if (!q2.reported) { showExtra('q', '<p class="muted">Nothing reported yet. The numbers arrive after this customer updates to the newest app and watches something.</p>'); return; }
+          const l = q2.you.live, v = q2.you.vod, a = q2.everyone, last = q2.last || {};
+          const per = (x) => (x == null ? '–' : `${x}/hour`), sec = (x) => (x == null ? '–' : `${x} s`), pct = (x) => (x == null ? '–' : `${x}%`);
+          const facts = [last.device && `Device: ${last.device}`, last.app && `App: ${last.app}`, last.buffer && `Live TV buffer: ${last.buffer}`, last.kbps && `Stream speed: ${(last.kbps / 1000).toFixed(1)} Mbit/s`, l.failed > 0 && `${l.failed} channel${l.failed === 1 ? '' : 's'} stopped working`].filter(Boolean);
+          showExtra('q', `<div class="stat-grid">${statTile('Live buffering', per(l.stallsPerHour), `everyone: ${per(a.live.stallsPerHour)}`)}${statTile('Channel start', sec(l.avgStartSec), `everyone: ${sec(a.live.avgStartSec)}`)}${statTile('Movies and shows buffering', pct(v.bufferingPct), `everyone: ${pct(a.vod.bufferingPct)}`)}</div>
+            ${facts.length ? `<p class="muted">${esc(facts.join(' · '))}</p>` : ''}
+            ${q2.hints.length ? `<div class="admin-card-note"><strong>What to try</strong><ul>${q2.hints.map((h) => `<li>${esc(h)}</li>`).join('')}</ul></div>` : '<p class="muted">Nothing stands out: their viewing looks normal.</p>'}`);
+        } catch (e) { showExtra('q', `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`); }
+      });
+      const loadDevices = async () => {
+        try {
+          const r = await guard(path('/devices'), { params: { userId: state.userId } });
+          const ds = r.devices || [];
+          showExtra('d', `<strong>Signed in on ${ds.length} ${ds.length === 1 ? 'device' : 'devices'}</strong><div class="admin-list">${ds.map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.name)}${x.app ? ' · ' + esc(x.app) : ''}${x.active ? ' <span class="pill good">Now</span>' : ''}<div class="muted">Last seen ${x.last ? esc(timeAgo(new Date(x.last).getTime())) : 'unknown'}</div></div><div class="plan-actions"><button class="btn btn-gray" data-rmdev="${esc(x.id)}">Remove</button></div></div>`).join('') || '<p class="muted">No devices.</p>'}</div>`);
+          $$('[data-rmdev]', extra).forEach((b) => b.addEventListener('click', async () => {
+            if (!(await confirmAction('Remove this device?', 'It is signed out and the customer has to sign in again there.', 'Remove'))) return;
+            try { await guard(path('/device-remove'), { method: 'POST', params: { userId: state.userId }, body: { deviceId: b.dataset.rmdev } }); toast('Device removed', 2000); loadDevices(); } catch (e) { say(esc(e.message), 'bad'); }
+          }));
+        } catch (e) { showExtra('d', `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`); }
+      };
+      $('[data-dev]', form).addEventListener('click', () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'd') { extra.classList.add('hidden'); return; }
+        showExtra('d', '<div class="spinner"></div>'); loadDevices();
+      });
       $('[data-hold]', form).addEventListener('click', async () => {
         const putOn = !c.hold;
         if (putOn && !(await confirmAction(`Put ${c.full || c.name} on hold?`, 'They are signed out and can\'t sign in until you release them. Their end date keeps running.', 'Put on hold'))) return;
@@ -8162,6 +8218,28 @@
       form.scrollIntoView({ block: 'center' });
     };
     $('[data-new]', root).addEventListener('click', openNew);
+    // ----- Notices and contact details for this reseller's customers (guard 1.33.0) -----
+    const ntList = $('[data-nt-list]', root), ntSay = (html, cls = '') => { const r = $('[data-nt-result]', root); r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; };
+    const loadNotices = async () => {
+      try {
+        const r = await guard('/reseller/notices', { params: { userId: state.userId } });
+        ntList.innerHTML = (r.notices || []).map((n) => `<div class="admin-row"><div class="admin-row-main">${esc(n.text)}<div class="muted">Until ${esc(fmtDay(new Date(n.expires).toISOString().slice(0, 10)))}</div></div><div class="plan-actions"><button class="btn btn-gray" data-nt-del="${esc(n.id)}">Remove</button></div></div>`).join('') || '<p class="muted">Nothing showing.</p>';
+        $$('[data-nt-del]', ntList).forEach((b) => b.addEventListener('click', async () => { try { await guard(`/reseller/notices/${encodeURIComponent(b.dataset.ntDel)}`, { method: 'DELETE', params: { userId: state.userId } }); loadNotices(); } catch (e) { ntSay(esc(e.message), 'bad'); } }));
+      } catch (e) { ntList.innerHTML = `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`; }
+    };
+    loadNotices();
+    $('[data-nt-send]', root).addEventListener('click', async () => {
+      const text = $('[data-nt-text]', root).value.trim();
+      if (!text) { ntSay('Write the message first.', 'bad'); return; }
+      try { await guard('/reseller/notices', { method: 'POST', params: { userId: state.userId }, body: { text, level: $('[data-nt-level]', root).value, hours: Number($('[data-nt-hours]', root).value) } }); $('[data-nt-text]', root).value = ''; ntSay('Sent. Your customers see it the next time they open the app.', 'good'); loadNotices(); }
+      catch (e) { ntSay(esc(e.message), 'bad'); }
+    });
+    $('[data-sp-save]', root).addEventListener('click', async () => {
+      const body = {}; $$('[data-sp]', root).forEach((i) => { body[i.dataset.sp] = i.value; });
+      const r = $('[data-sp-result]', root);
+      try { const x = await guard('/reseller/support', { method: 'PUT', params: { userId: state.userId }, body }); r.className = 'live-result good'; r.textContent = x.support ? 'Saved. Your customers see this under Help & support.' : 'Removed.'; }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
     $('[data-ask]', root)?.addEventListener('click', () => {
       const af = $('[data-askform]', root); af.classList.remove('hidden');
       af.innerHTML = `<div class="plan-grid"><label class="admin-field"><span>How many credits?</span><input type="number" data-f="amount" min="1" max="1000" step="1" inputmode="numeric" value="20"></label><label class="admin-field"><span>Note (optional)</span><input type="text" data-f="note" maxlength="200" placeholder="e.g. 12 renewals this week"></label></div>
