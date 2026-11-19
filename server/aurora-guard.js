@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.31.0';
+const VERSION = '1.32.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2674,6 +2674,33 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, request: publicRequest(entry) });
   }
 
+  // ----- Playback quality (guard 1.32.0): the app reports how each viewing went; kept for 14 days per customer -----
+  if (url.pathname === '/quality' && req.method === 'POST') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    if (overLimit('quality', me.Id, 120, 3600000)) return send(res, 429, { error: 'Too many reports.' });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const n = (v, max) => { const x = Math.round(Number(v)); return Number.isFinite(x) ? Math.max(0, Math.min(max, x)) : 0; };
+    const live = body.kind === 'live';
+    if (!live && body.kind !== 'vod') return send(res, 400, { error: 'Unknown kind.' });
+    const qs = store.quality || (store.quality = {});
+    const q = qs[me.Id] || (qs[me.Id] = { days: {}, last: {} });
+    const d = q.days[dayKey()] || (q.days[dayKey()] = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } });
+    if (live) {
+      const starts = n(body.starts, 500);
+      d.live.min += n(body.watchMin, 1440); d.live.stalls += n(body.stalls, 1000); d.live.starts += starts; d.live.startMs += n(body.startAvgMs, 120000) * starts;
+      d.live.startMax = Math.max(d.live.startMax, n(body.startMaxMs, 600000)); d.live.slow += n(body.slow, 500); d.live.failed += n(body.failed, 500);
+    } else {
+      d.vod.min += n(body.watchMin, 1440); d.vod.stalls += n(body.stalls, 1000); d.vod.stallSec += n(body.stallSec, 86400);
+    }
+    q.last = { at: Date.now(), app: cleanText(body.app, 40) || (q.last && q.last.app) || '', buffer: ['small', 'medium', 'large'].includes(body.buffer) ? body.buffer : (q.last && q.last.buffer) || '', kbps: live && n(body.kbps, 1000000) ? n(body.kbps, 1000000) : (q.last && q.last.kbps) || 0 };
+    const keep = dayKey(Date.now() - 13 * 86400000);
+    for (const k of Object.keys(q.days)) if (k < keep) delete q.days[k];
+    saveStore();
+    return send(res, 200, { ok: true });
+  }
+
   if (url.pathname === '/maintenance' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
     if (!me) return send(res, 401, { error: 'Not signed in' });
@@ -3747,6 +3774,40 @@ async function handle(req, res) {
     rec.updated = Date.now();
     recordAudit(auditBy, rec.remind ? `Set reminders for ${user.Name} to ${rec.remind.join(', ')} days before the end` : `Reminders for ${user.Name} follow the default`); saveStore();
     return send(res, 200, { ok: true, remind: rec.remind || null, remindDefault: remindDefault() });
+  }
+  // How this customer's viewing has gone for the last 7 days, next to everyone else's (guard 1.32.0).
+  const qm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/quality$/);
+  if (qm && req.method === 'GET') {
+    const sum = (q, from) => {
+      const t = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } };
+      for (const [day, d] of Object.entries((q && q.days) || {})) {
+        if (day < from) continue;
+        for (const k of Object.keys(t.live)) t.live[k] = k === 'startMax' ? Math.max(t.live[k], d.live[k] || 0) : t.live[k] + (d.live[k] || 0);
+        for (const k of Object.keys(t.vod)) t.vod[k] += d.vod[k] || 0;
+      }
+      return t;
+    };
+    const shape = (t) => ({
+      live: { minutes: t.live.min, stalls: t.live.stalls, stallsPerHour: t.live.min >= 5 ? round2(t.live.stalls / (t.live.min / 60)) : null, starts: t.live.starts, avgStartSec: t.live.starts ? round2(t.live.startMs / t.live.starts / 1000) : null, slowStarts: t.live.slow, failed: t.live.failed },
+      vod: { minutes: t.vod.min, stalls: t.vod.stalls, bufferingPct: t.vod.min >= 5 ? round2(t.vod.stallSec / (t.vod.min * 60) * 100) : null } });
+    const from = dayKey(Date.now() - 6 * 86400000), all = store.quality || {};
+    const mine = all[qm[1]], me7 = sum(mine, from), everyone = sum({ days: Object.values(all).reduce((acc, u) => { for (const [day, d] of Object.entries(u.days || {})) { const a = acc[day] || (acc[day] = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } }); for (const k of Object.keys(a.live)) a.live[k] = k === 'startMax' ? Math.max(a.live[k], d.live[k] || 0) : a.live[k] + (d.live[k] || 0); for (const k of Object.keys(a.vod)) a.vod[k] += d.vod[k] || 0; } return acc; }, {}) }, from);
+    const s = shape(me7), ev = shape(everyone), last = (mine && mine.last) || {};
+    // Plain words for what to try, from the numbers.
+    const hints = [];
+    if (s.live.failed > 0) hints.push("Some channels stopped working for them: that points at the TV provider, not at their device or internet.");
+    if (s.live.stallsPerHour != null && s.live.stallsPerHour >= 2) {
+      if (last.buffer && last.buffer !== 'large') hints.push('They buffer a lot on live channels with the buffer on ' + last.buffer + '. Ask them to set Settings → Playback → Live TV buffer → Large.');
+      if (last.kbps && last.kbps < 4000) hints.push('Their stream speed is low (' + (last.kbps / 1000).toFixed(1) + ' Mbit/s). Their internet or Wi-Fi is the likely cause: try a cable or sit closer to the router.');
+      else if (ev.live.stallsPerHour != null && ev.live.stallsPerHour < s.live.stallsPerHour / 2) hints.push('Most customers buffer much less than this one, so look at their device, Wi-Fi or router first.');
+      else hints.push('Everyone buffers about this much: the TV provider is probably struggling at busy times.');
+    }
+    if (s.live.avgStartSec != null && s.live.avgStartSec > 8) hints.push('Channels take a long time to start for them (' + s.live.avgStartSec + ' s on average).');
+    if (s.vod.bufferingPct != null && s.vod.bufferingPct >= 3) hints.push('Movies and shows buffer (' + s.vod.bufferingPct + '% of the time). Their internet may be too slow for the quality chosen.');
+    const days = Object.entries((mine && mine.days) || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([day, d]) => ({ day, liveMin: d.live.min, stalls: d.live.stalls, starts: d.live.starts, avgStartSec: d.live.starts ? round2(d.live.startMs / d.live.starts / 1000) : null, vodMin: d.vod.min, vodStalls: d.vod.stalls }));
+    let device = '';
+    try { const ss = activeByUser(await sessionsShared()).get(qm[1]); if (ss) device = [...ss.values()].sort((a, b) => b.at - a.at).map((x) => `${x.name} (${x.client})`)[0] || ''; } catch { /* Emby didn't answer: no device shown */ }
+    return send(res, 200, { reported: !!mine && Object.keys(mine.days || {}).length > 0, since: from, you: s, everyone: ev, last: { at: last.at || 0, app: last.app || '', buffer: last.buffer || '', kbps: last.kbps || 0, device }, hints, days });
   }
   // The default for everyone who has no list of their own.
   if (url.pathname === '/remind-default' && (req.method === 'PUT' || req.method === 'GET')) {

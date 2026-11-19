@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.32.0
+
+- Playback quality. The app (Android, Fire TV and iPhone) now reports a few numbers after each viewing: minutes watched, stalls, how fast channels started, stream speed, the Live TV buffer setting, failed channels, and the same for movies and shows. No titles are sent. The Guard keeps 14 days per customer (`POST /quality`, signed-in customer for themselves, 120 a minute at most). Admin -> Users -> a customer shows a "Playback quality" card for the last 7 days next to everyone else's average, with plain-words hints (use the Large buffer, slow stream speed, provider trouble). `GET /limits/:id/quality`, administrators only.
+
 ## 1.31.0
 
 - Resellers can see what their own customers are watching right now. `GET /reseller/watching` returns, for the signed-in reseller's customers only, each playing title (movie, show and episode, or live channel), the device, and whether it is paused. Emby sessions plus Aurora's own live player (from the once-a-minute provider connection count). The reseller website and the in-app Reseller panel show a "Watching now" card and a green line on each customer, refreshed every 20 seconds. Other resellers' customers, and customers' own accounts, are refused.

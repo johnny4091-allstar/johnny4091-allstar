@@ -2921,6 +2921,9 @@
       playLog.add({ kind: 'live-failed', title: stats.failedName || ch?.name || '', error: stats.failedCode ? `provider answered ${stats.failedCode}` : 'no picture', count: stats.failed });
       appLog.add('warn', `Live TV: ${stats.failed} ${stats.failed === 1 ? 'channel' : 'channels'} stopped working (last ${stats.failedName || '?'}${stats.failedCode ? ', provider answered ' + stats.failedCode : ''})`);
     }
+    if (stats && (stats.minutes > 0 || stats.starts > 0)) {
+      reportQuality({ kind: 'live', watchMin: stats.minutes, stalls: stats.stalls, starts: stats.starts, startAvgMs: stats.startAvg, startMaxMs: stats.startMax, slow: stats.startSlow, failed: stats.failed, kbps: stats.startKbps, buffer: stats.buffer });
+    }
     if (!ch) return;
     rememberChannel(ch);
     updateRecentRow();
@@ -8634,6 +8637,10 @@
         <p class="muted">Only switch this on for adults. They see a locked Adult row in Live TV and choose a 4-digit PIN to open it. It never shows in the iPhone or Apple TV apps. Switching it on or off also clears their PIN. Tag which categories are adult in Admin → Live TV.</p>
         <div class="live-result" data-adult-result></div>
       </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && isAdmin() ? `<section class="admin-card">
+        <h2>Playback quality <small>last 7 days</small></h2>
+        <div data-quality><div class="spinner"></div></div>
+      </section>` : ''}
       ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
         <h2>Renewal reminders</h2>
         <p class="muted">${esc(user.Name)} sees a notice in the app when their plan is this many days from ending. ${lim?.remind ? '' : 'Right now they follow the default.'}</p>
@@ -8693,6 +8700,25 @@
       catch (e) { ev.target.checked = !on; say('[data-mod-result]', e.status === 404 ? 'Update Aurora Guard to 1.27.0 first.' : esc(e.message), 'bad'); }
       ev.target.disabled = false;
     });
+    // Playback quality: how this customer's viewing went, next to everyone else's.
+    const qbox = $('[data-quality]', body);
+    if (qbox) guard(`/limits/${userId}/quality`).then((q) => {
+      if (!qbox.isConnected) return;
+      if (!q.reported) { qbox.innerHTML = '<p class="muted">Nothing reported yet. The numbers arrive after this customer updates to the newest app and watches something.</p>'; return; }
+      const ago = q.last.at ? timeAgo(q.last.at) : '';
+      const sec = (v) => (v == null ? '–' : `${v} s`), per = (v) => (v == null ? '–' : `${v}/hour`), pct = (v) => (v == null ? '–' : `${v}%`);
+      const live = q.you.live, vod = q.you.vod, all = q.everyone;
+      const hrs = (m) => (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${m} min`);
+      qbox.innerHTML = `<div class="stat-grid">
+          ${statTile('Live buffering', per(live.stallsPerHour), `everyone: ${per(all.live.stallsPerHour)}`)}
+          ${statTile('Channel start', sec(live.avgStartSec), `everyone: ${sec(all.live.avgStartSec)}`)}
+          ${statTile('Movies and shows buffering', pct(vod.bufferingPct), `everyone: ${pct(all.vod.bufferingPct)}`)}
+          ${statTile('Watched', hrs(live.minutes + vod.minutes), `${hrs(live.minutes)} live`)}
+        </div>
+        <p class="muted">${[q.last.device && `Device: ${esc(q.last.device)}`, q.last.app && `App: ${esc(q.last.app)}`, q.last.buffer && `Live TV buffer: ${esc(q.last.buffer)}`, q.last.kbps && `Stream speed: ${(q.last.kbps / 1000).toFixed(1)} Mbit/s`, live.failed > 0 && `${live.failed} channel${live.failed === 1 ? '' : 's'} stopped working`, ago && `Last report ${esc(ago)}`].filter(Boolean).join(' · ')}</p>
+        ${q.hints.length ? `<div class="admin-card-note"><strong>What to try</strong><ul>${q.hints.map((h) => `<li>${esc(h)}</li>`).join('')}</ul></div>` : '<p class="muted">Nothing stands out: their viewing looks normal.</p>'}
+        <details><summary>Day by day</summary><div class="admin-list">${q.days.map((d) => `<div class="admin-row"><div class="admin-row-main">${esc(d.day)}<div class="muted">Live ${hrs(d.liveMin)} · ${d.stalls} stalls · channels start in ${d.avgStartSec == null ? '–' : d.avgStartSec + ' s'} · movies and shows ${hrs(d.vodMin)}, ${d.vodStalls} stalls</div></div></div>`).join('')}</div></details>`;
+    }).catch((e) => { if (qbox.isConnected) qbox.innerHTML = `<p class="muted">${esc(e.message || 'Could not load.')} Update Aurora Guard to 1.32.0 for this.</p>`; });
     $('[data-remind-save]', body)?.addEventListener('click', async () => {
       const days = parseRemindDays($('[data-remind]', body).value);
       if (!days) return say('[data-remind-result]', 'Type 1 to 5 numbers of days, like 10, 5, 2.', 'bad');
@@ -10447,8 +10473,15 @@
 
   // How a viewing went (the Aurora player counts the stalls). A rough session goes into the app log as a warning,
   // so it reaches the admins with the automatic reports, and lowers the quality used for the next few plays.
+  // Tell the guard how a viewing went (a few numbers, no titles), so an admin can see which customers buffer and why.
+  function reportQuality(payload) {
+    if (!guardEnabled || !state.userId) return;
+    const app = `${nav.tv ? 'TV · ' : ''}${/Android/i.test(navigator.userAgent) ? 'Android' : /iPhone|iPad/i.test(navigator.userAgent) ? 'iPhone' : 'Web'}`;
+    guard('/quality', { method: 'POST', body: { ...payload, app }, params: { userId: state.userId } }).catch(() => { /* best effort */ });
+  }
   function noteStreamHealth(s, r) {
     const watched = r.watchedMs || 0, stalledMs = r.stalledMs || 0, stalls = r.stalls || 0;
+    if (watched >= 30000) reportQuality({ kind: 'vod', watchMin: Math.round(watched / 60000), stalls, stallSec: Math.round(stalledMs / 1000) });
     const pct = watched ? Math.round((stalledMs / watched) * 1000) / 10 : 0;
     const rough = stalls >= 3 || pct >= 3;
     if (rough) playLog.add({ kind: 'stalling', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, stalls, stalledSec: Math.round(stalledMs / 1000), pct, watchedMin: Math.round(watched / 60000), bitrate: s.bitrate || 0 });
