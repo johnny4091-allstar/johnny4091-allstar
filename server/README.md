@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.31.0
+
+- Resellers can see what their own customers are watching right now. `GET /reseller/watching` returns, for the signed-in reseller's customers only, each playing title (movie, show and episode, or live channel), the device, and whether it is paused. Emby sessions plus Aurora's own live player (from the once-a-minute provider connection count). The reseller website and the in-app Reseller panel show a "Watching now" card and a green line on each customer, refreshed every 20 seconds. Other resellers' customers, and customers' own accounts, are refused.
+
 ## 1.30.0
 
 Backup streams for channels.

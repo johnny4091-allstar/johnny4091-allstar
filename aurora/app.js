@@ -8053,6 +8053,9 @@
       ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
         <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
         <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
+      <section class="admin-card"><h2>Watching now <small data-wcount>0</small></h2>
+        <p class="muted">What your customers are playing right now. It updates by itself every 20 seconds.</p>
+        <div class="admin-list" data-watchlist><p class="muted">Nobody is watching right now.</p></div></section>
       <section class="admin-card"><h2>My customers <small data-count></small></h2>
         <div class="res-tools"><input type="search" class="st-note-input" data-search placeholder="Search name, username, email, phone, note" autocomplete="off">
           <select class="st-note-input" data-sort aria-label="Sort"><option value="days">Ending soonest first</option><option value="name">Name A–Z</option><option value="new">Newest first</option><option value="plan">Plan</option></select></div>
@@ -8195,11 +8198,30 @@
     };
     const sorters = { days: (a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999), name: (a, b) => (a.full || a.name).localeCompare(b.full || b.name), new: (a, b) => (b.created || 0) - (a.created || 0), plan: (a, b) => (a.planName || '').localeCompare(b.planName || '') || (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999) };
     const visible = () => d.customers.filter(matches).sort(sorters[view.sort] || sorters.days);
+    // ----- Watching now: what this reseller's own customers are playing, refreshed every 20 s while this page is open -----
+    let watching = {}, watchTimer = null;
+    const watchLine = (w) => `${w.paused ? 'Paused ' : ''}${w.kind === 'live' ? 'Live: ' + w.title : w.title + (w.episode ? ' · ' + w.episode : '')}${w.device ? ' on ' + w.device : ''}`;
+    const nowText = (id) => ((watching[id] || []).length ? `<span class="live-dot"></span>${esc(watching[id].map(watchLine).join(' · '))}` : '');
+    const paintWatch = (list) => {
+      watching = {}; for (const w of list) (watching[w.userId] ||= []).push(w);
+      const box = $('[data-watchlist]', root); if (!box) return;
+      $('[data-wcount]', root).textContent = list.length;
+      const ids = Object.keys(watching);
+      box.innerHTML = ids.length ? ids.map((id) => { const c = d.customers.find((x) => x.id === id); return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(c ? c.full || c.name : 'Customer')}</strong><div class="res-now">${nowText(id)}</div></div></div>`; }).join('') : '<p class="muted">Nobody is watching right now.</p>';
+      $$('[data-now]', root).forEach((n) => { n.innerHTML = nowText(n.dataset.now); });
+    };
+    const pollWatch = async () => {
+      if (!isCurrent() || !root.isConnected) { clearInterval(watchTimer); return; }
+      if (document.hidden) return;
+      try { const r = await guard('/reseller/watching', { params: { userId: state.userId } }); if (isCurrent()) paintWatch(r.watching || []); } catch { /* an older Guard has no such page: show nothing */ }
+    };
+    watchTimer = setInterval(pollWatch, 20000); pollWatch();
     const cRow = (c) => {
       const st = statusOf(c), cost = (d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits;
       return `<div class="res-row" data-c="${esc(c.id)}"><div class="res-av ${st.cls}">${esc((c.full || c.name).trim().charAt(0).toUpperCase() || '?')}</div>
         <div class="res-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${st.cls}">${esc(st.label)}</span>
-          <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>
+          <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div>
+          <div class="res-now" data-now="${esc(c.id)}">${nowText(c.id)}</div></div>
         <div class="res-end">${esc(leftText(c))}${c.expires && !c.expired ? `<small>${esc(fmtDay(c.expires))}</small>` : ''}</div>
         <div class="plan-actions"><button class="btn btn-gray" data-renew>Renew${cost != null ? ' · ' + cost : ''}</button><button class="btn btn-gray" data-details>Details</button></div></div>`;
     };
