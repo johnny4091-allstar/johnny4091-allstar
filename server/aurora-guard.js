@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.33.0';
+const VERSION = '1.34.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -82,6 +82,8 @@ function loadConfig() {
     exitOnCertError: false,
     intervalSeconds: 60,
     activeWindowMinutes: 5,
+    // Set to true (and restart the guard) to remove a forgotten Reseller PIN. Then set it back to false.
+    resetResellerPin: false,
     // Admin -> Sharing: flag an account seen on this many different networks in a week, or watching from two networks at once.
     sharingNetworks: 4,
     sharingSimultaneousMinutes: 10,
@@ -274,6 +276,40 @@ function saveStore() {
     }
   }
 }
+// ---------- Reseller PIN (guard 1.34.0) ----------
+// A 4-digit PIN in front of Admin -> Resellers and the credit requests, so another administrator you add can't open them.
+// It is tied to each administrator's own sign-in (their Emby token), is asked again after 30 quiet minutes, and 5 wrong tries lock it for 15 minutes.
+if (cfg.resetResellerPin && store.resellerPin) { delete store.resellerPin; saveStore(); log('The Reseller PIN was removed (resetResellerPin is on in config.json: set it back to false).'); }
+const PIN_IDLE_MS = 30 * 60000, pinUnlocked = new Map(), pinTries = new Map();
+const tokenKey = (token) => crypto.createHash('sha256').update(String(token || '')).digest('hex').slice(0, 32);
+function pinHash(pin, salt) { return crypto.scryptSync(String(pin), salt, 32).toString('hex'); }
+function pinIsUnlocked(token) {
+  if (!store.resellerPin) return true;
+  const k = tokenKey(token), until = pinUnlocked.get(k);
+  if (!until || until < Date.now()) { pinUnlocked.delete(k); return false; }
+  pinUnlocked.set(k, Date.now() + PIN_IDLE_MS); // each use keeps it open
+  return true;
+}
+// Checks a PIN with the try limit: 5 wrong tries per sign-in, 10 per internet address and 30 in all, then 15 minutes of waiting
+// (signing in again gives a new token, so the address and the overall count matter too). Returns { ok } or { error, wait, wrong }.
+function pinCheck(token, pin, ip) {
+  const now = Date.now(), keys = [[tokenKey(token), 5], ['ip:' + String(ip || ''), 10], ['all', 30]];
+  for (const [k] of keys) { const t = pinTries.get(k); if (t && t.until > now) return { error: `Too many wrong tries. Wait ${Math.ceil((t.until - now) / 60000)} minute${Math.ceil((t.until - now) / 60000) === 1 ? '' : 's'}.`, wait: true }; }
+  const rec = store.resellerPin;
+  let good = false;
+  if (rec && /^\d{4}$/.test(String(pin))) { try { good = crypto.timingSafeEqual(Buffer.from(pinHash(pin, rec.salt), 'hex'), Buffer.from(rec.hash, 'hex')); } catch { good = false; } }
+  if (good) { pinTries.delete(tokenKey(token)); return { ok: true }; }
+  let lockedNow = false;
+  for (const [k, max] of keys) {
+    const t = pinTries.get(k) && pinTries.get(k).since > now - 3600000 ? pinTries.get(k) : { n: 0, until: 0, since: now };
+    t.n++; if (t.n >= max) { t.until = now + 15 * 60000; t.n = 0; t.since = now; lockedNow = true; }
+    pinTries.set(k, t);
+  }
+  if (pinTries.size > 500) pinTries.delete(pinTries.keys().next().value);
+  return { error: lockedNow ? 'Too many wrong tries. Wait 15 minutes.' : 'That PIN is not right.', wrong: true };
+}
+const PIN_LOCKED_PATH = /^\/(resellers(\/|$)|credit-requests(\/|$))/;
+
 // ---------- Channel reports and the TV provider's API ----------
 // The provider's API key is set from Aurora's Admin screen and kept ONLY here (data/provider.json, readable by the
 // administrators of this PC). It is never sent back to any app: Admin sees whether a key is set and its last 4 characters.
@@ -3269,6 +3305,35 @@ async function handle(req, res) {
 
   // Who changed what: every change made through the admin endpoints is written down with the admin's name (the app sends it).
   const auditBy = mod ? `${mod.Name} (moderator)`.slice(0, 40) : String(url.searchParams.get('by') || req.headers['x-aurora-user'] || '').replace(/[^\p{L}\p{N} ._'-]/gu, '').trim().slice(0, 40) || 'an admin';
+  // Reseller PIN (guard 1.34.0): its own routes, and the lock on the Resellers tab and credit requests.
+  if (url.pathname === '/reseller-pin' && req.method === 'GET') return send(res, 200, { set: !!store.resellerPin, unlocked: pinIsUnlocked(token) });
+  if (url.pathname === '/reseller-pin/unlock' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (!store.resellerPin) return send(res, 200, { ok: true, unlocked: true });
+    const c = pinCheck(token, body.pin, ip);
+    if (!c.ok) { if (c.wrong) recordAudit(auditBy, 'Entered a wrong Reseller PIN'); return send(res, c.wait ? 429 : 403, { error: c.error }); }
+    pinUnlocked.set(tokenKey(token), Date.now() + PIN_IDLE_MS);
+    return send(res, 200, { ok: true, unlocked: true });
+  }
+  if (url.pathname === '/reseller-pin/lock' && req.method === 'POST') { pinUnlocked.delete(tokenKey(token)); return send(res, 200, { ok: true }); }
+  if (url.pathname === '/reseller-pin' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (store.resellerPin) { const c = pinCheck(token, body.current, ip); if (!c.ok) return send(res, c.wait ? 429 : 403, { error: c.wrong ? 'The current PIN is not right.' : c.error }); }
+    if (body.pin === null) {
+      if (!store.resellerPin) return send(res, 200, { ok: true, set: false });
+      delete store.resellerPin; pinUnlocked.clear(); recordAudit(auditBy, 'Removed the Reseller PIN'); saveStore();
+      return send(res, 200, { ok: true, set: false });
+    }
+    if (!/^\d{4}$/.test(String(body.pin || ''))) return send(res, 400, { error: 'The PIN must be exactly 4 digits.' });
+    const had = !!store.resellerPin, salt = crypto.randomBytes(16).toString('hex');
+    store.resellerPin = { salt, hash: pinHash(body.pin, salt), at: Date.now(), by: auditBy };
+    pinUnlocked.clear(); pinUnlocked.set(tokenKey(token), Date.now() + PIN_IDLE_MS); // whoever sets it is let in
+    recordAudit(auditBy, had ? 'Changed the Reseller PIN' : 'Set a Reseller PIN'); saveStore();
+    return send(res, 200, { ok: true, set: true });
+  }
+  if (!mod && store.resellerPin && PIN_LOCKED_PATH.test(url.pathname) && !pinIsUnlocked(token)) return send(res, 423, { error: 'Enter the Reseller PIN to open this.', pinRequired: true });
   if (url.pathname === '/audit' && req.method === 'POST') {
     let body;
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
@@ -3472,6 +3537,7 @@ async function handle(req, res) {
     const tickets = (store.tickets || []).filter((t) => t.status === 'open' && t.unseen).length;
     const low = Object.values(resellerList()).filter((r) => r.status === 'active' && r.credits <= cfg.resellerLowCredits).map((r) => ({ id: r.id, name: r.name, credits: r.credits }));
     if (mod) return send(res, 200, { total: tickets, extensions: 0, creditRequests: 0, tickets, lowResellers: [] });
+    if (store.resellerPin && !pinIsUnlocked(token)) return send(res, 200, { total: pendingExt + tickets, extensions: pendingExt, creditRequests: 0, tickets, lowResellers: [], locked: true }); // credit requests wait behind the Reseller PIN
     return send(res, 200, { total: pendingExt + requests + tickets + low.length, extensions: pendingExt, creditRequests: requests, tickets, lowResellers: low });
   }
 

@@ -2085,3 +2085,6 @@ html.tv .tm-preview { width: 320px; }
 /* Reseller panel: playback quality and devices under a customer */
 .res-extra { margin: 10px 0; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.1); }
 .res-extra ul { margin: 6px 0 0 18px; padding: 0; }
+
+/* Reseller PIN */
+.pin-input { max-width: 160px; letter-spacing: .5em; text-align: center; font-size: 1.4rem; }

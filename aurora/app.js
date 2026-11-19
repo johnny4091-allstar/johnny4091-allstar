@@ -7297,12 +7297,51 @@
   // pay for creating and renewing their own customers. Here the admin adds resellers, sets what they can sell and adds or removes credits.
   async function adminResellers(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Resellers');
+    // The Reseller PIN (guard 1.34.0): a 4-digit PIN in front of this tab, so another administrator can't open it.
+    let pinState = null;
+    try { pinState = await guard('/reseller-pin'); } catch { pinState = null; } // an older guard has no PIN
+    if (!isCurrent()) return;
+    const askPin = () => {
+      body.innerHTML = `<section class="admin-card pin-card"><h2>Reseller PIN</h2><p class="muted">Enter the 4-digit PIN to open the Resellers tab.</p>
+        <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
+        <div class="m-actions"><button class="btn btn-white" data-pin-go>Unlock</button></div><div class="live-result" data-pin-result></div></section>`;
+      const input = $('[data-pin]', body), out = $('[data-pin-result]', body);
+      const go = async () => {
+        if (!/^\d{4}$/.test(input.value)) { out.className = 'live-result bad'; out.textContent = 'Type the 4 digits.'; return; }
+        try { await guard('/reseller-pin/unlock', { method: 'POST', body: { pin: input.value } }); if (isCurrent()) adminResellers(body, isCurrent); }
+        catch (e) { input.value = ''; out.className = 'live-result bad'; out.textContent = e.message; autoFocus(input); }
+      };
+      input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); if (input.value.length === 4) go(); });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+      $('[data-pin-go]', body).addEventListener('click', go);
+      autoFocus(input);
+    };
+    if (pinState && pinState.set && !pinState.unlocked) { askPin(); return; }
     let d, plans;
     try { [d, plans] = await Promise.all([guard('/resellers'), guard('/plans').then((x) => x.plans || [])]); } catch (e) {
+      if (e.status === 423) { if (isCurrent()) askPin(); return; }
       if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Resellers</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.10.0 to use resellers (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
       return;
     }
     if (!isCurrent()) return;
+    const pinHandlers = () => {
+      if (!pinState) return;
+      const say = (t, cls = '') => { const r = $('[data-pin-set-result]', body); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.textContent = t; } };
+      const digits = (el) => el && el.addEventListener('input', () => { el.value = el.value.replace(/\D/g, '').slice(0, 4); });
+      digits($('[data-pin-cur]', body)); digits($('[data-pin-new]', body));
+      $('[data-pin-save]', body)?.addEventListener('click', async () => {
+        const pin = $('[data-pin-new]', body).value, current = $('[data-pin-cur]', body)?.value || '';
+        if (!/^\d{4}$/.test(pin)) return say('The PIN must be exactly 4 digits.', 'bad');
+        try { await guard('/reseller-pin', { method: 'PUT', body: { pin, current } }); toast(pinState.set ? 'PIN changed' : 'PIN set', 2500); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); }
+      });
+      $('[data-pin-off]', body)?.addEventListener('click', async () => {
+        const current = $('[data-pin-cur]', body).value;
+        if (!/^\d{4}$/.test(current)) return say('Type the current PIN first.', 'bad');
+        try { await guard('/reseller-pin', { method: 'PUT', body: { pin: null, current } }); toast('PIN removed', 2500); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); }
+      });
+      $('[data-pin-lock]', body)?.addEventListener('click', async () => { try { await guard('/reseller-pin/lock', { method: 'POST', body: {} }); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); } });
+    };
+    queueMicrotask(pinHandlers);
     const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
     const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
         <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>
@@ -7311,7 +7350,13 @@
     const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
         <div class="muted">${esc(e.by)} · balance ${e.balance}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
     const viaResellers = d.resellers.reduce((n, r) => n + r.customers, 0);
-    body.innerHTML = `
+    const pinCard = pinState ? `<section class="admin-card"><h2>Reseller PIN <small>${pinState.set ? 'on' : 'off'}</small></h2>
+        <p class="muted">${pinState.set ? 'Other administrators have to type this 4-digit PIN to open Resellers and credit requests. It is asked again after 30 quiet minutes.' : 'Set a 4-digit PIN so another administrator you add can\'t open Resellers or credit requests. Do it before you add anyone.'}</p>
+        <div class="plan-grid"><label class="admin-field${pinState.set ? '' : ' hidden'}"><span>Current PIN</span><input type="password" class="st-note-input" data-pin-cur inputmode="numeric" maxlength="4" autocomplete="off"></label>
+          <label class="admin-field"><span>${pinState.set ? 'New PIN' : 'PIN'} (4 digits)</span><input type="password" class="st-note-input" data-pin-new inputmode="numeric" maxlength="4" autocomplete="off"></label></div>
+        <div class="m-actions"><button class="btn btn-white" data-pin-save>${pinState.set ? 'Change PIN' : 'Set PIN'}</button>${pinState.set ? '<button class="btn btn-gray" data-pin-off>Remove PIN</button><button class="btn btn-gray" data-pin-lock>Lock now</button>' : ''}</div>
+        <div class="live-result" data-pin-set-result></div></section>` : '';
+    body.innerHTML = `${pinCard}
       <div class="stat-grid">
         ${statTile('Resellers', d.resellers.length, `${d.resellers.filter((r) => r.status === 'active').length} active`)}
         ${statTile('Credits held', d.totalCredits, 'across all resellers')}
@@ -7956,15 +8001,15 @@
       return;
     }
     let inbox, reqs, tickets;
-    try { [inbox, reqs, tickets] = await Promise.all([guard('/admin-inbox'), guard('/credit-requests'), guard('/support')]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="live-result bad">${guardTooOld(e, 'the Inbox')}</p></section>`; return; }
+    try { [inbox, reqs, tickets] = await Promise.all([guard('/admin-inbox'), guard('/credit-requests').catch((e) => { if (e.status === 423) return { requests: [], locked: true }; throw e; }), guard('/support')]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="live-result bad">${guardTooOld(e, 'the Inbox')}</p></section>`; return; }
     if (!isCurrent()) return;
     const pending = reqs.requests.filter((x) => x.status === 'pending');
     const open = tickets.tickets.filter((t) => t.status === 'open');
     body.innerHTML = `
       <div class="stat-grid">${statTile('Waiting for you', inbox.total, '', inbox.total ? 'bad' : '')}${statTile('Credit requests', inbox.creditRequests, '')}${statTile('Support messages', inbox.tickets, 'not answered')}${statTile('Time requests', inbox.extensions, 'customers')}</div>
-      <section class="admin-card"><h2>Credit requests</h2><div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
+      <section class="admin-card"><h2>Credit requests</h2>${reqs.locked ? '<p class="muted">Credit requests are behind the Reseller PIN. Open <a href="#/admin?tab=resellers">Resellers</a> and enter it to see them.</p>' : ''}<div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
           <div class="muted">${x.note ? '"' + esc(x.note) + '" · ' : ''}has ${x.balance} now · ${esc(timeAgo(x.at))}</div></div>
-          <div class="plan-actions"><button class="btn btn-white" data-ok>Approve ${x.amount}</button><button class="btn btn-gray" data-no>Decline</button></div></div>`).join('') || '<p class="muted">No credit requests.</p>'}</div></section>
+          <div class="plan-actions"><button class="btn btn-white" data-ok>Approve ${x.amount}</button><button class="btn btn-gray" data-no>Decline</button></div></div>`).join('') || (reqs.locked ? '' : '<p class="muted">No credit requests.</p>')}</div></section>
       <section class="admin-card"><h2>Other things waiting</h2><div class="admin-list">
         <div class="admin-row"><div class="admin-row-main"><strong>${open.length} open support ${open.length === 1 ? 'message' : 'messages'}</strong></div><a class="btn btn-gray" href="#/admin?tab=support">Open Support</a></div>
         <div class="admin-row"><div class="admin-row-main"><strong>${inbox.extensions} customer ${inbox.extensions === 1 ? 'request' : 'requests'} for more time</strong></div><a class="btn btn-gray" href="#/admin?tab=users">Open Users</a></div>
