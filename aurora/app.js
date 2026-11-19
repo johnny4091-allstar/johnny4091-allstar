@@ -949,7 +949,7 @@
     state.userId = user.Id;
     state.user = user;
     // The account's policy decides whether it is an administrator: read it fresh (in the background) when the sign-in did not bring it.
-    if (!user.Policy) api(`/Users/${user.Id}`).then((u) => { if (state.userId === user.Id && u?.Policy) { const was = isAdmin(); state.user = { ...state.user, ...u }; if (was !== isAdmin()) route(); } }).catch(() => {});
+    if (!user.Policy) api(`/Users/${user.Id}`).then((u) => { if (state.userId === user.Id && u?.Policy) { const was = isAdmin(); state.user = { ...state.user, ...u }; if (was !== isAdmin()) { applyKidsUi(); route(); } } }).catch(() => {});
     access.okUntil = 0;
     if (fresh) {
       const blocked = await checkAccess(user, 'signin');
@@ -5080,7 +5080,7 @@
       const ok = document.execCommand('copy'); t.remove(); return !!ok;
     } catch { return false; }
   }
-  const exemptFromLimits = (user) => (user?.Policy ? user.Policy.IsAdministrator === true : ADMIN_NAMES.includes((user?.Name || '').toLowerCase()));
+  const exemptFromLimits = (user) => user?.Policy?.IsAdministrator === true || ADMIN_NAMES.includes((user?.Name || '').toLowerCase());
 
   // The devices (unique DeviceIds) signed in to an account that talked to Emby in the last few minutes,
   // newest first. Uses Emby's session list.
@@ -5792,10 +5792,10 @@
   // ---------- Admin dashboard ----------
   // Only the owner's account sees it. Emby itself also refuses these admin calls for anyone who
   // isn't a server administrator, so the name check only decides who sees the menu item.
-  // Who is an administrator is decided by Emby (the account's administrator switch), so it changes the moment you change it there or
-  // with Admin -> Users. The names are only a fallback for the rare moment the app does not have the account's policy yet.
+  // An administrator is any account Emby marks as one (so it changes the moment you change it in Emby or with Admin -> Users), plus the
+  // two owner accounts below, which always see the Admin menu (as before).
   const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
-  const isAdmin = () => { const pol = state.user?.Policy; return pol ? pol.IsAdministrator === true : ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase()); };
+  const isAdmin = () => state.user?.Policy?.IsAdministrator === true || ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
   // A moderator (guard 1.27.0): an ordinary account the admin flagged. It gets only these Admin pages, and the guard refuses everything else.
   const MOD_TABS = ['inbox', 'support', 'feedback', 'announce', 'requests', 'reports', 'channels', 'sports', 'problems', 'activity', 'usage', 'sharing'];
   const isMod = () => !!state.isMod && !isAdmin();

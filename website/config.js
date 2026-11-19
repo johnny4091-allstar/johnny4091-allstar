@@ -7,7 +7,7 @@ window.AURORA_SITE = {
   // The TestFlight link for the iPhone and iPad app. Leave blank to hide that card.
   testflightUrl: 'https://testflight.apple.com/join/appxqJyp',
   // The code people type into the Downloader app on their TV.
-  downloaderCode: '2873179',
+  downloaderCode: '3643447',
   // Address of Aurora in a browser, for "Open on the web". Leave blank to hide that card.
   webAppUrl: '',
   // How to reach you (an email address or a phone number). Leave blank to hide the "Questions?" box.
