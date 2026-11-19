@@ -402,6 +402,15 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.33.0
+
+More ways for a reseller to look after their own customers (all limited to the customers that reseller made):
+
+- Playback quality: `GET /reseller/customers/:id/quality`, the same report an administrator sees in Admin -> Users.
+- Devices: `GET /reseller/customers/:id/devices` lists where a customer is signed in, and `POST /reseller/customers/:id/device-remove` (`{ deviceId }`) signs out and removes just that one.
+- Notices: `GET/POST /reseller/notices` and `DELETE /reseller/notices/:id`. A notice shows at the top of the app for that reseller's customers only, 1 hour to 14 days, up to 5 at a time (an announcement with the audience set to the reseller).
+- Contact details: `PUT /reseller/support` (name, phone, WhatsApp, email, a short note). `/account` returns them as `support` to that reseller's customers (a sub-reseller with none shows the reseller above), and the app shows them under Help & support with WhatsApp, call and email buttons.
+
 ## 1.32.0
 
 - Playback quality. The app (Android, Fire TV and iPhone) now reports a few numbers after each viewing: minutes watched, stalls, how fast channels started, stream speed, the Live TV buffer setting, failed channels, and the same for movies and shows. No titles are sent. The Guard keeps 14 days per customer (`POST /quality`, signed-in customer for themselves, 120 a minute at most). Admin -> Users -> a customer shows a "Playback quality" card for the last 7 days next to everyone else's average, with plain-words hints (use the Large buffer, slow stream speed, provider trouble). `GET /limits/:id/quality`, administrators only.

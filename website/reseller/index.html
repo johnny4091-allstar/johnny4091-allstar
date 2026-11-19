@@ -52,6 +52,9 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 .cust .nm { font-weight:800; } .cust .meta { color:var(--muted); font-size:.85rem; }
 .tag { display:inline-block; padding:3px 9px; border-radius:999px; font-size:.7rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-left:6px; vertical-align:middle; }
 .tag.on { background:rgba(70,211,105,.15); color:var(--green); } .tag.soon { background:rgba(255,212,121,.14); color:var(--amber); } .tag.exp { background:rgba(229,56,79,.15); color:#ff8d9b; }
+.pbox { margin-top:10px; padding:12px; border-radius:12px; background:rgba(255,255,255,.04); border:1px solid var(--line); flex-basis:100%; }
+.pbox ul { margin:6px 0 0 18px; padding:0; } .pbox li { margin:4px 0; }
+.prow { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 0; border-top:1px solid var(--line); } .prow:first-of-type { border-top:0; }
 .livedot { display:inline-block; width:8px; height:8px; margin-right:7px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(70,211,105,.6); animation:livepulse 1.8s infinite; vertical-align:middle; }
 @keyframes livepulse { 70% { box-shadow:0 0 0 7px rgba(70,211,105,0); } 100% { box-shadow:0 0 0 0 rgba(70,211,105,0); } }
 @media (prefers-reduced-motion: reduce) { .livedot { animation:none; } }
@@ -170,6 +173,23 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <p class="msg" id="nmsg" role="status" hidden></p>
     </div>
 
+    <div class="tools"><h2>Your customers' app</h2></div>
+    <div class="card" id="noticecard">
+      <h2>Send a notice to your customers</h2><p class="sub">It shows at the top of the app for your customers only, for as long as you choose. Good for maintenance, price changes or new channels.</p>
+      <div class="grid"><div class="full"><label for="nt-text">Message (200 characters)</label><input id="nt-text" maxlength="200" placeholder="e.g. Aurora will restart tonight at 10pm. Back in 10 minutes."></div>
+        <div><label for="nt-level">Look</label><select id="nt-level"><option value="info">Information</option><option value="warn">Heads up</option><option value="bad">Problem</option></select></div>
+        <div><label for="nt-hours">Show it for</label><select id="nt-hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option></select></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn red" id="nt-send" type="button">Send</button></div><p class="msg" id="nt-msg" role="status" hidden></p>
+      <h3 style="margin:16px 0 6px;font-size:1rem">Showing now</h3><div id="nt-list"></div>
+    </div>
+    <div class="card" id="supportcard" style="margin-top:16px">
+      <h2>Your contact details</h2><p class="sub">Your customers see these under Help &amp; support in the app, so they reach you with questions. Leave a box empty to hide it.</p>
+      <div class="grid"><div><label for="sp-name">Name</label><input id="sp-name" maxlength="40" placeholder="e.g. Alpha Support"></div><div><label for="sp-phone">Phone</label><input id="sp-phone" maxlength="30" inputmode="tel" placeholder="+1 555 123 4567"></div>
+        <div><label for="sp-wa">WhatsApp number</label><input id="sp-wa" maxlength="30" inputmode="tel" placeholder="+15551234567"></div><div><label for="sp-email">Email</label><input id="sp-email" maxlength="80" inputmode="email" placeholder="help@example.com"></div>
+        <div class="full"><label for="sp-note">A short note</label><input id="sp-note" maxlength="120" placeholder="e.g. Replies 9am to 9pm"></div></div>
+      <div class="row" style="margin-top:12px"><button class="btn red" id="sp-save" type="button">Save</button></div><p class="msg" id="sp-msg" role="status" hidden></p>
+    </div>
+
     <div class="tools"><h2>Watching now <span class="tag on" id="wcount">0</span></h2></div>
     <div class="card" id="watchcard"><p class="sub">What your customers are watching right now. It updates by itself every 20 seconds.</p><div id="watchlist" aria-live="polite"></div></div>
 
@@ -246,8 +266,8 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div><div class="nowp" data-u="' + esc(c.id) + '">' + nowText(c.id) + '</div></div>' +
         '<div class="meta" style="text-align:right">' + esc(c.planName || '') + '<br>' + esc(ends) + '</div></div>' +
         '<div class="act"><select class="rp" aria-label="Renew plan">' + planOptions() + '</select><button class="btn red sm renew" type="button">Renew</button><button class="btn line sm pw" type="button">Reset password</button>' +
-        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm danger del" type="button">Delete</button>' +
-        (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div></div>';
+        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm pq" type="button" title="Is it their internet, their app settings or the provider?">Playback quality</button><button class="btn line sm dv" type="button" title="See where they are signed in and remove one device">Devices</button><button class="btn line sm danger del" type="button">Delete</button>' +
+        (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div><div class="pbox" hidden></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
       top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
@@ -277,6 +297,45 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.querySelector('.cm').onclick = function () {
         var text = renewalMessage(c.full || c.name, c.expires);
         copyText(text).then(function (ok) { say(ok ? 'Copied. Paste it into Messenger, Text or WhatsApp: ' + text : 'Could not copy here. Copy this: ' + text, !ok); });
+      };
+      var pbox = el.querySelector('.pbox');
+      function showBox(kind, html) { pbox.hidden = false; pbox.setAttribute('data-kind', kind); pbox.innerHTML = html; }
+      function qualityHtml(q) {
+        if (!q.reported) return '<p class="meta">Nothing reported yet. The numbers arrive after this customer updates to the newest app and watches something.</p>';
+        var l = q.you.live, v = q.you.vod, a = q.everyone, last = q.last || {};
+        function per(x) { return x == null ? '–' : x + '/hour'; } function sec(x) { return x == null ? '–' : x + ' s'; } function pct(x) { return x == null ? '–' : x + '%'; }
+        var rows = [['Live buffering', per(l.stallsPerHour), 'everyone: ' + per(a.live.stallsPerHour)], ['Channel start', sec(l.avgStartSec), 'everyone: ' + sec(a.live.avgStartSec)], ['Movies and shows buffering', pct(v.bufferingPct), 'everyone: ' + pct(a.vod.bufferingPct)]];
+        var facts = [last.device && 'Device: ' + last.device, last.app && 'App: ' + last.app, last.buffer && 'Live TV buffer: ' + last.buffer, last.kbps && 'Stream speed: ' + (last.kbps / 1000).toFixed(1) + ' Mbit/s', l.failed > 0 && l.failed + ' channel' + (l.failed === 1 ? '' : 's') + ' stopped working'].filter(Boolean);
+        return '<strong>Playback quality, last 7 days</strong>' + rows.map(function (r) { return '<div class="prow"><span>' + esc(r[0]) + '</span><b>' + esc(r[1]) + '</b><span class="meta">' + esc(r[2]) + '</span></div>'; }).join('') +
+          (facts.length ? '<p class="meta">' + esc(facts.join(' · ')) + '</p>' : '') +
+          (q.hints.length ? '<strong>What to try</strong><ul>' + q.hints.map(function (h) { return '<li>' + esc(h) + '</li>'; }).join('') + '</ul>' : '<p class="meta">Nothing stands out: their viewing looks normal.</p>');
+      }
+      el.querySelector('.pq').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 'q') { pbox.hidden = true; return; }
+        showBox('q', '<p class="meta">Loading...</p>');
+        api('GET', '/reseller/customers/' + encodeURIComponent(c.id) + '/quality').then(function (j) {
+          if (j.__status !== 200) return showBox('q', '<p class="meta">' + esc(j.error || 'Could not load it. Your provider may need to update Aurora Guard.') + '</p>');
+          showBox('q', qualityHtml(j));
+        }).catch(function () { showBox('q', '<p class="meta">Could not reach Aurora.</p>'); });
+      };
+      function loadDevices() {
+        api('GET', '/reseller/customers/' + encodeURIComponent(c.id) + '/devices').then(function (j) {
+          if (j.__status !== 200) return showBox('d', '<p class="meta">' + esc(j.error || 'Could not load it. Your provider may need to update Aurora Guard.') + '</p>');
+          var ds = j.devices || [];
+          showBox('d', '<strong>Signed in on ' + ds.length + ' device' + (ds.length === 1 ? '' : 's') + '</strong>' + (ds.length ? ds.map(function (d) {
+            return '<div class="prow"><span>' + esc(d.name) + (d.app ? ' <span class="meta">· ' + esc(d.app) + '</span>' : '') + (d.active ? ' <span class="tag on">Now</span>' : '') + '<br><span class="meta">Last seen ' + esc(d.last ? new Date(d.last).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'unknown') + '</span></span><button class="btn line sm danger rmdev" type="button" data-id="' + esc(d.id) + '">Remove</button></div>';
+          }).join('') : '<p class="meta">No devices.</p>'));
+          var bs = pbox.querySelectorAll('.rmdev');
+          for (var i = 0; i < bs.length; i++) bs[i].onclick = function () {
+            var b = this; if (!confirm('Remove this device? It is signed out and the customer has to sign in again there.')) return;
+            b.disabled = true;
+            api('POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/device-remove', { deviceId: b.getAttribute('data-id') }).then(function (r) { if (r.__status === 200) { say('Device removed.'); loadDevices(); } else { b.disabled = false; say(r.error || 'That did not work.', true); } });
+          };
+        }).catch(function () { showBox('d', '<p class="meta">Could not reach Aurora.</p>'); });
+      }
+      el.querySelector('.dv').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 'd') { pbox.hidden = true; return; }
+        showBox('d', '<p class="meta">Loading...</p>'); loadDevices();
       };
       var del = el.querySelector('.del');
       del.onclick = function () { del.textContent = 'Tap again to delete'; del.onclick = function () { act(del, 'DELETE', '/reseller/customers/' + encodeURIComponent(c.id), null, function () { openId = null; reload(); }); }; };
@@ -428,12 +487,45 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
   function startWatching() { clearInterval(watchTimer); pollWatching(); watchTimer = setInterval(pollWatching, 20000); }
   document.addEventListener('visibilitychange', function () { if (!document.hidden) pollWatching(); });
 
+  // ----- Notices and contact details for the customers' app -----
+  function loadNotices() {
+    api('GET', '/reseller/notices').then(function (j) {
+      if (j.__status !== 200) { $('nt-list').innerHTML = '<div class="empty">' + esc(j.error || 'Could not load.') + '</div>'; return; }
+      var ns = j.notices || [];
+      $('nt-list').innerHTML = ns.length ? ns.map(function (n) { return '<div class="wrow"><span>' + esc(n.text) + '</span><div class="meta">Until ' + esc(new Date(n.expires).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })) + ' <button class="btn line sm danger" type="button" data-nid="' + esc(n.id) + '">Remove</button></div></div>'; }).join('') : '<div class="empty">Nothing showing.</div>';
+      var bs = $('nt-list').querySelectorAll('[data-nid]');
+      for (var i = 0; i < bs.length; i++) bs[i].onclick = function () { var b = this; b.disabled = true; api('DELETE', '/reseller/notices/' + encodeURIComponent(b.getAttribute('data-nid'))).then(function () { loadNotices(); }); };
+    }).catch(function () { $('nt-list').innerHTML = '<div class="empty">Could not reach Aurora.</div>'; });
+  }
+  $('nt-send').onclick = function () {
+    var b = this, text = $('nt-text').value.trim();
+    if (!text) return msg($('nt-msg'), 'Write the message first.', 'err');
+    b.disabled = true;
+    api('POST', '/reseller/notices', { text: text, level: $('nt-level').value, hours: Number($('nt-hours').value) }).then(function (j) {
+      b.disabled = false;
+      if (j.__status !== 200) return msg($('nt-msg'), j.error || 'That did not work.', 'err');
+      $('nt-text').value = ''; msg($('nt-msg'), 'Sent. Your customers see it the next time they open the app.', 'ok'); loadNotices();
+    }).catch(function () { b.disabled = false; msg($('nt-msg'), 'Could not reach Aurora.', 'err'); });
+  };
+  function paintSupport() {
+    var s = (me && me.support) || {};
+    $('sp-name').value = s.name || ''; $('sp-phone').value = s.phone || ''; $('sp-wa').value = s.whatsapp || ''; $('sp-email').value = s.email || ''; $('sp-note').value = s.note || '';
+  }
+  $('sp-save').onclick = function () {
+    var b = this; b.disabled = true;
+    api('PUT', '/reseller/support', { name: $('sp-name').value, phone: $('sp-phone').value, whatsapp: $('sp-wa').value, email: $('sp-email').value, note: $('sp-note').value }).then(function (j) {
+      b.disabled = false;
+      if (j.__status !== 200) return msg($('sp-msg'), j.error || 'That did not work.', 'err');
+      if (me) me.support = j.support; msg($('sp-msg'), j.support ? 'Saved. Your customers see this under Help & support.' : 'Removed.', 'ok');
+    }).catch(function () { b.disabled = false; msg($('sp-msg'), 'Could not reach Aurora.', 'err'); });
+  };
+
   function reload() {
     return api('GET', '/reseller/me').then(function (j) {
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      me = j; render(); if (!watchTimer) startWatching(); else paintWatching();
+      var first = !watchTimer; me = j; render(); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
     }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 

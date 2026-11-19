@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.32.0';
+const VERSION = '1.33.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -538,6 +538,20 @@ function publicReseller(r) {
   const up = r.parent ? resellerList()[r.parent] : null;
   return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits,
     parent: up ? up.id : '', parentName: up ? up.name : '', subs: subsOf(r).length };
+}
+// The contact details a reseller shows their own customers under Help (guard 1.33.0). A sub-reseller without any shows the one above them.
+const phoneOk = (v) => /^[\d+\-() .]{3,30}$/.test(v);
+function cleanSupport(b) {
+  const out = { name: cleanText(b.name, 40), phone: cleanText(b.phone, 30), whatsapp: cleanText(b.whatsapp, 30), email: cleanText(b.email, 80), note: cleanText(b.note, 120) };
+  if (out.phone && !phoneOk(out.phone)) return { error: 'The phone number can only have digits, spaces, + - ( ) and dots.' };
+  if (out.whatsapp && !phoneOk(out.whatsapp)) return { error: 'The WhatsApp number can only have digits, spaces, + - ( ) and dots.' };
+  if (out.email && !emailOk(out.email)) return { error: 'That email address does not look right.' };
+  return Object.values(out).some(Boolean) ? { support: out } : { support: null };
+}
+function supportOfReseller(id) {
+  const all = resellerList();
+  for (let r = all[id], hops = 0; r && hops < 3; r = r.parent ? all[r.parent] : null, hops++) if (r.status === 'active' && r.support) return { ...r.support, from: r.name };
+  return null;
 }
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
@@ -1361,6 +1375,41 @@ function noteLookupFailure(why) {
   if (Date.now() - lastLookupNote < 60000) return;
   lastLookupNote = Date.now();
   log('Not signed in (/check):', why);
+}
+
+// How a customer's viewing has gone for the last 7 days, next to everyone else's (guard 1.32.0; resellers see their own customers').
+async function qualityReport(userId) {
+  const sum = (q, from) => {
+    const t = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } };
+    for (const [day, d] of Object.entries((q && q.days) || {})) {
+      if (day < from) continue;
+      for (const k of Object.keys(t.live)) t.live[k] = k === 'startMax' ? Math.max(t.live[k], d.live[k] || 0) : t.live[k] + (d.live[k] || 0);
+      for (const k of Object.keys(t.vod)) t.vod[k] += d.vod[k] || 0;
+    }
+    return t;
+  };
+  const shape = (t) => ({
+    live: { minutes: t.live.min, stalls: t.live.stalls, stallsPerHour: t.live.min >= 5 ? round2(t.live.stalls / (t.live.min / 60)) : null, starts: t.live.starts, avgStartSec: t.live.starts ? round2(t.live.startMs / t.live.starts / 1000) : null, slowStarts: t.live.slow, failed: t.live.failed },
+    vod: { minutes: t.vod.min, stalls: t.vod.stalls, bufferingPct: t.vod.min >= 5 ? round2(t.vod.stallSec / (t.vod.min * 60) * 100) : null } });
+  const from = dayKey(Date.now() - 6 * 86400000), all = store.quality || {};
+  const mine = all[userId], me7 = sum(mine, from), everyone = sum({ days: Object.values(all).reduce((acc, u) => { for (const [day, d] of Object.entries(u.days || {})) { const a = acc[day] || (acc[day] = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } }); for (const k of Object.keys(a.live)) a.live[k] = k === 'startMax' ? Math.max(a.live[k], d.live[k] || 0) : a.live[k] + (d.live[k] || 0); for (const k of Object.keys(a.vod)) a.vod[k] += d.vod[k] || 0; } return acc; }, {}) }, from);
+  const s = shape(me7), ev = shape(everyone), last = (mine && mine.last) || {};
+  // Plain words for what to try, from the numbers.
+  const hints = [];
+  if (s.live.failed > 0) hints.push("Some channels stopped working for them: that points at the TV provider, not at their device or internet.");
+  if (s.live.stallsPerHour != null && s.live.stallsPerHour >= 2) {
+    if (last.buffer && last.buffer !== 'large') hints.push('They buffer a lot on live channels with the buffer on ' + last.buffer + '. Ask them to set Settings → Playback → Live TV buffer → Large.');
+    if (last.kbps && last.kbps < 4000) hints.push('Their stream speed is low (' + (last.kbps / 1000).toFixed(1) + ' Mbit/s). Their internet or Wi-Fi is the likely cause: try a cable or sit closer to the router.');
+    else if (ev.live.stallsPerHour != null && ev.live.stallsPerHour < s.live.stallsPerHour / 2) hints.push('Most customers buffer much less than this one, so look at their device, Wi-Fi or router first.');
+    else hints.push('Everyone buffers about this much: the TV provider is probably struggling at busy times.');
+  }
+  if (s.live.avgStartSec != null && s.live.avgStartSec > 8) hints.push('Channels take a long time to start for them (' + s.live.avgStartSec + ' s on average).');
+  if (s.vod.bufferingPct != null && s.vod.bufferingPct >= 3) hints.push('Movies and shows buffer (' + s.vod.bufferingPct + '% of the time). Their internet may be too slow for the quality chosen.');
+  const days = Object.entries((mine && mine.days) || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([day, d]) => ({ day, liveMin: d.live.min, stalls: d.live.stalls, starts: d.live.starts, avgStartSec: d.live.starts ? round2(d.live.startMs / d.live.starts / 1000) : null, vodMin: d.vod.min, vodStalls: d.vod.stalls }));
+  let device = '';
+  try { const ss = activeByUser(await sessionsShared()).get(userId); if (ss) device = [...ss.values()].sort((a, b) => b.at - a.at).map((x) => `${x.name} (${x.client})`)[0] || ''; } catch { /* Emby didn't answer: no device shown */ }
+
+  return { reported: !!mine && Object.keys(mine.days || {}).length > 0, since: from, you: s, everyone: ev, last: { at: last.at || 0, app: last.app || '', buffer: last.buffer || '', kbps: last.kbps || 0, device }, hints, days };
 }
 
 // ---------- Enforcement ----------
@@ -2500,6 +2549,7 @@ async function handle(req, res) {
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
       mod: !!rec?.mod && !me.Policy?.IsAdministrator, // a moderator (guard 1.27.0)
+      support: rec && rec.reseller ? supportOfReseller(rec.reseller) : null, // the reseller's contact details for Help (guard 1.33.0)
       adult: !!rec?.adult, adultReset: rec?.adultReset || 0, // the adult Live TV categories switch (guard 1.23.0); adultReset changes whenever it is switched, which also clears the account's PIN
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
@@ -2722,7 +2772,7 @@ async function handle(req, res) {
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
       return send(res, 200, { reseller: true, name: r.name, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
-        parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r),
+        parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
           const row = (x) => { const c = store.users[x.userId]; return { id: x.id, name: x.name, full: (c && c.contact && c.contact.full) || '', at: x.at, note: x.note || '', wantedPlanId: x.wantedPlanId || null, wantedPlan: planName(x.wantedPlanId),
@@ -2796,6 +2846,44 @@ async function handle(req, res) {
           out.push({ userId: x.userId, kind: 'live', title: x.channel || 'a channel', episode: '', device: x.device || '', client: 'Aurora', paused: false, since: x.since || 0 });
         }
         return send(res, 200, { at: now, watching: out });
+      }
+      // ----- Notices to this reseller's own customers (guard 1.33.0): they show in the customers' app like an announcement -----
+      if (url.pathname === '/reseller/notices' && req.method === 'GET') {
+        const now = Date.now();
+        return send(res, 200, { notices: (store.announcements || []).filter((a) => a.audience && a.audience.type === 'reseller' && a.audience.id === r.id && a.byReseller === r.id && (!a.expires || a.expires > now)) });
+      }
+      if (url.pathname === '/reseller/notices' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const text = cleanText(body.text, 200);
+        if (!text) return send(res, 400, { error: 'Write the message.' });
+        const level = ['info', 'warn', 'bad'].includes(body.level) ? body.level : 'info';
+        const hours = Number(body.hours);
+        if (!Number.isFinite(hours) || hours < 1 || hours > 24 * 14) return send(res, 400, { error: 'It must last between 1 hour and 14 days.' });
+        const live = (store.announcements || []).filter((a) => a.byReseller === r.id && (!a.expires || a.expires > Date.now()));
+        if (live.length >= 5) return send(res, 400, { error: 'You can have 5 notices showing at once. Remove one first.' });
+        if (overLimit('notice', r.id, 10, 3600000)) return send(res, 429, { error: 'That is a lot of notices. Try again in a little while.' });
+        const a = { id: crypto.randomBytes(5).toString('hex'), text, level, at: Date.now(), expires: Date.now() + hours * 3600000, audience: { type: 'reseller', id: r.id }, by, byReseller: r.id };
+        store.announcements = [a, ...(store.announcements || [])].slice(0, 100);
+        recordAudit(by, `Sent a notice to their customers: "${text.slice(0, 60)}"`); saveStore();
+        return send(res, 200, { ok: true, notice: a });
+      }
+      const nm = url.pathname.match(/^\/reseller\/notices\/([\w-]{1,32})$/);
+      if (nm && req.method === 'DELETE') {
+        const a = (store.announcements || []).find((x) => x.id === nm[1]);
+        if (!a || a.byReseller !== r.id) return send(res, 404, { error: 'No such notice.' });
+        store.announcements = store.announcements.filter((x) => x.id !== nm[1]); saveStore();
+        return send(res, 200, { ok: true });
+      }
+      // ----- The contact details this reseller's customers see under Help (guard 1.33.0) -----
+      if (url.pathname === '/reseller/support' && req.method === 'PUT') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const c = cleanSupport(body);
+        if (c.error) return send(res, 400, { error: c.error });
+        if (c.support) r.support = c.support; else delete r.support;
+        recordAudit(by, c.support ? 'Updated the contact details their customers see' : 'Removed the contact details their customers see'); saveStore();
+        return send(res, 200, { ok: true, support: r.support || null });
       }
       // ----- Where this reseller wants alerts (Telegram, Discord, ntfy or a web address) -----
       if (url.pathname === '/reseller/notify' && req.method === 'PUT') {
@@ -2953,13 +3041,34 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|adult|remind))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|adult|remind|quality|devices|device-remove))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
         const rec = store.users[id];
         let body = {};
         if (req.method !== 'GET') { try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+        // How this customer's viewing has been going (guard 1.33.0): the same report an administrator sees.
+        if (act === 'quality' && req.method === 'GET') return send(res, 200, await qualityReport(id));
+        // The devices this customer is signed in on, and removing just one of them (guard 1.33.0).
+        if (act === 'devices' && req.method === 'GET') {
+          let list = [];
+          try { const d = await emby('GET', '/Devices', { query: { UserId: id } }); list = ((d && d.Items) || []).filter((x) => !x.LastUserId || x.LastUserId === id); } catch (e) { return send(res, 502, { error: "Can't reach Emby: " + e.message }); }
+          const live = activeByUser(await sessionsShared()).get(id);
+          return send(res, 200, { devices: list.filter((x) => x.Id !== 'aurora-guard').map((x) => ({ id: x.Id, name: x.Name || 'Device', app: x.AppName || '', last: x.DateLastActivity || '', active: !!(live && live.has(x.Id)) })).sort((a, b) => String(b.last).localeCompare(String(a.last))).slice(0, 30) });
+        }
+        if (act === 'device-remove' && req.method === 'POST') {
+          const did = String(body.deviceId || '');
+          if (!/^[\w.:-]{1,128}$/.test(did) || did === 'aurora-guard') return send(res, 400, { error: 'Choose a device from the list.' });
+          let list = [];
+          try { const d = await emby('GET', '/Devices', { query: { UserId: id } }); list = ((d && d.Items) || []).filter((x) => !x.LastUserId || x.LastUserId === id); } catch (e) { return send(res, 502, { error: "Can't reach Emby: " + e.message }); }
+          const dev = list.find((x) => x.Id === did);
+          if (!dev) return send(res, 404, { error: "That device isn't on this customer's account." });
+          const sessions = ((await emby('GET', '/Sessions')) || []).filter((x) => x.DeviceId === did && x.UserId === id).map((x) => x.Id);
+          try { await signOutDevice({ Id: id, Name: rec.name }, { name: dev.Name || 'Device', client: dev.AppName || '', deviceId: did, sessions }, 'Signed out by your reseller'); } catch (e) { return send(res, 502, { error: 'Could not remove it: ' + e.message }); }
+          recordAudit(by, `Removed the device ${dev.Name || did} from ${rec.name}`); saveStore();
+          return send(res, 200, { ok: true });
+        }
         // The provider's movies and TV shows for this customer (a reseller can always switch it).
         if (act === 'vod' && req.method === 'POST') {
           rec.vod = body.on === true; rec.updated = Date.now();
@@ -3777,38 +3886,7 @@ async function handle(req, res) {
   }
   // How this customer's viewing has gone for the last 7 days, next to everyone else's (guard 1.32.0).
   const qm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/quality$/);
-  if (qm && req.method === 'GET') {
-    const sum = (q, from) => {
-      const t = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } };
-      for (const [day, d] of Object.entries((q && q.days) || {})) {
-        if (day < from) continue;
-        for (const k of Object.keys(t.live)) t.live[k] = k === 'startMax' ? Math.max(t.live[k], d.live[k] || 0) : t.live[k] + (d.live[k] || 0);
-        for (const k of Object.keys(t.vod)) t.vod[k] += d.vod[k] || 0;
-      }
-      return t;
-    };
-    const shape = (t) => ({
-      live: { minutes: t.live.min, stalls: t.live.stalls, stallsPerHour: t.live.min >= 5 ? round2(t.live.stalls / (t.live.min / 60)) : null, starts: t.live.starts, avgStartSec: t.live.starts ? round2(t.live.startMs / t.live.starts / 1000) : null, slowStarts: t.live.slow, failed: t.live.failed },
-      vod: { minutes: t.vod.min, stalls: t.vod.stalls, bufferingPct: t.vod.min >= 5 ? round2(t.vod.stallSec / (t.vod.min * 60) * 100) : null } });
-    const from = dayKey(Date.now() - 6 * 86400000), all = store.quality || {};
-    const mine = all[qm[1]], me7 = sum(mine, from), everyone = sum({ days: Object.values(all).reduce((acc, u) => { for (const [day, d] of Object.entries(u.days || {})) { const a = acc[day] || (acc[day] = { live: { min: 0, stalls: 0, starts: 0, startMs: 0, startMax: 0, slow: 0, failed: 0 }, vod: { min: 0, stalls: 0, stallSec: 0 } }); for (const k of Object.keys(a.live)) a.live[k] = k === 'startMax' ? Math.max(a.live[k], d.live[k] || 0) : a.live[k] + (d.live[k] || 0); for (const k of Object.keys(a.vod)) a.vod[k] += d.vod[k] || 0; } return acc; }, {}) }, from);
-    const s = shape(me7), ev = shape(everyone), last = (mine && mine.last) || {};
-    // Plain words for what to try, from the numbers.
-    const hints = [];
-    if (s.live.failed > 0) hints.push("Some channels stopped working for them: that points at the TV provider, not at their device or internet.");
-    if (s.live.stallsPerHour != null && s.live.stallsPerHour >= 2) {
-      if (last.buffer && last.buffer !== 'large') hints.push('They buffer a lot on live channels with the buffer on ' + last.buffer + '. Ask them to set Settings → Playback → Live TV buffer → Large.');
-      if (last.kbps && last.kbps < 4000) hints.push('Their stream speed is low (' + (last.kbps / 1000).toFixed(1) + ' Mbit/s). Their internet or Wi-Fi is the likely cause: try a cable or sit closer to the router.');
-      else if (ev.live.stallsPerHour != null && ev.live.stallsPerHour < s.live.stallsPerHour / 2) hints.push('Most customers buffer much less than this one, so look at their device, Wi-Fi or router first.');
-      else hints.push('Everyone buffers about this much: the TV provider is probably struggling at busy times.');
-    }
-    if (s.live.avgStartSec != null && s.live.avgStartSec > 8) hints.push('Channels take a long time to start for them (' + s.live.avgStartSec + ' s on average).');
-    if (s.vod.bufferingPct != null && s.vod.bufferingPct >= 3) hints.push('Movies and shows buffer (' + s.vod.bufferingPct + '% of the time). Their internet may be too slow for the quality chosen.');
-    const days = Object.entries((mine && mine.days) || {}).sort((a, b) => (a[0] < b[0] ? 1 : -1)).map(([day, d]) => ({ day, liveMin: d.live.min, stalls: d.live.stalls, starts: d.live.starts, avgStartSec: d.live.starts ? round2(d.live.startMs / d.live.starts / 1000) : null, vodMin: d.vod.min, vodStalls: d.vod.stalls }));
-    let device = '';
-    try { const ss = activeByUser(await sessionsShared()).get(qm[1]); if (ss) device = [...ss.values()].sort((a, b) => b.at - a.at).map((x) => `${x.name} (${x.client})`)[0] || ''; } catch { /* Emby didn't answer: no device shown */ }
-    return send(res, 200, { reported: !!mine && Object.keys(mine.days || {}).length > 0, since: from, you: s, everyone: ev, last: { at: last.at || 0, app: last.app || '', buffer: last.buffer || '', kbps: last.kbps || 0, device }, hints, days });
-  }
+  if (qm && req.method === 'GET') return send(res, 200, await qualityReport(qm[1]));
   // The default for everyone who has no list of their own.
   if (url.pathname === '/remind-default' && (req.method === 'PUT' || req.method === 'GET')) {
     if (req.method === 'GET') return send(res, 200, { days: remindDefault() });
