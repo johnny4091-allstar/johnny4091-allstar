@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.35.0';
+const VERSION = '1.36.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -277,7 +277,7 @@ function saveStore() {
   }
 }
 // ---------- Reseller PIN (guard 1.34.0) ----------
-// A 4-digit PIN in front of Admin -> Resellers and the credit requests, so another administrator you add can't open them.
+// A 4-digit PIN in front of Admin -> Resellers, Users and the credit requests, so another administrator you add can't open them.
 // It is tied to each administrator's own sign-in (their Emby token), is asked again after 30 quiet minutes, and 5 wrong tries lock it for 15 minutes.
 if (cfg.resetResellerPin && store.resellerPin) { delete store.resellerPin; saveStore(); log('The Reseller PIN was removed (resetResellerPin is on in config.json: set it back to false).'); }
 const PIN_IDLE_MS = 30 * 60000, pinUnlocked = new Map(), pinTries = new Map();
@@ -308,7 +308,7 @@ function pinCheck(token, pin, ip) {
   if (pinTries.size > 500) pinTries.delete(pinTries.keys().next().value);
   return { error: lockedNow ? 'Too many wrong tries. Wait 15 minutes.' : 'That PIN is not right.', wrong: true };
 }
-const PIN_LOCKED_PATH = /^\/(resellers(\/|$)|credit-requests(\/|$))/;
+const PIN_LOCKED_PATH = /^\/(resellers(\/|$)|credit-requests(\/|$)|limits(\/|$)|vod\/all$|remind-default$)/; // Resellers, credit requests, and the Users tab's data
 
 // ---------- Channel reports and the TV provider's API ----------
 // The provider's API key is set from Aurora's Admin screen and kept ONLY here (data/provider.json, readable by the
@@ -3312,7 +3312,7 @@ async function handle(req, res) {
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
     if (!store.resellerPin) return send(res, 200, { ok: true, unlocked: true });
     const c = pinCheck(token, body.pin, ip);
-    if (!c.ok) { if (c.wrong) recordAudit(auditBy, 'Entered a wrong Reseller PIN'); return send(res, c.wait ? 429 : 403, { error: c.error }); }
+    if (!c.ok) { if (c.wrong) recordAudit(auditBy, 'Entered a wrong Admin PIN'); return send(res, c.wait ? 429 : 403, { error: c.error }); }
     pinUnlocked.set(tokenKey(token), Date.now() + PIN_IDLE_MS);
     return send(res, 200, { ok: true, unlocked: true });
   }
@@ -3323,17 +3323,17 @@ async function handle(req, res) {
     if (store.resellerPin) { const c = pinCheck(token, body.current, ip); if (!c.ok) return send(res, c.wait ? 429 : 403, { error: c.wrong ? 'The current PIN is not right.' : c.error }); }
     if (body.pin === null) {
       if (!store.resellerPin) return send(res, 200, { ok: true, set: false });
-      delete store.resellerPin; pinUnlocked.clear(); recordAudit(auditBy, 'Removed the Reseller PIN'); saveStore();
+      delete store.resellerPin; pinUnlocked.clear(); recordAudit(auditBy, 'Removed the Admin PIN'); saveStore();
       return send(res, 200, { ok: true, set: false });
     }
     if (!/^\d{4}$/.test(String(body.pin || ''))) return send(res, 400, { error: 'The PIN must be exactly 4 digits.' });
     const had = !!store.resellerPin, salt = crypto.randomBytes(16).toString('hex');
     store.resellerPin = { salt, hash: pinHash(body.pin, salt), at: Date.now(), by: auditBy };
     pinUnlocked.clear(); pinUnlocked.set(tokenKey(token), Date.now() + PIN_IDLE_MS); // whoever sets it is let in
-    recordAudit(auditBy, had ? 'Changed the Reseller PIN' : 'Set a Reseller PIN'); saveStore();
+    recordAudit(auditBy, had ? 'Changed the Admin PIN' : 'Set an Admin PIN'); saveStore();
     return send(res, 200, { ok: true, set: true });
   }
-  if (!mod && store.resellerPin && PIN_LOCKED_PATH.test(url.pathname) && !pinIsUnlocked(token)) return send(res, 423, { error: 'Enter the Reseller PIN to open this.', pinRequired: true });
+  if (!mod && store.resellerPin && PIN_LOCKED_PATH.test(url.pathname) && !pinIsUnlocked(token)) return send(res, 423, { error: 'Enter the Admin PIN to open this.', pinRequired: true });
   if (url.pathname === '/audit' && req.method === 'POST') {
     let body;
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
@@ -3940,7 +3940,7 @@ async function handle(req, res) {
   const adm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/admin$/);
   if (adm && req.method === 'PUT') {
     if (mod) return send(res, 403, { error: "That isn't available to moderators." });
-    if (store.resellerPin && !pinIsUnlocked(token)) return send(res, 423, { error: 'Enter the Reseller PIN to add or remove an administrator.', pinRequired: true });
+    if (store.resellerPin && !pinIsUnlocked(token)) return send(res, 423, { error: 'Enter the Admin PIN to add or remove an administrator.', pinRequired: true });
     let body;
     try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
     let user, me;

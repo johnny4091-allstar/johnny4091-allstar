@@ -5177,15 +5177,39 @@
     });
   }
 
-  // The Reseller PIN (guard 1.34.0): asks for the 4 digits; resolves with them, or null when cancelled.
-  function askPin(text = 'Type the 4-digit Reseller PIN to continue.') {
+  // The Admin PIN (guard 1.34.0, now also in front of Users): a PIN pad in place of a tab, and a check that shows it when the PIN is in the way.
+  function showPinPad(body, isCurrent, what, retry) {
+    body.innerHTML = `<section class="admin-card pin-card"><h2>Admin PIN</h2><p class="muted">Enter the 4-digit PIN to open ${esc(what)}.</p>
+      <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
+      <div class="m-actions"><button class="btn btn-white" data-pin-go>Unlock</button></div><div class="live-result" data-pin-result></div></section>`;
+    const input = $('[data-pin]', body), out = $('[data-pin-result]', body);
+    const go = async () => {
+      if (!/^\d{4}$/.test(input.value)) { out.className = 'live-result bad'; out.textContent = 'Type the 4 digits.'; return; }
+      try { await guard('/reseller-pin/unlock', { method: 'POST', body: { pin: input.value } }); if (isCurrent()) retry(); }
+      catch (e) { input.value = ''; out.className = 'live-result bad'; out.textContent = e.message; autoFocus(input); }
+    };
+    input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); if (input.value.length === 4) go(); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    $('[data-pin-go]', body).addEventListener('click', go);
+    autoFocus(input);
+  }
+  // { locked, st }: locked when the PIN is set and not typed yet (the pad is then already on screen). An older guard has no PIN: not locked.
+  async function pinGate(body, isCurrent, what, retry) {
+    let st = null;
+    try { st = await guard('/reseller-pin'); } catch { return { locked: false, st: null }; }
+    if (!isCurrent()) return { locked: true, st };
+    if (st.set && !st.unlocked) { showPinPad(body, isCurrent, what, retry); return { locked: true, st }; }
+    return { locked: false, st };
+  }
+  // The PIN: asks for the 4 digits; resolves with them, or null when cancelled.
+  function askPin(text = 'Type the 4-digit Admin PIN to continue.') {
     return new Promise((resolve) => {
       const modal = $('#modal'), content = $('#modal-content');
       if (confirmResolve) confirmResolve(false);
       confirmResolve = () => resolve(null);
       modalToken++;
       if (modal.classList.contains('hidden')) rememberFocus('modal');
-      content.innerHTML = `<div class="m-body notice-body"><h2>Reseller PIN</h2><p class="overview">${esc(text)}</p>
+      content.innerHTML = `<div class="m-body notice-body"><h2>Admin PIN</h2><p class="overview">${esc(text)}</p>
         <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
         <div class="m-actions"><button class="btn btn-red" data-act="yes">Continue</button><button class="btn btn-gray" data-act="no">Cancel</button></div></div>`;
       modal.classList.remove('hidden');
@@ -7336,29 +7360,13 @@
   // pay for creating and renewing their own customers. Here the admin adds resellers, sets what they can sell and adds or removes credits.
   async function adminResellers(body, isCurrent) {
     if (!guardEnabled) return needGuard(body, 'Resellers');
-    // The Reseller PIN (guard 1.34.0): a 4-digit PIN in front of this tab, so another administrator can't open it.
-    let pinState = null;
-    try { pinState = await guard('/reseller-pin'); } catch { pinState = null; } // an older guard has no PIN
-    if (!isCurrent()) return;
-    const askPin = () => {
-      body.innerHTML = `<section class="admin-card pin-card"><h2>Reseller PIN</h2><p class="muted">Enter the 4-digit PIN to open the Resellers tab.</p>
-        <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
-        <div class="m-actions"><button class="btn btn-white" data-pin-go>Unlock</button></div><div class="live-result" data-pin-result></div></section>`;
-      const input = $('[data-pin]', body), out = $('[data-pin-result]', body);
-      const go = async () => {
-        if (!/^\d{4}$/.test(input.value)) { out.className = 'live-result bad'; out.textContent = 'Type the 4 digits.'; return; }
-        try { await guard('/reseller-pin/unlock', { method: 'POST', body: { pin: input.value } }); if (isCurrent()) adminResellers(body, isCurrent); }
-        catch (e) { input.value = ''; out.className = 'live-result bad'; out.textContent = e.message; autoFocus(input); }
-      };
-      input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); if (input.value.length === 4) go(); });
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-      $('[data-pin-go]', body).addEventListener('click', go);
-      autoFocus(input);
-    };
-    if (pinState && pinState.set && !pinState.unlocked) { askPin(); return; }
+    // The Admin PIN (guard 1.34.0): a 4-digit PIN in front of this tab, so another administrator can't open it.
+    const gate = await pinGate(body, isCurrent, 'the Resellers tab', () => adminResellers(body, isCurrent));
+    if (!isCurrent() || gate.locked) return;
+    const pinState = gate.st; // an older guard has no PIN: null
     let d, plans;
     try { [d, plans] = await Promise.all([guard('/resellers'), guard('/plans').then((x) => x.plans || [])]); } catch (e) {
-      if (e.status === 423) { if (isCurrent()) askPin(); return; }
+      if (e.status === 423) { if (isCurrent()) showPinPad(body, isCurrent, 'the Resellers tab', () => adminResellers(body, isCurrent)); return; }
       if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Resellers</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.10.0 to use resellers (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
       return;
     }
@@ -7389,8 +7397,8 @@
     const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
         <div class="muted">${esc(e.by)} · balance ${e.balance}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
     const viaResellers = d.resellers.reduce((n, r) => n + r.customers, 0);
-    const pinCard = pinState ? `<section class="admin-card"><h2>Reseller PIN <small>${pinState.set ? 'on' : 'off'}</small></h2>
-        <p class="muted">${pinState.set ? 'Other administrators have to type this 4-digit PIN to open Resellers and credit requests. It is asked again after 30 quiet minutes.' : 'Set a 4-digit PIN so another administrator you add can\'t open Resellers or credit requests. Do it before you add anyone.'}</p>
+    const pinCard = pinState ? `<section class="admin-card"><h2>Admin PIN <small>${pinState.set ? 'on' : 'off'}</small></h2>
+        <p class="muted">${pinState.set ? 'Other administrators have to type this 4-digit PIN to open Resellers, Users and credit requests. It is asked again after 30 quiet minutes.' : 'Set a 4-digit PIN so another administrator you add can\'t open Resellers, Users or credit requests. Do it before you add anyone.'}</p>
         <div class="plan-grid"><label class="admin-field${pinState.set ? '' : ' hidden'}"><span>Current PIN</span><input type="password" class="st-note-input" data-pin-cur inputmode="numeric" maxlength="4" autocomplete="off"></label>
           <label class="admin-field"><span>${pinState.set ? 'New PIN' : 'PIN'} (4 digits)</span><input type="password" class="st-note-input" data-pin-new inputmode="numeric" maxlength="4" autocomplete="off"></label></div>
         <div class="m-actions"><button class="btn btn-white" data-pin-save>${pinState.set ? 'Change PIN' : 'Set PIN'}</button>${pinState.set ? '<button class="btn btn-gray" data-pin-off>Remove PIN</button><button class="btn btn-gray" data-pin-lock>Lock now</button>' : ''}</div>
@@ -8046,7 +8054,7 @@
     const open = tickets.tickets.filter((t) => t.status === 'open');
     body.innerHTML = `
       <div class="stat-grid">${statTile('Waiting for you', inbox.total, '', inbox.total ? 'bad' : '')}${statTile('Credit requests', inbox.creditRequests, '')}${statTile('Support messages', inbox.tickets, 'not answered')}${statTile('Time requests', inbox.extensions, 'customers')}</div>
-      <section class="admin-card"><h2>Credit requests</h2>${reqs.locked ? '<p class="muted">Credit requests are behind the Reseller PIN. Open <a href="#/admin?tab=resellers">Resellers</a> and enter it to see them.</p>' : ''}<div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
+      <section class="admin-card"><h2>Credit requests</h2>${reqs.locked ? '<p class="muted">Credit requests are behind the Admin PIN. Open <a href="#/admin?tab=resellers">Resellers</a> and enter it to see them.</p>' : ''}<div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
           <div class="muted">${x.note ? '"' + esc(x.note) + '" · ' : ''}has ${x.balance} now · ${esc(timeAgo(x.at))}</div></div>
           <div class="plan-actions"><button class="btn btn-white" data-ok>Approve ${x.amount}</button><button class="btn btn-gray" data-no>Decline</button></div></div>`).join('') || (reqs.locked ? '' : '<p class="muted">No credit requests.</p>')}</div></section>
       <section class="admin-card"><h2>Other things waiting</h2><div class="admin-list">
@@ -8506,6 +8514,7 @@
     $$('[data-staff-remove]', body).forEach((b) => b.addEventListener('click', () => { const row = b.closest('[data-staff]'); set(row.dataset.staff, row.dataset.kind, false); }));
   }
   async function adminUsers(body, isCurrent) {
+    if (guardEnabled) { const gate = await pinGate(body, isCurrent, 'Users', () => adminUsers(body, isCurrent)); if (!isCurrent() || gate.locked) return; }
     const params = new URLSearchParams(location.hash.split('?')[1] || '');
     if (params.get('user') === 'new') return adminUserNew(body, isCurrent);
     if (params.get('user')) return adminUserDetail(body, isCurrent, params.get('user'));
@@ -8515,7 +8524,7 @@
       [users, sessions] = await Promise.all([api('/Users'), api('/Sessions', { params: { ActiveWithinSeconds: ACTIVE_WINDOW / 1000 } }).catch(() => [])]);
       users = users || [];
     } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
-    if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { guardError = e; } }
+    if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { if (e.status === 423) { if (isCurrent()) showPinPad(body, isCurrent, 'Users', () => adminUsers(body, isCurrent)); return; } guardError = e; } }
     const ext = g ? await guard('/extensions').catch(() => null) : null;
     const planList = g ? (await guard('/plans').catch(() => null))?.plans || [] : [];
     if (!isCurrent()) return;
@@ -8859,7 +8868,7 @@
       ${guardEnabled && !guardError && isAdmin() ? `<section class="admin-card">
         <h2>Administrator</h2>
         <label class="admin-check"><input type="checkbox" data-admin${user.Policy?.IsAdministrator ? ' checked' : ''}${userId === state.userId ? ' disabled' : ''}> Make ${esc(user.Name)} an administrator</label>
-        <p class="muted">${userId === state.userId ? 'This is you: you can\'t remove your own administrator access.' : 'An administrator sees the whole Admin menu and can change almost anything. Resellers and credits stay behind the Reseller PIN if you set one. For someone who should only answer customers, make them a moderator instead.'} This is Emby's administrator switch, so it also works in Emby.</p>
+        <p class="muted">${userId === state.userId ? 'This is you: you can\'t remove your own administrator access.' : 'An administrator sees the whole Admin menu and can change almost anything. Resellers, Users and credits stay behind the Admin PIN if you set one. For someone who should only answer customers, make them a moderator instead.'} This is Emby's administrator switch, so it also works in Emby.</p>
         <div class="live-result" data-admin-result></div>
       </section>` : ''}
       ${guardEnabled && !guardError && !exempt && isAdmin() ? `<section class="admin-card">

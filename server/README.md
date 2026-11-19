@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.36.0
+
+- The PIN (now called the Admin PIN) also covers the Users tab. While it is set and not typed, `/limits` (the whole Users list and each user's page and changes), `/vod/all` and `/remind-default` answer 423, next to Resellers and credit requests. Devices and the other Admin pages stay open. The app shows a PIN pad in place of the Users tab. Note: an Emby administrator can still open Emby's own dashboard; the PIN protects what Aurora holds (limits, plans, contact details, reminders, resellers, credits).
+
 ## 1.35.0
 
 - Administrators from the app. `PUT /limits/:id/admin` (`{ on }`) turns Emby's administrator switch on or off for an account, from Admin -> Users (the "Admins and moderators" card, or the Administrator switch on a user's page). Behind the Reseller PIN when one is set (answers 423 until it is typed). It refuses to remove your own access, to remove the last administrator, or to make a reseller an administrator; making someone an administrator clears their moderator flag. Written to the audit log.
