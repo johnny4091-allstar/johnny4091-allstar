@@ -948,6 +948,8 @@
   async function selectUser(user, { fresh = false } = {}) {
     state.userId = user.Id;
     state.user = user;
+    // The account's policy decides whether it is an administrator: read it fresh (in the background) when the sign-in did not bring it.
+    if (!user.Policy) api(`/Users/${user.Id}`).then((u) => { if (state.userId === user.Id && u?.Policy) { const was = isAdmin(); state.user = { ...state.user, ...u }; if (was !== isAdmin()) route(); } }).catch(() => {});
     access.okUntil = 0;
     if (fresh) {
       const blocked = await checkAccess(user, 'signin');
@@ -5078,7 +5080,7 @@
       const ok = document.execCommand('copy'); t.remove(); return !!ok;
     } catch { return false; }
   }
-  const exemptFromLimits = (user) => !!user?.Policy?.IsAdministrator || ADMIN_NAMES.includes((user?.Name || '').toLowerCase());
+  const exemptFromLimits = (user) => (user?.Policy ? user.Policy.IsAdministrator === true : ADMIN_NAMES.includes((user?.Name || '').toLowerCase()));
 
   // The devices (unique DeviceIds) signed in to an account that talked to Emby in the last few minutes,
   // newest first. Uses Emby's session list.
@@ -5173,6 +5175,41 @@
       $('[data-act="no"]', content).addEventListener('click', () => done(false));
       autoFocus($('[data-act="no"]', content));
     });
+  }
+
+  // The Reseller PIN (guard 1.34.0): asks for the 4 digits; resolves with them, or null when cancelled.
+  function askPin(text = 'Type the 4-digit Reseller PIN to continue.') {
+    return new Promise((resolve) => {
+      const modal = $('#modal'), content = $('#modal-content');
+      if (confirmResolve) confirmResolve(false);
+      confirmResolve = () => resolve(null);
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      content.innerHTML = `<div class="m-body notice-body"><h2>Reseller PIN</h2><p class="overview">${esc(text)}</p>
+        <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
+        <div class="m-actions"><button class="btn btn-red" data-act="yes">Continue</button><button class="btn btn-gray" data-act="no">Cancel</button></div></div>`;
+      modal.classList.remove('hidden');
+      const input = $('[data-pin]', content);
+      const done = (v) => { confirmResolve = null; closeModal(); resolve(v); };
+      input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && /^\d{4}$/.test(input.value)) done(input.value); });
+      $('[data-act="yes"]', content).addEventListener('click', () => { if (/^\d{4}$/.test(input.value)) done(input.value); else input.focus(); });
+      $('[data-act="no"]', content).addEventListener('click', () => done(null));
+      autoFocus(input);
+    });
+  }
+  // A Guard call that, when the Reseller PIN is in the way (423), asks for it, unlocks, and tries once more.
+  async function guardWithPin(path, opts) {
+    try { return await guard(path, opts); } catch (e) {
+      if (e.status !== 423) throw e;
+      let text;
+      for (let tries = 0; tries < 3; tries++) {
+        const pin = await askPin(text);
+        if (!pin) throw new Error('Cancelled.');
+        try { await guard('/reseller-pin/unlock', { method: 'POST', body: { pin } }); return await guard(path, opts); } catch (e2) { if (e2.status !== 403) throw e2; text = 'That PIN is not right. Try again.'; }
+      }
+      throw new Error('That PIN is not right.');
+    }
   }
 
   async function refreshRequestsConfig() {
@@ -5731,8 +5768,10 @@
   // ---------- Admin dashboard ----------
   // Only the owner's account sees it. Emby itself also refuses these admin calls for anyone who
   // isn't a server administrator, so the name check only decides who sees the menu item.
+  // Who is an administrator is decided by Emby (the account's administrator switch), so it changes the moment you change it there or
+  // with Admin -> Users. The names are only a fallback for the rare moment the app does not have the account's policy yet.
   const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
-  const isAdmin = () => ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
+  const isAdmin = () => { const pol = state.user?.Policy; return pol ? pol.IsAdministrator === true : ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase()); };
   // A moderator (guard 1.27.0): an ordinary account the admin flagged. It gets only these Admin pages, and the guard refuses everything else.
   const MOD_TABS = ['inbox', 'support', 'feedback', 'announce', 'requests', 'reports', 'channels', 'sports', 'problems', 'activity', 'usage', 'sharing'];
   const isMod = () => !!state.isMod && !isAdmin();
@@ -8432,6 +8471,40 @@
     });
   }
 
+  // Administrators and moderators in one place: who they are, remove them, add an account as either at any time (guard 1.35.0).
+  function staffCardHtml(rows) {
+    const admins = rows.filter((r) => r.u.Policy?.IsAdministrator), mods = rows.filter((r) => !r.u.Policy?.IsAdministrator && r.lim?.mod);
+    const pickable = rows.filter((r) => !r.u.Policy?.IsAdministrator && !r.lim?.mod && !r.u.Policy?.IsDisabled);
+    const line = (r, kind) => `<div class="admin-row" data-staff="${esc(r.u.Id)}" data-kind="${kind}"><div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> <span class="pill">${kind === 'admin' ? 'Administrator' : 'Moderator'}</span></div>
+      <div class="plan-actions">${kind === 'admin' && r.u.Id === state.userId ? '<span class="muted">You</span>' : '<button class="btn btn-gray" data-staff-remove>Remove</button>'}</div></div>`;
+    return `<section class="admin-card"><h2>Admins and moderators <small>${admins.length + mods.length}</small></h2>
+      <p class="muted">Administrators see the whole Admin menu. Moderators only answer customers and look at problems. Add an account as either one at any time, and remove it again here.</p>
+      <div class="admin-list" data-staff-list>${admins.map((r) => line(r, 'admin')).join('')}${mods.map((r) => line(r, 'mod')).join('') || ''}</div>
+      <div class="plan-grid"><label class="admin-field"><span>Account</span><select data-staff-user><option value="">Choose an account</option>${pickable.sort((a, b) => a.u.Name.localeCompare(b.u.Name)).map((r) => `<option value="${esc(r.u.Id)}">${esc(r.u.Name)}</option>`).join('')}</select></label>
+        <label class="admin-field"><span>Make them</span><select data-staff-role><option value="mod">A moderator</option><option value="admin">An administrator</option></select></label></div>
+      <div class="m-actions"><button class="btn btn-white" data-staff-add>Add</button></div><div class="live-result" data-staff-result></div></section>`;
+  }
+  function bindStaffCard(body, rows, isCurrent) {
+    const out = $('[data-staff-result]', body); if (!out) return;
+    const say = (html, cls = '') => { out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+    const set = async (id, kind, on) => {
+      const name = rows.find((r) => r.u.Id === id)?.u.Name || 'That account';
+      if (kind === 'admin' && on && !(await confirmAction(`Make ${name} an administrator?`, 'They get the whole Admin menu and can change almost anything. Only do this for someone you trust.', 'Make administrator'))) return;
+      if (kind === 'admin' && !on && !(await confirmAction(`Remove ${name} as an administrator?`, 'They become an ordinary account again and lose the Admin menu.', 'Remove'))) return;
+      try {
+        if (kind === 'admin') await guardWithPin(`/limits/${id}/admin`, { method: 'PUT', body: { on } });
+        else await guard(`/limits/${id}/mod`, { method: 'PUT', body: { on } });
+        toast(on ? `${name} added` : `${name} removed`, 2500);
+        if (isCurrent()) adminUsers(body, isCurrent);
+      } catch (e) { say(e.status === 404 ? 'Update Aurora Guard to 1.35.0 first.' : esc(e.message), 'bad'); }
+    };
+    $('[data-staff-add]', body).addEventListener('click', () => {
+      const id = $('[data-staff-user]', body).value, role = $('[data-staff-role]', body).value;
+      if (!id) { say('Choose an account first.', 'bad'); return; }
+      set(id, role, true);
+    });
+    $$('[data-staff-remove]', body).forEach((b) => b.addEventListener('click', () => { const row = b.closest('[data-staff]'); set(row.dataset.staff, row.dataset.kind, false); }));
+  }
   async function adminUsers(body, isCurrent) {
     const params = new URLSearchParams(location.hash.split('?')[1] || '');
     if (params.get('user') === 'new') return adminUserNew(body, isCurrent);
@@ -8494,6 +8567,7 @@
     if (!filters.includes(filter)) filter = 'all';
     body.innerHTML = `
       ${extensionsCardHtml(ext, planList)}
+      ${guardEnabled && !guardError ? staffCardHtml(rows) : ''}
       ${guardEnabled && !guardError && iptv.config?.type === 'xtream' && iptvOn() ? `<section class="admin-card">
         <h2>Provider movies and TV <small>${rows.filter((r) => !r.exempt && r.lim?.vod).length} of ${rows.filter((r) => !r.exempt).length} customers</small></h2>
         <p class="muted">Switch it on or off for one customer on their page, or for a plan in Admin → Plans. Here you can change everyone at once.</p>
@@ -8530,6 +8604,7 @@
           <div class="admin-row-time">${esc(timeAgo(new Date(a.at)))}</div></div>`).join('') || '<p class="muted">Nothing done yet.</p>'}</div>
       </section>`}`;
     bindExtensions(body, isCurrent);
+    bindStaffCard(body, rows, isCurrent);
     const list = $('.users-list', body);
     // Select mode (bulk edit): tapping a row ticks it instead of opening it.
     let selecting = false;
@@ -8781,6 +8856,12 @@
         <p class="muted">Paste it into Messenger, Text or WhatsApp. Aurora can't send those for you.</p>
         <div class="live-result" data-remind-result></div>
       </section>` : ''}
+      ${guardEnabled && !guardError && isAdmin() ? `<section class="admin-card">
+        <h2>Administrator</h2>
+        <label class="admin-check"><input type="checkbox" data-admin${user.Policy?.IsAdministrator ? ' checked' : ''}${userId === state.userId ? ' disabled' : ''}> Make ${esc(user.Name)} an administrator</label>
+        <p class="muted">${userId === state.userId ? 'This is you: you can\'t remove your own administrator access.' : 'An administrator sees the whole Admin menu and can change almost anything. Resellers and credits stay behind the Reseller PIN if you set one. For someone who should only answer customers, make them a moderator instead.'} This is Emby's administrator switch, so it also works in Emby.</p>
+        <div class="live-result" data-admin-result></div>
+      </section>` : ''}
       ${guardEnabled && !guardError && !exempt && isAdmin() ? `<section class="admin-card">
         <h2>Moderator</h2>
         <label class="admin-check"><input type="checkbox" data-mod${lim?.mod ? ' checked' : ''}> Make ${esc(user.Name)} a moderator</label>
@@ -8815,6 +8896,14 @@
       const on = ev.target.checked; ev.target.disabled = true;
       try { await guard(`/limits/${userId}/adult`, { method: 'PUT', body: { on } }); say('[data-adult-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
       catch (e) { ev.target.checked = !on; say('[data-adult-result]', e.status === 404 ? 'Update Aurora Guard to 1.23.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
+    $('[data-admin]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked;
+      if (on && !(await confirmAction(`Make ${user.Name} an administrator?`, 'They get the whole Admin menu and can change almost anything. Only do this for someone you trust.', 'Make administrator')) || (!on && !(await confirmAction(`Remove ${user.Name} as an administrator?`, 'They become an ordinary account again and lose the Admin menu.', 'Remove')))) { ev.target.checked = !on; return; }
+      ev.target.disabled = true;
+      try { await guardWithPin(`/limits/${userId}/admin`, { method: 'PUT', body: { on } }); say('[data-admin-result]', on ? `${esc(user.Name)} is an administrator now. They see the Admin menu next time Aurora opens.` : `${esc(user.Name)} is not an administrator any more.`, 'good'); user.Policy = { ...(user.Policy || {}), IsAdministrator: on }; }
+      catch (e) { ev.target.checked = !on; say('[data-admin-result]', e.status === 404 ? 'Update Aurora Guard to 1.35.0 first.' : esc(e.message), 'bad'); }
       ev.target.disabled = false;
     });
     $('[data-mod]', body)?.addEventListener('change', async (ev) => {

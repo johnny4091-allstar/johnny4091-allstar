@@ -402,6 +402,11 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.35.0
+
+- Administrators from the app. `PUT /limits/:id/admin` (`{ on }`) turns Emby's administrator switch on or off for an account, from Admin -> Users (the "Admins and moderators" card, or the Administrator switch on a user's page). Behind the Reseller PIN when one is set (answers 423 until it is typed). It refuses to remove your own access, to remove the last administrator, or to make a reseller an administrator; making someone an administrator clears their moderator flag. Written to the audit log.
+- The app now decides who is an administrator from Emby (the account's own administrator switch) instead of a fixed list of names, so a new administrator sees the Admin menu straight away.
+
 ## 1.34.0
 
 - Reseller PIN. A 4-digit PIN in front of Admin -> Resellers and the credit requests, so another administrator you add can't open them. Set it in Admin -> Resellers (do it before you add anyone). The Guard enforces it: `/resellers` and `/credit-requests` answer 423 until the PIN is typed. It is tied to each administrator's own sign-in, asked again after 30 quiet minutes, and kept only as a salted hash. 5 wrong tries per sign-in, 10 per internet address or 30 in all lock it for 15 minutes. Changing or removing it needs the current PIN. Setting, changing, removing and wrong tries go in the audit log. The Inbox shows "behind the Reseller PIN" for credit requests while locked.

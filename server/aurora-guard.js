@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.34.0';
+const VERSION = '1.35.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -3935,6 +3935,32 @@ async function handle(req, res) {
     identityCache.clear();
     recordAudit(auditBy, `${on ? 'Made' : 'Removed'} ${user.Name} ${on ? 'a moderator' : 'as a moderator'}`); saveStore();
     return send(res, 200, { ok: true, mod: !!rec.mod });
+  }
+  // Make an account an Emby administrator, or take that away (guard 1.35.0). Behind the Reseller PIN when one is set.
+  const adm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/admin$/);
+  if (adm && req.method === 'PUT') {
+    if (mod) return send(res, 403, { error: "That isn't available to moderators." });
+    if (store.resellerPin && !pinIsUnlocked(token)) return send(res, 423, { error: 'Enter the Reseller PIN to add or remove an administrator.', pinRequired: true });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user, me;
+    try { user = await emby('GET', `/Users/${adm[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    try { me = await emby('GET', '/Users/Me', { token }); } catch { me = null; }
+    const on = body.on === true, already = !!user.Policy?.IsAdministrator;
+    if (on === already) return send(res, 200, { ok: true, admin: already });
+    if (on) {
+      if (resellerOfUser(user.Id)) return send(res, 400, { error: "A reseller can't also be an administrator." });
+    } else {
+      if (me && me.Id === user.Id) return send(res, 400, { error: "You can't remove your own administrator access." });
+      const admins = ((await emby('GET', '/Users').catch(() => [])) || []).filter((u) => u.Policy?.IsAdministrator && !u.Policy?.IsDisabled);
+      if (admins.filter((u) => u.Id !== user.Id).length < 1) return send(res, 400, { error: 'There has to be at least one administrator.' });
+    }
+    try { await emby('POST', `/Users/${user.Id}/Policy`, { body: { ...(user.Policy || {}), IsAdministrator: on } }); } catch (e) { return send(res, 502, { error: 'Emby would not change it: ' + e.message }); }
+    const rec = store.users[user.Id];
+    if (on && rec && rec.mod) { delete rec.mod; rec.updated = Date.now(); } // an administrator needs no moderator flag
+    adminCache.clear(); identityCache.clear();
+    recordAudit(auditBy, `${on ? 'Made' : 'Removed'} ${user.Name} ${on ? 'an administrator' : 'as an administrator'}`); saveStore();
+    return send(res, 200, { ok: true, admin: on });
   }
   // Reminder days for one customer (guard 1.26.0): { days: [10, 5, 2] }, or { days: null } to use the default.
   const rmm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/remind$/);
