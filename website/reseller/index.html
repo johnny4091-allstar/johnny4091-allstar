@@ -52,6 +52,11 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 .cust .nm { font-weight:800; } .cust .meta { color:var(--muted); font-size:.85rem; }
 .tag { display:inline-block; padding:3px 9px; border-radius:999px; font-size:.7rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; margin-left:6px; vertical-align:middle; }
 .tag.on { background:rgba(70,211,105,.15); color:var(--green); } .tag.soon { background:rgba(255,212,121,.14); color:var(--amber); } .tag.exp { background:rgba(229,56,79,.15); color:#ff8d9b; }
+.livedot { display:inline-block; width:8px; height:8px; margin-right:7px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(70,211,105,.6); animation:livepulse 1.8s infinite; vertical-align:middle; }
+@keyframes livepulse { 70% { box-shadow:0 0 0 7px rgba(70,211,105,0); } 100% { box-shadow:0 0 0 0 rgba(70,211,105,0); } }
+@media (prefers-reduced-motion: reduce) { .livedot { animation:none; } }
+.nowp { margin-top:3px; font-size:.8rem; color:var(--green); } .nowp:empty { display:none; }
+.wrow { padding:9px 0; border-top:1px solid var(--line); } .wrow:first-child { border-top:0; }
 .tag.trial { background:rgba(79,123,255,.2); color:#9db4ff; } .tag.hold { background:rgba(255,255,255,.08); color:var(--muted); }
 .act { display:none; margin-top:12px; padding-top:12px; border-top:1px solid rgba(255,255,255,.07); gap:8px; flex-wrap:wrap; align-items:center; } .cust.open .act { display:flex; }
 .act select { width:auto; } .act .note { width:100%; color:var(--muted); font-size:.85rem; }
@@ -165,6 +170,9 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <p class="msg" id="nmsg" role="status" hidden></p>
     </div>
 
+    <div class="tools"><h2>Watching now <span class="tag on" id="wcount">0</span></h2></div>
+    <div class="card" id="watchcard"><p class="sub">What your customers are watching right now. It updates by itself every 20 seconds.</p><div id="watchlist" aria-live="polite"></div></div>
+
     <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
     <div class="chips" id="chips" role="group" aria-label="Filter"></div>
     <div class="list" id="list" aria-live="polite"></div>
@@ -205,7 +213,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
   }
   function show(inn) { $('login').hidden = inn; $('app').hidden = !inn; $('out').hidden = !inn; }
-  function out(text) { session = null; me = null; keep(); show(false); if (text) { $('lerr').hidden = false; $('lerr').textContent = text; } }
+  function out(text) { session = null; me = null; clearInterval(watchTimer); watchTimer = null; keep(); show(false); if (text) { $('lerr').hidden = false; $('lerr').textContent = text; } }
   function msg(el, text, kind) { el.hidden = !text; el.textContent = text || ''; el.className = 'msg ' + kind; }
   function gen() { var w = ['Blue','Tiger','Maple','River','Cloud','Amber','Falcon','Cedar','Pearl','Comet'], r = new Uint32Array(3); crypto.getRandomValues(r); return w[r[0] % 10] + w[r[1] % 10] + (10 + r[2] % 90); }
 
@@ -235,7 +243,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     rows.forEach(function (c) {
       var s = state(c), el = document.createElement('div'); el.className = 'cust' + (openId === c.id ? ' open' : '');
       var ends = c.expires ? ((c.daysLeft != null && c.daysLeft < 0 ? 'Ended ' : 'Ends ') + fmt(c.expires) + (c.daysLeft != null && c.daysLeft >= 0 ? ' (' + c.daysLeft + ' day' + (c.daysLeft === 1 ? '' : 's') + ')' : '')) : 'No end date';
-      el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div></div>' +
+      el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div><div class="nowp" data-u="' + esc(c.id) + '">' + nowText(c.id) + '</div></div>' +
         '<div class="meta" style="text-align:right">' + esc(c.planName || '') + '<br>' + esc(ends) + '</div></div>' +
         '<div class="act"><select class="rp" aria-label="Renew plan">' + planOptions() + '</select><button class="btn red sm renew" type="button">Renew</button><button class="btn line sm pw" type="button">Reset password</button>' +
         '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm danger del" type="button">Delete</button>' +
@@ -389,12 +397,43 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       list.appendChild(el);
     });
   }
+  // ----- Watching now: refreshed every 20 seconds while this page is open (only this reseller's own customers) -----
+  var watching = {}, watchList = [], watchTimer = null;
+  function watchLine(w) {
+    var what = w.kind === 'live' ? 'Live: ' + w.title : w.title + (w.episode ? ' · ' + w.episode : '');
+    return (w.paused ? 'Paused ' : '') + what + (w.device ? ' on ' + w.device : '');
+  }
+  function nowText(id) {
+    var l = watching[id]; if (!l || !l.length) return '';
+    return '<span class="livedot"></span>' + esc(l.map(watchLine).join(' · '));
+  }
+  function nameOf(id) { var c = (me && me.customers || []).filter(function (x) { return x.id === id; })[0]; return c ? (c.full || c.name) : 'Customer'; }
+  function paintWatching() {
+    watching = {}; watchList.forEach(function (w) { (watching[w.userId] = watching[w.userId] || []).push(w); });
+    var ids = Object.keys(watching), box = $('watchlist');
+    $('wcount').textContent = watchList.length;
+    box.innerHTML = ids.length ? ids.map(function (id) {
+      return '<div class="wrow"><span class="nm">' + esc(nameOf(id)) + '</span><div class="meta"><span class="livedot"></span>' + esc(watching[id].map(watchLine).join(' · ')) + '</div></div>';
+    }).join('') : '<div class="empty">Nobody is watching right now.</div>';
+    var rows = document.querySelectorAll('.nowp[data-u]');
+    for (var i = 0; i < rows.length; i++) rows[i].innerHTML = nowText(rows[i].getAttribute('data-u'));
+  }
+  function pollWatching() {
+    if (!session || document.hidden) return;
+    api('GET', '/reseller/watching').then(function (j) {
+      if (j.__status !== 200) return;
+      watchList = j.watching || []; paintWatching();
+    }).catch(function () { /* try again next time */ });
+  }
+  function startWatching() { clearInterval(watchTimer); pollWatching(); watchTimer = setInterval(pollWatching, 20000); }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) pollWatching(); });
+
   function reload() {
     return api('GET', '/reseller/me').then(function (j) {
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      me = j; render();
+      me = j; render(); if (!watchTimer) startWatching(); else paintWatching();
     }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 

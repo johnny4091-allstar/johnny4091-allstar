@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.30.0';
+const VERSION = '1.31.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2748,6 +2748,27 @@ async function handle(req, res) {
         saveStore();
         try { await enforce(x.userId); } catch (e) { log('Applying', rec.name, 'failed:', e.message); }
         return send(res, 200, { ok: true, credits: r.credits, expires: rec.expires });
+      }
+      // ----- Who is watching right now (guard 1.31.0): this reseller's own customers only -----
+      if (url.pathname === '/reseller/watching' && req.method === 'GET') {
+        let sessions;
+        try { sessions = await sessionsShared(); } catch (e) { return send(res, 502, { error: `Can't reach Emby: ${e.message}` }); }
+        const now = Date.now(), out = [], liveSeen = new Set();
+        for (const s of Array.isArray(sessions) ? sessions : []) {
+          if (!s.UserId || !owns(s.UserId) || !s.NowPlayingItem) continue;
+          if (now - (Date.parse(s.LastActivityDate || 0) || 0) > windowMs()) continue;
+          const it = s.NowPlayingItem, live = it.Type === 'TvChannel' || it.Type === 'LiveTvChannel';
+          const ep = !live && it.SeriesName && it.Name && it.Name !== it.SeriesName ? it.Name : '';
+          out.push({ userId: s.UserId, kind: live ? 'live' : (it.SeriesName ? 'show' : 'movie'), title: live ? (it.Name || 'a channel') : String(it.SeriesName || it.Name || 'Unknown').slice(0, 80), episode: String(ep).slice(0, 80),
+            device: s.DeviceName || '', client: s.Client || '', paused: !!(s.PlayState && s.PlayState.IsPaused) });
+          if (live) liveSeen.add(s.UserId + '|' + (s.DeviceName || ''));
+        }
+        // Live TV in Aurora's own player is not an Emby session: it comes from the once-a-minute count of TV provider connections.
+        for (const x of (connections.streams || [])) {
+          if (x.source !== 'aurora' || !x.userId || !owns(x.userId) || liveSeen.has(x.userId + '|' + x.device)) continue;
+          out.push({ userId: x.userId, kind: 'live', title: x.channel || 'a channel', episode: '', device: x.device || '', client: 'Aurora', paused: false, since: x.since || 0 });
+        }
+        return send(res, 200, { at: now, watching: out });
       }
       // ----- Where this reseller wants alerts (Telegram, Discord, ntfy or a web address) -----
       if (url.pathname === '/reseller/notify' && req.method === 'PUT') {
