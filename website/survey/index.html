@@ -74,24 +74,24 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
   var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, '');
   var $ = function (id) { return document.getElementById(id); };
   var GROUPS = [
-    { t: 'Your overall experience', q: [
-      { id: 'q1', k: 'rate', t: 'Overall, how happy are you with Aurora?', lo: 'Not happy', hi: 'Very happy' },
-      { id: 'q2', k: 'rate', t: 'How easy is the app to use?', lo: 'Confusing', hi: 'Very easy' },
-      { id: 'q3', k: 'rate', t: 'How is the picture and sound quality?', lo: 'Poor', hi: 'Excellent' },
-      { id: 'q4', k: 'rate', t: 'How reliable is live TV?', lo: 'Often fails', hi: 'Always works' },
-      { id: 'q5', k: 'rate', t: 'How do you like the choice of movies and shows?', lo: 'Not enough', hi: 'Plenty' },
-      { id: 'q6', k: 'rate', t: 'How fast does the app open and start playing?', lo: 'Slow', hi: 'Fast' },
-      { id: 'q7', k: 'rate', t: 'How do you feel about the value for the price?', lo: 'Poor value', hi: 'Great value' } ] },
-    { t: 'How you use it', q: [
-      { id: 'q8', k: 'one', t: 'Which device do you use most?', o: ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else'] },
-      { id: 'q9', k: 'one', t: 'How often do you watch?', o: ['Every day', 'A few times a week', 'About once a week', 'Less than that'] },
-      { id: 'q10', k: 'one', t: 'What do you watch the most?', o: ['Live TV', 'Sports', 'Movies', 'TV shows', 'Kids shows'] },
-      { id: 'q11', k: 'one', t: 'How often does the picture freeze or buffer?', o: ['Never', 'Rarely', 'Sometimes', 'Often', 'Almost every time'] },
-      { id: 'q12', k: 'one', t: 'How did you hear about Aurora?', o: ['A friend or family member', 'My provider or reseller', 'The website', 'Social media', 'Somewhere else'] } ] },
-    { t: 'Your ideas', q: [
-      { id: 'q13', k: 'nps', t: 'How likely are you to recommend Aurora to a friend?', lo: 'Not likely', hi: 'Very likely' },
-      { id: 'q14', k: 'text', t: 'What do you like most about Aurora?', ph: 'Anything at all' },
-      { id: 'q15', k: 'text', t: 'What should we fix or add next?', ph: 'A feature, a channel, a problem you hit' } ] }
+    { t: 'How well it works for you', q: [
+      { id: 'q1', k: 'rate', t: 'Overall, how well does Aurora do what you expect for what you pay?', lo: 'Poorly', hi: 'Perfectly' },
+      { id: 'q2', k: 'rate', t: 'How often does the app do what you want on the first try, without a restart, retry or new sign-in?', lo: 'Rarely', hi: 'Always' },
+      { id: 'q3', k: 'rate', t: 'Compared with the service you used before, how are the picture and sound?', lo: 'Much worse', hi: 'Much better' },
+      { id: 'q4', k: 'rate', t: 'How dependable is live TV at busy times, like evenings and big games?', lo: 'Falls apart', hi: 'Rock solid' },
+      { id: 'q5', k: 'rate', t: 'How easy is it to find something good to watch within one minute?', lo: 'Very hard', hi: 'Very easy' },
+      { id: 'q6', k: 'rate', t: 'How quickly does a channel or movie start after you press play?', lo: 'Too slow', hi: 'Instant' },
+      { id: 'q7', k: 'rate', t: 'When something goes wrong, how good is the help you get?', lo: 'No help', hi: 'Fixed fast' } ] },
+    { t: 'What really happens', q: [
+      { id: 'q8', k: 'one', t: 'Which device do you use the most?', o: ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else'] },
+      { id: 'q9', k: 'one', t: 'In a normal week, about how many hours do you watch?', o: ['Under 3 hours', '3 to 10 hours', '10 to 20 hours', 'More than 20 hours'] },
+      { id: 'q10', k: 'one', t: 'In a normal week, how many times does the picture freeze, buffer or stop?', o: ['Never', '1 or 2 times', '3 to 5 times', 'Almost every day', 'Several times every day'] },
+      { id: 'q11', k: 'one', t: 'What is your biggest frustration with Aurora right now?', o: ['Buffering or freezing', 'Channels missing or not working', 'Hard to find things', 'Crashes or sign-in problems', 'Slow or no support', 'The price', 'Nothing, I am happy'] },
+      { id: 'q12', k: 'one', t: 'If a similar service cost less, how likely are you to switch?', o: ['Very unlikely', 'Unlikely', 'Maybe', 'Likely', 'I have already thought about it'] } ] },
+    { t: 'Be straight with us', q: [
+      { id: 'q13', k: 'nps', t: 'How likely are you to recommend Aurora to a friend or family member?', lo: 'Never', hi: 'Definitely' },
+      { id: 'q14', k: 'text', t: 'Think of the last time Aurora let you down. What happened, which channel or show was it, and what time was it?', ph: 'The more detail, the faster we can fix it' },
+      { id: 'q15', k: 'text', t: 'If you could change one thing about Aurora tomorrow, what would it be, and why?', ph: 'A feature, a channel, a problem, anything' } ] }
   ];
   var n = 0, html = '';
   GROUPS.forEach(function (g) {
