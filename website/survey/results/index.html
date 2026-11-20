@@ -50,9 +50,9 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
 (function () {
   var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, all = [];
   try { session = JSON.parse(sessionStorage.getItem('aurora.survey.session') || 'null'); } catch (e) { session = null; }
-  var RATES = { q1: 'Overall happiness', q2: 'Ease of use', q3: 'Picture and sound', q4: 'Live TV reliability', q5: 'Movies and shows', q6: 'Speed', q7: 'Value for price' };
-  var CH = { q8: ['Main device', ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else']], q9: ['How often they watch', ['Every day', 'A few times a week', 'About once a week', 'Less than that']], q10: ['Watch the most', ['Live TV', 'Sports', 'Movies', 'TV shows', 'Kids shows']], q11: ['Freezing or buffering', ['Never', 'Rarely', 'Sometimes', 'Often', 'Almost every time']], q12: ['How they heard', ['A friend or family member', 'My provider or reseller', 'The website', 'Social media', 'Somewhere else']] };
-  var WORDS = { q14: 'Likes most', q15: 'Fix or add next' };
+  var RATES = { q1: 'Does what you pay for', q2: 'Works first time', q3: 'Quality vs before', q4: 'Live TV at busy times', q5: 'Finding something to watch', q6: 'Start speed', q7: 'Help when it goes wrong' };
+  var CH = { q8: ['Main device', ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else']], q9: ['Hours watched a week', ['Under 3 hours', '3 to 10 hours', '10 to 20 hours', 'More than 20 hours']], q10: ['Freezes in a normal week', ['Never', '1 or 2 times', '3 to 5 times', 'Almost every day', 'Several times every day']], q11: ['Biggest frustration', ['Buffering or freezing', 'Channels missing or not working', 'Hard to find things', 'Crashes or sign-in problems', 'Slow or no support', 'The price', 'Nothing, I am happy']], q12: ['Would switch for a cheaper service', ['Very unlikely', 'Unlikely', 'Maybe', 'Likely', 'I have already thought about it']] };
+  var WORDS = { q14: 'The last time it let them down', q15: 'The one thing they would change' };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function api(m, p, b) { var h = {}; if (b) h['Content-Type'] = 'application/json'; if (session) h['X-Emby-Token'] = session.token; if (session && m !== 'GET') p += (p.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
     return fetch(G + p, { method: m, headers: h, body: b ? JSON.stringify(b) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__s = r.status; return j; }); }); }
@@ -63,11 +63,12 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
   function draw() {
     var list = view(), nps = list.map(function (r) { return r.answers.q13; }).filter(function (x) { return typeof x === 'number'; });
     var pro = nps.filter(function (x) { return x >= 9; }).length, det = nps.filter(function (x) { return x <= 6; }).length, score = nps.length ? Math.round((pro - det) / nps.length * 100) : null;
-    var overall = avg(list, 'q1');
+    var overall = avg(list, 'q1'), sw = list.filter(function (r) { return r.answers.q12; }), risk = sw.filter(function (r) { return r.answers.q12 === 'Likely' || r.answers.q12 === 'I have already thought about it'; }).length;
     $('sub').textContent = all.length + ' response' + (all.length === 1 ? '' : 's') + ' in total' + ($('fr').value ? ', ' + list.length + ' from ' + $('fr').value : '') + '.';
     $('tiles').innerHTML = '<div class="card tile"><div class="n">' + list.length + '</div><small>Responses</small></div>' +
       '<div class="card tile"><div class="n">' + (overall.n ? overall.a.toFixed(1) : '-') + '</div><small>Overall happiness (of 5)</small></div>' +
-      '<div class="card tile"><div class="n ' + (score == null ? '' : score >= 30 ? 'pos' : score >= 0 ? 'mid' : 'neg') + '">' + (score == null ? '-' : score) + '</div><small>Recommend score (-100 to 100)</small></div>';
+      '<div class="card tile"><div class="n ' + (score == null ? '' : score >= 30 ? 'pos' : score >= 0 ? 'mid' : 'neg') + '">' + (score == null ? '-' : score) + '</div><small>Recommend score (-100 to 100)</small></div>' +
+      '<div class="card tile"><div class="n ' + (sw.length && risk / sw.length >= .25 ? 'neg' : '') + '">' + (sw.length ? Math.round(risk / sw.length * 100) + '%' : '-') + '</div><small>Likely to switch</small></div>';
     $('rates').innerHTML = Object.keys(RATES).map(function (id) { var x = avg(list, id); return '<div class="row"><span>' + RATES[id] + '</span><div class="track"><i style="width:' + (x.a / 5 * 100) + '%"></i></div><b>' + (x.n ? x.a.toFixed(1) : '-') + '</b></div>'; }).join('') || '';
     $('choices').innerHTML = Object.keys(CH).map(function (id) {
       var opts = CH[id][1], counts = opts.map(function (o) { return list.filter(function (r) { return r.answers[id] === o; }).length; }), tot = counts.reduce(function (a, b) { return a + b; }, 0);
