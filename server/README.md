@@ -402,6 +402,11 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.37.0
+
+- Customer survey. The website's `/survey/` page (15 questions) sends answers to `POST /survey`, which needs no sign-in and is limited to 6 a day per internet address (a hidden field catches robots). Only questions `q1` to `q15` are kept; the last 3000 responses are stored in `store.surveys`.
+- `GET /survey/results` (administrators) returns every response; `DELETE /survey/results?id=` removes one and is written to the audit log. The website's `/survey/results/` page (sign in as an administrator) shows averages, the recommend score, a breakdown by provider, the written answers and a CSV download.
+
 ## 1.36.0
 
 - The PIN (now called the Admin PIN) also covers the Users tab. While it is set and not typed, `/limits` (the whole Users list and each user's page and changes), `/vod/all` and `/remind-default` answer 423, next to Resellers and credit requests. Devices and the other Admin pages stay open. The app shows a PIN pad in place of the Users tab. Note: an Emby administrator can still open Emby's own dashboard; the PIN protects what Aurora holds (limits, plans, contact details, reminders, resellers, credits).

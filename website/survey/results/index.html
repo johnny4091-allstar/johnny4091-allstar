@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Survey Results</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+<script src="../../config.js"></script>
+<style>
+@font-face { font-family:'Inter'; src:url('../../assets/fonts/inter-variable.woff2') format('woff2'); font-weight:100 900; font-display:swap; }
+:root { --bg:#070c1c; --bg-2:#0e1530; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --green:#46d369; --amber:#ffd479; --red:#ff8d9b;
+  --grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; } [hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased; background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
+.wrap { max-width:960px; margin:0 auto; padding:0 max(16px,env(safe-area-inset-left,0px)) 80px; }
+.bar { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:18px 0; flex-wrap:wrap; }
+.bar a.back { color:#cfd6f5; text-decoration:none; font-weight:600; font-size:.85rem; letter-spacing:.06em; text-transform:uppercase; }
+h1 { font-size:clamp(1.5rem,4vw,2rem); margin:6px 0 4px; font-weight:800; } h2 { font-size:1.1rem; margin:28px 0 10px; font-weight:800; }
+.sub { color:var(--muted); margin:0 0 16px; }
+.card { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:18px; }
+label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
+input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; }
+.btn { border:0; border-radius:8px; padding:.65rem 1.2rem; font:700 .92rem var(--font); cursor:pointer; color:#fff; background:var(--grad); } .btn.line { background:none; border:1px solid var(--line); color:#e5e5e5; } .btn.sm { padding:.4rem .8rem; font-size:.8rem; } .btn.danger { color:var(--red); }
+.login { max-width:380px; margin:40px auto; display:grid; gap:14px; } .err { color:var(--red); font-size:.9rem; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:8px 0 6px; }
+.tile .n { font-size:2.2rem; font-weight:800; line-height:1.1; font-variant-numeric:tabular-nums; } .tile small { color:var(--muted); }
+.row { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(0,2fr) 48px; gap:12px; align-items:center; padding:8px 0; border-top:1px solid var(--line); font-size:.92rem; } .row:first-child { border-top:0; }
+.track { height:10px; border-radius:6px; background:var(--line); overflow:hidden; } .track i { display:block; height:100%; background:var(--grad); } .row b { text-align:right; font-variant-numeric:tabular-nums; }
+.tools { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin:14px 0; } .tools > div { min-width:180px; flex:1; }
+.cm { border-top:1px solid var(--line); padding:12px 0; } .cm:first-child { border-top:0; } .cm p { margin:2px 0 6px; white-space:pre-wrap; overflow-wrap:anywhere; } .cm small { color:var(--dim); display:block; }
+.pos { color:var(--green); } .mid { color:var(--amber); } .neg { color:var(--red); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar"><a class="back" href="../../admin/">&larr; Admin</a><span><a class="btn line sm" href="../" style="text-decoration:none">Open the survey</a> <button class="btn line sm" id="out" hidden>Sign out</button></span></div>
+  <div id="login" class="card login"><h1>Survey results</h1><div><label for="lu">Username</label><input id="lu" autocomplete="username"></div><div><label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password"></div><button class="btn" id="go">Sign in</button><div class="err" id="lerr" hidden></div></div>
+  <div id="app" hidden>
+    <h1>Survey results</h1><p class="sub" id="sub"></p>
+    <div class="tools"><div><label for="fr">Provider</label><select id="fr"></select></div><button class="btn line" id="csv">Download CSV</button><button class="btn line" id="rf">Refresh</button></div>
+    <div class="tiles" id="tiles"></div>
+    <h2>Ratings (average out of 5)</h2><div class="card" id="rates"></div>
+    <h2>How people use Aurora</h2><div id="choices"></div>
+    <h2>In their own words</h2><div class="card" id="words"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, all = [];
+  try { session = JSON.parse(sessionStorage.getItem('aurora.survey.session') || 'null'); } catch (e) { session = null; }
+  var RATES = { q1: 'Overall happiness', q2: 'Ease of use', q3: 'Picture and sound', q4: 'Live TV reliability', q5: 'Movies and shows', q6: 'Speed', q7: 'Value for price' };
+  var CH = { q8: ['Main device', ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else']], q9: ['How often they watch', ['Every day', 'A few times a week', 'About once a week', 'Less than that']], q10: ['Watch the most', ['Live TV', 'Sports', 'Movies', 'TV shows', 'Kids shows']], q11: ['Freezing or buffering', ['Never', 'Rarely', 'Sometimes', 'Often', 'Almost every time']], q12: ['How they heard', ['A friend or family member', 'My provider or reseller', 'The website', 'Social media', 'Somewhere else']] };
+  var WORDS = { q14: 'Likes most', q15: 'Fix or add next' };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function api(m, p, b) { var h = {}; if (b) h['Content-Type'] = 'application/json'; if (session) h['X-Emby-Token'] = session.token; if (session && m !== 'GET') p += (p.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
+    return fetch(G + p, { method: m, headers: h, body: b ? JSON.stringify(b) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__s = r.status; return j; }); }); }
+  function show(on) { $('login').hidden = on; $('app').hidden = !on; $('out').hidden = !on; }
+  function signOut(msg) { session = null; try { sessionStorage.removeItem('aurora.survey.session'); } catch (e) {} show(false); if (msg) { $('lerr').hidden = false; $('lerr').textContent = msg; } }
+  function view() { var f = $('fr').value; return all.filter(function (r) { return !f || (r.reseller || '(not given)') === f; }); }
+  function avg(list, id) { var v = list.map(function (r) { return r.answers[id]; }).filter(function (x) { return typeof x === 'number'; }); return { n: v.length, a: v.length ? v.reduce(function (s, x) { return s + x; }, 0) / v.length : 0 }; }
+  function draw() {
+    var list = view(), nps = list.map(function (r) { return r.answers.q13; }).filter(function (x) { return typeof x === 'number'; });
+    var pro = nps.filter(function (x) { return x >= 9; }).length, det = nps.filter(function (x) { return x <= 6; }).length, score = nps.length ? Math.round((pro - det) / nps.length * 100) : null;
+    var overall = avg(list, 'q1');
+    $('sub').textContent = all.length + ' response' + (all.length === 1 ? '' : 's') + ' in total' + ($('fr').value ? ', ' + list.length + ' from ' + $('fr').value : '') + '.';
+    $('tiles').innerHTML = '<div class="card tile"><div class="n">' + list.length + '</div><small>Responses</small></div>' +
+      '<div class="card tile"><div class="n">' + (overall.n ? overall.a.toFixed(1) : '-') + '</div><small>Overall happiness (of 5)</small></div>' +
+      '<div class="card tile"><div class="n ' + (score == null ? '' : score >= 30 ? 'pos' : score >= 0 ? 'mid' : 'neg') + '">' + (score == null ? '-' : score) + '</div><small>Recommend score (-100 to 100)</small></div>';
+    $('rates').innerHTML = Object.keys(RATES).map(function (id) { var x = avg(list, id); return '<div class="row"><span>' + RATES[id] + '</span><div class="track"><i style="width:' + (x.a / 5 * 100) + '%"></i></div><b>' + (x.n ? x.a.toFixed(1) : '-') + '</b></div>'; }).join('') || '';
+    $('choices').innerHTML = Object.keys(CH).map(function (id) {
+      var opts = CH[id][1], counts = opts.map(function (o) { return list.filter(function (r) { return r.answers[id] === o; }).length; }), tot = counts.reduce(function (a, b) { return a + b; }, 0);
+      return '<div class="card" style="margin-bottom:12px"><b>' + CH[id][0] + '</b>' + opts.map(function (o, i) { var p = tot ? Math.round(counts[i] / tot * 100) : 0; return '<div class="row"><span>' + esc(o) + '</span><div class="track"><i style="width:' + p + '%"></i></div><b>' + p + '%</b></div>'; }).join('') + '</div>'; }).join('');
+    var wl = list.filter(function (r) { return r.answers.q14 || r.answers.q15; });
+    $('words').innerHTML = wl.length ? wl.map(function (r) {
+      return '<div class="cm">' + Object.keys(WORDS).filter(function (k) { return r.answers[k]; }).map(function (k) { return '<small>' + WORDS[k] + '</small><p>' + esc(r.answers[k]) + '</p>'; }).join('') +
+        '<small>' + new Date(r.at).toLocaleString() + (r.reseller ? ' · ' + esc(r.reseller) : '') + (r.contact ? ' · ' + esc(r.contact) : '') + ' <button class="btn line sm danger" data-del="' + esc(r.id) + '" type="button">Delete</button></small></div>'; }).join('') : '<span class="sub">No written answers yet.</span>';
+    Array.prototype.forEach.call($('words').querySelectorAll('[data-del]'), function (b) { b.onclick = function () { if (b.dataset.ask !== '1') { b.dataset.ask = '1'; b.textContent = 'Tap again to delete'; return; } api('DELETE', '/survey/results?id=' + encodeURIComponent(b.dataset.del)).then(function (j) { if (j.ok) { all = all.filter(function (r) { return r.id !== b.dataset.del; }); draw(); } }); }; });
+  }
+  function load() {
+    api('GET', '/survey/results').then(function (j) {
+      if (j.__s === 401 || j.__s === 403) return signOut('Your sign-in ended. Please sign in again.');
+      if (j.__s !== 200) { $('sub').textContent = j.error || 'Could not load the results. Update the Aurora Guard to 1.37.0 or newer.'; return; }
+      all = j.responses || []; var cur = $('fr').value, names = {}; all.forEach(function (r) { names[r.reseller || '(not given)'] = 1; });
+      $('fr').innerHTML = '<option value="">Everyone</option>' + Object.keys(names).sort().map(function (n) { return '<option>' + esc(n) + '</option>'; }).join(''); $('fr').value = names[cur] ? cur : ''; draw();
+    }).catch(function () { $('sub').textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  function csv() {
+    var ids = []; for (var i = 1; i <= 15; i++) ids.push('q' + i);
+    var q = function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var rows = [['Date', 'Provider', 'Contact'].concat(ids).map(q).join(',')];
+    view().forEach(function (r) { rows.push([new Date(r.at).toISOString(), r.reseller, r.contact].concat(ids.map(function (k) { return r.answers[k]; })).map(q).join(',')); });
+    var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' })); a.download = 'aurora-survey.csv'; document.body.appendChild(a); a.click(); a.remove();
+  }
+  $('fr').onchange = draw; $('rf').onclick = load; $('csv').onclick = csv; $('out').onclick = function () { signOut(''); $('lp').value = ''; };
+  function login() {
+    var u = $('lu').value.trim(), p = $('lp').value, e = $('lerr'); e.hidden = true;
+    if (!u || !p) { e.hidden = false; e.textContent = 'Enter your username and password.'; return; }
+    if (!G) { e.hidden = false; e.textContent = 'The Guard address is not set in config.js.'; return; }
+    $('go').disabled = true;
+    api('POST', '/admin-login', { username: u, password: p }).then(function (j) {
+      $('go').disabled = false;
+      if (j.__s !== 200) { e.hidden = false; e.textContent = j.error || 'Could not sign in.'; return; }
+      session = { token: j.token, name: j.name }; try { sessionStorage.setItem('aurora.survey.session', JSON.stringify(session)); } catch (x) {} $('lp').value = ''; show(true); load();
+    }).catch(function () { $('go').disabled = false; e.hidden = false; e.textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  $('go').onclick = login; $('lp').onkeydown = function (ev) { if (ev.key === 'Enter') login(); };
+  if (session) { show(true); load(); } else show(false);
+})();
+</script>
+</body>
+</html>
