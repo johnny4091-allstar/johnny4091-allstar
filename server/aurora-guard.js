@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.37.2';
+const VERSION = '1.37.3';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2669,7 +2669,9 @@ async function handle(req, res) {
     }
     if (!Object.keys(answers).length) return send(res, 400, { error: 'Please answer at least one question.' });
     const clip = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
-    store.surveys = [{ id: crypto.randomBytes(5).toString('hex'), at: Date.now(), answers, reseller: clip(body.reseller, 60), contact: clip(body.contact, 120) }, ...(store.surveys || [])].slice(0, 3000);
+    const who = clip(body.user, 60);
+    if (!who) return send(res, 400, { error: 'Please enter your Aurora username first.' });
+    store.surveys = [{ id: crypto.randomBytes(5).toString('hex'), at: Date.now(), user: who, answers, reseller: clip(body.reseller, 60), contact: clip(body.contact, 120) }, ...(store.surveys || []).filter((x) => String(x.user || '').toLowerCase() !== who.toLowerCase())].slice(0, 3000); // sending again replaces that person's earlier answers
     saveStore();
     return send(res, 200, { ok: true });
   }

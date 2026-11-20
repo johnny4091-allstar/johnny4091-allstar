@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.37.3
+
+- The survey needs the person's Aurora username (`user`). A second submission from the same username replaces the first, so each customer counts once.
+
 ## 1.37.2
 
 - The survey grew to 30 questions: `POST /survey` now keeps `q1` to `q30` (it was `q1` to `q15`).
