@@ -2,8 +2,13 @@ plugins {
     id 'com.android.application'
 }
 
+// Aurora Lite (gradle -Plite=true): the same app for older devices (Android 7, e.g. Fire TV Stick 4K 1st gen). It bundles the web app
+// rewritten for older WebViews (android/lite/build-web.mjs writes it to android/lite/web) and installs on Android 7 and up.
+def isLite = (findProperty('lite') ?: 'false').toString() == 'true'
+if (isLite) layout.buildDirectory.set(file('build-lite')) // keeps the Lite build apart from the full one
+
 // The web app in ../../aurora is bundled into the APK as assets.
-def webAppDir = file('../../aurora')
+def webAppDir = isLite ? file('../lite/web') : file('../../aurora')
 def webAssetsDir = layout.buildDirectory.dir('generated/webassets').get().asFile
 
 def copyWebApp = tasks.register('copyWebApp', Sync) {
@@ -40,7 +45,7 @@ android {
     defaultConfig {
         // Kept from the EmbyFlix name so installed copies update in place.
         applicationId 'com.johnny4091.embyflix'
-        minSdk 26
+        minSdk isLite ? 24 : 26
         targetSdk 34
         versionCode appVersionCode
         versionName "2.${appVersionCode.intdiv(50)}.${appVersionCode % 50}"
@@ -49,6 +54,15 @@ android {
     // The release key is NEVER in the repository. It comes from the environment (the build workflow sets these from
     // GitHub secrets) or from android/keystore.properties (a gitignored file for building on your own computer).
     // See android/SIGNING.md.
+    // Lite runs on older Android, where some newer calls are guarded in the code. Report what Android's checker finds instead of stopping the build.
+    lint {
+        abortOnError !isLite
+        if (isLite) {
+            textReport true
+            textOutput file('build-lite/lint-lite.txt')
+        }
+    }
+
     signingConfigs {
         if (hasReleaseSigning) {
             release {

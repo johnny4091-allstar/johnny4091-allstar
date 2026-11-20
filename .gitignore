@@ -7,3 +7,4 @@ server/data/
 *.keystore
 *.jks
 keystore.properties
+android/lite/web/

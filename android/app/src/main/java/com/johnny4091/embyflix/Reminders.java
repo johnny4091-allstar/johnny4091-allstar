@@ -8,6 +8,7 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Build;
 import android.content.SharedPreferences;
 import android.net.Uri;
 
@@ -105,12 +106,13 @@ public final class Reminders {
             String title = intent.getStringExtra(EXTRA_TITLE), text = intent.getStringExtra(EXTRA_TEXT);
             NotificationManager nm = (NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
             if (nm == null) return;
-            nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Game reminders", NotificationManager.IMPORTANCE_HIGH));
+            // Notification channels exist from Android 8; older devices (the Lite app runs on Android 7) have none.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Game reminders", NotificationManager.IMPORTANCE_HIGH));
             Intent open = new Intent(ctx, MainActivity.class)
                     .putExtra(EXTRA_OPEN, "#/livetv?tab=sports")
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             PendingIntent tap = PendingIntent.getActivity(ctx, id.hashCode(), open, PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-            Notification note = new Notification.Builder(ctx, CHANNEL_ID)
+            Notification note = (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? new Notification.Builder(ctx, CHANNEL_ID) : new Notification.Builder(ctx))
                     .setSmallIcon(android.R.drawable.ic_popup_reminder)
                     .setContentTitle(title == null || title.isEmpty() ? "A game is about to start" : title)
                     .setContentText(text == null ? "" : text)
