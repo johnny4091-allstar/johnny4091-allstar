@@ -30,6 +30,7 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
 .track { height:10px; border-radius:6px; background:var(--line); overflow:hidden; } .track i { display:block; height:100%; background:var(--grad); } .row b { text-align:right; font-variant-numeric:tabular-nums; }
 .tools { display:flex; gap:10px; flex-wrap:wrap; align-items:end; margin:14px 0; } .tools > div { min-width:180px; flex:1; }
 .cm { border-top:1px solid var(--line); padding:12px 0; } .cm:first-child { border-top:0; } .cm p { margin:2px 0 6px; white-space:pre-wrap; overflow-wrap:anywhere; } .cm small { color:var(--dim); display:block; }
+.chip { display:inline-block; margin:0 6px 6px 0; padding:5px 12px; border:1px solid var(--line); border-radius:999px; background:#0a1126; color:#cfd6f5; font-size:.85rem; font-weight:600; }
 .pos { color:var(--green); } .mid { color:var(--amber); } .neg { color:var(--red); }
 </style>
 </head>
@@ -44,6 +45,7 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
     <h2>Ratings (average out of 5)</h2><div class="card" id="rates"></div>
     <h2>How people use Aurora</h2><div id="choices"></div>
     <h2>In their own words</h2><div class="card" id="words"></div>
+    <h2>Who answered</h2><div class="card" id="who"></div>
   </div>
 </div>
 <script>
@@ -77,10 +79,11 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
     $('choices').innerHTML = Object.keys(CH).map(function (id) {
       var opts = CH[id][1], counts = opts.map(function (o) { return list.filter(function (r) { return r.answers[id] === o; }).length; }), tot = counts.reduce(function (a, b) { return a + b; }, 0);
       return '<div class="card" style="margin-bottom:12px"><b>' + CH[id][0] + '</b>' + opts.map(function (o, i) { var p = tot ? Math.round(counts[i] / tot * 100) : 0; return '<div class="row"><span>' + esc(o) + '</span><div class="track"><i style="width:' + p + '%"></i></div><b>' + p + '%</b></div>'; }).join('') + '</div>'; }).join('');
+    $('who').innerHTML = list.length ? list.map(function (r) { return '<span class="chip">' + esc(r.user || '(no name)') + '</span>'; }).join(' ') : '<span class="sub">Nobody yet.</span>';
     var wl = list.filter(function (r) { return WORDS_ANY(r); });
     $('words').innerHTML = wl.length ? wl.map(function (r) {
       return '<div class="cm">' + Object.keys(WORDS).filter(function (k) { return r.answers[k]; }).map(function (k) { return '<small>' + WORDS[k] + '</small><p>' + esc(r.answers[k]) + '</p>'; }).join('') +
-        '<small>' + new Date(r.at).toLocaleString() + (r.reseller ? ' · ' + esc(r.reseller) : '') + (r.contact ? ' · ' + esc(r.contact) : '') + ' <button class="btn line sm danger" data-del="' + esc(r.id) + '" type="button">Delete</button></small></div>'; }).join('') : '<span class="sub">No written answers yet.</span>';
+        '<small>' + new Date(r.at).toLocaleString() + (r.user ? ' · <b>' + esc(r.user) + '</b>' : '') + (r.reseller ? ' · ' + esc(r.reseller) : '') + (r.contact ? ' · ' + esc(r.contact) : '') + ' <button class="btn line sm danger" data-del="' + esc(r.id) + '" type="button">Delete</button></small></div>'; }).join('') : '<span class="sub">No written answers yet.</span>';
     Array.prototype.forEach.call($('words').querySelectorAll('[data-del]'), function (b) { b.onclick = function () { if (b.dataset.ask !== '1') { b.dataset.ask = '1'; b.textContent = 'Tap again to delete'; return; } api('DELETE', '/survey/results?id=' + encodeURIComponent(b.dataset.del)).then(function (j) { if (j.ok) { all = all.filter(function (r) { return r.id !== b.dataset.del; }); draw(); } }); }; });
   }
   function load() {
@@ -94,8 +97,8 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
   function csv() {
     var ids = []; for (var i = 1; i <= 30; i++) ids.push('q' + i);
     var q = function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
-    var rows = [['Date', 'Provider', 'Contact'].concat(ids).map(q).join(',')];
-    view().forEach(function (r) { rows.push([new Date(r.at).toISOString(), r.reseller, r.contact].concat(ids.map(function (k) { return r.answers[k]; })).map(q).join(',')); });
+    var rows = [['Date', 'Username', 'Provider', 'Contact'].concat(ids).map(q).join(',')];
+    view().forEach(function (r) { rows.push([new Date(r.at).toISOString(), r.user, r.reseller, r.contact].concat(ids.map(function (k) { return r.answers[k]; })).map(q).join(',')); });
     var a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' })); a.download = 'aurora-survey.csv'; document.body.appendChild(a); a.click(); a.remove();
   }
   $('fr').onchange = draw; $('rf').onclick = load; $('csv').onclick = csv; $('out').onclick = function () { signOut(''); $('lp').value = ''; };

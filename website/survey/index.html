@@ -53,10 +53,12 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
   <div id="form">
     <h1>Tell us how Aurora is working for you</h1>
     <p class="lead">Thirty questions, in six short parts. It takes about six minutes, you can skip any of them, and every answer helps us make the app better.</p>
-    <div class="prog" aria-live="polite"><div><i id="pb"></i></div><small id="pt">0 of 30 answered</small></div>
-    <form id="sv" novalidate>
+    <div class="prog" aria-live="polite" id="prog" hidden><div><i id="pb"></i></div><small id="pt">0 of 30 answered</small></div>
+    <div class="q" id="start"><b>Before you start: what is your Aurora username?</b><label class="f" for="user">Username</label><input class="txt" id="user" maxlength="60" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="The name you sign in to Aurora with"><button class="btn" id="begin" type="button">Start the survey</button><div class="err" id="uerr" role="alert" hidden></div><p class="hint">We use it only to know who sent the answers. Sending again replaces your earlier answers.</p></div>
+    <form id="sv" novalidate hidden>
       <div id="qs"></div>
       <h2>About you (optional)</h2>
+      <p class="hint" style="margin:0 0 10px">Answering as <b id="who"></b></p>
       <div class="q"><div class="two">
         <div><label class="f" for="reseller">Who set up your account?</label><input class="txt" id="reseller" maxlength="60" placeholder="Your provider's name" autocomplete="off"></div>
         <div><label class="f" for="contact">Email or phone, if we may reply</label><input class="txt" id="contact" maxlength="120" placeholder="Leave blank to stay anonymous" autocomplete="off"></div>
@@ -140,6 +142,11 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
     return { a: a, count: count };
   }
   function progress() { var c = collect().count; $('pb').style.width = Math.round(c / TOTAL * 100) + '%'; $('pt').textContent = c + ' of ' + TOTAL + ' answered'; }
+  $('begin').onclick = function () {
+    var u = $('user').value.trim(); if (!u) { $('uerr').hidden = false; $('uerr').textContent = 'Please enter your username to begin.'; $('user').focus(); return; }
+    $('uerr').hidden = true; $('start').hidden = true; $('sv').hidden = false; $('prog').hidden = false; $('who').textContent = u; window.scrollTo(0, 0);
+  };
+  $('user').onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); $('begin').click(); } };
   $('sv').addEventListener('input', progress); $('sv').addEventListener('change', progress);
   $('sv').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -147,7 +154,7 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
     if (!r.count) { err.hidden = false; err.textContent = 'Please answer at least one question.'; return; }
     if (!G) { err.hidden = false; err.textContent = 'The survey is not connected yet.'; return; }
     var b = $('go'); b.disabled = true; b.textContent = 'Sending...';
-    fetch(G + '/survey', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: r.a, reseller: $('reseller').value, contact: $('contact').value, website: $('website').value }) })
+    fetch(G + '/survey', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ user: $('user').value, answers: r.a, reseller: $('reseller').value, contact: $('contact').value, website: $('website').value }) })
       .then(function (res) { return res.json().catch(function () { return {}; }).then(function (j) { return { s: res.status, j: j }; }); })
       .then(function (x) {
         if (x.s === 200) { $('form').hidden = true; $('thanks').hidden = false; window.scrollTo(0, 0); return; }
