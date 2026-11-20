@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.37.0';
+const VERSION = '1.37.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2686,7 +2686,7 @@ async function handle(req, res) {
     if (login.error) return send(res, login.status, { error: login.error });
     const u = login.r.User;
     if (url.pathname === '/admin-login') {
-      if (!u.Policy?.IsAdministrator) { noteFailure(ip); emby('POST', '/Sessions/Logout', { token: login.r.AccessToken }).catch(() => {}); /* don't leave a session behind for a non-admin */ return send(res, 403, { error: 'Only Emby administrators can open this page.' }); }
+      if (!u.Policy?.IsAdministrator) { noteFailure(ip); emby('POST', '/Sessions/Logout', { token: login.r.AccessToken }).catch(() => {}); /* don't leave a session behind for a non-admin */ return send(res, 403, { error: "This account isn't an Aurora administrator. Sign in with your administrator account (the one that shows the Admin menu in the app). If it should be one, open the server dashboard, go to Users, open the account and turn on 'Allow this user to manage the server'." }); }
       return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name });
     }
     return send(res, 200, { token: login.r.AccessToken, userId: u.Id, name: u.Name, admin: !!u.Policy?.IsAdministrator, reseller: !!resellerOfUser(u.Id), mod: !u.Policy?.IsAdministrator && !!(store.users[u.Id] && store.users[u.Id].mod) });
