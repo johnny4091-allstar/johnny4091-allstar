@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Feedback Survey</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<script src="../config.js"></script>
+<style>
+@font-face { font-family:'Inter'; src:url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight:100 900; font-display:swap; }
+:root { --bg:#070c1c; --bg-2:#0e1530; --bg-3:#1b2549; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --green:#46d369; --red:#ff8d9b;
+  --grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; }
+[hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 var(--font); -webkit-font-smoothing:antialiased; background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
+.wrap { max-width:720px; margin:0 auto; padding:0 max(16px,env(safe-area-inset-left,0px)) 80px; }
+.bar { padding:18px 0; } .pill { display:inline-flex; align-items:center; gap:.9rem; padding:.45rem 1.1rem; border-radius:999px; background:rgba(12,19,44,.76); border:1px solid rgba(255,255,255,.09); }
+.pill svg { height:20px; width:auto; display:block; } .pill span { font-size:.8rem; color:#cfd6f5; letter-spacing:.06em; text-transform:uppercase; font-weight:600; }
+h1 { font-size:clamp(1.6rem,5vw,2.2rem); line-height:1.15; margin:10px 0 8px; font-weight:800; text-wrap:balance; }
+.lead { color:var(--muted); margin:0 0 18px; }
+.prog { position:sticky; top:0; z-index:5; padding:10px 0 12px; background:linear-gradient(var(--bg) 75%,transparent); }
+.prog div { height:6px; border-radius:6px; background:var(--line); overflow:hidden; } .prog i { display:block; height:100%; width:0; background:var(--grad); transition:width .25s; }
+.prog small { display:block; margin-top:6px; color:var(--dim); font-size:.78rem; font-variant-numeric:tabular-nums; }
+h2 { font-size:.8rem; letter-spacing:.1em; text-transform:uppercase; color:var(--accent); font-weight:700; margin:30px 0 10px; }
+.q { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:18px; margin:0 0 12px; }
+.q > b { display:block; font-size:1rem; margin-bottom:12px; line-height:1.35; } .q > b span { color:var(--dim); font-weight:600; margin-right:6px; font-variant-numeric:tabular-nums; }
+.scale { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; } .scale.ten { grid-template-columns:repeat(11,1fr); gap:4px; }
+.scale label, .opts label { margin:0; cursor:pointer; }
+.scale input, .opts input { position:absolute; opacity:0; pointer-events:none; }
+.scale span { display:grid; place-items:center; height:48px; border:1px solid var(--line); border-radius:10px; background:#0a1126; font-weight:700; color:#cfd6f5; }
+.scale.ten span { height:42px; border-radius:8px; font-size:.85rem; }
+.ends { display:flex; justify-content:space-between; color:var(--dim); font-size:.74rem; margin-top:6px; }
+.opts { display:grid; gap:8px; } .opts span { display:block; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:#0a1126; color:#dfe4fa; }
+input:checked + span { background:#fff; color:#0a1126; border-color:#fff; }
+input:focus-visible + span { outline:2px solid var(--accent); outline-offset:2px; }
+textarea, .txt { width:100%; padding:12px; border-radius:10px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; } textarea { min-height:110px; resize:vertical; }
+textarea::placeholder, .txt::placeholder { color:#6d78a6; }
+label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin:0 0 6px; }
+.two { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.btn { width:100%; margin-top:18px; border:0; border-radius:10px; padding:15px; font:800 1rem var(--font); color:#fff; background:var(--grad); cursor:pointer; text-shadow:0 1px 2px rgba(0,0,0,.35); }
+.btn:disabled { opacity:.55; cursor:default; } .err { color:var(--red); margin-top:12px; font-size:.92rem; } .hint { color:var(--dim); font-size:.82rem; margin:10px 0 0; }
+.done { text-align:center; padding:48px 8px; } .done .tick { width:64px; height:64px; margin:0 auto 14px; border-radius:50%; background:var(--grad); display:grid; place-items:center; font-size:1.8rem; }
+.hp { position:absolute; left:-9999px; }
+@media (max-width:520px) { .two { grid-template-columns:1fr; } .scale.ten span { height:38px; font-size:.78rem; } }
+@media (prefers-reduced-motion:reduce) { .prog i { transition:none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar"><div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Feedback</span></div></div>
+  <div id="form">
+    <h1>Tell us how Aurora is working for you</h1>
+    <p class="lead">Fifteen quick questions. It takes about three minutes, and every answer helps us make the app better.</p>
+    <div class="prog" aria-live="polite"><div><i id="pb"></i></div><small id="pt">0 of 15 answered</small></div>
+    <form id="sv" novalidate>
+      <div id="qs"></div>
+      <h2>About you (optional)</h2>
+      <div class="q"><div class="two">
+        <div><label class="f" for="reseller">Who set up your account?</label><input class="txt" id="reseller" maxlength="60" placeholder="Your provider's name" autocomplete="off"></div>
+        <div><label class="f" for="contact">Email or phone, if we may reply</label><input class="txt" id="contact" maxlength="120" placeholder="Leave blank to stay anonymous" autocomplete="off"></div>
+      </div></div>
+      <input class="hp" id="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <button class="btn" id="go" type="submit">Send my answers</button>
+      <div class="err" id="err" role="alert" hidden></div>
+      <p class="hint">You can skip any question. We never share your answers.</p>
+    </form>
+  </div>
+  <div id="thanks" class="done" hidden><div class="tick">&#10003;</div><h1>Thank you</h1><p class="lead">Your answers were sent. They help us decide what to fix and build next.</p></div>
+</div>
+<script>
+(function () {
+  var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, '');
+  var $ = function (id) { return document.getElementById(id); };
+  var GROUPS = [
+    { t: 'Your overall experience', q: [
+      { id: 'q1', k: 'rate', t: 'Overall, how happy are you with Aurora?', lo: 'Not happy', hi: 'Very happy' },
+      { id: 'q2', k: 'rate', t: 'How easy is the app to use?', lo: 'Confusing', hi: 'Very easy' },
+      { id: 'q3', k: 'rate', t: 'How is the picture and sound quality?', lo: 'Poor', hi: 'Excellent' },
+      { id: 'q4', k: 'rate', t: 'How reliable is live TV?', lo: 'Often fails', hi: 'Always works' },
+      { id: 'q5', k: 'rate', t: 'How do you like the choice of movies and shows?', lo: 'Not enough', hi: 'Plenty' },
+      { id: 'q6', k: 'rate', t: 'How fast does the app open and start playing?', lo: 'Slow', hi: 'Fast' },
+      { id: 'q7', k: 'rate', t: 'How do you feel about the value for the price?', lo: 'Poor value', hi: 'Great value' } ] },
+    { t: 'How you use it', q: [
+      { id: 'q8', k: 'one', t: 'Which device do you use most?', o: ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else'] },
+      { id: 'q9', k: 'one', t: 'How often do you watch?', o: ['Every day', 'A few times a week', 'About once a week', 'Less than that'] },
+      { id: 'q10', k: 'one', t: 'What do you watch the most?', o: ['Live TV', 'Sports', 'Movies', 'TV shows', 'Kids shows'] },
+      { id: 'q11', k: 'one', t: 'How often does the picture freeze or buffer?', o: ['Never', 'Rarely', 'Sometimes', 'Often', 'Almost every time'] },
+      { id: 'q12', k: 'one', t: 'How did you hear about Aurora?', o: ['A friend or family member', 'My provider or reseller', 'The website', 'Social media', 'Somewhere else'] } ] },
+    { t: 'Your ideas', q: [
+      { id: 'q13', k: 'nps', t: 'How likely are you to recommend Aurora to a friend?', lo: 'Not likely', hi: 'Very likely' },
+      { id: 'q14', k: 'text', t: 'What do you like most about Aurora?', ph: 'Anything at all' },
+      { id: 'q15', k: 'text', t: 'What should we fix or add next?', ph: 'A feature, a channel, a problem you hit' } ] }
+  ];
+  var n = 0, html = '';
+  GROUPS.forEach(function (g) {
+    html += '<h2>' + g.t + '</h2>';
+    g.q.forEach(function (q) {
+      n++; html += '<div class="q" data-q="' + q.id + '"><b><span>' + n + '.</span>' + q.t + '</b>';
+      if (q.k === 'rate' || q.k === 'nps') {
+        var from = q.k === 'nps' ? 0 : 1, to = q.k === 'nps' ? 10 : 5;
+        html += '<div class="scale' + (q.k === 'nps' ? ' ten' : '') + '" role="radiogroup" aria-label="' + q.t + '">';
+        for (var v = from; v <= to; v++) html += '<label><input type="radio" name="' + q.id + '" value="' + v + '"><span>' + v + '</span></label>';
+        html += '</div><div class="ends"><span>' + q.lo + '</span><span>' + q.hi + '</span></div>';
+      } else if (q.k === 'one') {
+        html += '<div class="opts" role="radiogroup">' + q.o.map(function (o) { return '<label><input type="radio" name="' + q.id + '" value="' + o + '"><span>' + o + '</span></label>'; }).join('') + '</div>';
+      } else html += '<textarea name="' + q.id + '" maxlength="1000" placeholder="' + q.ph + '"></textarea>';
+      html += '</div>';
+    });
+  });
+  $('qs').innerHTML = html;
+  function collect() {
+    var a = {}, count = 0;
+    GROUPS.forEach(function (g) { g.q.forEach(function (q) {
+      var v;
+      if (q.k === 'text') { v = ($('sv').elements[q.id].value || '').trim(); if (v) a[q.id] = v; }
+      else { var c = $('sv').querySelector('input[name="' + q.id + '"]:checked'); if (c) a[q.id] = (q.k === 'one') ? c.value : Number(c.value); }
+      if (a[q.id] !== undefined) count++;
+    }); });
+    return { a: a, count: count };
+  }
+  function progress() { var c = collect().count; $('pb').style.width = Math.round(c / 15 * 100) + '%'; $('pt').textContent = c + ' of 15 answered'; }
+  $('sv').addEventListener('input', progress); $('sv').addEventListener('change', progress);
+  $('sv').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var r = collect(), err = $('err'); err.hidden = true;
+    if (!r.count) { err.hidden = false; err.textContent = 'Please answer at least one question.'; return; }
+    if (!G) { err.hidden = false; err.textContent = 'The survey is not connected yet.'; return; }
+    var b = $('go'); b.disabled = true; b.textContent = 'Sending...';
+    fetch(G + '/survey', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers: r.a, reseller: $('reseller').value, contact: $('contact').value, website: $('website').value }) })
+      .then(function (res) { return res.json().catch(function () { return {}; }).then(function (j) { return { s: res.status, j: j }; }); })
+      .then(function (x) {
+        if (x.s === 200) { $('form').hidden = true; $('thanks').hidden = false; window.scrollTo(0, 0); return; }
+        b.disabled = false; b.textContent = 'Send my answers'; err.hidden = false; err.textContent = x.j.error || 'Could not send. Please try again.';
+      }).catch(function () { b.disabled = false; b.textContent = 'Send my answers'; err.hidden = false; err.textContent = 'Could not reach Aurora. Check your connection and try again.'; });
+  });
+})();
+</script>
+</body>
+</html>

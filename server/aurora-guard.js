@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.36.0';
+const VERSION = '1.37.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2654,6 +2654,25 @@ async function handle(req, res) {
     return send(res, 200, { signupEnabled: !!cfg.signupEnabled, trialDays: cfg.signupTrialDays, trialConnections: cfg.signupTrialConnections, referralDays: cfg.referralDays > 0 ? cfg.referralDays : 0,
       plans: (store.plans || []).filter((x) => x.active).map((x) => ({ id: x.id, name: x.name, price: x.price, length: x.length, unit: x.unit, connections: x.connections })) });
   }
+  // Customer survey (guard 1.37.0): the website's /survey/ page posts here. No sign-in; limited per internet address and kept small.
+  if (url.pathname === '/survey' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (body.website) return send(res, 200, { ok: true }); // hidden field only a robot fills in: pretend it worked
+    if (overLimit('survey', ip, 6, 86400000)) return send(res, 429, { error: 'Thank you. We already have your answers from this connection today.' });
+    const raw = body.answers && typeof body.answers === 'object' ? body.answers : {}, answers = {};
+    for (const k of Object.keys(raw).slice(0, 30)) {
+      if (!/^q(?:[1-9]|1[0-5])$/.test(k)) continue;
+      const v = raw[k];
+      if (typeof v === 'number' && Number.isFinite(v)) answers[k] = Math.max(0, Math.min(10, Math.round(v)));
+      else if (typeof v === 'string' && v.trim()) answers[k] = v.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 1000);
+    }
+    if (!Object.keys(answers).length) return send(res, 400, { error: 'Please answer at least one question.' });
+    const clip = (v, n) => String(v || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+    store.surveys = [{ id: crypto.randomBytes(5).toString('hex'), at: Date.now(), answers, reseller: clip(body.reseller, 60), contact: clip(body.contact, 120) }, ...(store.surveys || [])].slice(0, 3000);
+    saveStore();
+    return send(res, 200, { ok: true });
+  }
   if (url.pathname === '/discount/check' && req.method === 'GET') {
     if (overLimit('dcheck', ip, 30, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
     const d = findDiscount(url.searchParams.get('code')), problem = discountProblem(d);
@@ -3391,6 +3410,13 @@ async function handle(req, res) {
     rollbackUpdate(auditBy); return send(res, 200, { ok: true, ...publicUpdate() });
   }
   // Discount codes for the website (admin).
+  if (url.pathname === '/survey/results' && req.method === 'GET') return send(res, 200, { responses: store.surveys || [] });
+  if (url.pathname === '/survey/results' && req.method === 'DELETE') {
+    const id = String(url.searchParams.get('id') || '');
+    const before = (store.surveys || []).length; store.surveys = (store.surveys || []).filter((x) => x.id !== id);
+    if (store.surveys.length === before) return send(res, 404, { error: 'No such response' });
+    saveStore(); recordAudit(auditBy, 'Deleted a survey response'); return send(res, 200, { ok: true });
+  }
   if (url.pathname === '/discounts' && req.method === 'GET') return send(res, 200, { discounts: (store.discounts || []).map(publicDiscount), plans: (store.plans || []).filter((x) => x.active).map((x) => ({ id: x.id, name: x.name, price: x.price })) });
   if (url.pathname === '/discounts' && req.method === 'POST') {
     let b;
