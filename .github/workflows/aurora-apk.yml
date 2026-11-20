@@ -99,6 +99,16 @@ jobs:
           AURORA_KEY_ALIAS: aurora
         run: gradle assembleRelease -PversionCode=${{ env.VERSION_CODE }} -Plite=true --stacktrace
 
+      - name: Check Lite for calls too new for Android 7
+        if: steps.lite_apk.outcome == 'success'
+        continue-on-error: true
+        working-directory: android
+        run: |
+          gradle lintRelease -Plite=true --continue || true
+          echo "--- Android's checker for Android 7 (lines below are problems; nothing below means none found) ---"
+          grep -h -B1 -A4 "NewApi\|InlinedApi\|Error:" app/build-lite/lint-lite.txt | head -120 || true
+          ls -la app/build-lite/lint-lite.txt || echo "no lint report was written"
+
       - name: Remove signing key from the runner
         if: always()
         run: rm -f "$RUNNER_TEMP/aurora-release.keystore"
