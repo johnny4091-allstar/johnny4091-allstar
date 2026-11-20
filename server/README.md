@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.37.2
+
+- The survey grew to 30 questions: `POST /survey` now keeps `q1` to `q30` (it was `q1` to `q15`).
+
 ## 1.37.1
 
 - The website sign-in for admin pages (discount codes, survey results) now says plainly what to do when the account is not an administrator.
