@@ -70,17 +70,63 @@ jobs:
           AURORA_KEY_ALIAS: aurora
         run: gradle assembleRelease -PversionCode=${{ env.VERSION_CODE }} --stacktrace
 
+      # Aurora Lite: the same app for older devices (Android 7 and up, like the Fire TV Stick 4K 1st gen). Same version number and same
+      # signing key as the full app. It is published separately (see below) so the full app's updater never picks it up.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The Lite steps never stop the full app's release: if one fails, the full app is still published and Lite is skipped.
+      - name: Build the Lite web app
+        id: lite_web
+        continue-on-error: true
+        working-directory: android/lite
+        run: |
+          npm install --no-audit --no-fund
+          node build-web.mjs
+
+      - name: Keep the full APK
+        run: cp android/app/build/outputs/apk/release/app-release.apk Aurora.apk
+
+      - name: Build Lite APK
+        id: lite_apk
+        if: steps.lite_web.outcome == 'success'
+        continue-on-error: true
+        working-directory: android
+        env:
+          AURORA_KEYSTORE_FILE: ${{ runner.temp }}/aurora-release.keystore
+          AURORA_KEYSTORE_PASSWORD: ${{ secrets.AURORA_KEYSTORE_PASSWORD }}
+          AURORA_KEY_ALIAS: aurora
+        run: gradle assembleRelease -PversionCode=${{ env.VERSION_CODE }} -Plite=true --stacktrace
+
+      - name: Check Lite for calls too new for Android 7
+        if: steps.lite_apk.outcome == 'success'
+        continue-on-error: true
+        working-directory: android
+        run: |
+          gradle lintRelease -Plite=true --continue || true
+          echo "--- Android's checker for Android 7 (lines below are problems; nothing below means none found) ---"
+          grep -h -B1 -A4 "NewApi\|InlinedApi\|Error:" app/build-lite/lint-lite.txt | head -120 || true
+          ls -la app/build-lite/lint-lite.txt || echo "no lint report was written"
+
       - name: Remove signing key from the runner
         if: always()
         run: rm -f "$RUNNER_TEMP/aurora-release.keystore"
 
-      - name: Rename APK
-        run: cp android/app/build/outputs/apk/release/app-release.apk Aurora.apk
+      - name: Rename Lite APK
+        if: steps.lite_apk.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cp android/app/build-lite/outputs/apk/release/app-release.apk Aurora-Lite.apk
+          echo "--- Android's checker, calls too new for Android 7 (should be empty) ---"
+          grep -h -B1 -A3 "NewApi\|InlinedApi" android/app/build-lite/lint-lite.txt 2>/dev/null | head -80 || true
 
       - uses: actions/upload-artifact@v4
         with:
           name: Aurora-apk
-          path: Aurora.apk
+          path: |
+            Aurora.apk
+            Aurora-Lite.apk
 
       # The app shows the lines between the notes markers in its update prompt.
       - name: Write release notes
@@ -163,3 +209,40 @@ jobs:
             aurora-guard.js
             aurora-guard.json
           body_path: release-notes.md
+
+      # Lite: one release per build (the Lite app looks for these tags) and one that always holds the newest file, so the
+      # download link on the website never changes.
+      - name: Write Lite release notes
+        if: hashFiles('Aurora-Lite.apk') != ''
+        run: |
+          {
+            echo "## Aurora Lite"
+            echo "For older devices: Fire TV Stick 4K (1st generation) and other Android 7 devices."
+            echo
+            echo "Download **Aurora-Lite.apk** below and open it to install. Most devices should use the full app instead."
+            echo "Version ${{ env.VERSION_NAME }}, build ${{ env.VERSION_CODE }}."
+          } > lite-notes.md
+
+      - name: Publish Lite release
+        if: hashFiles('Aurora-Lite.apk') != ''
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aurora-lite-v${{ env.VERSION_NAME }}-b${{ env.VERSION_CODE }}
+          name: Aurora Lite V${{ env.VERSION_NAME }}
+          target_commitish: ${{ github.sha }}
+          make_latest: false
+          files: Aurora-Lite.apk
+          body_path: lite-notes.md
+
+      - name: Publish the newest Lite file at a fixed address
+        if: hashFiles('Aurora-Lite.apk') != ''
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aurora-lite
+          name: Aurora Lite (newest)
+          target_commitish: ${{ github.sha }}
+          make_latest: false
+          files: Aurora-Lite.apk
+          body_path: lite-notes.md

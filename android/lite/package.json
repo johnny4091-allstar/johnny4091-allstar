@@ -1,0 +1,1 @@
+{ "name": "aurora-lite-build", "private": true, "type": "module", "dependencies": { "esbuild": "0.25.5" } }

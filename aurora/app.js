@@ -7,6 +7,8 @@
   // (see loadRemoteConfig), so both can change without a new APK. Until then the tab says "Coming soon".
   const REMOTE_CONFIG_URLS = ['main']
     .map((branch) => `https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/${branch}/aurora-config.json`);
+  // Letters and numbers for type-to-search. Older engines (Android 7 WebView) can't read \p{L} in a regex literal, so it is built here.
+  const KEY_TEXT_RE = (() => { try { return new RegExp("[\\p{L}\\p{N} '&:.-]", 'u'); } catch { return /[A-Za-z0-9 '&:.-]/; } })();
   const TICKS_PER_SECOND = 10000000;
   const ITEM_FIELDS = 'Overview,Genres,ProductionYear,OfficialRating,CommunityRating,RunTimeTicks,PrimaryImageAspectRatio,DateCreated';
   const IMAGE_PARAMS = { EnableImageTypes: 'Primary,Backdrop,Thumb,Logo', ImageTypeLimit: 1 };
@@ -1762,7 +1764,7 @@
       if (!isCurrent() || !page.contains($('.tv-keys', page))) { document.removeEventListener('keydown', onKey, true); return; }
       if (isTextInput(document.activeElement) || e.ctrlKey || e.altKey || e.metaKey) return;
       if (e.key === 'Backspace') { type('del'); e.preventDefault(); }
-      else if (e.key.length === 1 && /[\p{L}\p{N} '&:.-]/u.test(e.key)) { type(e.key.toLowerCase()); e.preventDefault(); }
+      else if (e.key.length === 1 && KEY_TEXT_RE.test(e.key)) { type(e.key.toLowerCase()); e.preventDefault(); }
     };
     document.addEventListener('keydown', onKey, true);
     // The box's own keyboard (and voice typing) as an alternative.
@@ -9985,7 +9987,7 @@
   // ---------- App updates (Android app only) ----------
   // Customers install the APK by hand, so the app checks GitHub Releases for a newer build itself.
   // Recent releases, so the update prompt can list what changed in every version the person missed.
-  const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases?per_page=30';
+  const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases?per_page=60';
   const RECHECK_AFTER = 15 * 60000; // when coming back to the app
   const updates = { checking: null, lastCheck: 0, dismissedCode: 0, waiting: null };
   // How many releases behind before the app stops working until it's updated. Set by forceUpdateAfter in
@@ -10005,6 +10007,9 @@
       .map((l) => brand(l.slice(2).trim())).filter(Boolean);
   }
 
+  // The Lite app (made for older TV sticks and phones) follows its own releases, so it never installs the full app by mistake.
+  const UPDATE_TAG_RE = window.AURORA_LITE ? /^aurora-lite-v/ : /^aurora-v/;
+
   async function checkForUpdate() {
     if (!nativeApp?.getVersionCode) return { status: 'web' };
     try {
@@ -10015,7 +10020,7 @@
       if (!res.ok) throw new Error(res.status);
       const installed = nativeApp.getVersionCode();
       const newer = (await res.json())
-        .filter((rel) => !rel.draft && !rel.prerelease && /^aurora-v/.test(rel.tag_name || ''))
+        .filter((rel) => !rel.draft && !rel.prerelease && UPDATE_TAG_RE.test(rel.tag_name || ''))
         .map((rel) => ({ rel, code: Number(rel.tag_name.match(/(\d+)$/)?.[1] || 0) }))
         .filter((r) => r.code > installed)
         .sort((a, b) => b.code - a.code);

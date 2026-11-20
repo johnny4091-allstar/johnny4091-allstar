@@ -2,6 +2,13 @@
 [build]
   publish = "."
 
+# Aurora Lite, for older devices (Fire TV Stick 4K 1st gen and other Android 7 devices). Type aurora-streaming.org/lite in the Downloader app.
+[[redirects]]
+  from = "/lite"
+  to = "https://github.com/johnny4091-allstar/johnny4091-allstar/releases/download/aurora-lite/Aurora-Lite.apk"
+  status = 302
+  force = true
+
 [[headers]]
   for = "/*"
   [headers.values]
