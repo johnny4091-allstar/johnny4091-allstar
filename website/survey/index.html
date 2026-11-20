@@ -52,8 +52,8 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
   <div class="bar"><div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Feedback</span></div></div>
   <div id="form">
     <h1>Tell us how Aurora is working for you</h1>
-    <p class="lead">Fifteen quick questions. It takes about three minutes, and every answer helps us make the app better.</p>
-    <div class="prog" aria-live="polite"><div><i id="pb"></i></div><small id="pt">0 of 15 answered</small></div>
+    <p class="lead">Thirty questions, in six short parts. It takes about six minutes, you can skip any of them, and every answer helps us make the app better.</p>
+    <div class="prog" aria-live="polite"><div><i id="pb"></i></div><small id="pt">0 of 30 answered</small></div>
     <form id="sv" novalidate>
       <div id="qs"></div>
       <h2>About you (optional)</h2>
@@ -88,10 +88,29 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
       { id: 'q10', k: 'one', t: 'In a normal week, how many times does the picture freeze, buffer or stop?', o: ['Never', '1 or 2 times', '3 to 5 times', 'Almost every day', 'Several times every day'] },
       { id: 'q11', k: 'one', t: 'What is your biggest frustration with Aurora right now?', o: ['Buffering or freezing', 'Channels missing or not working', 'Hard to find things', 'Crashes or sign-in problems', 'Slow or no support', 'The price', 'Nothing, I am happy'] },
       { id: 'q12', k: 'one', t: 'If a similar service cost less, how likely are you to switch?', o: ['Very unlikely', 'Unlikely', 'Maybe', 'Likely', 'I have already thought about it'] } ] },
-    { t: 'Be straight with us', q: [
+    { t: 'Your verdict', q: [
       { id: 'q13', k: 'nps', t: 'How likely are you to recommend Aurora to a friend or family member?', lo: 'Never', hi: 'Definitely' },
       { id: 'q14', k: 'text', t: 'Think of the last time Aurora let you down. What happened, which channel or show was it, and what time was it?', ph: 'The more detail, the faster we can fix it' },
-      { id: 'q15', k: 'text', t: 'If you could change one thing about Aurora tomorrow, what would it be, and why?', ph: 'A feature, a channel, a problem, anything' } ] }
+      { id: 'q15', k: 'text', t: 'If you could change one thing about Aurora tomorrow, what would it be, and why?', ph: 'A feature, a channel, a problem, anything' } ] },
+    { t: 'Live TV and sports', q: [
+      { id: 'q16', k: 'rate', t: 'How accurate and useful is the TV guide (what is on now and what is next)?', lo: 'Often wrong', hi: 'Always right' },
+      { id: 'q17', k: 'rate', t: 'How good is the sports coverage, the games and channels you care about?', lo: 'Games missing', hi: 'Everything I want' },
+      { id: 'q18', k: 'one', t: 'When a channel stops working, what do you usually do?', o: ['It fixes itself', 'I switch to another channel', 'I close and reopen the app', 'I give up and do something else', 'It rarely stops'] },
+      { id: 'q19', k: 'one', t: 'When do you do most of your watching?', o: ['Morning', 'Afternoon', 'Early evening, 5 to 8', 'Late evening, 8 to 11', 'Late night'] } ] },
+    { t: 'Movies, shows and the app', q: [
+      { id: 'q20', k: 'rate', t: 'How good is the choice of movies you actually want to watch?', lo: 'Poor', hi: 'Excellent' },
+      { id: 'q21', k: 'rate', t: 'How good is the choice of TV shows, with full seasons and new episodes on time?', lo: 'Poor', hi: 'Excellent' },
+      { id: 'q22', k: 'rate', t: 'How well do search, My List and Continue watching work for you?', lo: 'Badly', hi: 'Perfectly' },
+      { id: 'q23', k: 'one', t: 'How often do you look for a movie or show and find it missing?', o: ['Never', 'About once a month', 'About once a week', 'Most times I look'] },
+      { id: 'q24', k: 'one', t: 'Have you used the Requests tab to ask for something?', o: ['Yes, and I got it', 'Yes, but nothing happened', 'No, I did not know about it', 'No, I do not need it'] } ] },
+    { t: 'Support, price and devices', q: [
+      { id: 'q25', k: 'one', t: 'The last time you needed help, how long did it take to get an answer?', o: ['I have never needed help', 'Under an hour', 'The same day', 'A few days', 'I never got one'] },
+      { id: 'q26', k: 'one', t: 'How does the price compare with other services you have paid for?', o: ['Much cheaper', 'A bit cheaper', 'About the same', 'A bit more', 'Much more'] },
+      { id: 'q27', k: 'one', t: 'How many screens do you want to watch on at the same time?', o: ['1', '2', '3', '4 or more'] } ] },
+    { t: 'The last word', q: [
+      { id: 'q28', k: 'text', t: 'Which channels, shows or movies should we add first?', ph: 'Names help the most' },
+      { id: 'q29', k: 'text', t: 'Has anything nearly made you stop using Aurora? What was it?', ph: 'Be as honest as you like' },
+      { id: 'q30', k: 'text', t: 'What else would you tell the person who runs Aurora?', ph: 'Anything at all' } ] }
   ];
   var n = 0, html = '';
   GROUPS.forEach(function (g) {
@@ -109,7 +128,7 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
       html += '</div>';
     });
   });
-  $('qs').innerHTML = html;
+  $('qs').innerHTML = html; var TOTAL = n;
   function collect() {
     var a = {}, count = 0;
     GROUPS.forEach(function (g) { g.q.forEach(function (q) {
@@ -120,7 +139,7 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
     }); });
     return { a: a, count: count };
   }
-  function progress() { var c = collect().count; $('pb').style.width = Math.round(c / 15 * 100) + '%'; $('pt').textContent = c + ' of 15 answered'; }
+  function progress() { var c = collect().count; $('pb').style.width = Math.round(c / TOTAL * 100) + '%'; $('pt').textContent = c + ' of ' + TOTAL + ' answered'; }
   $('sv').addEventListener('input', progress); $('sv').addEventListener('change', progress);
   $('sv').addEventListener('submit', function (e) {
     e.preventDefault();

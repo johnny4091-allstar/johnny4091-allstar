@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.37.1';
+const VERSION = '1.37.2';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2662,7 +2662,7 @@ async function handle(req, res) {
     if (overLimit('survey', ip, 6, 86400000)) return send(res, 429, { error: 'Thank you. We already have your answers from this connection today.' });
     const raw = body.answers && typeof body.answers === 'object' ? body.answers : {}, answers = {};
     for (const k of Object.keys(raw).slice(0, 30)) {
-      if (!/^q(?:[1-9]|1[0-5])$/.test(k)) continue;
+      if (!/^q(?:[1-9]|[12]\d|30)$/.test(k)) continue;
       const v = raw[k];
       if (typeof v === 'number' && Number.isFinite(v)) answers[k] = Math.max(0, Math.min(10, Math.round(v)));
       else if (typeof v === 'string' && v.trim()) answers[k] = v.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 1000);

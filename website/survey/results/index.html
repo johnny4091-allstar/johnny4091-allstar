@@ -50,14 +50,18 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
 (function () {
   var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, all = [];
   try { session = JSON.parse(sessionStorage.getItem('aurora.survey.session') || 'null'); } catch (e) { session = null; }
-  var RATES = { q1: 'Does what you pay for', q2: 'Works first time', q3: 'Quality vs before', q4: 'Live TV at busy times', q5: 'Finding something to watch', q6: 'Start speed', q7: 'Help when it goes wrong' };
-  var CH = { q8: ['Main device', ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else']], q9: ['Hours watched a week', ['Under 3 hours', '3 to 10 hours', '10 to 20 hours', 'More than 20 hours']], q10: ['Freezes in a normal week', ['Never', '1 or 2 times', '3 to 5 times', 'Almost every day', 'Several times every day']], q11: ['Biggest frustration', ['Buffering or freezing', 'Channels missing or not working', 'Hard to find things', 'Crashes or sign-in problems', 'Slow or no support', 'The price', 'Nothing, I am happy']], q12: ['Would switch for a cheaper service', ['Very unlikely', 'Unlikely', 'Maybe', 'Likely', 'I have already thought about it']] };
-  var WORDS = { q14: 'The last time it let them down', q15: 'The one thing they would change' };
+  var RATES = { q1: 'Does what you pay for', q2: 'Works first time', q3: 'Quality vs before', q4: 'Live TV at busy times', q5: 'Finding something to watch', q6: 'Start speed', q7: 'Help when it goes wrong', q16: 'TV guide', q17: 'Sports coverage', q20: 'Movie choice', q21: 'TV show choice', q22: 'Search, My List, Continue' };
+  var CH = { q8: ['Main device', ['Fire TV or Android TV', 'iPhone or iPad', 'Android phone or tablet', 'Apple TV', 'Web browser on a computer', 'Something else']], q9: ['Hours watched a week', ['Under 3 hours', '3 to 10 hours', '10 to 20 hours', 'More than 20 hours']], q10: ['Freezes in a normal week', ['Never', '1 or 2 times', '3 to 5 times', 'Almost every day', 'Several times every day']], q11: ['Biggest frustration', ['Buffering or freezing', 'Channels missing or not working', 'Hard to find things', 'Crashes or sign-in problems', 'Slow or no support', 'The price', 'Nothing, I am happy']], q12: ['Would switch for a cheaper service', ['Very unlikely', 'Unlikely', 'Maybe', 'Likely', 'I have already thought about it']],
+    q18: ['When a channel stops', ['It fixes itself', 'I switch to another channel', 'I close and reopen the app', 'I give up and do something else', 'It rarely stops']], q19: ['When they watch', ['Morning', 'Afternoon', 'Early evening, 5 to 8', 'Late evening, 8 to 11', 'Late night']],
+    q23: ['Something missing', ['Never', 'About once a month', 'About once a week', 'Most times I look']], q24: ['Used the Requests tab', ['Yes, and I got it', 'Yes, but nothing happened', 'No, I did not know about it', 'No, I do not need it']],
+    q25: ['Time to get help', ['I have never needed help', 'Under an hour', 'The same day', 'A few days', 'I never got one']], q26: ['Price vs other services', ['Much cheaper', 'A bit cheaper', 'About the same', 'A bit more', 'Much more']], q27: ['Screens at once', ['1', '2', '3', '4 or more']] };
+  var WORDS = { q14: 'The last time it let them down', q15: 'The one thing they would change', q28: 'Add first', q29: 'Nearly made them leave', q30: 'Anything else' };
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function api(m, p, b) { var h = {}; if (b) h['Content-Type'] = 'application/json'; if (session) h['X-Emby-Token'] = session.token; if (session && m !== 'GET') p += (p.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
     return fetch(G + p, { method: m, headers: h, body: b ? JSON.stringify(b) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__s = r.status; return j; }); }); }
   function show(on) { $('login').hidden = on; $('app').hidden = !on; $('out').hidden = !on; }
   function signOut(msg) { session = null; try { sessionStorage.removeItem('aurora.survey.session'); } catch (e) {} show(false); if (msg) { $('lerr').hidden = false; $('lerr').textContent = msg; } }
+  function WORDS_ANY(r) { return Object.keys(WORDS).some(function (k) { return r.answers[k]; }); }
   function view() { var f = $('fr').value; return all.filter(function (r) { return !f || (r.reseller || '(not given)') === f; }); }
   function avg(list, id) { var v = list.map(function (r) { return r.answers[id]; }).filter(function (x) { return typeof x === 'number'; }); return { n: v.length, a: v.length ? v.reduce(function (s, x) { return s + x; }, 0) / v.length : 0 }; }
   function draw() {
@@ -73,7 +77,7 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
     $('choices').innerHTML = Object.keys(CH).map(function (id) {
       var opts = CH[id][1], counts = opts.map(function (o) { return list.filter(function (r) { return r.answers[id] === o; }).length; }), tot = counts.reduce(function (a, b) { return a + b; }, 0);
       return '<div class="card" style="margin-bottom:12px"><b>' + CH[id][0] + '</b>' + opts.map(function (o, i) { var p = tot ? Math.round(counts[i] / tot * 100) : 0; return '<div class="row"><span>' + esc(o) + '</span><div class="track"><i style="width:' + p + '%"></i></div><b>' + p + '%</b></div>'; }).join('') + '</div>'; }).join('');
-    var wl = list.filter(function (r) { return r.answers.q14 || r.answers.q15; });
+    var wl = list.filter(function (r) { return WORDS_ANY(r); });
     $('words').innerHTML = wl.length ? wl.map(function (r) {
       return '<div class="cm">' + Object.keys(WORDS).filter(function (k) { return r.answers[k]; }).map(function (k) { return '<small>' + WORDS[k] + '</small><p>' + esc(r.answers[k]) + '</p>'; }).join('') +
         '<small>' + new Date(r.at).toLocaleString() + (r.reseller ? ' · ' + esc(r.reseller) : '') + (r.contact ? ' · ' + esc(r.contact) : '') + ' <button class="btn line sm danger" data-del="' + esc(r.id) + '" type="button">Delete</button></small></div>'; }).join('') : '<span class="sub">No written answers yet.</span>';
@@ -88,7 +92,7 @@ input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px soli
     }).catch(function () { $('sub').textContent = 'Could not reach the Aurora Guard.'; });
   }
   function csv() {
-    var ids = []; for (var i = 1; i <= 15; i++) ids.push('q' + i);
+    var ids = []; for (var i = 1; i <= 30; i++) ids.push('q' + i);
     var q = function (v) { v = String(v == null ? '' : v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     var rows = [['Date', 'Provider', 'Contact'].concat(ids).map(q).join(',')];
     view().forEach(function (r) { rows.push([new Date(r.at).toISOString(), r.reseller, r.contact].concat(ids.map(function (k) { return r.answers[k]; })).map(q).join(',')); });
