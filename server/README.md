@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.44.0
+
+- A fuller public status page. `GET /status/public` (no sign-in, nothing about any person) returns whether the Guard and the Aurora server answer, the Guard's version and how long it has been running, the server's response time, the last 24 hours and 90 days of checks, uptime percentages, recent outages, the Live TV and sports-score state, whether sign-ups are open, and the administrator's status message. The website's `/status/` page shows it. History builds up from the day the Guard is updated.
+
 ## 1.43.0
 
 - The SABnzbd page shows more: SABnzbd's version, free disk space, the estimated finish time, how much was downloaded today, this week, this month and in total, the load, any warnings, and for each download its category, priority, age and (once finished) the time it took. You can move a download to the top, change its priority, retry a failed one, and set a speed limit (`POST /sab/limit`, `{ limit: "5M" }` or `"0"` for none).

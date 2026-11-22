@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.43.0';
+const VERSION = '1.44.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1547,6 +1547,11 @@ function trackReach(ok) {
   const reach = store.reach || (store.reach = {});
   const b = reach[hour] || (reach[hour] = { ok: 0, bad: 0 });
   if (ok) b.ok++; else b.bad++;
+  // one line per day, kept for 90 days, for the uptime bars on the public status page (guard 1.44.0)
+  if (!store.reachSince) store.reachSince = now;
+  const days = store.reachDays || (store.reachDays = {}), dk = new Date(now).toISOString().slice(0, 10), d = days[dk] || (days[dk] = { ok: 0, bad: 0 });
+  if (ok) d.ok++; else d.bad++;
+  for (const k of Object.keys(days).sort().slice(0, -90)) delete days[k];
   usageDirtyAt = now; // saved with the usage data, at most every 5 minutes
   for (const k of Object.keys(reach).sort().slice(0, -48)) delete reach[k];
   const list = store.incidents || (store.incidents = []);
@@ -1565,10 +1570,11 @@ function trackReach(ok) {
 async function enforce(onlyUserId) {
   let users, sessions;
   try {
+    const t0 = Date.now();
     users = await emby('GET', '/Users');
     sessions = await emby('GET', '/Sessions');
     if (!onlyUserId) {
-      embyReach = { at: Date.now(), ok: true, error: '' }; lastSnapshot = { users, sessions };
+      embyReach = { at: Date.now(), ok: true, error: '', ms: Date.now() - t0 }; lastSnapshot = { users, sessions };
       try { trackReach(true); } catch (e) { log('Status tracking failed:', e.message); }
       try { samplePass(users, sessions); } catch (e) { log('Usage sampling failed:', e.message); }
     }
@@ -2497,6 +2503,37 @@ async function handle(req, res) {
     // Readable by Aurora on any device (Settings shows "Aurora: Online/Offline" to customers).
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
     return res.end(req.method === 'HEAD' ? undefined : `Guard: online\nAurora: ${aurora}\n`);
+  }
+  // The public status page on the website (guard 1.44.0): no sign-in and nothing about any person. Whether the Guard and the Aurora server
+  // answer, how long the Guard has been running, how fast the server replies, the last 24 hours and 90 days, recent outages and the
+  // administrator's message. Counts and states only.
+  if (url.pathname === '/status/public' && (req.method === 'GET' || req.method === 'HEAD')) {
+    const now = Date.now(), stale = now - embyReach.at > Math.max(180000, cfg.intervalSeconds * 3000);
+    const online = !!embyReach.at && embyReach.ok && !stale;
+    const dayKeys = []; for (let i = 89; i >= 0; i--) dayKeys.push(new Date(now - i * 86400000).toISOString().slice(0, 10));
+    const store90 = store.reachDays || {}, expected = Math.max(1, Math.round(86400 / Math.max(5, cfg.intervalSeconds)));
+    const days = dayKeys.map((k) => { const r = store90[k]; return r ? { day: k, ok: r.ok, bad: r.bad, checks: r.ok + r.bad } : { day: k, ok: 0, bad: 0, checks: 0 }; });
+    const pct = (list) => { const ok = list.reduce((n, x) => n + x.ok, 0), all = list.reduce((n, x) => n + x.ok + x.bad, 0); return all ? Math.round(ok / all * 10000) / 100 : null; };
+    const withData = days.filter((x) => x.checks > 0), last30 = days.slice(-30);
+    const spanSec = (now - Math.max(store.reachSince || now, now - 30 * 86400000)) / 1000, checks30 = last30.reduce((n, x) => n + x.checks, 0);
+    const guard30 = spanSec > 600 ? Math.round(Math.min(1, checks30 / (spanSec / Math.max(5, cfg.intervalSeconds))) * 10000) / 100 : null;
+    // Live TV: only a state, from what several different people reported in the last 15 minutes
+    const recent = now - 15 * 60000, per = new Map(), people = new Set();
+    for (const x of store.reports || []) { if (x.at < recent || x.reason === 'Wrong channel' || x.reason === 'Other') continue; const k = String(x.channel).toLowerCase(); const r = per.get(k) || new Set(); r.add(x.user); per.set(k, r); people.add(x.user); }
+    const badCh = [...per.values()].filter((u) => u.size >= 2).length, wide = per.size >= 3 && people.size >= 3;
+    const sc = sportsCfg(), leagues = sc.leagues.map((k) => sportsState.leagues[k]).filter(Boolean), okLeagues = leagues.filter((r) => r.ok);
+    const body = { now, intervalSeconds: cfg.intervalSeconds,
+      guard: { online: true, version: VERSION, startedAt: now - Math.round(process.uptime() * 1000) },
+      server: { online, checkedAt: embyReach.at || null, ms: embyReach.ok && embyReach.ms != null ? embyReach.ms : null },
+      live: { state: !online ? 'na' : wide ? 'bad' : badCh ? 'warn' : 'ok' },
+      scores: { state: !sc.enabled ? 'na' : okLeagues.length ? 'ok' : leagues.length ? 'bad' : 'na' },
+      signup: { open: !!cfg.signupEnabled },
+      hours: statusHours(now), days,
+      uptime: { server30: pct(last30), server90: pct(withData), guard30, since: withData.length ? withData[0].day : null },
+      incidents: (store.incidents || []).slice(0, 15).map((x) => ({ title: x.title, start: x.start, end: x.end || null })),
+      note: store.statusNote && store.statusNote.text ? { text: store.statusNote.text, at: store.statusNote.at } : null };
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+    return res.end(req.method === 'HEAD' ? undefined : JSON.stringify(body));
   }
   const token = String(req.headers['x-emby-token'] || '');
 
