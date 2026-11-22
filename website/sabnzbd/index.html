@@ -10,41 +10,124 @@
 <script src="../config.js"></script>
 <style>
 @font-face { font-family:'Inter'; src:url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight:100 900; font-display:swap; }
-:root { --bg:#070c1c; --bg-2:#0e1530; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --green:#46d369; --amber:#ffd479; --red:#ff8d9b;
-  --grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+:root { --bg:#060a1a; --bg-2:#0d1430; --bg-3:#141d44; --text:#fff; --muted:#aeb7da; --dim:#7580ad; --line:#1f2b5c; --teal:#2ad4d0; --blue:#4f7bff; --violet:#7a5cff; --green:#46d369; --amber:#ffd479; --red:#ff6b81;
+  --grad:linear-gradient(100deg,#18c6d6 0%,#4f7bff 52%,#8a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
 * { box-sizing:border-box; } [hidden] { display:none !important; }
-body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased; background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
-.wrap { max-width:900px; margin:0 auto; padding:0 max(16px,env(safe-area-inset-left,0px)) 80px; }
-.bar { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:18px 0; flex-wrap:wrap; } .bar a.back { color:#cfd6f5; text-decoration:none; font-weight:600; font-size:.85rem; letter-spacing:.06em; text-transform:uppercase; }
-h1 { font-size:clamp(1.5rem,4vw,2rem); margin:6px 0 4px; font-weight:800; } h2 { font-size:1.1rem; margin:26px 0 10px; font-weight:800; } .sub { color:var(--muted); margin:0 0 14px; }
-.card { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:12px; }
-label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
-input[type=text],input[type=password],input[type=url],input[type=file] { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; }
-.btn { border:0; border-radius:8px; padding:.65rem 1.2rem; font:700 .92rem var(--font); cursor:pointer; color:#fff; background:var(--grad); } .btn.line { background:none; border:1px solid var(--line); color:#e5e5e5; } .btn.sm { padding:.4rem .8rem; font-size:.8rem; } .btn.danger { color:var(--red); } .btn:disabled { opacity:.55; cursor:default; }
-.login { max-width:380px; margin:40px auto; display:grid; gap:14px; } .err { color:var(--red); font-size:.9rem; } .ok { color:var(--green); font-size:.9rem; }
-.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:12px; } .tile .n { font-size:1.7rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.1; } .tile small { color:var(--muted); }
-.row2 { display:flex; gap:10px; flex-wrap:wrap; align-items:end; } .row2 > div { flex:1; min-width:220px; }
-.item { padding:12px 0; border-top:1px solid var(--line); } .item:first-child { border-top:0; } .item .top { display:flex; flex-wrap:wrap; gap:6px 12px; justify-content:space-between; align-items:baseline; } .item b { overflow-wrap:anywhere; }
-.meta { color:var(--dim); font-size:.8rem; } .track { height:8px; border-radius:6px; background:var(--line); overflow:hidden; margin:8px 0; } .track i { display:block; height:100%; background:var(--grad); }
-.acts { display:flex; gap:8px; margin-top:6px; } .tag { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.68rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase; background:rgba(122,92,255,.2); color:#b9a6ff; margin-left:6px; }
-.tag.good { background:rgba(70,211,105,.15); color:var(--green); } .tag.bad { background:rgba(229,56,79,.15); color:var(--red); }
+html { background:var(--bg); }
+body { margin:0; min-height:100vh; color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased; background:var(--bg); position:relative; overflow-x:hidden; }
+/* slow-moving aurora glow behind everything */
+.glow { position:fixed; inset:-20% -10% auto -10%; height:90vh; z-index:0; pointer-events:none; filter:blur(70px); opacity:.55;
+  background:radial-gradient(40% 50% at 15% 30%,rgba(42,212,208,.55),transparent 70%),radial-gradient(40% 50% at 70% 20%,rgba(122,92,255,.6),transparent 70%),radial-gradient(35% 45% at 95% 55%,rgba(79,123,255,.45),transparent 70%); animation:drift 18s ease-in-out infinite alternate; }
+@keyframes drift { to { transform:translate3d(-4%,6%,0) scale(1.08); } }
+.wrap { position:relative; z-index:1; max-width:960px; margin:0 auto; padding:0 max(16px,env(safe-area-inset-left,0px)) 90px; }
+.bar { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:18px 0; flex-wrap:wrap; }
+.pill { display:inline-flex; align-items:center; gap:.9rem; padding:.45rem 1.1rem; border-radius:999px; background:rgba(12,19,44,.7); border:1px solid rgba(255,255,255,.1); backdrop-filter:blur(8px); text-decoration:none; }
+.pill svg { height:20px; width:auto; display:block; } .pill span { font-size:.8rem; color:#cfd6f5; letter-spacing:.08em; text-transform:uppercase; font-weight:700; }
+h1 { font-size:clamp(2rem,6vw,3rem); line-height:1.05; margin:10px 0 6px; font-weight:900; letter-spacing:-.02em; }
+h1 em { font-style:normal; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
+h2 { font-size:.8rem; letter-spacing:.14em; text-transform:uppercase; color:var(--muted); font-weight:800; margin:34px 0 12px; display:flex; align-items:center; gap:10px; }
+h2::after { content:""; flex:1; height:1px; background:linear-gradient(90deg,var(--line),transparent); }
+.sub { color:var(--muted); margin:0 0 18px; }
+.card { background:linear-gradient(180deg,rgba(20,29,68,.72),rgba(13,20,48,.72)); border:1px solid var(--line); border-radius:20px; padding:20px; backdrop-filter:blur(10px); box-shadow:0 18px 50px rgba(0,0,0,.35); }
+label.f { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
+input[type=text],input[type=password],input[type=url] { width:100%; padding:13px 14px; border-radius:12px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; }
+input:focus-visible,button:focus-visible,.drop:focus-within { outline:2px solid var(--teal); outline-offset:2px; }
+.btn { border:0; border-radius:12px; padding:.8rem 1.4rem; font:800 .95rem var(--font); cursor:pointer; color:#fff; background:var(--grad); box-shadow:0 8px 24px rgba(79,123,255,.35); transition:transform .15s, box-shadow .15s, filter .15s; display:inline-flex; align-items:center; gap:8px; }
+.btn:hover { transform:translateY(-1px); filter:brightness(1.1); } .btn:disabled { opacity:.55; cursor:default; transform:none; }
+.btn.line { background:rgba(255,255,255,.04); border:1px solid var(--line); color:#e5e9ff; box-shadow:none; } .btn.sm { padding:.45rem .9rem; font-size:.8rem; border-radius:10px; } .btn.danger { color:var(--red); }
+.btn svg { width:18px; height:18px; flex:none; }
+.login { max-width:400px; margin:40px auto; display:grid; gap:14px; text-align:center; } .login .logo { width:64px; height:64px; margin:0 auto; border-radius:20px; background:var(--grad); display:grid; place-items:center; box-shadow:0 12px 34px rgba(79,123,255,.5); }
+.login .logo svg { width:32px; height:32px; } .login .in { text-align:left; } .err { color:var(--red); font-size:.9rem; } .ok { color:var(--green); font-size:.9rem; }
+
+/* hero */
+.hero { display:grid; grid-template-columns:1.1fr 1fr; gap:20px; align-items:center; overflow:hidden; position:relative; }
+.hero::before { content:""; position:absolute; inset:0; background:radial-gradient(80% 120% at 0% 0%,rgba(42,212,208,.18),transparent 60%),radial-gradient(70% 120% at 100% 0%,rgba(122,92,255,.28),transparent 60%); pointer-events:none; }
+.hero > * { position:relative; }
+.state { display:inline-flex; align-items:center; gap:8px; padding:5px 12px; border-radius:999px; font-size:.72rem; font-weight:800; letter-spacing:.1em; text-transform:uppercase; background:rgba(255,255,255,.07); color:var(--muted); }
+.state i { width:9px; height:9px; border-radius:50%; background:var(--dim); } .state.go { color:var(--green); background:rgba(70,211,105,.12); } .state.go i { background:var(--green); animation:ping 1.6s infinite; } .state.pa { color:var(--amber); background:rgba(255,212,121,.12); } .state.pa i { background:var(--amber); }
+@keyframes ping { 70% { box-shadow:0 0 0 9px rgba(70,211,105,0); } 0% { box-shadow:0 0 0 0 rgba(70,211,105,.6); } 100% { box-shadow:0 0 0 0 rgba(70,211,105,0); } }
+.speed { font-size:clamp(3.4rem,11vw,5.6rem); font-weight:900; line-height:1; letter-spacing:-.04em; margin:10px 0 0; font-variant-numeric:tabular-nums; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; filter:drop-shadow(0 6px 24px rgba(79,123,255,.35)); }
+.speed small { font-size:.32em; font-weight:800; letter-spacing:0; margin-left:6px; color:var(--muted); -webkit-text-fill-color:var(--muted); }
+.spark { width:100%; height:120px; display:block; } .spark .grid { stroke:rgba(255,255,255,.06); stroke-width:1; }
+.stats { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-top:16px; }
+.stat { background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.06); border-radius:14px; padding:12px 14px; } .stat b { display:block; font-size:1.25rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.2; } .stat small { color:var(--dim); font-size:.72rem; letter-spacing:.06em; text-transform:uppercase; font-weight:700; }
+
+/* add */
+.add { display:grid; gap:14px; }
+.link { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.field { position:relative; flex:1; min-width:220px; } .field svg { position:absolute; left:14px; top:50%; transform:translateY(-50%); width:20px; height:20px; color:var(--dim); pointer-events:none; } .field input { padding-left:44px; height:52px; }
+.drop { position:relative; display:flex; align-items:center; gap:16px; padding:18px 20px; border:2px dashed #2c3b7a; border-radius:16px; background:rgba(79,123,255,.05); cursor:pointer; transition:border-color .15s, background .15s, transform .15s; }
+.drop:hover, .drop.over { border-color:var(--teal); background:rgba(42,212,208,.09); transform:scale(1.005); }
+.drop input { position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; height:100%; }
+.drop .ic { width:46px; height:46px; border-radius:14px; background:var(--grad); display:grid; place-items:center; flex:none; box-shadow:0 8px 22px rgba(79,123,255,.4); } .drop .ic svg { width:24px; height:24px; }
+.drop b { display:block; } .drop span.t { color:var(--dim); font-size:.85rem; }
+.dropact { display:flex; gap:10px; align-items:center; flex-wrap:wrap; } #fname { color:var(--muted); font-size:.9rem; overflow-wrap:anywhere; }
+
+/* queue */
+.item { position:relative; padding:16px 0 14px; border-top:1px solid rgba(255,255,255,.06); }
+.item:first-child { border-top:0; padding-top:4px; }
+.row { display:flex; gap:14px; align-items:flex-start; }
+.ico { width:42px; height:42px; border-radius:14px; flex:none; display:grid; place-items:center; background:rgba(79,123,255,.15); color:var(--blue); } .ico svg { width:22px; height:22px; }
+.ico.dl { background:rgba(42,212,208,.14); color:var(--teal); } .ico.dl svg { animation:bob 1.3s ease-in-out infinite; } @keyframes bob { 50% { transform:translateY(3px); } }
+.ico.pa { background:rgba(255,212,121,.14); color:var(--amber); } .ico.ok { background:rgba(70,211,105,.14); color:var(--green); } .ico.bad { background:rgba(255,107,129,.14); color:var(--red); }
+.main { flex:1; min-width:0; } .name { font-weight:700; overflow-wrap:anywhere; line-height:1.3; }
+.pct { font-size:1.5rem; font-weight:900; font-variant-numeric:tabular-nums; letter-spacing:-.02em; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; flex:none; }
+.track { height:12px; border-radius:99px; background:rgba(255,255,255,.07); overflow:hidden; margin:10px 0; position:relative; }
+.track i { display:block; height:100%; border-radius:99px; background:var(--grad); box-shadow:0 0 16px rgba(79,123,255,.7); position:relative; overflow:hidden; transition:width .6s ease; }
+.track i.live::after { content:""; position:absolute; inset:0; background:repeating-linear-gradient(115deg,rgba(255,255,255,.28) 0 10px,transparent 10px 20px); animation:stripes 1s linear infinite; }
+@keyframes stripes { to { background-position:28px 0; } } .track i.paused { background:linear-gradient(90deg,#9a7b2a,#ffd479); box-shadow:none; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; } .chip { font-size:.74rem; font-weight:700; padding:3px 10px; border-radius:999px; background:rgba(255,255,255,.06); color:var(--muted); }
+.chip.good { background:rgba(70,211,105,.14); color:var(--green); } .chip.bad { background:rgba(255,107,129,.14); color:var(--red); } .chip.warn { background:rgba(255,212,121,.14); color:var(--amber); }
+.acts { display:flex; gap:8px; margin-top:10px; }
+.empty { text-align:center; padding:26px 10px; color:var(--dim); } .empty svg { width:52px; height:52px; color:#2c3b7a; margin-bottom:8px; }
+.hint { color:var(--dim); font-size:.9rem; line-height:1.55; } code { background:#0a1126; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:.85em; color:#9fe9e6; }
+@media (max-width:700px) { .hero { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(3,1fr); } }
+@media (max-width:440px) { .stat b { font-size:1.05rem; } .btn { padding:.75rem 1.1rem; } }
+@media (prefers-reduced-motion:reduce) { .glow,.ico.dl svg,.track i.live::after,.state.go i { animation:none; } .track i { transition:none; } }
 </style>
 </head>
 <body>
+<div class="glow" aria-hidden="true"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M6 11l6 6 6-6M5 20h14"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.5" height="14" rx="1.4"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.4"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/></symbol>
+  <symbol id="i-up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V5M7 9.5l5-5 5 5M5 19h14"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
+  <symbol id="i-box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8l9-5 9 5v8l-9 5-9-5zM3 8l9 5 9-5M12 13v8"/></symbol>
+</defs></svg>
 <div class="wrap">
-  <div class="bar"><a class="back" href="../admin/">&larr; Admin</a><span><button class="btn line sm" id="out" hidden>Sign out</button></span></div>
-  <div id="login" class="card login"><h1>Downloader</h1><div><label for="lu">Username</label><input type="text" id="lu" autocomplete="username"></div><div><label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password"></div><button class="btn" id="go">Sign in</button><div class="err" id="lerr" hidden></div></div>
+  <div class="bar"><a class="pill" href="../admin/"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>&larr; Admin</span></a><span><button class="btn line sm" id="out" hidden>Sign out</button></span></div>
+
+  <div id="login" class="card login"><div class="logo"><svg><use href="#i-down" style="color:#fff"/></svg></div><h1 style="font-size:2rem;margin:0">Down<em>loader</em></h1><p class="sub" style="margin:0">Sign in with your administrator account.</p>
+    <div class="in"><label class="f" for="lu">Username</label><input type="text" id="lu" autocomplete="username"></div><div class="in"><label class="f" for="lp">Password</label><input id="lp" type="password" autocomplete="current-password"></div><button class="btn" id="go" style="justify-content:center">Sign in</button><div class="err" id="lerr" hidden></div></div>
+
   <div id="app" hidden>
-    <h1>Downloader</h1><p class="sub" id="sub">Loading...</p>
-    <div id="setup" class="card" hidden><b>SABnzbd is not set up on the Aurora Guard yet.</b><p class="sub" style="margin:8px 0 0">On the PC that runs the Guard, open <code>config.json</code> and add <code>"sabnzbdUrl"</code> (the address of SABnzbd, like <code>http://192.168.1.20:8080</code>) and <code>"sabnzbdApiKey"</code> (SABnzbd &rarr; Config &rarr; General &rarr; API Key). Restart the Guard, then reload this page. Needs Guard 1.42.0 or newer.</p></div>
+    <h1>Down<em>loader</em></h1><p class="sub" id="sub">Loading...</p>
+    <div id="setup" class="card" hidden><b>Almost there. SABnzbd isn't connected to the Aurora Guard yet.</b><p class="hint" style="margin:10px 0 0">On the PC that runs the Guard, open <code>config.json</code> and add <code>"sabnzbdUrl": "http://127.0.0.1:8080"</code> and <code>"sabnzbdApiKey": "your key"</code> (SABnzbd &rarr; Config &rarr; General &rarr; API Key). Restart the Guard, then reload this page. Needs Guard 1.42.0 or newer.</p></div>
+
     <div id="main" hidden>
-      <div class="tiles" id="tiles"></div>
-      <div class="card">
-        <div class="row2"><div><label for="nzburl">Add a link (NZB address)</label><input type="url" id="nzburl" placeholder="https://..." autocomplete="off"></div><button class="btn" id="addurl">Add</button></div>
-        <div class="row2" style="margin-top:12px"><div><label for="nzbfile">Or add an NZB file</label><input type="file" id="nzbfile" accept=".nzb,.xml,application/x-nzb"></div><button class="btn" id="addfile">Upload</button></div>
-        <div id="msg" aria-live="polite" style="margin-top:10px"></div>
+      <div class="card hero">
+        <div>
+          <span class="state" id="state"><i></i><span id="statet">Idle</span></span>
+          <div class="speed" id="speed">0<small>MB/s</small></div>
+          <div class="stats" id="stats"></div>
+        </div>
+        <div><svg class="spark" id="spark" viewBox="0 0 300 120" preserveAspectRatio="none" aria-label="Download speed over the last few minutes" role="img"></svg></div>
       </div>
-      <h2>Downloading <button class="btn line sm" id="pauseall" type="button" style="margin-left:8px">Pause all</button></h2>
+
+      <h2>Add a download</h2>
+      <div class="card add">
+        <div class="link"><div class="field"><svg><use href="#i-link"/></svg><input type="url" id="nzburl" placeholder="Paste an NZB link" autocomplete="off" aria-label="NZB link"></div><button class="btn" id="addurl" type="button"><svg><use href="#i-down"/></svg>Add</button></div>
+        <label class="drop" id="drop"><span class="ic"><svg><use href="#i-up"/></svg></span><span><b>Drop an NZB file here</b><span class="t">or click to choose one from your computer</span></span><input type="file" id="nzbfile" accept=".nzb,.xml,application/x-nzb" aria-label="NZB file"></label>
+        <div class="dropact" id="dropact" hidden><span id="fname"></span><button class="btn" id="addfile" type="button"><svg><use href="#i-up"/></svg>Upload</button></div>
+        <div id="msg" aria-live="polite"></div>
+      </div>
+
+      <h2>Downloading <button class="btn line sm" id="pauseall" type="button" style="margin-left:auto"><svg><use href="#i-pause"/></svg><span id="pausetxt">Pause all</span></button></h2>
       <div class="card" id="queue"></div>
       <h2>History</h2>
       <div class="card" id="history"></div>
@@ -53,39 +136,62 @@ input[type=text],input[type=password],input[type=url],input[type=file] { width:1
 </div>
 <script>
 (function () {
-  var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, timer = null, last = null;
+  var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, timer = null, last = null, samples = [];
   try { session = JSON.parse(sessionStorage.getItem('aurora.sab.session') || 'null'); } catch (e) { session = null; }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function ic(n) { return '<svg><use href="#i-' + n + '"/></svg>'; }
   function api(m, p, b) { var h = {}; if (b) h['Content-Type'] = 'application/json'; if (session) h['X-Emby-Token'] = session.token; if (session && m !== 'GET') p += (p.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
     return fetch(G + p, { method: m, headers: h, body: b ? JSON.stringify(b) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__s = r.status; return j; }); }); }
   function show(on) { $('login').hidden = on; $('app').hidden = !on; $('out').hidden = !on; if (!on && timer) { clearInterval(timer); timer = null; } }
   function signOut(msg) { session = null; try { sessionStorage.removeItem('aurora.sab.session'); } catch (e) {} show(false); if (msg) { $('lerr').hidden = false; $('lerr').textContent = msg; } }
-  function say(t, bad) { var m = $('msg'); m.className = bad ? 'err' : 'ok'; m.textContent = t; }
+  function say(t, bad) { var m = $('msg'); m.className = bad ? 'err' : 'ok'; m.textContent = t; m.style.marginTop = t ? '2px' : '0'; }
+
+  // the speed graph: the last 60 readings (one every 5 seconds = 5 minutes)
+  function spark() {
+    var W = 300, H = 120, pts = samples.slice(-60), max = Math.max.apply(null, pts.concat([1])) * 1.15, n = pts.length;
+    var grid = '<line class="grid" x1="0" x2="300" y1="30" y2="30"/><line class="grid" x1="0" x2="300" y1="60" y2="60"/><line class="grid" x1="0" x2="300" y1="90" y2="90"/>';
+    if (n < 2) { $('spark').innerHTML = grid + '<text x="150" y="66" fill="#7580ad" font-size="12" text-anchor="middle">Speed graph appears here</text>'; return; }
+    var xs = function (i) { return (i / (n - 1)) * W; }, ys = function (v) { return H - 6 - (v / max) * (H - 18); };
+    var line = pts.map(function (v, i) { return (i ? 'L' : 'M') + xs(i).toFixed(1) + ' ' + ys(v).toFixed(1); }).join(' ');
+    $('spark').innerHTML = '<defs><linearGradient id="sg" x1="0" x2="1"><stop offset="0" stop-color="#18c6d6"/><stop offset=".55" stop-color="#4f7bff"/><stop offset="1" stop-color="#8a5cff"/></linearGradient><linearGradient id="sf" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#4f7bff" stop-opacity=".45"/><stop offset="1" stop-color="#4f7bff" stop-opacity="0"/></linearGradient></defs>' + grid +
+      '<path d="' + line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z" fill="url(#sf)"/><path d="' + line + '" fill="none" stroke="url(#sg)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/><circle cx="' + xs(n - 1).toFixed(1) + '" cy="' + ys(pts[n - 1]).toFixed(1) + '" r="4.5" fill="#fff" vector-effect="non-scaling-stroke"/>';
+  }
   function draw(j) {
     last = j;
     if (!j.configured) { $('setup').hidden = false; $('main').hidden = true; $('sub').textContent = ''; return; }
     $('setup').hidden = true; $('main').hidden = false;
-    $('sub').textContent = j.paused ? 'Paused.' : (j.queue.length ? 'Downloading now.' : 'Nothing downloading.');
-    $('tiles').innerHTML = '<div class="card tile"><div class="n">' + esc(j.paused ? 'Paused' : (j.speed || '0')) + '</div><small>Speed</small></div><div class="card tile"><div class="n">' + j.queue.length + '</div><small>In the queue</small></div><div class="card tile"><div class="n">' + esc(j.sizeleft || '0') + '</div><small>Left to download</small></div><div class="card tile"><div class="n">' + esc(j.timeleft || '-') + '</div><small>Time left</small></div>';
-    $('pauseall').textContent = j.paused ? 'Resume all' : 'Pause all';
+    var mbs = (Number(j.kbpersec) || 0) / 1024; samples.push(j.paused ? 0 : mbs);
+    var go = !j.paused && j.queue.length && mbs > 0;
+    $('sub').textContent = j.paused ? 'Paused. Nothing is downloading.' : (j.queue.length ? 'Downloading now.' : 'Nothing downloading. Add a link or drop an NZB file below.');
+    $('state').className = 'state' + (j.paused ? ' pa' : go ? ' go' : ''); $('statet').textContent = j.paused ? 'Paused' : go ? 'Downloading' : 'Idle';
+    $('speed').innerHTML = (j.paused ? '0' : mbs >= 10 ? mbs.toFixed(0) : mbs.toFixed(1)) + '<small>MB/s</small>';
+    $('stats').innerHTML = '<div class="stat"><b>' + j.queue.length + '</b><small>In queue</small></div><div class="stat"><b>' + esc(j.sizeleft || '0') + '</b><small>Left</small></div><div class="stat"><b>' + esc(j.timeleft && j.timeleft !== '0:00:00' ? j.timeleft : '–') + '</b><small>Time left</small></div>';
+    spark();
+    $('pausetxt').textContent = j.paused ? 'Resume all' : 'Pause all'; $('pauseall').querySelector('use').setAttribute('href', j.paused ? '#i-play' : '#i-pause');
     $('queue').innerHTML = j.queue.length ? j.queue.map(function (x) {
-      return '<div class="item" data-id="' + esc(x.id) + '"><div class="top"><b>' + esc(x.name) + '</b><span class="meta">' + esc(x.size) + ' · ' + esc(x.left) + ' left · ' + esc(x.eta) + '</span></div><div class="track"><i style="width:' + x.pct + '%"></i></div><div class="meta">' + x.pct + '% <span class="tag">' + esc(x.status) + '</span></div><div class="acts"><button class="btn line sm" data-act="' + (x.status === 'Paused' ? 'resume' : 'pause') + '">' + (x.status === 'Paused' ? 'Resume' : 'Pause') + '</button><button class="btn line sm danger" data-act="delete">Remove</button></div></div>'; }).join('') : '<span class="sub">Nothing in the queue.</span>';
+      var paused = x.status === 'Paused', going = /download/i.test(x.status) && !j.paused;
+      return '<div class="item" data-id="' + esc(x.id) + '"><div class="row"><div class="ico ' + (paused ? 'pa' : going ? 'dl' : '') + '">' + ic(paused ? 'pause' : 'down') + '</div><div class="main"><div class="name">' + esc(x.name) + '</div></div><div class="pct">' + x.pct + '%</div></div>' +
+        '<div class="track"><i class="' + (paused || j.paused ? 'paused' : going ? 'live' : '') + '" style="width:' + Math.max(2, x.pct) + '%"></i></div>' +
+        '<div class="chips"><span class="chip ' + (paused ? 'warn' : '') + '">' + esc(x.status) + '</span><span class="chip">' + esc(x.size) + '</span><span class="chip">' + esc(x.left) + ' left</span>' + (x.eta && x.eta !== '0:00:00' ? '<span class="chip">' + esc(x.eta) + '</span>' : '') + '</div>' +
+        '<div class="acts"><button class="btn line sm" data-act="' + (paused ? 'resume' : 'pause') + '">' + ic(paused ? 'play' : 'pause') + (paused ? 'Resume' : 'Pause') + '</button><button class="btn line sm danger" data-act="delete">' + ic('trash') + 'Remove</button></div></div>'; }).join('') :
+      '<div class="empty">' + ic('box') + '<div>The queue is empty.</div></div>';
     $('history').innerHTML = j.history.length ? j.history.map(function (x) {
       var good = /complete/i.test(x.status), badx = /fail/i.test(x.status);
-      return '<div class="item" data-id="' + esc(x.id) + '" data-kind="history"><div class="top"><b>' + esc(x.name) + '</b><span class="meta">' + esc(x.size) + (x.at ? ' · ' + new Date(x.at * 1000).toLocaleString() : '') + '</span></div><div class="meta"><span class="tag ' + (good ? 'good' : badx ? 'bad' : '') + '">' + esc(x.status) + '</span>' + (x.fail ? ' ' + esc(x.fail) : '') + '</div><div class="acts"><button class="btn line sm danger" data-act="delete">Remove</button></div></div>'; }).join('') : '<span class="sub">Nothing finished yet.</span>';
+      return '<div class="item" data-id="' + esc(x.id) + '" data-kind="history"><div class="row"><div class="ico ' + (good ? 'ok' : badx ? 'bad' : '') + '">' + ic(good ? 'check' : badx ? 'x' : 'down') + '</div><div class="main"><div class="name">' + esc(x.name) + '</div><div class="chips" style="margin-top:6px"><span class="chip ' + (good ? 'good' : badx ? 'bad' : '') + '">' + esc(x.status) + '</span><span class="chip">' + esc(x.size) + '</span>' + (x.at ? '<span class="chip">' + new Date(x.at * 1000).toLocaleString() + '</span>' : '') + (x.fail ? '<span class="chip bad">' + esc(x.fail) + '</span>' : '') + '</div></div>' +
+        '<button class="btn line sm danger" data-act="delete" aria-label="Remove">' + ic('trash') + '</button></div></div>'; }).join('') : '<div class="empty">' + ic('check') + '<div>Nothing finished yet.</div></div>';
   }
   function load() {
     api('GET', '/sab/status').then(function (j) {
       if (j.__s === 401 || j.__s === 403) return signOut('Your sign-in ended. Please sign in again.');
-      if (j.__s === 404) { $('sub').textContent = 'Update the Aurora Guard to 1.42.0 or newer.'; return; }
+      if (j.__s === 404) { $('main').hidden = true; $('sub').textContent = 'Update the Aurora Guard to 1.42.0 or newer.'; return; }
       if (j.__s !== 200) { $('main').hidden = true; $('sub').textContent = j.error || 'Could not reach SABnzbd.'; return; }
       draw(j);
     }).catch(function () { $('sub').textContent = 'Could not reach the Aurora Guard.'; });
   }
-  function start() { load(); if (timer) clearInterval(timer); timer = setInterval(function () { if (!document.hidden) load(); }, 5000); }
+  function start() { samples = []; load(); if (timer) clearInterval(timer); timer = setInterval(function () { if (!document.hidden) load(); }, 5000); }
   document.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('[data-act]'); if (!b) return; var it = b.closest('.item'); if (!it) return;
-    if (b.dataset.act === 'delete' && b.dataset.ask !== '1') { b.dataset.ask = '1'; b.textContent = 'Tap again to remove'; return; }
+    if (b.dataset.act === 'delete' && b.dataset.ask !== '1') { b.dataset.ask = '1'; b.innerHTML = ic('trash') + 'Tap again'; return; }
     b.disabled = true;
     api('POST', '/sab/item', { id: it.dataset.id, action: b.dataset.act, kind: it.dataset.kind === 'history' ? 'history' : 'queue' }).then(function (j) { if (j.ok) load(); else { b.disabled = false; say(j.error || 'Could not do that.', true); } });
   });
@@ -93,13 +199,19 @@ input[type=text],input[type=password],input[type=url],input[type=file] { width:1
   $('addurl').onclick = function () {
     var u = $('nzburl').value.trim(); if (!u) { say('Paste a link first.', true); return; }
     $('addurl').disabled = true;
-    api('POST', '/sab/add', { url: u }).then(function (j) { $('addurl').disabled = false; if (j.ok) { $('nzburl').value = ''; say('Added.'); load(); } else say(j.error || 'Could not add it.', true); });
+    api('POST', '/sab/add', { url: u }).then(function (j) { $('addurl').disabled = false; if (j.ok) { $('nzburl').value = ''; say('Added to the queue.'); load(); } else say(j.error || 'Could not add it.', true); });
   };
+  $('nzburl').onkeydown = function (e) { if (e.key === 'Enter') $('addurl').click(); };
+  function chosen() { var f = $('nzbfile').files[0]; $('dropact').hidden = !f; $('fname').textContent = f ? f.name : ''; }
+  $('nzbfile').onchange = chosen;
+  var drop = $('drop');
+  ['dragenter', 'dragover'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+  ['dragleave', 'drop'].forEach(function (ev) { drop.addEventListener(ev, function () { drop.classList.remove('over'); }); });
   $('addfile').onclick = function () {
     var f = $('nzbfile').files[0]; if (!f) { say('Choose an NZB file first.', true); return; }
     if (f.size > 4 * 1024 * 1024) { say('That file is too big.', true); return; }
     var rd = new FileReader(); $('addfile').disabled = true;
-    rd.onload = function () { var data = String(rd.result).split(',')[1] || ''; api('POST', '/sab/upload', { filename: f.name, data: data }).then(function (j) { $('addfile').disabled = false; if (j.ok) { $('nzbfile').value = ''; say('Uploaded.'); load(); } else say(j.error || 'Could not upload it.', true); }); };
+    rd.onload = function () { var data = String(rd.result).split(',')[1] || ''; api('POST', '/sab/upload', { filename: f.name, data: data }).then(function (j) { $('addfile').disabled = false; if (j.ok) { $('nzbfile').value = ''; chosen(); say('Uploaded. It is in the queue.'); load(); } else say(j.error || 'Could not upload it.', true); }); };
     rd.onerror = function () { $('addfile').disabled = false; say('Could not read that file.', true); }; rd.readAsDataURL(f);
   };
   $('out').onclick = function () { signOut(''); $('lp').value = ''; };
