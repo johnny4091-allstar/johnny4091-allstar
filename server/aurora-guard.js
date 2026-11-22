@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.38.0';
+const VERSION = '1.39.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2675,6 +2675,24 @@ async function handle(req, res) {
     saveStore();
     return send(res, 200, { ok: true });
   }
+  // Feature requests (guard 1.39.0): the website's /requests/ page posts here. No sign-in; limited per internet address and kept small.
+  if (url.pathname === '/feature-request' && req.method === 'POST') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (body.website) return send(res, 200, { ok: true }); // hidden field only a robot fills in: pretend it worked
+    if (overLimit('featreq', ip, 5, 86400000)) return send(res, 429, { error: 'You have sent a few already today. Please try again tomorrow.' });
+    const clip = (v, n) => String(v || '').replace(/[\u0000-\u0009\u000b-\u001f]/g, ' ').trim().slice(0, n);
+    const user = clip(body.user, 60), title = clip(body.title, 100).replace(/\s+/g, ' '), details = clip(body.details, 1500);
+    const kind = ['feature', 'channel', 'problem', 'other'].includes(body.kind) ? body.kind : 'feature';
+    const device = clip(body.device, 60);
+    if (!user) return send(res, 400, { error: 'Please enter your Aurora username.' });
+    if (title.length < 4) return send(res, 400, { error: 'Please give your request a short title.' });
+    if (!Array.isArray(store.featureRequests)) store.featureRequests = [];
+    store.featureRequests = [{ id: crypto.randomBytes(5).toString('hex'), at: Date.now(), user, kind, title, details, device, status: 'new' }, ...store.featureRequests].slice(0, 1000);
+    saveStore();
+    try { sendAlert('Aurora: new feature request', `${user}: ${title}`, false); } catch { /* alerts are optional */ }
+    return send(res, 200, { ok: true });
+  }
   if (url.pathname === '/discount/check' && req.method === 'GET') {
     if (overLimit('dcheck', ip, 30, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
     const d = findDiscount(url.searchParams.get('code')), problem = discountProblem(d);
@@ -3412,6 +3430,20 @@ async function handle(req, res) {
     rollbackUpdate(auditBy); return send(res, 200, { ok: true, ...publicUpdate() });
   }
   // Discount codes for the website (admin).
+  if (url.pathname === '/feature-requests' && req.method === 'GET') return send(res, 200, { requests: store.featureRequests || [] });
+  {
+    const fr = url.pathname.match(/^\/feature-requests\/([0-9a-f]{10})$/);
+    if (fr && (req.method === 'PUT' || req.method === 'DELETE')) {
+      const list = store.featureRequests || [], item = list.find((x) => x.id === fr[1]);
+      if (!item) return send(res, 404, { error: 'No such request' });
+      if (req.method === 'DELETE') { store.featureRequests = list.filter((x) => x.id !== fr[1]); saveStore(); recordAudit(auditBy, 'Deleted a feature request'); return send(res, 200, { ok: true }); }
+      let body;
+      try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+      if (!['new', 'planned', 'done', 'declined'].includes(body.status)) return send(res, 400, { error: 'Unknown status' });
+      item.status = body.status; saveStore();
+      return send(res, 200, { ok: true, request: item });
+    }
+  }
   if (url.pathname === '/survey/results' && req.method === 'GET') return send(res, 200, { responses: store.surveys || [] });
   if (url.pathname === '/survey/results' && req.method === 'DELETE') {
     const id = String(url.searchParams.get('id') || '');

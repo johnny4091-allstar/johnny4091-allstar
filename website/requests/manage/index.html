@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Requests Inbox</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+<script src="../../config.js"></script>
+<style>
+@font-face { font-family:'Inter'; src:url('../../assets/fonts/inter-variable.woff2') format('woff2'); font-weight:100 900; font-display:swap; }
+:root { --bg:#070c1c; --bg-2:#0e1530; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --green:#46d369; --amber:#ffd479; --red:#ff8d9b;
+  --grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; } [hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased; background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
+.wrap { max-width:860px; margin:0 auto; padding:0 max(16px,env(safe-area-inset-left,0px)) 80px; }
+.bar { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:18px 0; flex-wrap:wrap; } .bar a.back { color:#cfd6f5; text-decoration:none; font-weight:600; font-size:.85rem; letter-spacing:.06em; text-transform:uppercase; }
+h1 { font-size:clamp(1.5rem,4vw,2rem); margin:6px 0 4px; font-weight:800; } .sub { color:var(--muted); margin:0 0 14px; }
+.card { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:12px; }
+label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
+input,select { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; }
+.btn { border:0; border-radius:8px; padding:.65rem 1.2rem; font:700 .92rem var(--font); cursor:pointer; color:#fff; background:var(--grad); } .btn.line { background:none; border:1px solid var(--line); color:#e5e5e5; } .btn.sm { padding:.4rem .8rem; font-size:.8rem; } .btn.danger { color:var(--red); }
+.login { max-width:380px; margin:40px auto; display:grid; gap:14px; } .err { color:var(--red); font-size:.9rem; }
+.chips { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 14px; } .chip { padding:7px 13px; border:1px solid var(--line); border-radius:999px; background:#0a1126; color:#cfd6f5; font:600 .85rem var(--font); cursor:pointer; } .chip[aria-pressed="true"] { background:#fff; color:#0a1126; border-color:#fff; }
+.top { display:flex; flex-wrap:wrap; gap:6px 12px; justify-content:space-between; align-items:baseline; } .top b { font-size:1.05rem; overflow-wrap:anywhere; }
+.meta { color:var(--dim); font-size:.8rem; } .body { margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; color:#dfe4fa; }
+.tag { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.68rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase; margin-right:6px; vertical-align:middle; background:rgba(122,92,255,.2); color:#b9a6ff; }
+.tag.problem { background:rgba(229,56,79,.15); color:var(--red); } .tag.channel { background:rgba(42,212,208,.15); color:var(--accent); } .tag.other { background:rgba(255,255,255,.08); color:#cfd6f5; }
+.acts { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; } .acts select { width:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar"><a class="back" href="../../admin/">&larr; Admin</a><span><a class="btn line sm" href="../" style="text-decoration:none">Open the request page</a> <button class="btn line sm" id="out" hidden>Sign out</button></span></div>
+  <div id="login" class="card login"><h1>Requests inbox</h1><div><label for="lu">Username</label><input id="lu" autocomplete="username"></div><div><label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password"></div><button class="btn" id="go">Sign in</button><div class="err" id="lerr" hidden></div></div>
+  <div id="app" hidden>
+    <h1>Requests inbox</h1><p class="sub" id="sub"></p>
+    <div class="chips" id="chips"></div>
+    <div id="list"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, all = [], filter = 'new';
+  try { session = JSON.parse(sessionStorage.getItem('aurora.requests.session') || 'null'); } catch (e) { session = null; }
+  var KIND = { feature: 'Feature', channel: 'Channel or show', problem: 'Problem', other: 'Other' }, STAT = { new: 'New', planned: 'Planned', done: 'Done', declined: 'Declined' };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function api(m, p, b) { var h = {}; if (b) h['Content-Type'] = 'application/json'; if (session) h['X-Emby-Token'] = session.token; if (session && m !== 'GET') p += (p.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
+    return fetch(G + p, { method: m, headers: h, body: b ? JSON.stringify(b) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__s = r.status; return j; }); }); }
+  function show(on) { $('login').hidden = on; $('app').hidden = !on; $('out').hidden = !on; }
+  function signOut(msg) { session = null; try { sessionStorage.removeItem('aurora.requests.session'); } catch (e) {} show(false); if (msg) { $('lerr').hidden = false; $('lerr').textContent = msg; } }
+  function draw() {
+    var counts = { all: all.length }; Object.keys(STAT).forEach(function (k) { counts[k] = all.filter(function (r) { return r.status === k; }).length; });
+    $('sub').textContent = all.length + ' request' + (all.length === 1 ? '' : 's') + ' in total, ' + counts.new + ' new.';
+    $('chips').innerHTML = ['new', 'planned', 'done', 'declined', 'all'].map(function (k) { return '<button class="chip" data-f="' + k + '" aria-pressed="' + (k === filter) + '">' + (k === 'all' ? 'All' : STAT[k]) + ' · ' + counts[k] + '</button>'; }).join('');
+    Array.prototype.forEach.call($('chips').querySelectorAll('[data-f]'), function (b) { b.onclick = function () { filter = b.dataset.f; draw(); }; });
+    var list = all.filter(function (r) { return filter === 'all' || r.status === filter; });
+    $('list').innerHTML = list.length ? list.map(function (r) {
+      return '<div class="card" data-id="' + esc(r.id) + '"><div class="top"><b><span class="tag ' + esc(r.kind) + '">' + esc(KIND[r.kind] || r.kind) + '</span>' + esc(r.title) + '</b><span class="meta">' + new Date(r.at).toLocaleString() + '</span></div>' +
+        '<div class="meta">From <b>' + esc(r.user) + '</b>' + (r.device ? ' · ' + esc(r.device) : '') + '</div>' + (r.details ? '<div class="body">' + esc(r.details) + '</div>' : '') +
+        '<div class="acts"><select data-st>' + Object.keys(STAT).map(function (k) { return '<option value="' + k + '"' + (k === r.status ? ' selected' : '') + '>' + STAT[k] + '</option>'; }).join('') + '</select><button class="btn line sm danger" data-del type="button">Delete</button></div></div>'; }).join('') : '<div class="card"><span class="sub">Nothing here.</span></div>';
+    Array.prototype.forEach.call($('list').querySelectorAll('.card[data-id]'), function (card) {
+      var id = card.dataset.id, item = all.filter(function (r) { return r.id === id; })[0];
+      card.querySelector('[data-st]').onchange = function () { var v = this.value; api('PUT', '/feature-requests/' + id, { status: v }).then(function (j) { if (j.__s === 200) { item.status = v; draw(); } }); };
+      var d = card.querySelector('[data-del]'); d.onclick = function () { if (d.dataset.ask !== '1') { d.dataset.ask = '1'; d.textContent = 'Tap again to delete'; return; } api('DELETE', '/feature-requests/' + id).then(function (j) { if (j.ok) { all = all.filter(function (r) { return r.id !== id; }); draw(); } }); };
+    });
+  }
+  function load() {
+    api('GET', '/feature-requests').then(function (j) {
+      if (j.__s === 401 || j.__s === 403) return signOut('Your sign-in ended. Please sign in again.');
+      if (j.__s !== 200) { $('sub').textContent = j.error || 'Could not load the requests. Update the Aurora Guard to 1.39.0 or newer.'; return; }
+      all = j.requests || []; draw();
+    }).catch(function () { $('sub').textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  $('out').onclick = function () { signOut(''); $('lp').value = ''; };
+  function login() {
+    var u = $('lu').value.trim(), p = $('lp').value, e = $('lerr'); e.hidden = true;
+    if (!u || !p) { e.hidden = false; e.textContent = 'Enter your username and password.'; return; }
+    if (!G) { e.hidden = false; e.textContent = 'The Guard address is not set in config.js.'; return; }
+    $('go').disabled = true;
+    api('POST', '/admin-login', { username: u, password: p }).then(function (j) {
+      $('go').disabled = false;
+      if (j.__s !== 200) { e.hidden = false; e.textContent = j.error || 'Could not sign in.'; return; }
+      session = { token: j.token, name: j.name }; try { sessionStorage.setItem('aurora.requests.session', JSON.stringify(session)); } catch (x) {} $('lp').value = ''; show(true); load();
+    }).catch(function () { $('go').disabled = false; e.hidden = false; e.textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  $('go').onclick = login; $('lp').onkeydown = function (ev) { if (ev.key === 'Enter') login(); };
+  if (session) { show(true); load(); } else show(false);
+})();
+</script>
+</body>
+</html>
