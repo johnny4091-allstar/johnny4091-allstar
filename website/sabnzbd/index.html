@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<title>Aurora Downloader</title>
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<script src="../config.js"></script>
+<style>
+@font-face { font-family:'Inter'; src:url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight:100 900; font-display:swap; }
+:root { --bg:#070c1c; --bg-2:#0e1530; --text:#fff; --muted:#b3b3b3; --dim:#808080; --line:#232f58; --accent:#2ad4d0; --green:#46d369; --amber:#ffd479; --red:#ff8d9b;
+  --grad:linear-gradient(100deg,#18b6d6 0%,#4f7bff 55%,#7a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; } [hidden] { display:none !important; }
+body { margin:0; background:var(--bg); color:var(--text); font:16px/1.5 var(--font); -webkit-font-smoothing:antialiased; background-image:radial-gradient(60% 30% at 8% 0%,rgba(42,212,208,.14),transparent 70%),radial-gradient(50% 30% at 100% 0%,rgba(122,92,255,.2),transparent 70%); background-repeat:no-repeat; }
+.wrap { max-width:900px; margin:0 auto; padding:0 max(16px,env(safe-area-inset-left,0px)) 80px; }
+.bar { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:18px 0; flex-wrap:wrap; } .bar a.back { color:#cfd6f5; text-decoration:none; font-weight:600; font-size:.85rem; letter-spacing:.06em; text-transform:uppercase; }
+h1 { font-size:clamp(1.5rem,4vw,2rem); margin:6px 0 4px; font-weight:800; } h2 { font-size:1.1rem; margin:26px 0 10px; font-weight:800; } .sub { color:var(--muted); margin:0 0 14px; }
+.card { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:12px; }
+label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
+input[type=text],input[type=password],input[type=url],input[type=file] { width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; }
+.btn { border:0; border-radius:8px; padding:.65rem 1.2rem; font:700 .92rem var(--font); cursor:pointer; color:#fff; background:var(--grad); } .btn.line { background:none; border:1px solid var(--line); color:#e5e5e5; } .btn.sm { padding:.4rem .8rem; font-size:.8rem; } .btn.danger { color:var(--red); } .btn:disabled { opacity:.55; cursor:default; }
+.login { max-width:380px; margin:40px auto; display:grid; gap:14px; } .err { color:var(--red); font-size:.9rem; } .ok { color:var(--green); font-size:.9rem; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:12px; } .tile .n { font-size:1.7rem; font-weight:800; font-variant-numeric:tabular-nums; line-height:1.1; } .tile small { color:var(--muted); }
+.row2 { display:flex; gap:10px; flex-wrap:wrap; align-items:end; } .row2 > div { flex:1; min-width:220px; }
+.item { padding:12px 0; border-top:1px solid var(--line); } .item:first-child { border-top:0; } .item .top { display:flex; flex-wrap:wrap; gap:6px 12px; justify-content:space-between; align-items:baseline; } .item b { overflow-wrap:anywhere; }
+.meta { color:var(--dim); font-size:.8rem; } .track { height:8px; border-radius:6px; background:var(--line); overflow:hidden; margin:8px 0; } .track i { display:block; height:100%; background:var(--grad); }
+.acts { display:flex; gap:8px; margin-top:6px; } .tag { display:inline-block; padding:2px 9px; border-radius:999px; font-size:.68rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase; background:rgba(122,92,255,.2); color:#b9a6ff; margin-left:6px; }
+.tag.good { background:rgba(70,211,105,.15); color:var(--green); } .tag.bad { background:rgba(229,56,79,.15); color:var(--red); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="bar"><a class="back" href="../admin/">&larr; Admin</a><span><button class="btn line sm" id="out" hidden>Sign out</button></span></div>
+  <div id="login" class="card login"><h1>Downloader</h1><div><label for="lu">Username</label><input type="text" id="lu" autocomplete="username"></div><div><label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password"></div><button class="btn" id="go">Sign in</button><div class="err" id="lerr" hidden></div></div>
+  <div id="app" hidden>
+    <h1>Downloader</h1><p class="sub" id="sub">Loading...</p>
+    <div id="setup" class="card" hidden><b>SABnzbd is not set up on the Aurora Guard yet.</b><p class="sub" style="margin:8px 0 0">On the PC that runs the Guard, open <code>config.json</code> and add <code>"sabnzbdUrl"</code> (the address of SABnzbd, like <code>http://192.168.1.20:8080</code>) and <code>"sabnzbdApiKey"</code> (SABnzbd &rarr; Config &rarr; General &rarr; API Key). Restart the Guard, then reload this page. Needs Guard 1.42.0 or newer.</p></div>
+    <div id="main" hidden>
+      <div class="tiles" id="tiles"></div>
+      <div class="card">
+        <div class="row2"><div><label for="nzburl">Add a link (NZB address)</label><input type="url" id="nzburl" placeholder="https://..." autocomplete="off"></div><button class="btn" id="addurl">Add</button></div>
+        <div class="row2" style="margin-top:12px"><div><label for="nzbfile">Or add an NZB file</label><input type="file" id="nzbfile" accept=".nzb,.xml,application/x-nzb"></div><button class="btn" id="addfile">Upload</button></div>
+        <div id="msg" aria-live="polite" style="margin-top:10px"></div>
+      </div>
+      <h2>Downloading <button class="btn line sm" id="pauseall" type="button" style="margin-left:8px">Pause all</button></h2>
+      <div class="card" id="queue"></div>
+      <h2>History</h2>
+      <div class="card" id="history"></div>
+    </div>
+  </div>
+</div>
+<script>
+(function () {
+  var G = ((window.AURORA_SITE || {}).guardUrl || '').replace(/\/+$/, ''), $ = function (i) { return document.getElementById(i); }, session = null, timer = null, last = null;
+  try { session = JSON.parse(sessionStorage.getItem('aurora.sab.session') || 'null'); } catch (e) { session = null; }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function api(m, p, b) { var h = {}; if (b) h['Content-Type'] = 'application/json'; if (session) h['X-Emby-Token'] = session.token; if (session && m !== 'GET') p += (p.indexOf('?') >= 0 ? '&' : '?') + 'by=' + encodeURIComponent(String(session.name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40));
+    return fetch(G + p, { method: m, headers: h, body: b ? JSON.stringify(b) : undefined }).then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__s = r.status; return j; }); }); }
+  function show(on) { $('login').hidden = on; $('app').hidden = !on; $('out').hidden = !on; if (!on && timer) { clearInterval(timer); timer = null; } }
+  function signOut(msg) { session = null; try { sessionStorage.removeItem('aurora.sab.session'); } catch (e) {} show(false); if (msg) { $('lerr').hidden = false; $('lerr').textContent = msg; } }
+  function say(t, bad) { var m = $('msg'); m.className = bad ? 'err' : 'ok'; m.textContent = t; }
+  function draw(j) {
+    last = j;
+    if (!j.configured) { $('setup').hidden = false; $('main').hidden = true; $('sub').textContent = ''; return; }
+    $('setup').hidden = true; $('main').hidden = false;
+    $('sub').textContent = j.paused ? 'Paused.' : (j.queue.length ? 'Downloading now.' : 'Nothing downloading.');
+    $('tiles').innerHTML = '<div class="card tile"><div class="n">' + esc(j.paused ? 'Paused' : (j.speed || '0')) + '</div><small>Speed</small></div><div class="card tile"><div class="n">' + j.queue.length + '</div><small>In the queue</small></div><div class="card tile"><div class="n">' + esc(j.sizeleft || '0') + '</div><small>Left to download</small></div><div class="card tile"><div class="n">' + esc(j.timeleft || '-') + '</div><small>Time left</small></div>';
+    $('pauseall').textContent = j.paused ? 'Resume all' : 'Pause all';
+    $('queue').innerHTML = j.queue.length ? j.queue.map(function (x) {
+      return '<div class="item" data-id="' + esc(x.id) + '"><div class="top"><b>' + esc(x.name) + '</b><span class="meta">' + esc(x.size) + ' · ' + esc(x.left) + ' left · ' + esc(x.eta) + '</span></div><div class="track"><i style="width:' + x.pct + '%"></i></div><div class="meta">' + x.pct + '% <span class="tag">' + esc(x.status) + '</span></div><div class="acts"><button class="btn line sm" data-act="' + (x.status === 'Paused' ? 'resume' : 'pause') + '">' + (x.status === 'Paused' ? 'Resume' : 'Pause') + '</button><button class="btn line sm danger" data-act="delete">Remove</button></div></div>'; }).join('') : '<span class="sub">Nothing in the queue.</span>';
+    $('history').innerHTML = j.history.length ? j.history.map(function (x) {
+      var good = /complete/i.test(x.status), badx = /fail/i.test(x.status);
+      return '<div class="item" data-id="' + esc(x.id) + '" data-kind="history"><div class="top"><b>' + esc(x.name) + '</b><span class="meta">' + esc(x.size) + (x.at ? ' · ' + new Date(x.at * 1000).toLocaleString() : '') + '</span></div><div class="meta"><span class="tag ' + (good ? 'good' : badx ? 'bad' : '') + '">' + esc(x.status) + '</span>' + (x.fail ? ' ' + esc(x.fail) : '') + '</div><div class="acts"><button class="btn line sm danger" data-act="delete">Remove</button></div></div>'; }).join('') : '<span class="sub">Nothing finished yet.</span>';
+  }
+  function load() {
+    api('GET', '/sab/status').then(function (j) {
+      if (j.__s === 401 || j.__s === 403) return signOut('Your sign-in ended. Please sign in again.');
+      if (j.__s === 404) { $('sub').textContent = 'Update the Aurora Guard to 1.42.0 or newer.'; return; }
+      if (j.__s !== 200) { $('main').hidden = true; $('sub').textContent = j.error || 'Could not reach SABnzbd.'; return; }
+      draw(j);
+    }).catch(function () { $('sub').textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  function start() { load(); if (timer) clearInterval(timer); timer = setInterval(function () { if (!document.hidden) load(); }, 5000); }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('[data-act]'); if (!b) return; var it = b.closest('.item'); if (!it) return;
+    if (b.dataset.act === 'delete' && b.dataset.ask !== '1') { b.dataset.ask = '1'; b.textContent = 'Tap again to remove'; return; }
+    b.disabled = true;
+    api('POST', '/sab/item', { id: it.dataset.id, action: b.dataset.act, kind: it.dataset.kind === 'history' ? 'history' : 'queue' }).then(function (j) { if (j.ok) load(); else { b.disabled = false; say(j.error || 'Could not do that.', true); } });
+  });
+  $('pauseall').onclick = function () { api('POST', last && last.paused ? '/sab/resume' : '/sab/pause', {}).then(load); };
+  $('addurl').onclick = function () {
+    var u = $('nzburl').value.trim(); if (!u) { say('Paste a link first.', true); return; }
+    $('addurl').disabled = true;
+    api('POST', '/sab/add', { url: u }).then(function (j) { $('addurl').disabled = false; if (j.ok) { $('nzburl').value = ''; say('Added.'); load(); } else say(j.error || 'Could not add it.', true); });
+  };
+  $('addfile').onclick = function () {
+    var f = $('nzbfile').files[0]; if (!f) { say('Choose an NZB file first.', true); return; }
+    if (f.size > 4 * 1024 * 1024) { say('That file is too big.', true); return; }
+    var rd = new FileReader(); $('addfile').disabled = true;
+    rd.onload = function () { var data = String(rd.result).split(',')[1] || ''; api('POST', '/sab/upload', { filename: f.name, data: data }).then(function (j) { $('addfile').disabled = false; if (j.ok) { $('nzbfile').value = ''; say('Uploaded.'); load(); } else say(j.error || 'Could not upload it.', true); }); };
+    rd.onerror = function () { $('addfile').disabled = false; say('Could not read that file.', true); }; rd.readAsDataURL(f);
+  };
+  $('out').onclick = function () { signOut(''); $('lp').value = ''; };
+  function login() {
+    var u = $('lu').value.trim(), p = $('lp').value, e = $('lerr'); e.hidden = true;
+    if (!u || !p) { e.hidden = false; e.textContent = 'Enter your username and password.'; return; }
+    if (!G) { e.hidden = false; e.textContent = 'The Guard address is not set in config.js.'; return; }
+    $('go').disabled = true;
+    api('POST', '/admin-login', { username: u, password: p }).then(function (j) {
+      $('go').disabled = false;
+      if (j.__s !== 200) { e.hidden = false; e.textContent = j.error || 'Could not sign in.'; return; }
+      session = { token: j.token, name: j.name }; try { sessionStorage.setItem('aurora.sab.session', JSON.stringify(session)); } catch (x) {} $('lp').value = ''; show(true); start();
+    }).catch(function () { $('go').disabled = false; e.hidden = false; e.textContent = 'Could not reach the Aurora Guard.'; });
+  }
+  $('go').onclick = login; $('lp').onkeydown = function (ev) { if (ev.key === 'Enter') login(); };
+  if (session) { show(true); start(); } else show(false);
+})();
+</script>
+</body>
+</html>
