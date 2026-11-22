@@ -204,6 +204,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
   var $ = function (i) { return document.getElementById(i); };
   var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
   var session = null, me = null, filter = 'all', openId = null, busy = false;
+  var catsCache = null;
   try { session = JSON.parse(sessionStorage.getItem('aurora.reseller') || 'null'); } catch (e) { session = null; }
   function keep() { try { if (session) sessionStorage.setItem('aurora.reseller', JSON.stringify(session)); else sessionStorage.removeItem('aurora.reseller'); } catch (e) { /* private window */ } }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -266,7 +267,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.innerHTML = '<div class="top" tabindex="0" role="button" aria-expanded="' + (openId === c.id) + '"><div><span class="nm">' + esc(c.full || c.name) + '</span><span class="tag ' + s + '">' + label[s] + '</span><div class="meta">' + esc(c.name) + (c.email ? ' · ' + esc(c.email) : '') + '</div><div class="nowp" data-u="' + esc(c.id) + '">' + nowText(c.id) + '</div></div>' +
         '<div class="meta" style="text-align:right">' + esc(c.planName || '') + '<br>' + esc(ends) + '</div></div>' +
         '<div class="act"><select class="rp" aria-label="Renew plan">' + planOptions() + '</select><button class="btn red sm renew" type="button">Renew</button><button class="btn line sm pw" type="button">Reset password</button>' +
-        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm pq" type="button" title="Is it their internet, their app settings or the provider?">Playback quality</button><button class="btn line sm dv" type="button" title="See where they are signed in and remove one device">Devices</button><button class="btn line sm danger del" type="button">Delete</button>' +
+        '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm pq" type="button" title="Is it their internet, their app settings or the provider?">Playback quality</button><button class="btn line sm dv" type="button" title="See where they are signed in and remove one device">Devices</button><button class="btn line sm cg" type="button" title="Choose which Live TV categories this customer sees, like the 24/7 channels">Channels: ' + (c.cats == null ? 'all' : c.cats) + '</button><button class="btn line sm danger del" type="button">Delete</button>' +
         (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div><div class="pbox" hidden></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
@@ -336,6 +337,39 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       el.querySelector('.dv').onclick = function () {
         if (!pbox.hidden && pbox.getAttribute('data-kind') === 'd') { pbox.hidden = true; return; }
         showBox('d', '<p class="meta">Loading...</p>'); loadDevices();
+      };
+      // Live TV categories for this customer (like the 24/7 channels).
+      el.querySelector('.cg').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 'c') { pbox.hidden = true; return; }
+        showBox('c', '<p class="meta">Loading...</p>');
+        var base = '/reseller/customers/' + encodeURIComponent(c.id) + '/categories';
+        // One after the other: a reseller can only have one request running at a time.
+        (catsCache ? Promise.resolve(catsCache) : api('GET', '/reseller/categories')).then(function (all) { return api('GET', base).then(function (mine) { return [all, mine]; }); }).then(function (r) {
+          var all = r[0], mine = r[1];
+          if (all.__status !== 200 || mine.__status !== 200) return showBox('c', '<p class="meta">' + esc((all.__status !== 200 ? all.error : mine.error) || 'Could not load it. Your provider may need to update Aurora Guard.') + '</p>');
+          catsCache = all;
+          if (!all.supported) return showBox('c', '<p class="meta">Choosing categories works with an Xtream TV provider. Yours is set up another way.</p>');
+          var have = mine.categories ? mine.categories.map(String) : null;
+          showBox('c', '<strong>Live TV categories for ' + esc(c.full || c.name) + '</strong>' +
+            '<p class="meta">' + (have ? 'They see only the ticked categories.' : 'Right now they see all categories' + (mine.planName ? ' (' + esc(mine.planName) + ')' : '') + '. Tick some to limit them.') + ' Adult categories are controlled by the adult switch, not here.</p>' +
+            '<div class="row" style="margin:8px 0"><input class="cgq" type="search" placeholder="Search categories" aria-label="Search categories" style="flex:1"><button class="btn line sm cg247" type="button">Tick 24/7</button><button class="btn line sm cgall" type="button">Tick all</button><button class="btn line sm cgnone" type="button">Untick all</button></div>' +
+            '<div class="cglist" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 10px">' + all.categories.map(function (k) {
+              return '<label class="cgrow" data-n="' + esc(k.name.toLowerCase()) + '" style="display:flex;gap:8px;align-items:center;margin:0;padding:6px 0;font-weight:400"><input type="checkbox" value="' + esc(k.id) + '" style="width:auto"' + (have ? (have.indexOf(String(k.id)) >= 0 ? ' checked' : '') : ' checked') + '> <span style="flex:1">' + esc(k.name) + '</span><span class="meta">' + k.count + '</span></label>';
+            }).join('') + '</div>' +
+            '<div class="act" style="margin-top:10px"><button class="btn red sm cgsave" type="button">Save</button><button class="btn line sm cgplan" type="button">Back to their plan (all)</button><span class="meta cgmsg" aria-live="polite"></span></div>');
+          var boxes = function () { return Array.prototype.slice.call(pbox.querySelectorAll('.cglist input')); }, msg = pbox.querySelector('.cgmsg');
+          pbox.querySelector('.cgq').oninput = function () { var q = this.value.trim().toLowerCase(); Array.prototype.forEach.call(pbox.querySelectorAll('.cgrow'), function (r) { r.style.display = !q || r.getAttribute('data-n').indexOf(q) >= 0 ? 'flex' : 'none'; }); };
+          pbox.querySelector('.cg247').onclick = function () { boxes().forEach(function (b) { if (/24\s*[\/x]?\s*7/i.test(b.parentNode.getAttribute('data-n'))) b.checked = true; }); };
+          pbox.querySelector('.cgall').onclick = function () { boxes().forEach(function (b) { b.checked = true; }); };
+          pbox.querySelector('.cgnone').onclick = function () { boxes().forEach(function (b) { b.checked = false; }); };
+          function done(j, text) { if (j.__status === 200) { c.cats = j.categories ? j.categories.length : null; say(text); reload(); } else { msg.style.color = '#ff8d9b'; msg.textContent = j.error || 'Could not save.'; } }
+          pbox.querySelector('.cgsave').onclick = function () {
+            var ids = boxes().filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+            if (!ids.length) { msg.style.color = '#ff8d9b'; msg.textContent = 'Tick at least one category.'; return; }
+            api('POST', base, { categories: ids.length === boxes().length ? null : ids }).then(function (j) { done(j, ids.length === boxes().length ? 'Now on all categories.' : 'Saved: ' + ids.length + ' categories. They see the change the next time they open Aurora.'); });
+          };
+          pbox.querySelector('.cgplan').onclick = function () { api('POST', base, { categories: null }).then(function (j) { done(j, 'Back on all categories.'); }); };
+        }).catch(function () { showBox('c', '<p class="meta">Could not reach Aurora.</p>'); });
       };
       var del = el.querySelector('.del');
       del.onclick = function () { del.textContent = 'Tap again to delete'; del.onclick = function () { act(del, 'DELETE', '/reseller/customers/' + encodeURIComponent(c.id), null, function () { openId = null; reload(); }); }; };

@@ -8248,7 +8248,7 @@
         </div>
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
         <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
-        <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button></div><div class="res-extra hidden" data-extra></div>
+        <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button><button class="btn btn-gray" data-cg>Channels: ${c.cats == null ? 'all' : c.cats}</button></div><div class="res-extra hidden" data-extra></div>
         <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
       $('[data-cancel]', form).addEventListener('click', closeForm);
       const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
@@ -8299,6 +8299,39 @@
       $('[data-dev]', form).addEventListener('click', () => {
         if (!extra.classList.contains('hidden') && extra.dataset.kind === 'd') { extra.classList.add('hidden'); return; }
         showExtra('d', '<div class="spinner"></div>'); loadDevices();
+      });
+      // Live TV categories for this customer, like the 24/7 channels (guard 1.40.0).
+      $('[data-cg]', form).addEventListener('click', async () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'c') { extra.classList.add('hidden'); return; }
+        showExtra('c', '<div class="spinner"></div>');
+        try {
+          // One after the other: a reseller can only have one request running at a time.
+          const all = await guard('/reseller/categories', { params: { userId: state.userId } });
+          const mine = await guard(path('/categories'), { params: { userId: state.userId } });
+          if (!all.supported) { showExtra('c', '<p class="muted">Choosing categories works with an Xtream TV provider. Yours is set up another way.</p>'); return; }
+          const have = mine.categories ? new Set(mine.categories.map(String)) : null;
+          showExtra('c', `<strong>Live TV categories for ${esc(c.full || c.name)}</strong>
+            <p class="muted">${have ? 'They see only the ticked categories.' : `Right now they see all categories${mine.planName ? ' (' + esc(mine.planName) + ')' : ''}. Tick some to limit them.`} Adult categories are controlled by the adult switch, not here.</p>
+            <div class="m-actions"><input type="search" class="users-search" data-cg-q placeholder="Search categories" autocomplete="off" spellcheck="false"><button class="btn btn-gray" data-cg-247>Tick 24/7</button><button class="btn btn-gray" data-cg-all>Tick all</button><button class="btn btn-gray" data-cg-none>Untick all</button></div>
+            <div class="admin-list" data-cg-list style="max-height:300px;overflow:auto">${all.categories.map((k) => `<label class="admin-row" data-n="${esc(k.name.toLowerCase())}"><div class="admin-row-main"><input type="checkbox" value="${esc(k.id)}"${have ? (have.has(String(k.id)) ? ' checked' : '') : ' checked'}> ${esc(k.name)} <span class="muted">${k.count}</span></div></label>`).join('')}</div>
+            <div class="m-actions"><button class="btn btn-red" data-cg-save>Save</button><button class="btn btn-gray" data-cg-plan>Back to their plan (all)</button></div>`);
+          const boxes = () => $$('[data-cg-list] input', extra);
+          $('[data-cg-q]', extra).addEventListener('input', (e) => { const t = e.target.value.trim().toLowerCase(); $$('[data-cg-list] [data-n]', extra).forEach((r) => { r.style.display = !t || r.dataset.n.includes(t) ? '' : 'none'; }); });
+          $('[data-cg-247]', extra).addEventListener('click', () => boxes().forEach((b) => { if (/24\s*[\/x]?\s*7/i.test(b.closest('[data-n]').dataset.n)) b.checked = true; }));
+          $('[data-cg-all]', extra).addEventListener('click', () => boxes().forEach((b) => { b.checked = true; }));
+          $('[data-cg-none]', extra).addEventListener('click', () => boxes().forEach((b) => { b.checked = false; }));
+          $('[data-cg-save]', extra).addEventListener('click', async () => {
+            const ids = boxes().filter((b) => b.checked).map((b) => b.value);
+            if (!ids.length) { say('Tick at least one category.', 'bad'); return; }
+            try {
+              await guard(path('/categories'), { method: 'POST', params: { userId: state.userId }, body: { categories: ids.length === boxes().length ? null : ids } });
+              toast(ids.length === boxes().length ? 'Now on all categories' : `Saved: ${ids.length} categories`, 3000); reload();
+            } catch (e) { say(esc(e.message), 'bad'); }
+          });
+          $('[data-cg-plan]', extra).addEventListener('click', async () => {
+            try { await guard(path('/categories'), { method: 'POST', params: { userId: state.userId }, body: { categories: null } }); toast('Back on all categories', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+          });
+        } catch (e) { showExtra('c', `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`); }
       });
       $('[data-hold]', form).addEventListener('click', async () => {
         const putOn = !c.hold;
