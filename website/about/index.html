@@ -48,6 +48,7 @@ ul,ol { padding-left:1.3rem; margin:0 0 18px; } li { margin:8px 0; } li::marker 
 strong { color:#fff; }
 .qa { border-top:1px solid var(--line); padding:6px 0 4px; } .qa:first-of-type { margin-top:10px; } .qa h3 { margin:18px 0 6px; font-size:1.12rem; }
 .gl { display:grid; grid-template-columns:minmax(120px,190px) 1fr; gap:0 22px; margin:0; } .gl dt { color:#fff; font-weight:700; padding:12px 0; border-top:1px solid var(--line); } .gl dd { margin:0; padding:12px 0; border-top:1px solid var(--line); }
+.team { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; margin:20px 0 24px; } .member { background:rgba(14,21,48,.7); border:1px solid var(--line); border-radius:18px; padding:20px 18px; text-align:center; } .member .av { width:64px; height:64px; margin:0 auto 12px; border-radius:50%; background:var(--grad); display:grid; place-items:center; font-weight:900; color:#fff; font-size:1.2rem; box-shadow:0 10px 28px rgba(79,123,255,.4); } .member b { display:block; color:#fff; font-size:1.05rem; } .member span:last-child { color:var(--dim); font-size:.86rem; }
 .small { color:var(--dim); font-size:.95rem; }
 footer { position:relative; z-index:1; border-top:1px solid var(--line); padding:30px max(18px,env(safe-area-inset-left,0px)) 44px; text-align:center; color:var(--dim); font-size:.88rem; }
 footer a { color:var(--muted); margin:0 8px; }
@@ -71,11 +72,12 @@ footer a { color:var(--muted); margin:0 8px; }
     <div class="fact"><b>Live TV and sports</b><span>With backup streams</span></div>
     <div class="fact"><b>Free trial</b><span>No card needed</span></div>
     <div class="fact"><b>Real support</b><span>People who know your account</span></div>
+    <div class="fact"><b>Serving customers since 2020</b><span>Built with their feedback</span></div>
   </div>
 </div>
 
 <div class="layout">
-  <aside class="toc" aria-label="On this page"><h4>On this page</h4><ol><li><a href="#what"><span>01</span>What Aurora is</a></li><li><a href="#beliefs"><span>02</span>What we believe</a></li><li><a href="#how"><span>03</span>How Aurora works</a></li><li><a href="#movies"><span>04</span>Movies and TV shows</a></li><li><a href="#live"><span>05</span>Live TV</a></li><li><a href="#sports"><span>06</span>Sports</a></li><li><a href="#extras"><span>07</span>Requests, lists and the small things</a></li><li><a href="#devices"><span>08</span>Every screen you own</a></li><li><a href="#accounts"><span>09</span>Accounts, trials and plans</a></li><li><a href="#resellers"><span>10</span>Resellers and the people behind Aurora</a></li><li><a href="#privacy"><span>11</span>Privacy and security</a></li><li><a href="#reliable"><span>12</span>Keeping it running</a></li><li><a href="#support"><span>13</span>Support, feedback and how we listen</a></li><li><a href="#ahead"><span>14</span>Where we want to go</a></li><li><a href="#faq"><span>15</span>Questions people ask</a></li><li><a href="#words"><span>16</span>A short glossary</a></li><li><a href="#contact"><span>17</span>Say hello</a></li></ol></aside>
+  <aside class="toc" aria-label="On this page"><h4>On this page</h4><ol><li><a href="#what"><span>01</span>What Aurora is</a></li><li><a href="#story"><span>02</span>Our story</a></li><li><a href="#beliefs"><span>03</span>What we believe</a></li><li><a href="#how"><span>04</span>How Aurora works</a></li><li><a href="#movies"><span>05</span>Movies and TV shows</a></li><li><a href="#live"><span>06</span>Live TV</a></li><li><a href="#sports"><span>07</span>Sports</a></li><li><a href="#extras"><span>08</span>Requests, lists and the small things</a></li><li><a href="#devices"><span>09</span>Every screen you own</a></li><li><a href="#accounts"><span>10</span>Accounts, trials and plans</a></li><li><a href="#resellers"><span>11</span>Resellers and the people behind Aurora</a></li><li><a href="#privacy"><span>12</span>Privacy and security</a></li><li><a href="#reliable"><span>13</span>Keeping it running</a></li><li><a href="#support"><span>14</span>Support, feedback and how we listen</a></li><li><a href="#ahead"><span>15</span>Where we want to go</a></li><li><a href="#faq"><span>16</span>Questions people ask</a></li><li><a href="#words"><span>17</span>A short glossary</a></li><li><a href="#contact"><span>18</span>Say hello</a></li></ol></aside>
   <article>
 <section id="what">
 <h2><span class="n">01</span>What Aurora is</h2>
@@ -95,13 +97,36 @@ footer a { color:var(--muted); margin:0 8px; }
 <li><strong>Real support</strong> from resellers who know their own customers, backed by a team that watches the service every day.</li>
 </ul>
 
-<h3>What Aurora is not</h3>
-<p>It is worth saying plainly what Aurora is not, because misunderstandings cost people time. Aurora is a player and a service layer. It is not a free-for-all, it is not a public website anyone can open without an account, and it is not a replacement for the rights holders of the shows and films themselves. The library you see and the channels you can open come from the service you have signed up with, and that service decides what is available and for how long. Aurora is the way you reach it, along with the tools that make it reliable.</p>
-<p>It is also not a social network, an advertising platform or a data business. There are no ads in the app, nothing is sold, and the information we hold about you is the minimum needed to run your account. Later in this page there is a full section on privacy and security, with the specifics.</p>
+</section>
+
+<section id="story">
+<h2><span class="n">02</span>Our story</h2>
+<p class="lede">Aurora started with a simple frustration: people were paying too much to watch too little, and I believed there was a better way to do it.</p>
+<p>Streaming bills add up quickly. One subscription becomes three, then five, and each one wants its own monthly payment, its own app and its own password. Netflix, Hulu and the rest of the big names make good products, but when you put them all together the cost is hard to defend, especially for a family that simply wants a good evening in front of the television. I wanted to save people money and give them a better streaming opportunity than that. Why should it cost this much, and why should it be this complicated?</p>
+<p>In 2018 that idea turned into a real passion. I became very committed to finding a better way: one place to watch movies, shows, live television and sports, at a fair price, that worked properly on the screens people already own. I wanted it done well, not just cheaply. Cheap is easy. Cheap and reliable is the hard part, and reliable was the part I refused to give up.</p>
+
+<h3>2020: the first customers</h3>
+<p>In 2020 I started serving my first customers. That is the year this stopped being an idea and became a responsibility. Once real people depend on something to work on a Friday night, you learn very quickly what matters. You learn that the picture has to start fast. You learn that a channel that fails during a big game is remembered for a long time. You learn that people will forgive a lot if you answer the phone, tell them the truth and fix the problem, and that they will forgive almost nothing if you go quiet.</p>
+<p>Since then, I have loved working with my customers. I mean that. The best part of this work has never been the technology. It is hearing from people that the service just works, and being able to help quickly when it does not. Those conversations shape the decisions we make. When customers turned out to have older television sticks that could not install the app, we built a lighter edition for them. When resellers needed to see what was going wrong for a customer, we built them the tools to see it.</p>
+
+<h3>Building our own app</h3>
+<p>As the customers grew, I wanted them to have something built just for them, an experience we controlled from end to end, so that when a customer had a problem we could fix it ourselves. So we made our own app and called it Aurora.</p>
+<p>That decision changed a great deal. Building our own app meant we could design the experience we had always wanted to offer: calm, clear and quick, with live channels that switch to a backup by themselves, a Sports tab built around the questions sports fans actually ask, and tools that let the people who look after customers do their jobs well. It meant we could listen to our customers and act on what they told us. It meant that when something went wrong, we owned the answer.</p>
+<p>Aurora is still growing, and so are we. I am proud of what it has become, and I am more excited about what we can build next. The goal has not changed since 2018: give people a better way to watch, for a fair price, and look after them properly while they do.</p>
+
+<h3>The team</h3>
+<p>Aurora is not one person. It is a team, and the service you use every day is the result of their work. Meet the people behind it.</p>
+<div class="team">
+<div class="member"><span class="av" aria-hidden="true">JH</span><b>Johnathon H</b><span>Aurora team</span></div>
+<div class="member"><span class="av" aria-hidden="true">CE</span><b>Casey E</b><span>Aurora team</span></div>
+<div class="member"><span class="av" aria-hidden="true">RL</span><b>Ray L</b><span>Aurora team</span></div>
+</div>
+<p>Together we look after our customers, keep the service running, listen to your feedback, and decide what to build next. We answer to the people who use Aurora, and we try to behave that way: promptly, honestly and with respect for your time. If you ever need us, the last section of this page shows the quickest way to reach us.</p>
+<p>Thank you for being part of the story, whether you have been here since 2020 or you are about to try Aurora for the first time.</p>
 </section>
 
 <section id="beliefs">
-<h2><span class="n">02</span>What we believe</h2>
+<h2><span class="n">03</span>What we believe</h2>
 <p class="lede">Every product has opinions, whether or not its makers admit it. Ours are simple, and they explain most of the decisions you will notice as a customer.</p>
 
 <h3>It should just play</h3>
@@ -122,7 +147,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="how">
-<h2><span class="n">03</span>How Aurora works</h2>
+<h2><span class="n">04</span>How Aurora works</h2>
 <p class="lede">You do not need to understand any of this to enjoy the app. But if you are curious, or if you are the sort of person who likes knowing why a thing behaves the way it does, here is the whole picture in plain words.</p>
 
 <h3>Four pieces</h3>
@@ -147,7 +172,7 @@ footer a { color:var(--muted); margin:0 8px; }
 
 </section>
 <section id="movies">
-<h2><span class="n">04</span>Movies and TV shows</h2>
+<h2><span class="n">05</span>Movies and TV shows</h2>
 <p class="lede">The film and show library is the quiet heart of Aurora. It is where you go when you want to settle in and watch something properly, with the whole evening in front of you.</p>
 
 <h3>Finding something to watch</h3>
@@ -169,7 +194,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="live">
-<h2><span class="n">05</span>Live TV</h2>
+<h2><span class="n">06</span>Live TV</h2>
 <p class="lede">Live television is the part of the service that is hardest to keep reliable, and the part where we have spent the most effort. A live channel is a continuous stream that never stops, from a source that is not ours, over a path that crosses many networks. It deserves its own section.</p>
 
 <h3>Channels, categories and favourites</h3>
@@ -192,7 +217,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="sports">
-<h2><span class="n">06</span>Sports</h2>
+<h2><span class="n">07</span>Sports</h2>
 <p class="lede">A great deal of live television is sport, and sport has its own rhythm. You want to know when a game starts, who is winning, and which channel is showing it. Aurora has a Sports tab built around exactly those three questions.</p>
 
 <h3>Scores and standings</h3>
@@ -209,7 +234,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="extras">
-<h2><span class="n">07</span>Requests, lists and the small things</h2>
+<h2><span class="n">08</span>Requests, lists and the small things</h2>
 <p class="lede">A service is more than its main screens. These are the smaller features that make daily use pleasant, and the channels through which you can shape what Aurora becomes.</p>
 
 <h3>My List and favourites</h3>
@@ -223,7 +248,7 @@ footer a { color:var(--muted); margin:0 8px; }
 
 </section>
 <section id="devices">
-<h2><span class="n">08</span>Every screen you own</h2>
+<h2><span class="n">09</span>Every screen you own</h2>
 <p class="lede">People watch in different places: the big television in the lounge, a tablet in the kitchen, a phone on the bus, a laptop at a desk. Aurora is built to feel the same on all of them, and to respect what each is best at.</p>
 
 <h3>Android phones and tablets</h3>
@@ -251,7 +276,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="accounts">
-<h2><span class="n">09</span>Accounts, trials and plans</h2>
+<h2><span class="n">10</span>Accounts, trials and plans</h2>
 <p class="lede">The idea behind our plans is that it should be obvious what you are buying. You pay for a length of time and a number of connections. That is the whole of it.</p>
 
 <h3>The free trial</h3>
@@ -265,13 +290,10 @@ footer a { color:var(--muted); margin:0 8px; }
 <h3>Discount codes and referrals</h3>
 <p>The website can accept discount codes, which can take a percentage or a fixed amount off particular plans for a limited time. A code entered at sign-up applies to the first paid plan it is valid for. There is also a referral scheme: when a friend signs up with your code, you both receive extra free days. It is a small thank-you for spreading the word, and a simple one, because the people who recommend a service to their friends are the people who are most honest about it.</p>
 
-<h3>Renewals and extension requests</h3>
-<p>The app warns you before your plan ends, with a notice that counts down the days. If you would like more time, you can ask from inside the app, and the request goes to whoever looks after your account, usually your reseller. They can approve it, change it or decline it, and you see the answer in the app. There is a limit on how many requests one account can make in a month, which keeps the system fair and keeps the inbox readable for the people who have to deal with it.</p>
-
 </section>
 
 <section id="resellers">
-<h2><span class="n">10</span>Resellers and the people behind Aurora</h2>
+<h2><span class="n">11</span>Resellers and the people behind Aurora</h2>
 <p class="lede">Aurora is sold directly, and it is also sold by resellers: independent people who look after their own customers. They are a large part of how the service reaches people, and a large part of why customers get a human being when they need one.</p>
 
 <h3>What a reseller does</h3>
@@ -282,15 +304,12 @@ footer a { color:var(--muted); margin:0 8px; }
 <p>We build the reseller tools around the questions a customer actually asks. "Is it working?" is answered by a Watching Now list that shows what each customer is playing at this moment. "Why does it buffer?" is answered by a playback quality report for each customer, with plain-language hints such as turning on a larger buffer. "My phone is lost" is answered by a list of the customer's devices with a button to remove one. "When will you tell me about maintenance?" is answered by a notice that a reseller can send to just their own customers, for a time they choose. And "how do I contact you?" is answered by contact details that each reseller sets, which the customer sees under Help and Support inside the app.</p>
 <p>Resellers can also choose which live categories each customer sees, and give a customer a named package such as Sports or Kids, in one tap. They can see which customers are about to end, copy a ready-made reminder message, search, filter and export their customer list, ask the administrators for more credits, and set up alerts for things like low credits. There is a reseller panel in the app and the same tools on the reseller website, so that a reseller can work from whichever screen is nearest.</p>
 
-<h3>Credits are a ledger, not a promise</h3>
-<p>Every change to a reseller's credits is written to a ledger, with the amount, the reason, who made the change and what the balance became. If a balance ever looks wrong, the ledger answers the question. A reseller's balance can never go below zero, and only one change can happen at a time, so a double click cannot spend a credit twice. A deleted customer is not refunded, which is why deleting asks twice.</p>
-
 <h3>The administrators</h3>
 <p>Behind the resellers are the administrators, who run the service itself. They manage the library, the live channel lists and their backups, the plans and prices, the resellers and their credits, the announcements and the maintenance windows. Some of the most sensitive screens, such as the list of resellers and the list of users, sit behind an Admin PIN, so that giving someone a helper role does not give them the keys to everything. Moderators are a lighter role, for people who help customers and look at problems without being able to change money or settings.</p>
 <p>Every administrative action is written to an audit log: who did it, what they did and when. The log cannot be edited. It exists so that the question "who changed that" always has an answer, and so that the team can see at a glance that the rules are being followed.</p>
 </section>
 <section id="privacy">
-<h2><span class="n">11</span>Privacy and security</h2>
+<h2><span class="n">12</span>Privacy and security</h2>
 <p class="lede">You are trusting us with a username, a password, an email address and a record of what you watch. We take that seriously, and we would like you to see exactly what that means. This section is a plain-language summary. The full <a href="../privacy/">privacy policy</a> is on its own page, and if the two ever disagree, the policy is the one that counts.</p>
 
 <h3>What we hold</h3>
@@ -313,7 +332,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="reliable">
-<h2><span class="n">12</span>Keeping it running</h2>
+<h2><span class="n">13</span>Keeping it running</h2>
 <p class="lede">Reliability is not one big feature. It is a hundred small habits. This is a tour of the habits that keep Aurora up, and the ones that tell us quickly when it is not.</p>
 
 <h3>The Guard checks every minute</h3>
@@ -325,16 +344,13 @@ footer a { color:var(--muted); margin:0 8px; }
 <h3>Playback quality, measured</h3>
 <p>Guessing at buffering is miserable, so Aurora measures it. After each viewing the app sends back a tiny report: how long it took to start, how many times it stalled, how long the stalls lasted, and roughly how fast the stream was. Those reports are kept for two weeks and shown to resellers and administrators as a plain summary with hints. If a customer says "it is buffering", the person helping can see whether the problem is a single customer or a pattern across many, and can say with a straight face whether the fix is a bigger buffer, a better connection or a call to the provider.</p>
 
-<h3>Backups, everywhere</h3>
-<p>We mentioned backup streams for live channels. The same attitude applies elsewhere. The Guard keeps its data in plain files that are easy to copy. Settings live in a configuration file that can be restored. A forgotten Admin PIN can be recovered by someone who has access to the computer the Guard runs on, and by no one else. And because the Guard is a single file with no outside packages, a bad update can be reversed by putting back the previous file.</p>
-
 <h3>Updates that cannot surprise you</h3>
 <p>New versions are published from a single place and checked before they go out. The Guard looks for a new version once a day and only installs one when an administrator taps Update, after checking that the file has not been tampered with and that the new version starts correctly. The Android apps tell you when an update is available and install it from inside the app. The iPhone and iPad app updates through TestFlight. Each release carries a short list of what changed, so you can see what is different.</p>
 
 </section>
 
 <section id="support">
-<h2><span class="n">13</span>Support, feedback and how we listen</h2>
+<h2><span class="n">14</span>Support, feedback and how we listen</h2>
 <p class="lede">A service is only as good as the way it responds to people. We try to make it easy to be heard, and we try to show that we have listened.</p>
 
 <h3>Who to contact first</h3>
@@ -345,7 +361,7 @@ footer a { color:var(--muted); margin:0 8px; }
 
 </section>
 <section id="ahead">
-<h2><span class="n">14</span>Where we want to go</h2>
+<h2><span class="n">15</span>Where we want to go</h2>
 <p class="lede">A service that stands still slowly gets worse, because everything around it moves. We keep a list of things we would like to do. None of it is a promise, and the order changes whenever customers tell us something that matters more. We share the list because we would rather you heard our thinking than guessed at it.</p>
 
 <h3>Ideas we are considering</h3>
@@ -368,7 +384,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="faq">
-<h2><span class="n">15</span>Questions people ask</h2>
+<h2><span class="n">16</span>Questions people ask</h2>
 
 <div class="qa"><h3>Is there a free trial?</h3><p>Yes. When you sign up on the website, your account starts with a short free trial, and no card is needed. It is a real account on the real service, so you can judge for yourself. If you do nothing at the end, it simply stops.</p></div>
 
@@ -399,7 +415,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="words">
-<h2><span class="n">16</span>A short glossary</h2>
+<h2><span class="n">17</span>A short glossary</h2>
 <p class="lede">A few words come up often. Here they are in plain language.</p>
 <dl class="gl">
 <dt>Aurora</dt><dd>The apps and website that you use, and the service behind them.</dd>
@@ -428,7 +444,7 @@ footer a { color:var(--muted); margin:0 8px; }
 </section>
 
 <section id="contact">
-<h2><span class="n">17</span>Say hello</h2>
+<h2><span class="n">18</span>Say hello</h2>
 <p class="lede">We would like to hear from you, whether it is a question, a problem, an idea or just a thank-you.</p>
 <p>If you already have an account, the quickest route is the person who set it up. Their details are in the app under Help and Support. If you are new, start with the free trial on the home page, and if you get stuck, use the request page to tell us where.</p>
 <div class="cta-row">
