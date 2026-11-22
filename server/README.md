@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.38.0
+
+- Clean up old accounts. `GET /limits/expired?days=30` lists customers whose end date was at least that many days ago (never administrators, moderators, resellers, or accounts with no end date). `POST /limits/expired` (`{ days, ids }`) deletes the chosen ones from the server and the Guard, checking each again first, and writes one line to the audit log. Behind the Admin PIN like the rest of Users.
+
 ## 1.37.3
 
 - The survey needs the person's Aurora username (`user`). A second submission from the same username replaces the first, so each customer counts once.
