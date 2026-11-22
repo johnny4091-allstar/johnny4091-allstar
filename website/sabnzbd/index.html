@@ -81,6 +81,17 @@ input:focus-visible,button:focus-visible,.drop:focus-within { outline:2px solid 
 .acts { display:flex; gap:8px; margin-top:10px; }
 .empty { text-align:center; padding:26px 10px; color:var(--dim); } .empty svg { width:52px; height:52px; color:#2c3b7a; margin-bottom:8px; }
 .hint { color:var(--dim); font-size:.9rem; line-height:1.55; } code { background:#0a1126; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:.85em; color:#9fe9e6; }
+/* more information */
+.glance { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px; margin-top:14px; }
+.mini { padding:16px 18px; } .mini h3 { margin:0 0 10px; font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:800; display:flex; justify-content:space-between; gap:8px; }
+.kv { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-top:1px solid rgba(255,255,255,.06); font-size:.92rem; } .kv:first-of-type { border-top:0; } .kv span { color:var(--dim); } .kv b { font-variant-numeric:tabular-nums; text-align:right; overflow-wrap:anywhere; }
+.big { font-size:1.9rem; font-weight:900; letter-spacing:-.02em; font-variant-numeric:tabular-nums; line-height:1.1; } .big small { font-size:.45em; color:var(--muted); font-weight:700; letter-spacing:0; }
+.disk { height:10px; border-radius:99px; background:rgba(255,255,255,.07); overflow:hidden; margin:10px 0 8px; } .disk i { display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,#46d369,#2ad4d0); } .disk.low i { background:linear-gradient(90deg,#ff6b81,#ffd479); }
+select { padding:9px 12px; border-radius:10px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; max-width:100%; }
+.warn { border-color:rgba(255,212,121,.35); } .warn li { margin:6px 0; color:#f1e3b5; overflow-wrap:anywhere; font-size:.9rem; } .warn ul { margin:8px 0 0; padding-left:20px; }
+.chip.pf { background:rgba(255,107,129,.14); color:var(--red); } .chip.ph { background:rgba(255,212,121,.14); color:var(--amber); } .chip.pl { background:rgba(255,255,255,.04); color:var(--dim); }
+.acts select { padding:6px 10px; font-size:.8rem; border-radius:10px; } .sm-label { font-size:.72rem; color:var(--dim); align-self:center; }
+.folder { color:var(--dim); font-size:.78rem; margin-top:6px; overflow-wrap:anywhere; }
 @media (max-width:700px) { .hero { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(3,1fr); } }
 @media (max-width:440px) { .stat b { font-size:1.05rem; } .btn { padding:.75rem 1.1rem; } }
 @media (prefers-reduced-motion:reduce) { .glow,.ico.dl svg,.track i.live::after,.state.go i { animation:none; } .track i { transition:none; } }
@@ -119,6 +130,9 @@ input:focus-visible,button:focus-visible,.drop:focus-within { outline:2px solid 
         <div><svg class="spark" id="spark" viewBox="0 0 300 120" preserveAspectRatio="none" aria-label="Download speed over the last few minutes" role="img"></svg></div>
       </div>
 
+      <div class="glance" id="glance"></div>
+      <div id="warnbox"></div>
+
       <h2>Add a download</h2>
       <div class="card add">
         <div class="link"><div class="field"><svg><use href="#i-link"/></svg><input type="url" id="nzburl" placeholder="Paste an NZB link" autocomplete="off" aria-label="NZB link"></div><button class="btn" id="addurl" type="button"><svg><use href="#i-down"/></svg>Add</button></div>
@@ -146,6 +160,22 @@ input:focus-visible,button:focus-visible,.drop:focus-within { outline:2px solid 
   function signOut(msg) { session = null; try { sessionStorage.removeItem('aurora.sab.session'); } catch (e) {} show(false); if (msg) { $('lerr').hidden = false; $('lerr').textContent = msg; } }
   function say(t, bad) { var m = $('msg'); m.className = bad ? 'err' : 'ok'; m.textContent = t; m.style.marginTop = t ? '2px' : '0'; }
 
+  function dur(sec) { sec = Math.round(Number(sec) || 0); if (sec < 60) return sec + 's'; var m = Math.floor(sec / 60), r = sec % 60; if (m < 60) return m + 'm ' + (r ? r + 's' : ''); var h = Math.floor(m / 60); return h + 'h ' + (m % 60) + 'm'; }
+  function gb(v) { if (v == null) return '–'; return v >= 1000 ? (v / 1024).toFixed(2) + ' TB' : v.toFixed(v >= 100 ? 0 : 1) + ' GB'; }
+  var LIMITS = [['0', 'No limit'], ['1M', '1 MB/s'], ['2M', '2 MB/s'], ['5M', '5 MB/s'], ['10M', '10 MB/s'], ['20M', '20 MB/s'], ['50M', '50 MB/s']];
+  function glance(j) {
+    var d = j.disk || {}, used = d.total != null && d.free != null ? Math.max(0, d.total - d.free) : null, pctUsed = d.total ? Math.min(100, Math.round(used / d.total * 100)) : 0, low = d.total ? d.free / d.total < 0.1 : false;
+    var lim = String(j.speedlimitAbs || '0').toUpperCase(), opts = LIMITS.map(function (l) { return '<option value="' + l[0] + '"' + (l[0].toUpperCase() === lim || (l[0] === '0' && (lim === '' || lim === '0')) ? ' selected' : '') + '>' + l[1] + '</option>'; }).join('');
+    if (!LIMITS.some(function (l) { return l[0].toUpperCase() === lim; }) && lim && lim !== '0') opts += '<option value="' + esc(lim) + '" selected>' + esc(lim) + ' (set in SABnzbd)</option>';
+    var t = j.totals || {};
+    $('glance').innerHTML =
+      '<div class="card mini"><h3>Disk space</h3><div class="big">' + gb(d.free) + ' <small>free</small></div><div class="disk' + (low ? ' low' : '') + '"><i style="width:' + pctUsed + '%"></i></div><div class="kv"><span>Used</span><b>' + gb(used) + ' of ' + gb(d.total) + '</b></div>' +
+        (d.freeIncomplete != null && d.freeIncomplete !== d.free ? '<div class="kv"><span>Incomplete folder</span><b>' + gb(d.freeIncomplete) + ' free</b></div>' : '') + (low ? '<div class="kv"><span style="color:var(--red)">Running low</span><b></b></div>' : '') + '</div>' +
+      '<div class="card mini"><h3>Downloaded</h3><div class="kv"><span>Today</span><b>' + esc(t.day || '–') + '</b></div><div class="kv"><span>This week</span><b>' + esc(t.week || '–') + '</b></div><div class="kv"><span>This month</span><b>' + esc(t.month || '–') + '</b></div><div class="kv"><span>All time</span><b>' + esc(t.all || '–') + '</b></div></div>' +
+      '<div class="card mini"><h3>Speed limit</h3><select id="limit" aria-label="Speed limit">' + opts + '</select><div class="kv" style="margin-top:10px"><span>Now</span><b>' + esc(j.paused ? 'Paused' : (j.speed || '0') + 'B/s') + '</b></div><div class="kv"><span>Size of the queue</span><b>' + gb(j.mb != null ? j.mb / 1024 : null) + '</b></div></div>' +
+      '<div class="card mini"><h3>SABnzbd</h3><div class="kv"><span>Version</span><b>' + esc(j.version || '–') + '</b></div><div class="kv"><span>Finish around</span><b>' + esc(j.eta || '–') + '</b></div><div class="kv"><span>Computer load</span><b>' + esc(j.load || '–') + '</b></div><div class="kv"><span>Warnings</span><b>' + (j.warningCount ? '<span class="chip warn">' + j.warningCount + '</span>' : 'None') + '</b></div></div>';
+    $('warnbox').innerHTML = j.warnings && j.warnings.length ? '<div class="card warn" style="margin-top:14px"><b>Warnings from SABnzbd</b><ul>' + j.warnings.map(function (w) { return '<li>' + esc(w) + '</li>'; }).join('') + '</ul></div>' : '';
+  }
   // the speed graph: the last 60 readings (one every 5 seconds = 5 minutes)
   function spark() {
     var W = 300, H = 120, pts = samples.slice(-60), max = Math.max.apply(null, pts.concat([1])) * 1.15, n = pts.length;
@@ -165,20 +195,21 @@ input:focus-visible,button:focus-visible,.drop:focus-within { outline:2px solid 
     $('sub').textContent = j.paused ? 'Paused. Nothing is downloading.' : (j.queue.length ? 'Downloading now.' : 'Nothing downloading. Add a link or drop an NZB file below.');
     $('state').className = 'state' + (j.paused ? ' pa' : go ? ' go' : ''); $('statet').textContent = j.paused ? 'Paused' : go ? 'Downloading' : 'Idle';
     $('speed').innerHTML = (j.paused ? '0' : mbs >= 10 ? mbs.toFixed(0) : mbs.toFixed(1)) + '<small>MB/s</small>';
-    $('stats').innerHTML = '<div class="stat"><b>' + j.queue.length + '</b><small>In queue</small></div><div class="stat"><b>' + esc(j.sizeleft || '0') + '</b><small>Left</small></div><div class="stat"><b>' + esc(j.timeleft && j.timeleft !== '0:00:00' ? j.timeleft : '–') + '</b><small>Time left</small></div>';
-    spark();
+    $('stats').innerHTML = '<div class="stat"><b>' + (j.total || j.queue.length) + '</b><small>In queue</small></div><div class="stat"><b>' + esc(j.sizeleft || '0') + '</b><small>Left</small></div><div class="stat"><b>' + esc(j.timeleft && j.timeleft !== '0:00:00' ? j.timeleft : '–') + '</b><small>Time left</small></div>';
+    spark(); glance(j);
     $('pausetxt').textContent = j.paused ? 'Resume all' : 'Pause all'; $('pauseall').querySelector('use').setAttribute('href', j.paused ? '#i-play' : '#i-pause');
     $('queue').innerHTML = j.queue.length ? j.queue.map(function (x) {
       var paused = x.status === 'Paused', going = /download/i.test(x.status) && !j.paused;
       return '<div class="item" data-id="' + esc(x.id) + '"><div class="row"><div class="ico ' + (paused ? 'pa' : going ? 'dl' : '') + '">' + ic(paused ? 'pause' : 'down') + '</div><div class="main"><div class="name">' + esc(x.name) + '</div></div><div class="pct">' + x.pct + '%</div></div>' +
         '<div class="track"><i class="' + (paused || j.paused ? 'paused' : going ? 'live' : '') + '" style="width:' + Math.max(2, x.pct) + '%"></i></div>' +
-        '<div class="chips"><span class="chip ' + (paused ? 'warn' : '') + '">' + esc(x.status) + '</span><span class="chip">' + esc(x.size) + '</span><span class="chip">' + esc(x.left) + ' left</span>' + (x.eta && x.eta !== '0:00:00' ? '<span class="chip">' + esc(x.eta) + '</span>' : '') + '</div>' +
-        '<div class="acts"><button class="btn line sm" data-act="' + (paused ? 'resume' : 'pause') + '">' + ic(paused ? 'play' : 'pause') + (paused ? 'Resume' : 'Pause') + '</button><button class="btn line sm danger" data-act="delete">' + ic('trash') + 'Remove</button></div></div>'; }).join('') :
+        '<div class="chips"><span class="chip ' + (paused ? 'warn' : '') + '">' + esc(x.status) + '</span><span class="chip">' + esc(x.size) + '</span><span class="chip">' + esc(x.left) + ' left</span>' + (x.eta && x.eta !== '0:00:00' ? '<span class="chip">' + esc(x.eta) + ' to go</span>' : '') +
+          (x.cat && x.cat !== '*' ? '<span class="chip">' + esc(x.cat) + '</span>' : '') + (x.priority && x.priority !== 'Normal' ? '<span class="chip ' + (/force|high/i.test(x.priority) ? (/force/i.test(x.priority) ? 'pf' : 'ph') : 'pl') + '">' + esc(x.priority) + ' priority</span>' : '') + (x.age ? '<span class="chip">' + esc(x.age) + ' old</span>' : '') + (x.labels || []).map(function (l) { return '<span class="chip warn">' + esc(l) + '</span>'; }).join('') + '</div>' +
+        '<div class="acts"><label class="sm-label" for="pr-' + esc(x.id) + '">Priority</label><select class="prio" id="pr-' + esc(x.id) + '" data-prio aria-label="Priority">' + ['Force', 'High', 'Normal', 'Low'].map(function (n) { return '<option' + (n === (x.priority || 'Normal') ? ' selected' : '') + '>' + n + '</option>'; }).join('') + '</select><button class="btn line sm" data-act="top">' + ic('up') + 'Top</button><button class="btn line sm" data-act="' + (paused ? 'resume' : 'pause') + '">' + ic(paused ? 'play' : 'pause') + (paused ? 'Resume' : 'Pause') + '</button><button class="btn line sm danger" data-act="delete">' + ic('trash') + 'Remove</button></div></div>'; }).join('') :
       '<div class="empty">' + ic('box') + '<div>The queue is empty.</div></div>';
     $('history').innerHTML = j.history.length ? j.history.map(function (x) {
       var good = /complete/i.test(x.status), badx = /fail/i.test(x.status);
-      return '<div class="item" data-id="' + esc(x.id) + '" data-kind="history"><div class="row"><div class="ico ' + (good ? 'ok' : badx ? 'bad' : '') + '">' + ic(good ? 'check' : badx ? 'x' : 'down') + '</div><div class="main"><div class="name">' + esc(x.name) + '</div><div class="chips" style="margin-top:6px"><span class="chip ' + (good ? 'good' : badx ? 'bad' : '') + '">' + esc(x.status) + '</span><span class="chip">' + esc(x.size) + '</span>' + (x.at ? '<span class="chip">' + new Date(x.at * 1000).toLocaleString() + '</span>' : '') + (x.fail ? '<span class="chip bad">' + esc(x.fail) + '</span>' : '') + '</div></div>' +
-        '<button class="btn line sm danger" data-act="delete" aria-label="Remove">' + ic('trash') + '</button></div></div>'; }).join('') : '<div class="empty">' + ic('check') + '<div>Nothing finished yet.</div></div>';
+      return '<div class="item" data-id="' + esc(x.id) + '" data-kind="history"><div class="row"><div class="ico ' + (good ? 'ok' : badx ? 'bad' : '') + '">' + ic(good ? 'check' : badx ? 'x' : 'down') + '</div><div class="main"><div class="name">' + esc(x.name) + '</div><div class="chips" style="margin-top:6px"><span class="chip ' + (good ? 'good' : badx ? 'bad' : '') + '">' + esc(x.status) + '</span><span class="chip">' + esc(x.size) + '</span>' + (x.cat ? '<span class="chip">' + esc(x.cat) + '</span>' : '') + (x.at ? '<span class="chip">' + new Date(x.at * 1000).toLocaleString() + '</span>' : '') + (x.dl ? '<span class="chip">downloaded in ' + dur(x.dl) + '</span>' : '') + (x.pp ? '<span class="chip">unpacked in ' + dur(x.pp) + '</span>' : '') + (x.fail ? '<span class="chip bad">' + esc(x.fail) + '</span>' : '') + '</div>' + (x.folder && good ? '<div class="folder">Saved in ' + esc(x.folder) + '</div>' : '') + '</div>' +
+        '<div class="acts" style="margin:0;flex-direction:column">' + (badx ? '<button class="btn line sm" data-act="retry">' + ic('down') + 'Retry</button>' : '') + '<button class="btn line sm danger" data-act="delete" aria-label="Remove">' + ic('trash') + '</button></div></div></div>'; }).join('') : '<div class="empty">' + ic('check') + '<div>Nothing finished yet.</div></div>';
   }
   function load() {
     api('GET', '/sab/status').then(function (j) {
@@ -194,6 +225,11 @@ input:focus-visible,button:focus-visible,.drop:focus-within { outline:2px solid 
     if (b.dataset.act === 'delete' && b.dataset.ask !== '1') { b.dataset.ask = '1'; b.innerHTML = ic('trash') + 'Tap again'; return; }
     b.disabled = true;
     api('POST', '/sab/item', { id: it.dataset.id, action: b.dataset.act, kind: it.dataset.kind === 'history' ? 'history' : 'queue' }).then(function (j) { if (j.ok) load(); else { b.disabled = false; say(j.error || 'Could not do that.', true); } });
+  });
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (t.id === 'limit') { api('POST', '/sab/limit', { limit: t.value }).then(function (j) { say(j.ok ? (t.value === '0' ? 'Speed limit removed.' : 'Speed limit set to ' + t.options[t.selectedIndex].text + '.') : (j.error || 'Could not change the limit.'), !j.ok); load(); }); }
+    if (t.hasAttribute && t.hasAttribute('data-prio')) { var it = t.closest('.item'); api('POST', '/sab/item', { id: it.dataset.id, action: 'priority', priority: t.value }).then(function (j) { if (!j.ok) say(j.error || 'Could not change the priority.', true); load(); }); }
   });
   $('pauseall').onclick = function () { api('POST', last && last.paused ? '/sab/resume' : '/sab/pause', {}).then(load); };
   $('addurl').onclick = function () {

@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.42.0';
+const VERSION = '1.43.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -3569,10 +3569,17 @@ async function handle(req, res) {
   if (url.pathname === '/sab/status' && req.method === 'GET') {
     if (!sabBase()) return send(res, 200, { configured: false });
     try {
-      const q = (await sabCall({ mode: 'queue' })).queue || {}, h = (await sabCall({ mode: 'history', limit: 15 })).history || {};
-      return send(res, 200, { configured: true, paused: !!q.paused, status: q.status || '', speed: q.speed || '', kbpersec: Number(q.kbpersec) || 0, sizeleft: q.sizeleft || '', timeleft: q.timeleft || '',
-        queue: (q.slots || []).slice(0, 50).map((x) => ({ id: x.nzo_id, name: x.filename, status: x.status, pct: Number(x.percentage) || 0, size: x.size || '', left: x.sizeleft || '', eta: x.timeleft || '', cat: x.cat || '' })),
-        history: (h.slots || []).slice(0, 15).map((x) => ({ id: x.nzo_id, name: x.name, status: x.status, size: x.size || '', at: x.completed || 0, fail: x.fail_message || '' })) });
+      const q = (await sabCall({ mode: 'queue' })).queue || {}, h = (await sabCall({ mode: 'history', limit: 20 })).history || {};
+      const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : null; };
+      let warnings = [];
+      if (Number(q.have_warnings) > 0) { try { warnings = (((await sabCall({ mode: 'warnings' })).warnings) || []).slice(-8).reverse().map((w) => String(w).slice(0, 220)); } catch { /* optional */ } }
+      const lastSeg = (v) => String(v || '').split(/[\\/]/).filter(Boolean).pop() || '';
+      return send(res, 200, { configured: true, version: q.version || '', paused: !!q.paused, status: q.status || '', speed: q.speed || '', kbpersec: Number(q.kbpersec) || 0, sizeleft: q.sizeleft || '', timeleft: q.timeleft || '', eta: q.eta || '',
+        total: Number(q.noofslots_total) || (q.slots || []).length, mb: num(q.mb), mbleft: num(q.mbleft), load: q.loadavg || '', speedlimit: q.speedlimit || '', speedlimitAbs: q.speedlimit_abs || '',
+        disk: { free: num(q.diskspace1), total: num(q.diskspacetotal1), freeIncomplete: num(q.diskspace2), totalIncomplete: num(q.diskspacetotal2) },
+        totals: { day: h.day_size || '', week: h.week_size || '', month: h.month_size || '', all: h.total_size || '' }, warnings, warningCount: Number(q.have_warnings) || 0,
+        queue: (q.slots || []).slice(0, 50).map((x) => ({ id: x.nzo_id, name: x.filename, status: x.status, pct: Number(x.percentage) || 0, size: x.size || '', left: x.sizeleft || '', eta: x.timeleft || '', cat: x.cat || '', priority: x.priority || 'Normal', age: x.avg_age || '', mb: num(x.mb), mbleft: num(x.mbleft), labels: Array.isArray(x.labels) ? x.labels.slice(0, 4).map(String) : [] })),
+        history: (h.slots || []).slice(0, 20).map((x) => ({ id: x.nzo_id, name: x.name, status: x.status, size: x.size || '', at: x.completed || 0, fail: x.fail_message || '', cat: x.category || '', dl: Number(x.download_time) || 0, pp: Number(x.postproc_time) || 0, folder: lastSeg(x.storage) })) });
     } catch (e) { return send(res, 502, { configured: true, error: e.message }); }
   }
   if (url.pathname.startsWith('/sab/') && req.method === 'POST') {
@@ -3603,9 +3610,25 @@ async function handle(req, res) {
         await sabCall({ mode: url.pathname === '/sab/pause' ? 'pause' : 'resume' });
         return send(res, 200, { ok: true });
       }
+      if (url.pathname === '/sab/limit') {
+        // "0" means no limit; otherwise a speed such as 5M or 800K
+        const v = String(body.limit == null ? '' : body.limit).trim();
+        if (!/^(0|\d{1,5}[KkMm])$/.test(v)) return send(res, 400, { error: 'Not a valid speed limit.' });
+        await sabCall({ mode: 'config', name: 'speedlimit', value: v });
+        recordAudit(auditBy, `Set the SABnzbd speed limit to ${v === '0' ? 'none' : v.toUpperCase()}`); saveStore();
+        return send(res, 200, { ok: true });
+      }
       if (url.pathname === '/sab/item') {
         const id = String(body.id || ''), act = String(body.action || ''), kind = body.kind === 'history' ? 'history' : 'queue';
         if (!/^[\w-]{3,80}$/.test(id)) return send(res, 400, { error: 'Not a valid download.' });
+        if (act === 'retry' && kind === 'history') { await sabCall({ mode: 'retry', value: id }); return send(res, 200, { ok: true }); }
+        if (act === 'top' && kind === 'queue') { await sabCall({ mode: 'switch', value: id, value2: '0' }); return send(res, 200, { ok: true }); }
+        if (act === 'priority' && kind === 'queue') {
+          const pr = { force: 2, high: 1, normal: 0, low: -1 }[String(body.priority || '').toLowerCase()];
+          if (pr === undefined) return send(res, 400, { error: 'Not a valid priority.' });
+          await sabCall({ mode: 'queue', name: 'priority', value: id, value2: String(pr) });
+          return send(res, 200, { ok: true });
+        }
         if (!['pause', 'resume', 'delete'].includes(act) || (kind === 'history' && act !== 'delete')) return send(res, 400, { error: 'Not a valid action.' });
         await sabCall({ mode: kind, name: act, value: id, ...(act === 'delete' ? { del_files: '1' } : {}) });
         if (act === 'delete') { recordAudit(auditBy, `Removed a download from SABnzbd${kind === 'history' ? ' history' : ''}`); saveStore(); }
