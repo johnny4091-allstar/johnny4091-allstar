@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.39.0';
+const VERSION = '1.40.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -592,7 +592,7 @@ function supportOfReseller(id) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, cats: Array.isArray(rec.categories) ? rec.categories.length : null, catsCustom: !!rec.catsCustom, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
     remind: cleanDays(rec.remind), remindDefault: remindDefault(),
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
@@ -933,7 +933,7 @@ function applyPlan(userId, userName, plan, mode, priceOverride) {
   const from = mode === 'extend' && rec.expires && rec.expires > today ? rec.expires : today;
   rec.limit = plan.connections;
   rec.expires = addPlanLength(from, plan);
-  rec.categories = plan.categories ? [...plan.categories] : null;
+  if (!rec.catsCustom) rec.categories = plan.categories ? [...plan.categories] : null; // a reseller's own choice of categories stays through renewals
   if (plan.price > 0) rec.trial = false; // a paid plan ends a free trial
   if (plan.vod) rec.vod = true; // a plan that includes the provider's movies and TV switches it on (a plan without it leaves a switch you set by hand alone)
   rec.name = userName; rec.updated = Date.now();
@@ -944,7 +944,7 @@ function applyPlan(userId, userName, plan, mode, priceOverride) {
     price = discountedPrice(plan.price, dc); dc.usedAt = today; dc.paid = price;
     recordAudit('Discount', `${userName}: code ${dc.code} (${discountLabel(dc)}) applied to ${plan.name}: $${plan.price} became $${price}`);
   }
-  rec.plan = { id: plan.id, name: plan.name, price, connections: plan.connections, length: plan.length, unit: plan.unit, categories: rec.categories, since: today };
+  rec.plan = { id: plan.id, name: plan.name, price, connections: plan.connections, length: plan.length, unit: plan.unit, categories: plan.categories ? [...plan.categories] : null, since: today }; // the plan's own categories, even when a reseller chose others
   const entry = { id: crypto.randomBytes(5).toString('hex'), at: Date.now(), userId, name: userName, planId: plan.id, planName: plan.name, price, length: plan.length, unit: plan.unit,
     connections: plan.connections, mode, from, expires: rec.expires };
   store.subscriptions = [entry, ...(store.subscriptions || [])].slice(0, 1000);
@@ -1108,10 +1108,27 @@ async function readProviderList(c) {
     try { streams = JSON.parse(st.text); cl = JSON.parse(cats.text); } catch { streams = null; }
     if (!Array.isArray(streams)) throw new Error('The provider did not accept the login.');
     const names = new Map((Array.isArray(cl) ? cl : []).map((x) => [String(x.category_id), String(x.category_name || '')]));
-    list = streams.map((x) => ({ key: 'x' + x.stream_id, name: String(x.name || 'Channel'), num: x.num != null ? String(x.num) : '', group: names.get(String(x.category_id)) || '', logo: String(x.stream_icon || ''),
+    list = streams.map((x) => ({ key: 'x' + x.stream_id, cat: String(x.category_id == null ? '' : x.category_id), name: String(x.name || 'Channel'), num: x.num != null ? String(x.num) : '', group: names.get(String(x.category_id)) || '', logo: String(x.stream_icon || ''),
       url: `${root}/live/${encodeURIComponent(c.username || '')}/${encodeURIComponent(c.password || '')}/${x.stream_id}.m3u8` }));
   }
   return list;
+}
+// Live TV categories a reseller can give a customer (guard 1.40.0). Only for an Xtream provider (the apps filter by its category numbers).
+// Categories marked adult are left out: those stay behind the adult switch.
+const ADULT_CAT_NAME = /(adult(?!\s*swim)|xxx|18\s*\+|\+\s*18|porn|erotic|nsfw|hentai|playboy|\bsex\b|\bsexy\b)/i;
+async function assignableCategories() {
+  const c = await mainProviderConfig();
+  if (c.type !== 'xtream') return { supported: false, categories: [] };
+  const list = await providerChannels('main'), by = new Map();
+  const explicit = Array.isArray(c.adultCats) ? new Set(c.adultCats.map(String)) : null;
+  for (const ch of list) {
+    if (!ch.cat) continue;
+    const e = by.get(ch.cat) || { id: ch.cat, name: ch.group || 'Channels', count: 0 };
+    e.count++; by.set(ch.cat, e);
+  }
+  const out = [...by.values()].filter((e) => !(explicit ? explicit.has(e.id) : ADULT_CAT_NAME.test(e.name)));
+  out.sort((x, y) => x.name.localeCompare(y.name));
+  return { supported: true, categories: out };
 }
 const backupProviders = () => { const c = chanStore(); if (!Array.isArray(c.providers)) c.providers = []; return c.providers; };
 async function providerChannels(src = 'main') {
@@ -2900,6 +2917,36 @@ async function handle(req, res) {
         saveStore();
         try { await enforce(x.userId); } catch (e) { log('Applying', rec.name, 'failed:', e.message); }
         return send(res, 200, { ok: true, credits: r.credits, expires: rec.expires });
+      }
+      // ----- Channel categories for a customer (guard 1.40.0) -----
+      if (url.pathname === '/reseller/categories' && req.method === 'GET') {
+        try { return send(res, 200, await assignableCategories()); } catch (e) { return send(res, 502, { error: e.message }); }
+      }
+      {
+        const ct = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})\/categories$/);
+        if (ct && (req.method === 'GET' || req.method === 'POST')) {
+          const cid = ct[1];
+          if (!owns(cid)) return send(res, 404, { error: 'No such customer.' });
+          const rec = store.users[cid];
+          if (req.method === 'GET') return send(res, 200, { categories: Array.isArray(rec.categories) ? rec.categories : null, custom: !!rec.catsCustom, planName: rec.plan ? rec.plan.name : '' });
+          let body;
+          try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+          if (body.categories === null || body.categories === undefined) {
+            // Back to the customer's plan (all categories, or whatever the plan includes).
+            rec.catsCustom = false; rec.categories = rec.plan && Array.isArray(rec.plan.categories) ? [...rec.plan.categories] : null; rec.updated = Date.now();
+            recordAudit(by, `Gave ${rec.name} the categories from their plan`); saveStore();
+            return send(res, 200, { ok: true, categories: rec.categories, custom: false });
+          }
+          if (!Array.isArray(body.categories) || body.categories.length > 5000) return send(res, 400, { error: 'The categories are not valid.' });
+          let allowed;
+          try { allowed = await assignableCategories(); } catch (e) { return send(res, 502, { error: e.message }); }
+          if (!allowed.supported) return send(res, 400, { error: 'Your TV provider does not support choosing categories.' });
+          const ok = new Set(allowed.categories.map((x) => x.id)), chosen = [...new Set(body.categories.map(String))].filter((x) => ok.has(x));
+          if (!chosen.length) return send(res, 400, { error: 'Choose at least one category, or put the customer back on all categories.' });
+          rec.categories = chosen; rec.catsCustom = true; rec.updated = Date.now();
+          recordAudit(by, `Set ${chosen.length} Live TV categor${chosen.length === 1 ? 'y' : 'ies'} for ${rec.name}`); saveStore();
+          return send(res, 200, { ok: true, categories: rec.categories, custom: true });
+        }
       }
       // ----- Who is watching right now (guard 1.31.0): this reseller's own customers only -----
       if (url.pathname === '/reseller/watching' && req.method === 'GET') {
