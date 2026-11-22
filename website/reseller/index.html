@@ -344,13 +344,15 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
         showBox('c', '<p class="meta">Loading...</p>');
         var base = '/reseller/customers/' + encodeURIComponent(c.id) + '/categories';
         // One after the other: a reseller can only have one request running at a time.
-        (catsCache ? Promise.resolve(catsCache) : api('GET', '/reseller/categories')).then(function (all) { return api('GET', base).then(function (mine) { return [all, mine]; }); }).then(function (r) {
-          var all = r[0], mine = r[1];
+        (catsCache ? Promise.resolve(catsCache) : api('GET', '/reseller/categories')).then(function (all) { return api('GET', base).then(function (mine) { return api('GET', '/reseller/packages').then(function (pk) { return [all, mine, pk]; }); }); }).then(function (r) {
+          var all = r[0], mine = r[1], packs = (r[2].__status === 200 && r[2].packages) || [], myPacks = (mine.packs || []).map(String);
           if (all.__status !== 200 || mine.__status !== 200) return showBox('c', '<p class="meta">' + esc((all.__status !== 200 ? all.error : mine.error) || 'Could not load it. Your provider may need to update Aurora Guard.') + '</p>');
           catsCache = all;
           if (!all.supported) return showBox('c', '<p class="meta">Choosing categories works with an Xtream TV provider. Yours is set up another way.</p>');
           var have = mine.categories ? mine.categories.map(String) : null;
-          showBox('c', '<strong>Live TV categories for ' + esc(c.full || c.name) + '</strong>' +
+          showBox('c', (packs.length ? '<strong>Packages</strong><p class="meta">Give ' + esc(c.full || c.name) + ' a ready-made group of channels in one tap.</p><div class="chips" style="margin:6px 0">' + packs.map(function (k) {
+              return '<label class="chip pkchip" style="cursor:pointer;margin:0"><input type="checkbox" value="' + esc(k.id) + '"' + (myPacks.indexOf(String(k.id)) >= 0 ? ' checked' : '') + ' style="width:auto;margin-right:6px">' + esc(k.name) + ' · ' + k.count + '</label>';
+            }).join('') + '</div><div class="act" style="margin-bottom:10px"><button class="btn red sm pkapply" type="button">Give the ticked packages</button><span class="meta pkmsg" aria-live="polite"></span></div><p class="meta">Or pick categories by hand:</p>' : '') + '<strong>Live TV categories for ' + esc(c.full || c.name) + '</strong>' +
             '<p class="meta">' + (have ? 'They see only the ticked categories.' : 'Right now they see all categories' + (mine.planName ? ' (' + esc(mine.planName) + ')' : '') + '. Tick some to limit them.') + ' Adult categories are controlled by the adult switch, not here.</p>' +
             '<div class="row" style="margin:8px 0"><input class="cgq" type="search" placeholder="Search categories" aria-label="Search categories" style="flex:1"><button class="btn line sm cg247" type="button">Tick 24/7</button><button class="btn line sm cgall" type="button">Tick all</button><button class="btn line sm cgnone" type="button">Untick all</button></div>' +
             '<div class="cglist" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:10px;padding:6px 10px">' + all.categories.map(function (k) {
@@ -358,6 +360,13 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
             }).join('') + '</div>' +
             '<div class="act" style="margin-top:10px"><button class="btn red sm cgsave" type="button">Save</button><button class="btn line sm cgplan" type="button">Back to their plan (all)</button><span class="meta cgmsg" aria-live="polite"></span></div>');
           var boxes = function () { return Array.prototype.slice.call(pbox.querySelectorAll('.cglist input')); }, msg = pbox.querySelector('.cgmsg');
+          var pkb = pbox.querySelector('.pkapply');
+          if (pkb) pkb.onclick = function () {
+            var ids = Array.prototype.slice.call(pbox.querySelectorAll('.pkchip input')).filter(function (i) { return i.checked; }).map(function (i) { return i.value; });
+            api('POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/packages', { packs: ids }).then(function (j) {
+              if (j.__status === 200) { c.cats = j.categories ? j.categories.length : null; say(ids.length ? 'Packages given.' : 'Back on their plan.'); reload(); } else { var m = pbox.querySelector('.pkmsg'); m.style.color = '#ff8d9b'; m.textContent = j.error || 'Could not save.'; }
+            });
+          };
           pbox.querySelector('.cgq').oninput = function () { var q = this.value.trim().toLowerCase(); Array.prototype.forEach.call(pbox.querySelectorAll('.cgrow'), function (r) { r.style.display = !q || r.getAttribute('data-n').indexOf(q) >= 0 ? 'flex' : 'none'; }); };
           pbox.querySelector('.cg247').onclick = function () { boxes().forEach(function (b) { if (/24\s*[\/x]?\s*7/i.test(b.parentNode.getAttribute('data-n'))) b.checked = true; }); };
           pbox.querySelector('.cgall').onclick = function () { boxes().forEach(function (b) { b.checked = true; }); };

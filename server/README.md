@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.41.0
+
+- Named packages. An administrator groups Live TV categories under a name (Sports, Kids, 24/7): `GET /packages` (also lists the categories to choose from), `POST /packages`, `PUT /packages/:id`, `DELETE /packages/:id`. A reseller lists them with `GET /reseller/packages` and gives a customer one or more with `POST /reseller/customers/:id/packages` (`{ packs: ["id", ...] }`, or an empty list to go back to the plan). The customer sees the categories of their packages together. Changing or deleting a package updates everyone who has it. Packages never include adult categories (those stay behind the adult switch), and choosing categories by hand takes the packages off.
+
 ## 1.40.0
 
 - Channel categories chosen by resellers. `GET /reseller/categories` lists the Live TV categories a reseller can hand out (Xtream providers only; categories marked adult are left out, they stay behind the adult switch). `POST /reseller/customers/:id/categories` (`{ categories: ["12","40"] }`, or `null` for the customer's plan) sets which Live TV categories one of the reseller's own customers sees, for example the 24/7 channels. A customer's own choice stays when they are renewed. The customer list shows how many categories each customer has.

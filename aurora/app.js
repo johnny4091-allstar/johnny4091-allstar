@@ -7246,6 +7246,62 @@
     return src.categories.map((c) => ({ id: String(c.id), name: c.name, count: c.count }));
   }
 
+  // Channel packages (Sports, Kids, 24/7): groups of Live TV categories that resellers give to customers in one tap (guard 1.41.0).
+  async function bindPackages(body, isCurrent) {
+    const card = $('[data-packs]', body); if (!card) return;
+    let data;
+    try { data = await guard('/packages'); } catch (e) {
+      if (isCurrent()) card.innerHTML = `<h2>Channel packages</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.41.0 to use packages.' : esc(e.message)}</p>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const draw = () => {
+      const noSupport = !data.supported;
+      card.innerHTML = `<h2>Channel packages <small>Resellers give these to customers</small></h2>
+        <p class="muted">Group Live TV categories under a name, like Sports or Kids. A reseller then gives a customer one or more packages in one tap. Changing a package updates every customer who has it. Adult categories are never in a package.</p>
+        ${noSupport ? `<p class="live-result bad">${esc(data.error || 'Packages work with an Xtream TV provider. Yours is set up another way.')}</p>` : ''}
+        <div class="admin-list">${(data.packages || []).map((x) => `<div class="admin-row" data-pack="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.name)}</strong>
+          <div class="muted">${x.categories.length} ${x.categories.length === 1 ? 'category' : 'categories'}: ${esc(x.categories.map((id) => (data.categories.find((c) => c.id === id) || {}).name || '(removed)').slice(0, 6).join(', '))}${x.categories.length > 6 ? ', ...' : ''}</div></div>
+          <div class="plan-actions"><button class="btn btn-gray" data-pk-edit>Edit</button><button class="btn btn-gray" data-pk-del>Delete</button></div></div>`).join('') || '<p class="muted">No packages yet.</p>'}</div>
+        ${noSupport ? '' : '<div class="m-actions"><button class="btn btn-white" data-pk-add>Add a package</button></div>'}
+        <div class="plan-form hidden" data-pk-form></div><p class="live-result" data-pk-result hidden></p>`;
+      const out = $('[data-pk-result]', card), say = (html, cls = '') => { out.hidden = !html; out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+      const form = $('[data-pk-form]', card);
+      const open = (pk) => {
+        const have = new Set((pk ? pk.categories : []).map(String));
+        form.classList.remove('hidden');
+        form.innerHTML = `<h3 class="admin-sub">${pk ? 'Edit package' : 'New package'}</h3>
+          <label class="admin-field"><span>Name</span><input type="text" data-pk-name maxlength="40" value="${esc(pk ? pk.name : '')}" placeholder="Sports"></label>
+          <div class="m-actions"><input type="search" class="users-search" data-pk-q placeholder="Search categories" autocomplete="off" spellcheck="false"><button class="btn btn-gray" data-pk-247>Tick 24/7</button><button class="btn btn-gray" data-pk-none>Untick all</button></div>
+          <div class="admin-list" data-pk-list style="max-height:300px;overflow:auto">${data.categories.map((k) => `<label class="admin-row" data-n="${esc(k.name.toLowerCase())}"><div class="admin-row-main"><input type="checkbox" value="${esc(k.id)}"${have.has(String(k.id)) ? ' checked' : ''}> ${esc(k.name)} <span class="muted">${k.count}</span></div></label>`).join('')}</div>
+          <div class="m-actions"><button class="btn btn-red" data-pk-save>${pk ? 'Save changes' : 'Make the package'}</button><button class="btn btn-gray" data-pk-cancel>Cancel</button></div>`;
+        const boxes = () => $$('[data-pk-list] input', form);
+        $('[data-pk-q]', form).addEventListener('input', (e) => { const t = e.target.value.trim().toLowerCase(); $$('[data-pk-list] [data-n]', form).forEach((r) => { r.style.display = !t || r.dataset.n.includes(t) ? '' : 'none'; }); });
+        $('[data-pk-247]', form).addEventListener('click', () => boxes().forEach((b) => { if (/24\s*[\/x]?\s*7/i.test(b.closest('[data-n]').dataset.n)) b.checked = true; }));
+        $('[data-pk-none]', form).addEventListener('click', () => boxes().forEach((b) => { b.checked = false; }));
+        $('[data-pk-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+        $('[data-pk-save]', form).addEventListener('click', async () => {
+          const body2 = { name: $('[data-pk-name]', form).value, categories: boxes().filter((b) => b.checked).map((b) => b.value) };
+          try {
+            const r = await guard(pk ? `/packages/${pk.id}` : '/packages', { method: pk ? 'PUT' : 'POST', body: body2 });
+            if (pk) Object.assign(pk, r.package); else data.packages.push(r.package);
+            toast(pk ? 'Package saved' : 'Package made', 2500); draw();
+          } catch (e) { say(esc(e.message), 'bad'); }
+        });
+        form.scrollIntoView({ block: 'nearest' });
+      };
+      $('[data-pk-add]', card)?.addEventListener('click', () => open(null));
+      $$('[data-pack]', card).forEach((row) => {
+        const pk = data.packages.find((x) => x.id === row.dataset.pack);
+        $('[data-pk-edit]', row).addEventListener('click', () => open(pk));
+        $('[data-pk-del]', row).addEventListener('click', async () => {
+          if (!(await confirmAction(`Delete the ${pk.name} package?`, 'Customers who have it lose those categories (customers with no other package go back to their plan).', 'Delete'))) return;
+          try { await guard(`/packages/${pk.id}`, { method: 'DELETE' }); data.packages = data.packages.filter((x) => x.id !== pk.id); toast('Package deleted', 2500); draw(); } catch (e) { say(esc(e.message), 'bad'); }
+        });
+      });
+    };
+    draw();
+  }
   async function adminPlans(body, isCurrent) {
     if (!guardEnabled) { body.innerHTML = '<section class="admin-card"><h2>Plans</h2><p class="muted">Plans need Aurora Guard (it is switched off). See server/README.md.</p></section>'; return; }
     let data;
@@ -7274,10 +7330,12 @@
         <div class="m-actions"><button class="btn btn-white" data-add>Add a plan</button></div>
         <div class="plan-form hidden" data-form></div>
       </section>
+      <section class="admin-card" data-packs><h2>Channel packages</h2><div class="spinner"></div></section>
       <section class="admin-card">
         <h2>Subscription history <small>Newest first</small></h2>
         <div class="admin-list">${data.subscriptions.map(sub).join('') || '<p class="muted">Nothing yet. A line is added each time you put a plan on a customer.</p>'}</div>
       </section>`;
+    bindPackages(body, isCurrent);
     const form = $('[data-form]', body);
     let cats = null;
     const openForm = (p) => {
@@ -8309,13 +8367,23 @@
           const all = await guard('/reseller/categories', { params: { userId: state.userId } });
           const mine = await guard(path('/categories'), { params: { userId: state.userId } });
           if (!all.supported) { showExtra('c', '<p class="muted">Choosing categories works with an Xtream TV provider. Yours is set up another way.</p>'); return; }
+          const pkAll = await guard('/reseller/packages', { params: { userId: state.userId } }).catch(() => ({ packages: [] }));
+          const myPacks = new Set((mine.packs || []).map(String));
           const have = mine.categories ? new Set(mine.categories.map(String)) : null;
-          showExtra('c', `<strong>Live TV categories for ${esc(c.full || c.name)}</strong>
+          const packHtml = pkAll.packages.length ? `<div class="admin-card-note"><strong>Packages</strong><p class="muted">Give ${esc(c.full || c.name)} a ready-made group of channels in one tap.</p>
+            <div class="chip-row" data-pk-chips>${pkAll.packages.map((x) => `<label class="chip${myPacks.has(x.id) ? ' active' : ''}"><input type="checkbox" value="${esc(x.id)}" ${myPacks.has(x.id) ? 'checked' : ''} hidden> ${esc(x.name)} · ${x.count}</label>`).join('')}</div>
+            <div class="m-actions"><button class="btn btn-red" data-pk-apply>Give the ticked packages</button></div></div><p class="muted">Or pick categories by hand:</p>` : '';
+          showExtra('c', `${packHtml}<strong>Live TV categories for ${esc(c.full || c.name)}</strong>
             <p class="muted">${have ? 'They see only the ticked categories.' : `Right now they see all categories${mine.planName ? ' (' + esc(mine.planName) + ')' : ''}. Tick some to limit them.`} Adult categories are controlled by the adult switch, not here.</p>
             <div class="m-actions"><input type="search" class="users-search" data-cg-q placeholder="Search categories" autocomplete="off" spellcheck="false"><button class="btn btn-gray" data-cg-247>Tick 24/7</button><button class="btn btn-gray" data-cg-all>Tick all</button><button class="btn btn-gray" data-cg-none>Untick all</button></div>
             <div class="admin-list" data-cg-list style="max-height:300px;overflow:auto">${all.categories.map((k) => `<label class="admin-row" data-n="${esc(k.name.toLowerCase())}"><div class="admin-row-main"><input type="checkbox" value="${esc(k.id)}"${have ? (have.has(String(k.id)) ? ' checked' : '') : ' checked'}> ${esc(k.name)} <span class="muted">${k.count}</span></div></label>`).join('')}</div>
             <div class="m-actions"><button class="btn btn-red" data-cg-save>Save</button><button class="btn btn-gray" data-cg-plan>Back to their plan (all)</button></div>`);
           const boxes = () => $$('[data-cg-list] input', extra);
+          $$('[data-pk-chips] label', extra).forEach((l) => l.addEventListener('click', (e) => { e.preventDefault(); const i = $('input', l); i.checked = !i.checked; l.classList.toggle('active', i.checked); }));
+          $('[data-pk-apply]', extra)?.addEventListener('click', async () => {
+            const packs = $$('[data-pk-chips] input', extra).filter((i) => i.checked).map((i) => i.value);
+            try { await guard(path('/packages'), { method: 'POST', params: { userId: state.userId }, body: { packs } }); toast(packs.length ? 'Packages given' : 'Back on their plan', 3000); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+          });
           $('[data-cg-q]', extra).addEventListener('input', (e) => { const t = e.target.value.trim().toLowerCase(); $$('[data-cg-list] [data-n]', extra).forEach((r) => { r.style.display = !t || r.dataset.n.includes(t) ? '' : 'none'; }); });
           $('[data-cg-247]', extra).addEventListener('click', () => boxes().forEach((b) => { if (/24\s*[\/x]?\s*7/i.test(b.closest('[data-n]').dataset.n)) b.checked = true; }));
           $('[data-cg-all]', extra).addEventListener('click', () => boxes().forEach((b) => { b.checked = true; }));

@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.40.0';
+const VERSION = '1.41.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -592,7 +592,7 @@ function supportOfReseller(id) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, cats: Array.isArray(rec.categories) ? rec.categories.length : null, catsCustom: !!rec.catsCustom, hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, cats: Array.isArray(rec.categories) ? rec.categories.length : null, catsCustom: !!rec.catsCustom, packs: Array.isArray(rec.packs) ? rec.packs : [], hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
     remind: cleanDays(rec.remind), remindDefault: remindDefault(),
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
@@ -1130,6 +1130,23 @@ async function assignableCategories() {
   out.sort((x, y) => x.name.localeCompare(y.name));
   return { supported: true, categories: out };
 }
+// Named packages (guard 1.41.0): an administrator groups Live TV categories under a name (Sports, Kids, 24/7). A reseller gives a customer
+// one or more packages; the customer then sees the categories of those packages. Changing a package updates everyone who has it.
+const packList = () => { if (!Array.isArray(store.packages)) store.packages = []; return store.packages; };
+function syncPacks(rec) {
+  const valid = (Array.isArray(rec.packs) ? rec.packs : []).filter((id) => packList().some((x) => x.id === id));
+  rec.packs = valid;
+  if (valid.length) {
+    const set = new Set();
+    for (const id of valid) for (const c of packList().find((x) => x.id === id).categories) set.add(c);
+    rec.categories = [...set]; rec.catsCustom = true;
+  } else if (rec.catsCustom && rec.packsOn) {
+    rec.catsCustom = false; rec.categories = rec.plan && Array.isArray(rec.plan.categories) ? [...rec.plan.categories] : null;
+  }
+  rec.packsOn = valid.length > 0;
+  rec.updated = Date.now();
+}
+function syncAllPacks() { for (const rec of Object.values(store.users)) if (rec.packsOn || (Array.isArray(rec.packs) && rec.packs.length)) syncPacks(rec); }
 const backupProviders = () => { const c = chanStore(); if (!Array.isArray(c.providers)) c.providers = []; return c.providers; };
 async function providerChannels(src = 'main') {
   let cfgOf, label;
@@ -2918,6 +2935,23 @@ async function handle(req, res) {
         try { await enforce(x.userId); } catch (e) { log('Applying', rec.name, 'failed:', e.message); }
         return send(res, 200, { ok: true, credits: r.credits, expires: rec.expires });
       }
+      // ----- Packages (guard 1.41.0) -----
+      if (url.pathname === '/reseller/packages' && req.method === 'GET') return send(res, 200, { packages: packList().map((x) => ({ id: x.id, name: x.name, count: x.categories.length })) });
+      {
+        const pk = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})\/packages$/);
+        if (pk && req.method === 'POST') {
+          const cid = pk[1];
+          if (!owns(cid)) return send(res, 404, { error: 'No such customer.' });
+          let body;
+          try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+          const rec = store.users[cid], ids = [...new Set(Array.isArray(body.packs) ? body.packs.map(String) : [])];
+          if (ids.some((id) => !packList().some((x) => x.id === id))) return send(res, 400, { error: 'One of those packages no longer exists.' });
+          rec.packs = ids; syncPacks(rec);
+          const names = ids.map((id) => packList().find((x) => x.id === id).name);
+          recordAudit(by, ids.length ? `Gave ${rec.name} the package${ids.length === 1 ? '' : 's'}: ${names.join(', ')}` : `Took the packages off ${rec.name} (back to their plan)`); saveStore();
+          return send(res, 200, { ok: true, packs: rec.packs, categories: rec.categories, custom: !!rec.catsCustom });
+        }
+      }
       // ----- Channel categories for a customer (guard 1.40.0) -----
       if (url.pathname === '/reseller/categories' && req.method === 'GET') {
         try { return send(res, 200, await assignableCategories()); } catch (e) { return send(res, 502, { error: e.message }); }
@@ -2928,12 +2962,12 @@ async function handle(req, res) {
           const cid = ct[1];
           if (!owns(cid)) return send(res, 404, { error: 'No such customer.' });
           const rec = store.users[cid];
-          if (req.method === 'GET') return send(res, 200, { categories: Array.isArray(rec.categories) ? rec.categories : null, custom: !!rec.catsCustom, planName: rec.plan ? rec.plan.name : '' });
+          if (req.method === 'GET') return send(res, 200, { categories: Array.isArray(rec.categories) ? rec.categories : null, custom: !!rec.catsCustom, planName: rec.plan ? rec.plan.name : '', packs: Array.isArray(rec.packs) ? rec.packs : [] });
           let body;
           try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
           if (body.categories === null || body.categories === undefined) {
             // Back to the customer's plan (all categories, or whatever the plan includes).
-            rec.catsCustom = false; rec.categories = rec.plan && Array.isArray(rec.plan.categories) ? [...rec.plan.categories] : null; rec.updated = Date.now();
+            rec.packs = []; rec.packsOn = false; rec.catsCustom = false; rec.categories = rec.plan && Array.isArray(rec.plan.categories) ? [...rec.plan.categories] : null; rec.updated = Date.now();
             recordAudit(by, `Gave ${rec.name} the categories from their plan`); saveStore();
             return send(res, 200, { ok: true, categories: rec.categories, custom: false });
           }
@@ -2943,7 +2977,7 @@ async function handle(req, res) {
           if (!allowed.supported) return send(res, 400, { error: 'Your TV provider does not support choosing categories.' });
           const ok = new Set(allowed.categories.map((x) => x.id)), chosen = [...new Set(body.categories.map(String))].filter((x) => ok.has(x));
           if (!chosen.length) return send(res, 400, { error: 'Choose at least one category, or put the customer back on all categories.' });
-          rec.categories = chosen; rec.catsCustom = true; rec.updated = Date.now();
+          rec.packs = []; rec.packsOn = false; rec.categories = chosen; rec.catsCustom = true; rec.updated = Date.now();
           recordAudit(by, `Set ${chosen.length} Live TV categor${chosen.length === 1 ? 'y' : 'ies'} for ${rec.name}`); saveStore();
           return send(res, 200, { ok: true, categories: rec.categories, custom: true });
         }
@@ -3477,6 +3511,46 @@ async function handle(req, res) {
     rollbackUpdate(auditBy); return send(res, 200, { ok: true, ...publicUpdate() });
   }
   // Discount codes for the website (admin).
+  // Packages (guard 1.41.0): administrators make, change and remove them.
+  if (url.pathname === '/packages' && req.method === 'GET') {
+    let cats = { supported: false, categories: [] }, err = '';
+    try { cats = await assignableCategories(); } catch (e) { err = e.message; }
+    return send(res, 200, { packages: packList(), supported: cats.supported, categories: cats.categories, error: err });
+  }
+  {
+    const pm = url.pathname.match(/^\/packages(?:\/([0-9a-f]{8}))?$/);
+    if (pm && (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE') && (pm[1] ? true : req.method === 'POST')) {
+      if (req.method === 'DELETE') {
+        const x = packList().find((q) => q.id === pm[1]);
+        if (!x) return send(res, 404, { error: 'No such package' });
+        store.packages = packList().filter((q) => q.id !== pm[1]); syncAllPacks();
+        recordAudit(auditBy, `Deleted the package ${x.name}`); saveStore();
+        return send(res, 200, { ok: true });
+      }
+      let body;
+      try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+      const name = String(body.name || '').replace(/[\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+      if (!name) return send(res, 400, { error: 'Give the package a name.' });
+      let cats;
+      try { cats = await assignableCategories(); } catch (e) { return send(res, 502, { error: e.message }); }
+      if (!cats.supported) return send(res, 400, { error: 'Packages need an Xtream TV provider.' });
+      const ok = new Set(cats.categories.map((c) => c.id)), chosen = [...new Set((Array.isArray(body.categories) ? body.categories : []).map(String))].filter((c) => ok.has(c));
+      if (!chosen.length) return send(res, 400, { error: 'Choose at least one category.' });
+      if (packList().some((q) => q.name.toLowerCase() === name.toLowerCase() && q.id !== pm[1])) return send(res, 400, { error: 'There is already a package with that name.' });
+      if (pm[1]) {
+        const x = packList().find((q) => q.id === pm[1]);
+        if (!x) return send(res, 404, { error: 'No such package' });
+        x.name = name; x.categories = chosen; syncAllPacks();
+        recordAudit(auditBy, `Changed the package ${name} (${chosen.length} categories)`); saveStore();
+        return send(res, 200, { ok: true, package: x });
+      }
+      if (packList().length >= 30) return send(res, 400, { error: 'That is the most packages Aurora can keep.' });
+      const x = { id: crypto.randomBytes(4).toString('hex'), name, categories: chosen };
+      store.packages = [...packList(), x];
+      recordAudit(auditBy, `Made the package ${name} (${chosen.length} categories)`); saveStore();
+      return send(res, 200, { ok: true, package: x });
+    }
+  }
   if (url.pathname === '/feature-requests' && req.method === 'GET') return send(res, 200, { requests: store.featureRequests || [] });
   {
     const fr = url.pathname.match(/^\/feature-requests\/([0-9a-f]{10})$/);
