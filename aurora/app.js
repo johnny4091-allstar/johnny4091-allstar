@@ -8494,6 +8494,41 @@
         <label class="admin-field"><span>Make them</span><select data-staff-role><option value="mod">A moderator</option><option value="admin">An administrator</option></select></label></div>
       <div class="m-actions"><button class="btn btn-white" data-staff-add>Add</button></div><div class="live-result" data-staff-result></div></section>`;
   }
+  // Clean up old accounts: preview the customers whose end date passed N days ago, then remove the ones that are ticked.
+  function bindCleanup(body, isCurrent) {
+    const card = $('[data-cleanup]', body); if (!card) return;
+    const list = $('[data-cleanup-list]', card), out = $('[data-cleanup-result]', card);
+    const say = (html, cls = '') => { out.hidden = !html; out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+    let days = 30;
+    const find = async () => {
+      days = Number($('[data-cleanup-days]', card).value) || 30; say(''); list.innerHTML = '<p class="muted">Looking...</p>';
+      let r;
+      try { r = await guardWithPin(`/limits/expired?days=${days}`); } catch (e) { list.innerHTML = ''; say(e.status === 404 ? 'Update Aurora Guard to 1.38.0 first.' : esc(e.message), 'bad'); return; }
+      if (!isCurrent()) return;
+      const users = r.users || [];
+      if (!users.length) { list.innerHTML = '<p class="muted">No accounts ended that long ago.</p>'; return; }
+      list.innerHTML = `<p class="muted"><strong data-cleanup-count></strong> <button class="btn btn-gray" data-cleanup-all="1">Tick all</button> <button class="btn btn-gray" data-cleanup-all="0">Untick all</button></p>
+        <div class="admin-list">${users.map((u) => `<label class="admin-row"><div class="admin-row-main"><input type="checkbox" data-cleanup-id="${esc(u.id)}" checked> <strong>${esc(u.name)}</strong> ·
+          ended ${esc(u.expires)} (${u.daysAgo} days ago)${u.trial ? ' · trial' : ''}${u.reseller ? ' · ' + esc(u.reseller) + "'s customer" : ''}</div></label>`).join('')}</div>
+        <button class="btn btn-red" data-cleanup-go>Remove the ticked accounts</button>`;
+      const boxes = () => $$('[data-cleanup-id]', list);
+      const count = () => { const n = boxes().filter((b) => b.checked).length; $('[data-cleanup-count]', list).textContent = `${n} of ${users.length} ticked`; $('[data-cleanup-go]', list).disabled = !n; };
+      list.addEventListener('change', count);
+      $$('[data-cleanup-all]', list).forEach((b) => b.addEventListener('click', () => { boxes().forEach((x) => { x.checked = b.dataset.cleanupAll === '1'; }); count(); }));
+      count();
+      $('[data-cleanup-go]', list).addEventListener('click', async () => {
+        const ids = boxes().filter((b) => b.checked).map((b) => b.dataset.cleanupId); if (!ids.length) return;
+        if (!(await confirmAction(`Remove ${ids.length} account${ids.length === 1 ? '' : 's'} for good?`, 'Their watch history, My List and settings go too. This cannot be undone, and credits are not refunded.', `Remove ${ids.length}`))) return;
+        try {
+          const res = await guardWithPin('/limits/expired', { method: 'POST', body: { days, ids } });
+          toast(`${res.deleted} account${res.deleted === 1 ? '' : 's'} removed`, 3500);
+          if (isCurrent()) adminUsers(body, isCurrent);
+          if (res.failed?.length) say(`${res.failed.length} could not be removed: ${esc(res.failed.map((f) => f.name || f.id).join(', '))}`, 'bad');
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+    };
+    $('[data-cleanup-find]', card).addEventListener('click', find);
+  }
   function bindStaffCard(body, rows, isCurrent) {
     const out = $('[data-staff-result]', body); if (!out) return;
     const say = (html, cls = '') => { out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
@@ -8613,9 +8648,21 @@
           a.type === 'signedOut' ? `signed out ${a.device || 'a device'}${a.client ? ' (' + a.client + ')' : ''}, ${a.why}`
             : a.type === 'disabled' ? `disabled, ${a.why}` : a.type === 'enabled' ? `enabled again, ${a.why}` : a.why || a.type)}</div>
           <div class="admin-row-time">${esc(timeAgo(new Date(a.at)))}</div></div>`).join('') || '<p class="muted">Nothing done yet.</p>'}</div>
+      </section>
+      <section class="admin-card" data-cleanup>
+        <h2>Clean up old accounts</h2>
+        <p class="muted">Find customers whose end date passed a while ago and remove their accounts for good. Administrators, moderators, resellers and accounts with no end date are never listed. Nothing is removed until you tick the accounts and confirm.</p>
+        <div class="users-head">
+          <label class="muted" for="cleanup-days">Ended at least</label>
+          <select id="cleanup-days" data-cleanup-days><option value="30" selected>1 month ago</option><option value="60">2 months ago</option><option value="90">3 months ago</option><option value="180">6 months ago</option></select>
+          <button class="btn btn-gray" data-cleanup-find>Find accounts</button>
+        </div>
+        <div data-cleanup-list></div>
+        <p class="live-result" data-cleanup-result hidden></p>
       </section>`}`;
     bindExtensions(body, isCurrent);
     bindStaffCard(body, rows, isCurrent);
+    bindCleanup(body, isCurrent);
     const list = $('.users-list', body);
     // Select mode (bulk edit): tapping a row ticks it instead of opening it.
     let selecting = false;

@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.37.3';
+const VERSION = '1.38.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -3685,6 +3685,40 @@ async function handle(req, res) {
   }
   if (url.pathname === '/sports/refresh' && req.method === 'POST') { await pollSports(true); return send(res, 200, { ok: true }); }
 
+  // Clean-up of old accounts (guard 1.38.0): customers whose end date is at least N days in the past. Administrators, moderators and
+  // resellers are never listed, and an account with no end date never expires, so it is never listed either. The list is a preview;
+  // deleting only touches the ids sent, and each one is checked again first. Behind the Admin PIN like the rest of Users.
+  if (url.pathname === '/limits/expired' && (req.method === 'GET' || req.method === 'POST')) {
+    const expiredFor = async (days) => {
+      const cutoff = addDays(localDay(new Date()), -days), users = (await emby('GET', '/Users')) || [], out = [];
+      for (const u of users) {
+        const rec = store.users[u.Id];
+        if (!rec || !rec.expires || rec.expires > cutoff) continue;
+        if (u.Policy?.IsAdministrator || rec.mod || resellerOfUser(u.Id)) continue;
+        const rs = rec.reseller ? resellerList()[rec.reseller] : null;
+        out.push({ id: u.Id, name: u.Name, expires: rec.expires, daysAgo: Math.round((new Date(localDay(new Date()) + 'T12:00:00') - new Date(rec.expires + 'T12:00:00')) / 86400000), trial: !!rec.trial, reseller: rs ? rs.name : null });
+      }
+      return out.sort((a, b) => a.expires.localeCompare(b.expires));
+    };
+    if (req.method === 'GET') {
+      const days = Math.max(1, Math.min(3650, parseInt(url.searchParams.get('days'), 10) || 30));
+      return send(res, 200, { days, users: await expiredFor(days) });
+    }
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const days = Math.max(1, Math.min(3650, parseInt(body.days, 10) || 30)), ids = Array.isArray(body.ids) ? body.ids.map(String).slice(0, 2000) : [];
+    if (!ids.length) return send(res, 400, { error: 'Choose at least one account.' });
+    const ok = new Map((await expiredFor(days)).map((x) => [x.id, x])), gone = [], failed = [];
+    for (const id of ids) {
+      const x = ok.get(id);
+      if (!x) { failed.push({ id, error: 'No longer qualifies' }); continue; }
+      try { await emby('DELETE', `/Users/${id}`); } catch (e) { if (e.status !== 404) { failed.push({ id, name: x.name, error: e.message }); continue; } }
+      delete store.users[id]; delete store.disabledByGuard[id]; delete store.firstSeen[id];
+      gone.push(x.name);
+    }
+    if (gone.length) { recordAudit(auditBy, `Deleted ${gone.length} account${gone.length === 1 ? '' : 's'} that ended ${days}+ days ago: ${gone.join(', ')}`); saveStore(); }
+    return send(res, 200, { ok: true, deleted: gone.length, failed });
+  }
   if (url.pathname === '/limits' && req.method === 'GET') {
     return send(res, 200, {
       defaultLimit: cfg.defaultLimit, dryRun: !!cfg.dryRun, users: store.users, remindDefault: remindDefault(),
