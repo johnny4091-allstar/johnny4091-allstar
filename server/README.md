@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.43.0
+
+- The SABnzbd page shows more: SABnzbd's version, free disk space, the estimated finish time, how much was downloaded today, this week, this month and in total, the load, any warnings, and for each download its category, priority, age and (once finished) the time it took. You can move a download to the top, change its priority, retry a failed one, and set a speed limit (`POST /sab/limit`, `{ limit: "5M" }` or `"0"` for none).
+
 ## 1.42.0
 
 - SABnzbd downloader page. Put `"sabnzbdUrl": "http://your-address:8080"` and `"sabnzbdApiKey": "..."` (SABnzbd -> Config -> General) in `config.json`. The website's `/sabnzbd/` page (administrators only) then shows the queue, speed and history and lets you add a link or an NZB file, pause, resume and remove. The Guard makes the calls (`GET /sab/status`, `POST /sab/add`, `/sab/upload`, `/sab/pause`, `/sab/resume`, `/sab/item`), so the address and the key never reach a web page.
