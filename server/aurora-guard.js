@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.41.0';
+const VERSION = '1.42.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -97,6 +97,10 @@ function loadConfig() {
     referralDays: 7,
     referralMaxPerYear: 10,
     // Website sign-up (guard 1.16.0): anyone can make a free trial account from the Aurora website. OFF until you set "signupEnabled": true.
+    // SABnzbd downloader page (guard 1.42.0): the website's /sabnzbd/ page (administrators only) talks to your SABnzbd through the Guard, so the address
+    // and the API key stay here and never reach a web page. Example: "sabnzbdUrl": "http://192.168.1.20:8080", "sabnzbdApiKey": "..." (SABnzbd -> Config -> General).
+    sabnzbdUrl: '',
+    sabnzbdApiKey: '',
     signupEnabled: false,
     signupTrialDays: 2,
     signupTrialConnections: 1,
@@ -1147,6 +1151,16 @@ function syncPacks(rec) {
   rec.updated = Date.now();
 }
 function syncAllPacks() { for (const rec of Object.values(store.users)) if (rec.packsOn || (Array.isArray(rec.packs) && rec.packs.length)) syncPacks(rec); }
+// SABnzbd (guard 1.42.0)
+const sabBase = () => { const u = String(cfg.sabnzbdUrl || '').trim().replace(/\/+$/, ''); return /^https?:\/\/[^\s]+$/i.test(u) && cfg.sabnzbdApiKey ? u : ''; };
+async function sabCall(params, opts = {}) {
+  const qs = new URLSearchParams({ ...params, output: 'json', apikey: String(cfg.sabnzbdApiKey) });
+  const r = await plainRequest(`${sabBase()}/api?${qs}`, { timeoutMs: 20000, ...opts });
+  if (!r.status) throw new Error('Could not reach SABnzbd' + (r.error ? ` (${r.error.replace(String(cfg.sabnzbdApiKey), '***')})` : '') + '.');
+  let j; try { j = JSON.parse(r.text); } catch { throw new Error('SABnzbd gave an answer Aurora could not read. Check the address.'); }
+  if (j && j.error) throw new Error(/api key/i.test(String(j.error)) ? 'SABnzbd refused the API key. Check sabnzbdApiKey in config.json.' : 'SABnzbd said: ' + String(j.error).slice(0, 120));
+  return j || {};
+}
 const backupProviders = () => { const c = chanStore(); if (!Array.isArray(c.providers)) c.providers = []; return c.providers; };
 async function providerChannels(src = 'main') {
   let cfgOf, label;
@@ -2436,10 +2450,10 @@ function send(res, status, body) {
   res.end(data);
 }
 
-function readBody(req) {
+function readBody(req, max = 64 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
-    req.on('data', (c) => { size += c.length; if (size > 64 * 1024) { if (!req.tooLarge) { req.tooLarge = true; reject(new Error('too large')); } req.resume(); chunks.length = 0; } else if (!req.tooLarge) chunks.push(c); });
+    req.on('data', (c) => { size += c.length; if (size > max) { if (!req.tooLarge) { req.tooLarge = true; reject(new Error('too large')); } req.resume(); chunks.length = 0; } else if (!req.tooLarge) chunks.push(c); });
     req.on('end', () => {
       try {
         let v = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
@@ -3550,6 +3564,55 @@ async function handle(req, res) {
       recordAudit(auditBy, `Made the package ${name} (${chosen.length} categories)`); saveStore();
       return send(res, 200, { ok: true, package: x });
     }
+  }
+  // SABnzbd (guard 1.42.0): administrators only. The Guard calls SABnzbd with the API key from config.json.
+  if (url.pathname === '/sab/status' && req.method === 'GET') {
+    if (!sabBase()) return send(res, 200, { configured: false });
+    try {
+      const q = (await sabCall({ mode: 'queue' })).queue || {}, h = (await sabCall({ mode: 'history', limit: 15 })).history || {};
+      return send(res, 200, { configured: true, paused: !!q.paused, status: q.status || '', speed: q.speed || '', kbpersec: Number(q.kbpersec) || 0, sizeleft: q.sizeleft || '', timeleft: q.timeleft || '',
+        queue: (q.slots || []).slice(0, 50).map((x) => ({ id: x.nzo_id, name: x.filename, status: x.status, pct: Number(x.percentage) || 0, size: x.size || '', left: x.sizeleft || '', eta: x.timeleft || '', cat: x.cat || '' })),
+        history: (h.slots || []).slice(0, 15).map((x) => ({ id: x.nzo_id, name: x.name, status: x.status, size: x.size || '', at: x.completed || 0, fail: x.fail_message || '' })) });
+    } catch (e) { return send(res, 502, { configured: true, error: e.message }); }
+  }
+  if (url.pathname.startsWith('/sab/') && req.method === 'POST') {
+    if (!sabBase()) return send(res, 400, { error: 'SABnzbd is not set up on the Guard yet (sabnzbdUrl and sabnzbdApiKey in config.json).' });
+    let body;
+    try { body = await readBody(req, 9 * 1024 * 1024); } catch (e) { return send(res, 400, { error: e.message }); }
+    try {
+      if (url.pathname === '/sab/add') {
+        const link = String(body.url || '').trim();
+        if (!/^https?:\/\/[^\s]{4,1990}$/i.test(link)) return send(res, 400, { error: 'Paste a link that starts with http:// or https://' });
+        const j = await sabCall({ mode: 'addurl', name: link });
+        if (j.status === false) return send(res, 400, { error: 'SABnzbd did not accept that link.' });
+        recordAudit(auditBy, 'Added a link to SABnzbd'); saveStore();
+        return send(res, 200, { ok: true });
+      }
+      if (url.pathname === '/sab/upload') {
+        const name = String(body.filename || 'file.nzb').replace(/[^\w .()-]/g, '_').slice(0, 120), raw = Buffer.from(String(body.data || ''), 'base64');
+        if (!raw.length || raw.length > 6 * 1024 * 1024) return send(res, 400, { error: 'That file is empty or too big (6 MB at most).' });
+        if (!/<nzb[\s>]/i.test(raw.slice(0, 4000).toString('utf8'))) return send(res, 400, { error: 'That does not look like an NZB file.' });
+        const boundary = '----aurora' + crypto.randomBytes(8).toString('hex');
+        const payload = `--${boundary}\r\nContent-Disposition: form-data; name="name"; filename="${name}"\r\nContent-Type: application/x-nzb\r\n\r\n${raw.toString('utf8')}\r\n--${boundary}--\r\n`;
+        const j = await sabCall({ mode: 'addfile' }, { method: 'POST', body: payload, headers: { 'Content-Type': 'multipart/form-data; boundary=' + boundary } });
+        if (j.status === false) return send(res, 400, { error: 'SABnzbd did not accept that file.' });
+        recordAudit(auditBy, `Added the file ${name} to SABnzbd`); saveStore();
+        return send(res, 200, { ok: true });
+      }
+      if (url.pathname === '/sab/pause' || url.pathname === '/sab/resume') {
+        await sabCall({ mode: url.pathname === '/sab/pause' ? 'pause' : 'resume' });
+        return send(res, 200, { ok: true });
+      }
+      if (url.pathname === '/sab/item') {
+        const id = String(body.id || ''), act = String(body.action || ''), kind = body.kind === 'history' ? 'history' : 'queue';
+        if (!/^[\w-]{3,80}$/.test(id)) return send(res, 400, { error: 'Not a valid download.' });
+        if (!['pause', 'resume', 'delete'].includes(act) || (kind === 'history' && act !== 'delete')) return send(res, 400, { error: 'Not a valid action.' });
+        await sabCall({ mode: kind, name: act, value: id, ...(act === 'delete' ? { del_files: '1' } : {}) });
+        if (act === 'delete') { recordAudit(auditBy, `Removed a download from SABnzbd${kind === 'history' ? ' history' : ''}`); saveStore(); }
+        return send(res, 200, { ok: true });
+      }
+    } catch (e) { return send(res, 502, { error: e.message }); }
+    return send(res, 404, { error: 'Not found' });
   }
   if (url.pathname === '/feature-requests' && req.method === 'GET') return send(res, 200, { requests: store.featureRequests || [] });
   {
