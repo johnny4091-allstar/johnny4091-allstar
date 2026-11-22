@@ -50,6 +50,17 @@ strong { color:#fff; }
 .gl { display:grid; grid-template-columns:minmax(120px,190px) 1fr; gap:0 22px; margin:0; } .gl dt { color:#fff; font-weight:700; padding:12px 0; border-top:1px solid var(--line); } .gl dd { margin:0; padding:12px 0; border-top:1px solid var(--line); }
 .team { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:14px; margin:20px 0 24px; } .member { background:rgba(14,21,48,.7); border:1px solid var(--line); border-radius:18px; padding:20px 18px; text-align:center; } .member .av { width:64px; height:64px; margin:0 auto 12px; border-radius:50%; background:var(--grad); display:grid; place-items:center; font-weight:900; color:#fff; font-size:1.2rem; box-shadow:0 10px 28px rgba(79,123,255,.4); } .member b { display:block; color:#fff; font-size:1.05rem; } .member span:last-child { color:var(--dim); font-size:.86rem; }
 .sig { margin:6px 0 0; color:#fff; font-weight:800; font-size:1.15rem; line-height:1.3; } .sig span { color:var(--dim); font-weight:600; font-size:.9rem; }
+.btn-a.listen { background:rgba(42,212,208,.12); border-color:rgba(42,212,208,.5); color:#fff; cursor:pointer; font:inherit; font-weight:700; } .btn-a.listen svg { width:18px; height:18px; margin-right:8px; }
+.speaking { background:linear-gradient(90deg,rgba(42,212,208,.16),rgba(122,92,255,.08)); box-shadow:-14px 0 0 0 rgba(42,212,208,.16), 14px 0 0 0 rgba(122,92,255,.06); border-radius:6px; }
+.player { position:fixed; left:0; right:0; bottom:0; z-index:40; padding:10px max(14px,env(safe-area-inset-left,0px)) calc(10px + env(safe-area-inset-bottom,0px)); background:rgba(10,16,38,.94); backdrop-filter:blur(14px); border-top:1px solid var(--line); box-shadow:0 -14px 40px rgba(0,0,0,.45); }
+.player[hidden] { display:none; }
+.player .in { max-width:1160px; margin:0 auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.player .now { flex:1; min-width:150px; } .player .now b { display:block; color:#fff; font-size:.92rem; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } .player .now span { color:var(--dim); font-size:.78rem; }
+.player .bar { height:4px; border-radius:4px; background:rgba(255,255,255,.1); overflow:hidden; margin-top:6px; } .player .bar i { display:block; height:100%; width:0; background:var(--grad); transition:width .3s; }
+.pbtn { width:44px; height:44px; border-radius:50%; border:1px solid var(--line); background:rgba(255,255,255,.05); color:#fff; display:grid; place-items:center; cursor:pointer; padding:0; } .pbtn:hover { border-color:var(--teal); } .pbtn svg { width:20px; height:20px; }
+.pbtn.main { width:52px; height:52px; background:var(--grad); border:0; box-shadow:0 8px 24px rgba(79,123,255,.45); }
+.player select { background:#0a1126; color:#fff; border:1px solid var(--line); border-radius:10px; padding:9px 10px; font:inherit; font-size:.86rem; }
+body.has-player { padding-bottom:96px; }
 .small { color:var(--dim); font-size:.95rem; }
 footer { position:relative; z-index:1; border-top:1px solid var(--line); padding:30px max(18px,env(safe-area-inset-left,0px)) 44px; text-align:center; color:var(--dim); font-size:.88rem; }
 footer a { color:var(--muted); margin:0 8px; }
@@ -67,7 +78,7 @@ footer a { color:var(--muted); margin:0 8px; }
   <span class="eyebrow">About Aurora</span>
   <h1>Streaming that <em>just plays.</em></h1>
   <p>Movies, TV shows, live TV and sports on every screen you own, run by people you can actually reach. This is the whole story of how it works and what it stands for.</p>
-  <div class="cta-row"><a class="btn-a primary" href="../#signup">Start a free trial</a><a class="btn-a" href="#how">How it works</a><a class="btn-a" href="#faq">Questions</a></div>
+  <div class="cta-row"><a class="btn-a primary" href="../#signup">Start a free trial</a><button class="btn-a listen" id="listenHero" type="button" hidden><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>Listen to this page</button><a class="btn-a" href="#how">How it works</a><a class="btn-a" href="#faq">Questions</a></div>
   <div class="facts" aria-label="Aurora at a glance">
     <div class="fact"><b>Every screen</b><span>Phone, tablet, TV, browser</span></div>
     <div class="fact"><b>Live TV and sports</b><span>With backup streams</span></div>
@@ -462,12 +473,112 @@ footer a { color:var(--muted); margin:0 8px; }
   </article>
 </div>
 <footer><a href="../">Home</a><a href="../requests/">Requests</a><a href="../status/">Status</a><a href="../privacy/">Privacy</a><div style="margin-top:12px">AURORA &middot; Where streaming is possible</div></footer>
+<div class="player" id="player" role="region" aria-label="Listen to this page" hidden>
+  <div class="in">
+    <button class="pbtn" id="pPrev" type="button" aria-label="Previous section"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h2.5v14H6zM20 5.7v12.6a.8.8 0 0 1-1.25.66L9.6 12.66a.8.8 0 0 1 0-1.32l9.15-6.3A.8.8 0 0 1 20 5.7z"/></svg></button>
+    <button class="pbtn main" id="pPlay" type="button" aria-label="Pause"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.5" height="14" rx="1.4"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.4"/></svg></button>
+    <button class="pbtn" id="pNext" type="button" aria-label="Next section"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 5H20v14h-2.5zM4 5.7v12.6a.8.8 0 0 0 1.25.66l9.15-6.3a.8.8 0 0 0 0-1.32L5.25 5.04A.8.8 0 0 0 4 5.7z"/></svg></button>
+    <div class="now"><b id="pTitle">Starting...</b><span id="pInfo"></span><div class="bar"><i id="pBar"></i></div></div>
+    <label class="sr" for="pRate" style="position:absolute;left:-9999px">Speed</label>
+    <select id="pRate" aria-label="Reading speed"><option value="0.85">0.85x</option><option value="1" selected>1x</option><option value="1.15">1.15x</option><option value="1.3">1.3x</option><option value="1.5">1.5x</option></select>
+    <button class="pbtn" id="pStop" type="button" aria-label="Stop and close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+</div>
 <script>
 (function () {
   var links = [].slice.call(document.querySelectorAll('.toc a')), secs = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
   if (!('IntersectionObserver' in window)) return;
   var io = new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) { links.forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id); }); } }); }, { rootMargin: '-20% 0px -70% 0px' });
   secs.forEach(function (s) { if (s) io.observe(s); });
+
+(function () {
+  var synth = window.speechSynthesis;
+  var hero = document.getElementById('listenHero');
+  if (!synth || typeof SpeechSynthesisUtterance === 'undefined') return;
+  hero.hidden = false;
+  var player = document.getElementById('player'), pPlay = document.getElementById('pPlay'), pTitle = document.getElementById('pTitle'), pInfo = document.getElementById('pInfo'), pBar = document.getElementById('pBar'), pRate = document.getElementById('pRate');
+  var PLAY = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>';
+  var PAUSE = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.5" height="14" rx="1.4"/><rect x="13.5" y="5" width="4.5" height="14" rx="1.4"/></svg>';
+  var chunks = [], sections = [], idx = 0, playing = false, wake = null, token = 0, current = null;
+  try { var saved = localStorage.getItem('aurora.about.rate'); if (saved) pRate.value = saved; } catch (e) {}
+
+  // Build what gets read: each heading and paragraph in order, cut into sentences of a sensible length.
+  function clean(t) { return t.replace(/\s+/g, ' ').trim(); }
+  function split(text) {
+    var parts = text.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [text], out = [], cur = '';
+    parts.forEach(function (p) { if ((cur + p).length > 220 && cur) { out.push(cur.trim()); cur = p; } else cur += p; });
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+  }
+  function build() {
+    chunks = []; sections = [];
+    var art = document.querySelector('article');
+    [].forEach.call(art.querySelectorAll('section'), function (sec) {
+      var title = clean((sec.querySelector('h2') || {}).textContent || '').replace(/^\d+\s*/, '');
+      sections.push({ id: sec.id, title: title, first: chunks.length });
+      [].forEach.call(sec.querySelectorAll('h2, h3, p, li, .member, dt, dd'), function (el) {
+        if (el.closest('.cta-row')) return;
+        var text;
+        if (el.tagName === 'H2') { var c = el.cloneNode(true); var n = c.querySelector('.n'); if (n) n.remove(); text = clean(c.textContent) + '.'; }
+        else if (el.classList.contains('member')) text = clean((el.querySelector('b') || {}).textContent + ', ' + (el.querySelector('span:last-child') || {}).textContent) + '.';
+        else if (el.tagName === 'DT') text = clean(el.textContent) + ':';
+        else text = clean(el.textContent);
+        if (!text) return;
+        var pieces = split(text);
+        pieces.forEach(function (piece, i) { chunks.push({ text: piece, el: el, sec: sections.length - 1, head: el.tagName === 'H2' || el.tagName === 'H3', last: i === pieces.length - 1 }); });
+      });
+    });
+  }
+  function mark(el) {
+    if (current && current !== el) current.classList.remove('speaking');
+    current = el; if (!el) return; el.classList.add('speaking');
+    var r = el.getBoundingClientRect();
+    if (r.top < 90 || r.bottom > window.innerHeight - 120) { try { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { el.scrollIntoView(); } }
+  }
+  function ui() {
+    var c = chunks[idx]; if (!c) return;
+    pTitle.textContent = sections[c.sec].title;
+    var done = Math.round(idx / chunks.length * 100), rate = parseFloat(pRate.value) || 1, wordsLeft = chunks.slice(idx).reduce(function (n, k) { return n + k.text.split(' ').length; }, 0);
+    pInfo.textContent = done + '% read · about ' + Math.max(1, Math.round(wordsLeft / (160 * rate))) + ' min left';
+    pBar.style.width = done + '%';
+  }
+  function say() {
+    if (!playing) return;
+    if (idx >= chunks.length) { finish(); return; }
+    var mine = ++token, c = chunks[idx], u = new SpeechSynthesisUtterance(c.text);
+    u.rate = parseFloat(pRate.value) || 1; u.lang = 'en-US';
+    var vs = synth.getVoices().filter(function (v) { return /^en/i.test(v.lang); }); if (vs.length) { var pick = vs.filter(function (v) { return v.default; })[0] || vs[0]; u.voice = pick; }
+    mark(c.el); ui();
+    u.onend = function () { if (mine !== token) return; idx++; setTimeout(say, c.last ? (c.head ? 120 : 260) : 40); };
+    u.onerror = function (e) { if (mine !== token) return; if (e && (e.error === 'canceled' || e.error === 'interrupted')) return; idx++; say(); };
+    synth.speak(u);
+  }
+  function lock(on) { try { if (on && navigator.wakeLock) navigator.wakeLock.request('screen').then(function (l) { wake = l; }, function () {}); else if (!on && wake) { wake.release(); wake = null; } } catch (e) {} }
+  function start(from) {
+    if (!chunks.length) build();
+    synth.cancel(); token++; idx = typeof from === 'number' ? from : idx; playing = true;
+    player.hidden = false; document.body.classList.add('has-player'); pPlay.innerHTML = PAUSE; pPlay.setAttribute('aria-label', 'Pause'); lock(true); say();
+  }
+  function pause() { playing = false; token++; synth.cancel(); pPlay.innerHTML = PLAY; pPlay.setAttribute('aria-label', 'Resume'); lock(false); }
+  function stop() { playing = false; token++; synth.cancel(); if (current) current.classList.remove('speaking'); current = null; player.hidden = true; document.body.classList.remove('has-player'); idx = 0; pPlay.innerHTML = PAUSE; lock(false); }
+  function finish() { playing = false; pTitle.textContent = 'That is the whole page'; pInfo.textContent = 'Thanks for listening'; pBar.style.width = '100%'; pPlay.innerHTML = PLAY; pPlay.setAttribute('aria-label', 'Play again'); idx = 0; if (current) current.classList.remove('speaking'); lock(false); }
+  function jump(d) {
+    if (!chunks.length) return; var c = chunks[Math.min(idx, chunks.length - 1)], s = c.sec;
+    var target = d > 0 ? s + 1 : (idx > sections[s].first + 3 ? s : s - 1);
+    if (target < 0) target = 0; if (target >= sections.length) { finish(); return; }
+    start(sections[target].first);
+  }
+  hero.addEventListener('click', function () { if (!playing && player.hidden) { idx = 0; start(0); } else if (!playing) start(); else pause(); });
+  pPlay.addEventListener('click', function () { if (playing) pause(); else { if (idx >= chunks.length) idx = 0; start(); } });
+  document.getElementById('pStop').addEventListener('click', stop);
+  document.getElementById('pPrev').addEventListener('click', function () { jump(-1); });
+  document.getElementById('pNext').addEventListener('click', function () { jump(1); });
+  pRate.addEventListener('change', function () { try { localStorage.setItem('aurora.about.rate', pRate.value); } catch (e) {} if (playing) start(); else ui(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !player.hidden) stop(); });
+  document.addEventListener('visibilitychange', function () { if (!document.hidden && playing) lock(true); });
+  window.addEventListener('pagehide', function () { synth.cancel(); });
+  window.__listen = { build: function () { build(); return chunks.length; }, chunks: function () { return chunks; }, sections: function () { return sections; } };
+})();
 })();
 </script>
 </body>
