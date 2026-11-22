@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>About Aurora</title>
+<meta name="description" content="What Aurora is, how it works, and who is behind it: movies, TV shows, live TV and sports on every screen, with real support from people you can reach.">
+<meta property="og:title" content="About Aurora">
+<meta property="og:description" content="Movies, TV shows, live TV and sports on every screen, run by people you can reach.">
+<meta name="theme-color" content="#070c1c">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<style>
+@font-face { font-family:'Inter'; src:url('../assets/fonts/inter-variable.woff2') format('woff2'); font-weight:100 900; font-display:swap; }
+:root { --bg:#070c1c; --bg-2:#0e1530; --text:#fff; --body:#dfe4f6; --muted:#aab3d6; --dim:#7580ad; --line:#232f58; --teal:#2ad4d0; --blue:#4f7bff; --violet:#7a5cff;
+  --grad:linear-gradient(100deg,#18c6d6 0%,#4f7bff 52%,#8a5cff 100%); --font:'Inter','Helvetica Neue',Helvetica,Arial,sans-serif; color-scheme:dark; }
+* { box-sizing:border-box; }
+html { scroll-behavior:smooth; scroll-padding-top:84px; background:var(--bg); }
+body { margin:0; background:var(--bg); color:var(--body); font:17px/1.75 var(--font); -webkit-font-smoothing:antialiased; }
+.glow { position:absolute; inset:0 0 auto 0; height:640px; z-index:0; pointer-events:none; background:radial-gradient(55% 60% at 12% 0%,rgba(42,212,208,.22),transparent 70%),radial-gradient(50% 60% at 92% 0%,rgba(122,92,255,.3),transparent 70%); }
+a { color:var(--teal); } :focus-visible { outline:2px solid var(--teal); outline-offset:3px; }
+.top { position:sticky; top:0; z-index:20; backdrop-filter:blur(12px); background:rgba(7,12,28,.78); border-bottom:1px solid rgba(255,255,255,.06); }
+.top .in { max-width:1160px; margin:0 auto; padding:12px max(18px,env(safe-area-inset-left,0px)); display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.top .logo { display:inline-flex; align-items:center; text-decoration:none; } .top .logo svg { height:22px; width:auto; display:block; }
+.top nav { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+.top nav a { color:#cfd6f5; text-decoration:none; font-weight:600; font-size:.88rem; padding:7px 13px; border-radius:999px; } .top nav a:hover { background:rgba(255,255,255,.07); }
+.top nav a.cta { background:#fff; color:#0a1126; }
+.hero { position:relative; z-index:1; max-width:1160px; margin:0 auto; padding:72px max(18px,env(safe-area-inset-left,0px)) 36px; }
+.eyebrow { display:inline-block; font-size:.76rem; font-weight:800; letter-spacing:.16em; text-transform:uppercase; color:var(--teal); margin-bottom:14px; }
+h1 { font-size:clamp(2.6rem,8vw,5rem); line-height:1.02; letter-spacing:-.035em; margin:0 0 18px; color:#fff; font-weight:900; max-width:14ch; }
+h1 em { font-style:normal; background:var(--grad); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.hero p { font-size:clamp(1.1rem,2.4vw,1.4rem); line-height:1.55; color:var(--muted); max-width:46ch; margin:0 0 26px; }
+.cta-row { display:flex; flex-wrap:wrap; gap:10px; margin:22px 0 6px; }
+.btn-a { display:inline-flex; align-items:center; padding:13px 22px; border-radius:12px; border:1px solid var(--line); color:#e8ecff; text-decoration:none; font-weight:700; background:rgba(255,255,255,.04); } .btn-a:hover { border-color:var(--teal); }
+.btn-a.primary { background:var(--grad); border:0; color:#fff; box-shadow:0 10px 30px rgba(79,123,255,.4); }
+.facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-top:34px; }
+.fact { background:rgba(14,21,48,.7); border:1px solid var(--line); border-radius:16px; padding:16px 18px; } .fact b { display:block; color:#fff; font-size:1.05rem; } .fact span { color:var(--dim); font-size:.88rem; }
+.layout { position:relative; z-index:1; max-width:1160px; margin:0 auto; padding:30px max(18px,env(safe-area-inset-left,0px)) 90px; display:grid; grid-template-columns:230px minmax(0,1fr); gap:56px; }
+.toc { position:sticky; top:92px; align-self:start; font-size:.9rem; } .toc h4 { margin:0 0 10px; font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:var(--dim); }
+.toc ol { list-style:none; margin:0; padding:0; border-left:1px solid var(--line); } .toc li a { display:flex; gap:10px; padding:6px 12px; color:var(--muted); text-decoration:none; border-left:2px solid transparent; margin-left:-1px; }
+.toc li a:hover { color:#fff; } .toc li a.on { color:#fff; border-left-color:var(--teal); } .toc li a span { color:var(--dim); font-variant-numeric:tabular-nums; width:1.6em; }
+article { max-width:70ch; }
+section { margin:0 0 72px; } section:last-child { margin-bottom:0; }
+h2 { font-size:clamp(1.8rem,4vw,2.5rem); line-height:1.12; letter-spacing:-.02em; color:#fff; margin:0 0 18px; font-weight:800; display:flex; align-items:baseline; gap:14px; }
+h2 .n { font-size:.9rem; font-weight:800; color:var(--teal); letter-spacing:.1em; font-variant-numeric:tabular-nums; }
+h3 { font-size:1.25rem; color:#fff; margin:34px 0 8px; letter-spacing:-.01em; }
+p { margin:0 0 18px; } .lede { font-size:1.18rem; line-height:1.65; color:#fff; font-weight:500; }
+ul,ol { padding-left:1.3rem; margin:0 0 18px; } li { margin:8px 0; } li::marker { color:var(--teal); }
+strong { color:#fff; }
+.qa { border-top:1px solid var(--line); padding:6px 0 4px; } .qa:first-of-type { margin-top:10px; } .qa h3 { margin:18px 0 6px; font-size:1.12rem; }
+.gl { display:grid; grid-template-columns:minmax(120px,190px) 1fr; gap:0 22px; margin:0; } .gl dt { color:#fff; font-weight:700; padding:12px 0; border-top:1px solid var(--line); } .gl dd { margin:0; padding:12px 0; border-top:1px solid var(--line); }
+.small { color:var(--dim); font-size:.95rem; }
+footer { position:relative; z-index:1; border-top:1px solid var(--line); padding:30px max(18px,env(safe-area-inset-left,0px)) 44px; text-align:center; color:var(--dim); font-size:.88rem; }
+footer a { color:var(--muted); margin:0 8px; }
+@media (max-width:900px) { .layout { grid-template-columns:1fr; gap:0; } .toc { position:static; margin-bottom:34px; } .toc ol { columns:2; border-left:0; } .toc li a { border-left:0; padding:5px 0; } .top nav a:not(.cta) { display:none; } }
+@media (max-width:520px) { body { font-size:16.5px; } .gl { grid-template-columns:1fr; } .gl dt { padding-bottom:0; border-top:1px solid var(--line); } .gl dd { border-top:0; padding-top:2px; } .toc ol { columns:1; } }
+@media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
+@media print { .top,.toc,.glow,.cta-row { display:none; } body { background:#fff; color:#000; } h1,h2,h3,strong { color:#000; } }
+</style>
+</head>
+<body>
+<div class="glow" aria-hidden="true"></div>
+<header class="top"><div class="in"><a class="logo" href="../"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg></a><nav aria-label="Main"><a href="../">Home</a><a href="../#prices">Prices</a><a href="../#faq">FAQ</a><a href="../privacy/">Privacy</a><a class="cta" href="../#signup">Start free trial</a></nav></div></header>
+
+<div class="hero">
+  <span class="eyebrow">About Aurora</span>
+  <h1>Streaming that <em>just plays.</em></h1>
+  <p>Movies, TV shows, live TV and sports on every screen you own, run by people you can actually reach. This is the whole story of how it works and what it stands for.</p>
+  <div class="cta-row"><a class="btn-a primary" href="../#signup">Start a free trial</a><a class="btn-a" href="#how">How it works</a><a class="btn-a" href="#faq">Questions</a></div>
+  <div class="facts" aria-label="Aurora at a glance">
+    <div class="fact"><b>Every screen</b><span>Phone, tablet, TV, browser</span></div>
+    <div class="fact"><b>Live TV and sports</b><span>With backup streams</span></div>
+    <div class="fact"><b>Free trial</b><span>No card needed</span></div>
+    <div class="fact"><b>Real support</b><span>People who know your account</span></div>
+  </div>
+</div>
+
+<div class="layout">
+  <aside class="toc" aria-label="On this page"><h4>On this page</h4><ol><li><a href="#what"><span>01</span>What Aurora is</a></li><li><a href="#beliefs"><span>02</span>What we believe</a></li><li><a href="#how"><span>03</span>How Aurora works</a></li><li><a href="#movies"><span>04</span>Movies and TV shows</a></li><li><a href="#live"><span>05</span>Live TV</a></li><li><a href="#sports"><span>06</span>Sports</a></li><li><a href="#extras"><span>07</span>Requests, lists and the small things</a></li><li><a href="#devices"><span>08</span>Every screen you own</a></li><li><a href="#accounts"><span>09</span>Accounts, trials and plans</a></li><li><a href="#resellers"><span>10</span>Resellers and the people behind Aurora</a></li><li><a href="#privacy"><span>11</span>Privacy and security</a></li><li><a href="#reliable"><span>12</span>Keeping it running</a></li><li><a href="#support"><span>13</span>Support, feedback and how we listen</a></li><li><a href="#ahead"><span>14</span>Where we want to go</a></li><li><a href="#faq"><span>15</span>Questions people ask</a></li><li><a href="#words"><span>16</span>A short glossary</a></li><li><a href="#contact"><span>17</span>Say hello</a></li></ol></aside>
+  <article>
+<section id="what">
+<h2><span class="n">01</span>What Aurora is</h2>
+<p class="lede">Aurora is a private streaming app for movies, TV shows, live TV and sports. It looks and feels like the big streaming services, it runs on the screens you already own, and it is run by people you can actually reach when something goes wrong.</p>
+<p>That sentence is short, but it hides a lot of work. Most people only ever see the front door: a dark, calm screen with a row of posters, a search box, and a big Play button. Behind that door sits a media server that holds a library, a live TV system that talks to a provider, a small guard service that keeps every account honest, a set of apps for phones, tablets, televisions and browsers, and a team of resellers and support people who keep customers happy. This page explains all of it in plain language, so that you know exactly what you are signing up for, how it works, and who is behind it.</p>
+<p>We wrote this page for three kinds of readers. If you are thinking about trying Aurora, it tells you what you get and what you do not get. If you are already a customer, it explains why things behave the way they do: why a channel sometimes switches by itself, why your account has a connection limit, why the app asks for a PIN in one place and not another. And if you are a reseller or a friend of the service who is curious about the machinery, it shows you how the pieces fit together and what each one is responsible for.</p>
+<p>We have tried to be honest throughout. Where Aurora is strong, we say so. Where there are limits, we say that too. A streaming service is a promise that the thing will play when you press the button, and the only way to keep that promise over time is to be straight with people about how it is built.</p>
+
+<h3>The short version</h3>
+<ul>
+<li><strong>One app, every screen.</strong> Android phones and tablets, Android TV and Fire TV, iPhone and iPad, Apple TV, and any modern web browser. A lighter edition called Aurora Lite exists for older Android TV sticks.</li>
+<li><strong>Movies and shows</strong> from a media library, with posters, descriptions, ratings, seasons, subtitles, audio choices, and a place that remembers where you stopped.</li>
+<li><strong>Live TV</strong> with categories, favourites, a programme guide, and automatic backup streams that take over when a channel stops working.</li>
+<li><strong>Sports</strong> with scores, standings, your teams, reminders before a game, and the best channel for each match.</li>
+<li><strong>Requests</strong> for things you want that are not there yet, and a feature request page for ideas about the app itself.</li>
+<li><strong>A free trial</strong> with no card needed, then simple plans measured in months and connections.</li>
+<li><strong>Real support</strong> from resellers who know their own customers, backed by a team that watches the service every day.</li>
+</ul>
+
+<h3>What Aurora is not</h3>
+<p>It is worth saying plainly what Aurora is not, because misunderstandings cost people time. Aurora is a player and a service layer. It is not a free-for-all, it is not a public website anyone can open without an account, and it is not a replacement for the rights holders of the shows and films themselves. The library you see and the channels you can open come from the service you have signed up with, and that service decides what is available and for how long. Aurora is the way you reach it, along with the tools that make it reliable.</p>
+<p>It is also not a social network, an advertising platform or a data business. There are no ads in the app, nothing is sold, and the information we hold about you is the minimum needed to run your account. Later in this page there is a full section on privacy and security, with the specifics.</p>
+</section>
+
+<section id="beliefs">
+<h2><span class="n">02</span>What we believe</h2>
+<p class="lede">Every product has opinions, whether or not its makers admit it. Ours are simple, and they explain most of the decisions you will notice as a customer.</p>
+
+<h3>It should just play</h3>
+<p>The single most important measure of a streaming service is not how many films it lists. It is how often pressing Play leads to a picture within a few seconds, and how often that picture stays on screen until the end. Everything else is decoration. This belief shapes the way Aurora is built. The apps use the native video players of each device wherever that gives a better result. Live channels have backup streams. The app measures its own playback quality, in a privacy-respecting way, so that problems show up as numbers instead of as angry messages at midnight. When something stalls, the question we ask is never "whose fault is this" but "what would have kept it playing".</p>
+
+<h3>Calm beats clever</h3>
+<p>Streaming apps have a habit of piling on features until the screen looks like a stock market terminal. Aurora goes the other way. The home screen is a row of things to watch. The navigation is a short pill of words at the top. Settings are grouped by what you are trying to do, not by how the software happens to be organised. When we add something, we ask whether a first-time customer on a television remote could find it without help. If the answer is no, the feature waits until we have found a calmer way to present it.</p>
+
+<h3>Old devices deserve respect</h3>
+<p>Many of the people who use a service like this do not own the newest hardware. They have a stick that is a few years old, a tablet that is still perfectly good, an older phone that works fine. Treating those devices as second class is easy and cheap, and it is also unkind. So Aurora has a Lite edition for older Android TV sticks, with a plainer look and lighter work for the device to do. It is not glamorous work, but it means a family does not have to buy a new gadget just to watch the same show as everyone else.</p>
+
+<h3>The person who sold it to you should be able to help</h3>
+<p>Aurora is sold through resellers as well as directly. We think that is a good thing, because a reseller knows their customers by name, speaks their language, and answers the phone. But a reseller can only help if they can see what is going on. That is why the reseller tools exist: a list of their customers, who is watching right now, how each person's playback has been going, which devices are signed in, and a way to send a short notice to just their own customers. Support should be close to the customer, not buried behind a form.</p>
+
+<h3>Say what happened</h3>
+<p>When something breaks, people are owed an explanation in words they understand. The app tells you why a stream was switched or why an account is blocked. The status page tells you whether the service is up. Announcements inside the app tell you about planned maintenance before it happens. Our habit is to over-explain rather than to go quiet, because silence makes a small problem feel like a big one.</p>
+
+</section>
+
+<section id="how">
+<h2><span class="n">03</span>How Aurora works</h2>
+<p class="lede">You do not need to understand any of this to enjoy the app. But if you are curious, or if you are the sort of person who likes knowing why a thing behaves the way it does, here is the whole picture in plain words.</p>
+
+<h3>Four pieces</h3>
+<p>Aurora is made of four pieces that work together. Knowing which piece owns which job is the quickest way to understand almost everything about the service.</p>
+<ol>
+<li><strong>The Aurora server.</strong> This is the media server that holds the accounts, the passwords, the film and show library, and the list of who is allowed to do what. When you type your username and password, the server is the thing that checks them. When you open a film, the server is what streams it to you. It runs on a computer that is switched on day and night.</li>
+<li><strong>The Aurora Guard.</strong> This is a small program that runs next to the server and enforces the rules that make a shared service sustainable. It knows how many devices each account may use at once, when each account ends, which plan a customer is on, how many credits each reseller has left, which announcements to show, and whether an administrator has put a PIN in front of the sensitive screens. It does not hold your password. It asks the server who you are and then decides what you are allowed to do.</li>
+<li><strong>The Aurora apps.</strong> These are what you actually touch: the app on your phone, your television, your tablet or your browser. They talk to the server to get your library and to the Guard to learn about your account.</li>
+<li><strong>The website.</strong> The website is where people find the service, sign up for a free trial, read the answers to common questions, download the apps, and where administrators and resellers sign in to manage things from a computer.</li>
+</ol>
+
+<h3>The path of a single play</h3>
+<p>Let us follow one ordinary evening. You open Aurora on your television and sign in. The app asks the server whether the username and password are right. The server says yes and hands the app a short-lived token that stands for you. From then on the app shows that token to the Guard whenever it needs something, and the Guard asks the server who the token belongs to, so no one ever has to trust a name typed into a box.</p>
+<p>You pick a film and press Play. Before the picture starts, the Guard checks three simple things: is your account still within its dates, is it switched on, and are you within your connection limit. If any of those fails, the app tells you in plain words and tells you what to do, for example, ask for more time or stop playback on another device. If everything is fine, the film starts. The video travels from the media server straight to your television. The Guard is not in the video path, so a busy evening does not make your film slower.</p>
+<p>When you stop watching, your place is saved, so that the next time you open the film on your phone it offers to continue from where you left off. In the background, the app also sends back a very short health report about how the playback went: how long it took to start, whether it stalled, and roughly how fast the stream was. That report is what lets a reseller say, with numbers, whether a problem is your internet or the service.</p>
+
+<h3>Live television is a little different</h3>
+<p>Live channels come from a television provider rather than from the film library. The Guard knows how to read the provider's channel list, and the app uses native players to play those streams smoothly. Because a live channel can fail for reasons far outside anyone's control, each channel can have one or more backup addresses. If the main stream stops, the player moves to the next one by itself, usually within a few seconds, and carries on. The section on live TV below goes into this in more detail.</p>
+
+<h3>Why a Guard at all?</h3>
+<p>You might wonder why there is a separate Guard instead of building the rules into the media server. The honest answer is that a media server is designed for one household, and Aurora serves many. The Guard is the part that turns a household server into a service. It makes the rules enforceable every minute, not only when someone happens to look. It keeps a ledger of what resellers have spent. It keeps an audit log of every administrative action, so that "who changed that, and when" always has an answer. And because it is a single small program with no outside packages, it is easy to update and easy to reason about.</p>
+
+</section>
+<section id="movies">
+<h2><span class="n">04</span>Movies and TV shows</h2>
+<p class="lede">The film and show library is the quiet heart of Aurora. It is where you go when you want to settle in and watch something properly, with the whole evening in front of you.</p>
+
+<h3>Finding something to watch</h3>
+<p>The home screen opens on a featured title, with a large picture, a short description and a Play button, followed by rows of things you might like: what you were in the middle of, what was added recently, and lists by type. Underneath, the top navigation lets you move between Home, TV Shows, Movies and your Favourites. Search is one tap away and works as you type, finding titles, people and genres. On a television, the same search is designed to be used with a remote control, with the letters laid out so that you do not have to hunt for them.</p>
+<p>We pay attention to the small moments in this process because they add up. Posters load quickly and in the right shape. A row you scroll sideways remembers where you were. A title you have already watched is marked so you do not pick it again by accident. If you are on a phone, the layout rearranges itself for a narrow screen, instead of squeezing a television layout into your hand.</p>
+
+<h3>Everything about a title in one place</h3>
+<p>When you open a film or a show you see what you would expect: the year, the running time, the rating, the genres, the cast and the story. For a series you can move between seasons and see every episode with its own picture, number and description. If a show has many seasons, the app remembers the last one you were on and offers the next unwatched episode as the main button. You can add anything to your list with one tap.</p>
+
+<h3>Subtitles and audio, done properly</h3>
+<p>Language is not a detail. A film is a different experience when the dialogue is in a language you follow, and subtitles are the only way many people can enjoy a show at all. Aurora lists every audio track and subtitle track the file contains, in plain names. It remembers what you chose, so that you do not have to repeat the choice for every episode of a series. It supports the usual surround and stereo formats, and where a device cannot play a particular audio format on its own, the app includes a software decoder that steps in, so that the sound does not simply disappear. It is the kind of thing you only notice when it is missing, which is exactly why we build it in.</p>
+
+<h3>Picking up where you left off</h3>
+<p>The most-used feature in any streaming app is probably the least glamorous: resume. Aurora saves your place as you watch, and it keeps that place across devices. Start a film on the television in the evening, and the next morning your phone will offer to continue from the same minute. The Continue Watching row sits at the top of the home screen so the thing you were in the middle of is always one tap away.</p>
+
+<h3>Downloads for the journey</h3>
+<p>On Android devices you can download a film or an episode and watch it without any connection, which is the right answer for flights, trains, holidays and patches of poor signal. Downloaded items are stored on the device, with a clear view of how much space they use and a simple way to remove them. Because a download is a copy of a file, it is tied to your account and to your device, and it follows the same rules as everything else in the service.</p>
+
+</section>
+
+<section id="live">
+<h2><span class="n">05</span>Live TV</h2>
+<p class="lede">Live television is the part of the service that is hardest to keep reliable, and the part where we have spent the most effort. A live channel is a continuous stream that never stops, from a source that is not ours, over a path that crosses many networks. It deserves its own section.</p>
+
+<h3>Channels, categories and favourites</h3>
+<p>The Live TV page groups channels into categories that follow your provider's lists: news, sport, movies, kids, entertainment, local channels and so on. Each channel has its name, number and logo, and a quick way to mark it as a favourite so it is always near the top. A favourites row means that the five or six channels you actually watch are never more than a tap away, and you never have to scroll through hundreds of others. There is also a search that works on channel names.</p>
+<p>The people who run the service can also curate the lists. They can rename a channel that has an awkward name, correct a logo, hide a channel that does not belong, set its number, and create custom categories and custom channels of their own. These changes apply to everyone, and they reach the apps within a few minutes, so a fix made in the morning is already in place by the time people sit down in the evening.</p>
+
+<h3>The programme guide</h3>
+<p>Beside each channel the app can show what is on now and what is next, with start and end times, drawn from the programme guide that comes with the provider's data. Tap a programme to read its description. The guide is the difference between flicking through channels hoping and knowing what you are going to watch. It is only as accurate as the data behind it, and we say so, because guide data is occasionally wrong or late. When it is wrong, the best thing you can do is tell us, which is the reason the request page exists.</p>
+
+<h3>When a channel stops working</h3>
+<p>Every live service has bad moments. A source goes down, a provider restarts a server, a route across the internet gets congested. What matters is what happens next. Aurora's answer is to give each channel one or more backup streams that the player can move to by itself.</p>
+<p>The rule is simple. The player watches the first picture closely. If the stream reports an error, or if nothing has appeared within a few seconds of tuning, or if the picture freezes and stays frozen, the player switches to the next backup and tries again. In practice that usually takes around eight seconds from the moment the problem starts. It tries each backup in turn, and it stays on the last one rather than looping forever. You see a short message explaining what happened, so the app never leaves you staring at a black screen wondering whether it has crashed.</p>
+<p>Backups can come from a second provider as well as from the first, which protects against the failure of one source. The people who manage the channel list choose which backups go with which channel, and they can test each one before they save it. It is slow, careful, unglamorous work, and it is a large part of why live television on Aurora keeps going when other services give up.</p>
+
+<h3>Adult categories</h3>
+<p>Some categories in a live television list are meant for adults only. In Aurora those categories are off for an account by default. An administrator or reseller can switch them on for a particular account, and when they do, they are vouching that the account holder is an adult. Even then, the categories stay behind a PIN chosen on the device itself, so that a child who picks up an adult's phone does not wander into them. Changing the switch resets the PIN, so that access never survives a change of mind. These categories are never part of a channel package that a reseller assigns, and they never appear in the pick lists, which keeps the adult switch the only door.</p>
+
+<h3>Packages and categories for your plan</h3>
+<p>Not every customer needs every category. A household that only watches sport does not need to scroll through twenty children's categories, and a household with young children may prefer a smaller list. For that reason an account can be limited to a chosen set of live categories. Plans can include a set, and resellers can give a customer a ready-made package such as Sports, Kids or 24/7, with a single tap. The customer then sees only those categories, and the change reaches their app the next time they open it. A customer who is moved back to their plan sees everything their plan allows.</p>
+</section>
+
+<section id="sports">
+<h2><span class="n">06</span>Sports</h2>
+<p class="lede">A great deal of live television is sport, and sport has its own rhythm. You want to know when a game starts, who is winning, and which channel is showing it. Aurora has a Sports tab built around exactly those three questions.</p>
+
+<h3>Scores and standings</h3>
+<p>The Sports tab shows scores for the major leagues, updated through the day, along with standings tables for each competition. Live games are marked clearly, finished games show the final score, and upcoming games show their start time in your own time zone. The scores come from a public sports data feed and can lag behind the real match by a minute or so, which is fine for checking in and not good enough for betting, and we say so because we would rather you knew.</p>
+
+<h3>Your teams</h3>
+<p>You can choose the teams you follow. Their games rise to the top, so that on a busy night you do not scroll through a dozen matches you do not care about to find the one you do. Teams have aliases behind the scenes, so that a channel called by a short name and a team called by its full name are recognised as the same thing.</p>
+
+<h3>The best channel for each game</h3>
+<p>This is the feature people tell us they like most. For a given game, Aurora looks across the live channels and offers the ones that are most likely to be showing it. One tap takes you to the channel. If you have ever spent the first ten minutes of a match searching for where it is being shown, you will understand why this matters.</p>
+
+<h3>Reminders</h3>
+<p>If a game you care about is coming up, you can set a reminder, and the app will send a notification shortly before kick-off. On Android the reminders survive a restart of the device. Notifications need your permission, and you can turn them off at any time from the device settings. Nothing in the app is allowed to send you messages you have not asked for.</p>
+</section>
+
+<section id="extras">
+<h2><span class="n">07</span>Requests, lists and the small things</h2>
+<p class="lede">A service is more than its main screens. These are the smaller features that make daily use pleasant, and the channels through which you can shape what Aurora becomes.</p>
+
+<h3>My List and favourites</h3>
+<p>Anything can be added to your list with a single tap, whether it is a film for the weekend, a series you want to start, or a channel you watch every day. Your list is yours, it syncs between your devices, and it is where you will find the things you meant to watch and had not yet got round to.</p>
+
+<h3>Asking for something that is not there</h3>
+<p>No library has everything. If something you want is not available, the Requests tab lets you ask for it. A request goes to the people who manage the library, who can add it where that is possible. You can see the state of your requests. It is a small loop, and it is the one that makes a library feel like it belongs to its viewers.</p>
+
+<h3>Telling us what the app should do</h3>
+<p>The Requests tab in the app is for films and shows. For ideas about the app itself, such as a feature you wish it had, a channel you would like added, or a problem you ran into, there is a separate request page on the website. You enter your username so that we know who is asking, choose what kind of request it is, and describe it. Every request goes to an inbox that the administrators read, and each one can be marked as new, planned, done or declined, so that nothing disappears into a void. We cannot build everything, but we read everything, and the ones that help the most people are the ones we build first.</p>
+
+</section>
+<section id="devices">
+<h2><span class="n">08</span>Every screen you own</h2>
+<p class="lede">People watch in different places: the big television in the lounge, a tablet in the kitchen, a phone on the bus, a laptop at a desk. Aurora is built to feel the same on all of them, and to respect what each is best at.</p>
+
+<h3>Android phones and tablets</h3>
+<p>The Android app installs from a file that you download from the website. It uses a native video player for live channels and for films, so that picture and sound quality are as good as the hardware allows, and it supports downloads for offline watching, game reminders, and updates from inside the app. When a new version is released, the app tells you and offers to install it, so that you are not left on an old version by accident.</p>
+
+<h3>Android TV, Google TV and Fire TV</h3>
+<p>The same app runs on Android television devices, and it is designed to be driven by a remote control. Focus moves where you expect, the keyboard on screen is easy to use, and the channel buttons on a remote change channels in live TV. To install it on a television without a keyboard, you use a free app called Downloader and type a short code that is shown on the website. That is the quickest way we know to put an app on a television stick, and it works on almost every model.</p>
+
+<h3>iPhone and iPad</h3>
+<p>The iPhone and iPad app is delivered through TestFlight, Apple's own system for trying apps before they appear in the public store. You open an invitation link on your device, install TestFlight if you do not already have it, and install Aurora from there. New builds arrive through TestFlight as they are released. The app uses Apple's native player, so the picture looks right on the screen and the controls behave the way iPhone owners expect.</p>
+
+<h3>Apple TV</h3>
+<p>We are also working on an Apple TV app, designed for the remote and the large screen, so that a household can watch on the television without a second device. It is not part of the service for everyone yet, and the people who run your service can tell you whether it is available to you.</p>
+
+<h3>Any web browser</h3>
+<p>If you do not want to install anything, you can open Aurora in a modern web browser on a computer or a tablet and sign in. It is the same app, running on the web, with the same library and the same account. It is a good choice for a work laptop, a guest's computer, or a quick check on something when you are away from home.</p>
+
+<h3>Aurora Lite, for older devices</h3>
+<p>Some of the most common television sticks in people's homes are several years old and run an older version of Android. The full Aurora app needs a reasonably recent version of Android, and on an older stick the install simply fails with a message about a parsing problem. We did not think that was good enough.</p>
+<p>Aurora Lite is a separate edition for these devices. It installs on Android 7 and up, which covers the first-generation Fire TV Stick 4K and many other older boxes and phones. It does the same job with a lighter touch: the code is rewritten for older browser engines, motion and blur effects are switched off, and the opening animation is shown as a still picture, so that a slower processor is not asked to do work that does not help you watch. It updates itself from its own releases so that it can never accidentally install the full app, and the full app never installs Lite. To get it on a television, type the Lite address from the website into the Downloader app.</p>
+<p>We are honest about its limits. Lite is newer than the devices it runs on, and the very oldest hardware may still struggle. Where that happens, a modern streaming stick costs very little and is the best fix. But for the many people whose older stick works well, Lite means they can join in.</p>
+
+<h3>How many devices at once</h3>
+<p>Every account has a connection limit, which is the number of devices that can play at the same time. You can sign in on as many devices as you like, but only that many can be watching at once. If another device tries to start while the limit is already used, Aurora tells it so, and tells you to stop playback elsewhere first. The account page shows the devices you are signed in on, and you can ask for a device to be removed if you no longer use it.</p>
+</section>
+
+<section id="accounts">
+<h2><span class="n">09</span>Accounts, trials and plans</h2>
+<p class="lede">The idea behind our plans is that it should be obvious what you are buying. You pay for a length of time and a number of connections. That is the whole of it.</p>
+
+<h3>The free trial</h3>
+<p>Anyone can try Aurora without paying. The sign-up form on the website asks for a username, a password and an email address, and your account is ready straight away. A new account starts with a short free trial, with no card details needed. The trial is a real taste of the service on a real device, not a locked-down demonstration, so that you can judge for yourself whether it suits you. If you do nothing, the trial simply ends, and nothing is charged.</p>
+<p>To keep the trial fair for everyone, sign-ups are limited per day and per internet address, and the form checks that an email address has not already been used. Those limits are there to stop abuse, and they are generous enough that an honest person will never notice them.</p>
+
+<h3>Plans in months and connections</h3>
+<p>Beyond the trial, a plan is defined by two things: how long it lasts and how many devices can play at once. A one-month plan with two connections, for example, suits a couple who occasionally watch on separate screens. A longer plan with more connections suits a bigger household. The current plans and prices are always listed on the website, read live from the same place the administrators manage them, so the page can never be out of date.</p>
+<p>When a plan ends, the account is switched off, and it is switched back on the moment it is extended. Nothing is lost: your list, your place in each show and your settings are kept, so that coming back after a gap feels like coming back to a room you left tidy.</p>
+
+<h3>Discount codes and referrals</h3>
+<p>The website can accept discount codes, which can take a percentage or a fixed amount off particular plans for a limited time. A code entered at sign-up applies to the first paid plan it is valid for. There is also a referral scheme: when a friend signs up with your code, you both receive extra free days. It is a small thank-you for spreading the word, and a simple one, because the people who recommend a service to their friends are the people who are most honest about it.</p>
+
+<h3>Renewals and extension requests</h3>
+<p>The app warns you before your plan ends, with a notice that counts down the days. If you would like more time, you can ask from inside the app, and the request goes to whoever looks after your account, usually your reseller. They can approve it, change it or decline it, and you see the answer in the app. There is a limit on how many requests one account can make in a month, which keeps the system fair and keeps the inbox readable for the people who have to deal with it.</p>
+
+</section>
+
+<section id="resellers">
+<h2><span class="n">10</span>Resellers and the people behind Aurora</h2>
+<p class="lede">Aurora is sold directly, and it is also sold by resellers: independent people who look after their own customers. They are a large part of how the service reaches people, and a large part of why customers get a human being when they need one.</p>
+
+<h3>What a reseller does</h3>
+<p>A reseller buys credits and uses them to look after customers. One credit is one connection for one month. With credits they can create accounts for new customers, renew existing ones, change a customer's details, reset a password, sign a device out, put an account on hold and take it off hold. They deal with their customers in the customer's own language, in whatever way suits that customer, and they are the first person you contact if something is not working.</p>
+<p>Resellers can only ever see and change their own customers. They cannot open other resellers' lists, they cannot open the administrator's tools, and they cannot reach into anyone else's account. That separation is enforced by the Guard on every request, not by good manners.</p>
+
+<h3>Tools that make a reseller useful</h3>
+<p>We build the reseller tools around the questions a customer actually asks. "Is it working?" is answered by a Watching Now list that shows what each customer is playing at this moment. "Why does it buffer?" is answered by a playback quality report for each customer, with plain-language hints such as turning on a larger buffer. "My phone is lost" is answered by a list of the customer's devices with a button to remove one. "When will you tell me about maintenance?" is answered by a notice that a reseller can send to just their own customers, for a time they choose. And "how do I contact you?" is answered by contact details that each reseller sets, which the customer sees under Help and Support inside the app.</p>
+<p>Resellers can also choose which live categories each customer sees, and give a customer a named package such as Sports or Kids, in one tap. They can see which customers are about to end, copy a ready-made reminder message, search, filter and export their customer list, ask the administrators for more credits, and set up alerts for things like low credits. There is a reseller panel in the app and the same tools on the reseller website, so that a reseller can work from whichever screen is nearest.</p>
+
+<h3>Credits are a ledger, not a promise</h3>
+<p>Every change to a reseller's credits is written to a ledger, with the amount, the reason, who made the change and what the balance became. If a balance ever looks wrong, the ledger answers the question. A reseller's balance can never go below zero, and only one change can happen at a time, so a double click cannot spend a credit twice. A deleted customer is not refunded, which is why deleting asks twice.</p>
+
+<h3>The administrators</h3>
+<p>Behind the resellers are the administrators, who run the service itself. They manage the library, the live channel lists and their backups, the plans and prices, the resellers and their credits, the announcements and the maintenance windows. Some of the most sensitive screens, such as the list of resellers and the list of users, sit behind an Admin PIN, so that giving someone a helper role does not give them the keys to everything. Moderators are a lighter role, for people who help customers and look at problems without being able to change money or settings.</p>
+<p>Every administrative action is written to an audit log: who did it, what they did and when. The log cannot be edited. It exists so that the question "who changed that" always has an answer, and so that the team can see at a glance that the rules are being followed.</p>
+</section>
+<section id="privacy">
+<h2><span class="n">11</span>Privacy and security</h2>
+<p class="lede">You are trusting us with a username, a password, an email address and a record of what you watch. We take that seriously, and we would like you to see exactly what that means. This section is a plain-language summary. The full <a href="../privacy/">privacy policy</a> is on its own page, and if the two ever disagree, the policy is the one that counts.</p>
+
+<h3>What we hold</h3>
+<p>To run your account we need a handful of things: your username, your sign-in details, your plan and its end date, how many devices you can use at once, and the devices you are signed in on. If you gave an email address or a phone number, we keep that so that you can be reached about your account. We keep your list, your favourites and your place in each film and show, because that is the whole point of having an account. And we keep a short record of playback quality, such as how long a channel took to start and whether it stalled, so that problems can be found and fixed.</p>
+
+<h3>What we do not do</h3>
+<p>We do not sell your information. We do not show advertising, so there is no advertising profile to build. We do not use advertising or analytics tools in the app. We do not read what you watch for any purpose other than keeping the service running and helping you when you ask for help. The data we hold stays on the servers that run your Aurora service and is used by the people who run it. A few outside services are involved for specific reasons, such as your TV provider, which supplies live video, and GitHub, where release notes and settings are looked up, and the privacy policy names each of them.</p>
+
+<h3>How your password is protected</h3>
+<p>Your password is checked by the media server and is never kept in the app or in the Guard. The apps keep your sign-in on your own device in the secure storage that the device provides. When a password is created or reset for you, it is shown once so that the person setting it up can pass it on, and it is not stored anywhere in readable form. If someone guesses wrongly too many times, the service slows them down and then locks that source out for a while, which defeats guessing without getting in the way of a person who simply mistyped.</p>
+
+<h3>Who can see what</h3>
+<p>Access is layered, and each layer sees only what it needs. A customer sees their own account. A reseller sees their own customers and nobody else's. A moderator can answer customers and look at problems but cannot change money, plans or settings. An administrator can manage the service, and even among administrators the most sensitive screens sit behind a four-digit Admin PIN with careful limits on wrong guesses. Every request to an administrative function is checked against the server, using your own sign-in, so that a person cannot gain access by guessing someone else's identifier.</p>
+
+<h3>Children</h3>
+<p>Aurora is not made for children under 13 and does not knowingly collect their information. It is, however, used in family homes, so we have made the defaults careful. Adult live categories are off unless someone with the authority to do so switches them on for a particular account, and they sit behind a PIN on the device even then. A Kids setting on an account lets a parent limit what is shown. We cannot decide what is right for your family, but we can make sure the starting point is the careful one.</p>
+
+<h3>Your choices</h3>
+<p>You can ask what we hold about you, ask for it to be corrected, and ask for your account and its history to be deleted. You can turn off notifications from your device settings at any time. You can remove a device from your account. You can sign out everywhere. The privacy page explains how to ask, and the people who look after your account can help.</p>
+</section>
+
+<section id="reliable">
+<h2><span class="n">12</span>Keeping it running</h2>
+<p class="lede">Reliability is not one big feature. It is a hundred small habits. This is a tour of the habits that keep Aurora up, and the ones that tell us quickly when it is not.</p>
+
+<h3>The Guard checks every minute</h3>
+<p>The Guard does not wait for someone to look. Every minute or so it reviews the accounts that matter. It signs out devices that are over their limit. It switches off accounts whose time has ended and switches them back on when they are extended. It checks that it can reach the media server, and it records what it found. The result is that the rules apply all the time, in every app, even to people using an older version, and that a problem with the server shows up in the Guard's own checks before most customers notice.</p>
+
+<h3>A public status page</h3>
+<p>There is a status page on the website that shows, at a glance, whether the Guard and the Aurora server are answering. It needs no sign-in, so it is safe to open on a phone, and it refreshes by itself. It is the quickest way to answer the question, "is it just me?" When the page says both are online and something is still wrong, the likeliest cause is your own network or device, and the speed test inside the app is the next place to look. When the page says something is offline, you know it is not your fault and that someone is already working on it.</p>
+
+<h3>Playback quality, measured</h3>
+<p>Guessing at buffering is miserable, so Aurora measures it. After each viewing the app sends back a tiny report: how long it took to start, how many times it stalled, how long the stalls lasted, and roughly how fast the stream was. Those reports are kept for two weeks and shown to resellers and administrators as a plain summary with hints. If a customer says "it is buffering", the person helping can see whether the problem is a single customer or a pattern across many, and can say with a straight face whether the fix is a bigger buffer, a better connection or a call to the provider.</p>
+
+<h3>Backups, everywhere</h3>
+<p>We mentioned backup streams for live channels. The same attitude applies elsewhere. The Guard keeps its data in plain files that are easy to copy. Settings live in a configuration file that can be restored. A forgotten Admin PIN can be recovered by someone who has access to the computer the Guard runs on, and by no one else. And because the Guard is a single file with no outside packages, a bad update can be reversed by putting back the previous file.</p>
+
+<h3>Updates that cannot surprise you</h3>
+<p>New versions are published from a single place and checked before they go out. The Guard looks for a new version once a day and only installs one when an administrator taps Update, after checking that the file has not been tampered with and that the new version starts correctly. The Android apps tell you when an update is available and install it from inside the app. The iPhone and iPad app updates through TestFlight. Each release carries a short list of what changed, so you can see what is different.</p>
+
+</section>
+
+<section id="support">
+<h2><span class="n">13</span>Support, feedback and how we listen</h2>
+<p class="lede">A service is only as good as the way it responds to people. We try to make it easy to be heard, and we try to show that we have listened.</p>
+
+<h3>Who to contact first</h3>
+<p>The first person to contact is whoever set up your account. That is usually your reseller, and their contact details are in the app under Help and Support, with a phone number, a messaging address or an email, whichever they have chosen to share. If you signed up directly from the website, the contact details are those of the service. Starting with the person closest to you means problems are usually solved in a single conversation, in your own language, by someone who knows your account.</p>
+
+<h3>The survey</h3>
+<p>Now and then we ask for a few minutes of your opinion. The survey asks about the things that matter most: whether the app works the first time, whether live TV holds up in busy periods, how easy it is to find something to watch, how fast it starts, and how good support is. It also asks the uncomfortable question of whether you would switch for a cheaper service, because the truth about that is more useful to us than polite praise. We look at the answers by device, by reseller and by theme, and we act on what we find.</p>
+
+</section>
+<section id="ahead">
+<h2><span class="n">14</span>Where we want to go</h2>
+<p class="lede">A service that stands still slowly gets worse, because everything around it moves. We keep a list of things we would like to do. None of it is a promise, and the order changes whenever customers tell us something that matters more. We share the list because we would rather you heard our thinking than guessed at it.</p>
+
+<h3>Ideas we are considering</h3>
+<ul>
+<li><strong>A "Recently added" and "Coming soon" shelf</strong> so that returning to the app always shows you something new, with a badge on the tab when there is.</li>
+<li><strong>A Trending row</strong> showing what other people on the service are watching this week, built from viewing totals we already keep.</li>
+<li><strong>Collections chosen by hand</strong>, such as holiday films, classic westerns or weekend action, put together by the people who run the library.</li>
+<li><strong>A "What's new" feed</strong> that brings library additions, app updates, fixes and notices from your provider into one place.</li>
+<li><strong>Music and radio</strong>, with live stations by genre, playlists and a mini player that keeps going while you browse.</li>
+<li><strong>News and weather</strong>, with a small weather card for your town and a shelf of live news channels.</li>
+<li><strong>Event reminders</strong> for big fights, concerts and finals, with the date, the channel and a notification before they begin.</li>
+<li><strong>Polls</strong>, so that you can vote on what should be added next.</li>
+<li><strong>Better tools for resellers</strong>, such as earnings and renewals views, reminders sent on their behalf and a sign-up link that carries their name.</li>
+<li><strong>More device support</strong>, including more native features on Apple TV and more work on very old hardware.</li>
+</ul>
+<p>Some of these will happen soon, some will take longer, and some will turn out to be a bad idea once we try them. If one of them matters to you, or if something not on the list matters more, the request page is the place to say so. The ideas that appear in many messages move up the list.</p>
+
+<h3>What we will not do</h3>
+<p>It helps to be as clear about the things we will not do. We will not fill the app with advertising. We will not sell your information. We will not make the app harder to use in order to push you towards something. And we will not claim that things work when they do not. If a feature is half finished, we will say it is half finished.</p>
+</section>
+
+<section id="faq">
+<h2><span class="n">15</span>Questions people ask</h2>
+
+<div class="qa"><h3>Is there a free trial?</h3><p>Yes. When you sign up on the website, your account starts with a short free trial, and no card is needed. It is a real account on the real service, so you can judge for yourself. If you do nothing at the end, it simply stops.</p></div>
+
+<div class="qa"><h3>Which devices does Aurora work on?</h3><p>Android phones and tablets, Android TV, Google TV and Fire TV, iPhone and iPad through TestFlight, and any modern web browser. Aurora Lite covers older Android devices from Android 7 up, including the first-generation Fire TV Stick 4K. An Apple TV app is also in the works.</p></div>
+
+<div class="qa"><h3>How do I put Aurora on my television?</h3><p>Install the free Downloader app from your television's app store, open it, type the code shown on the website, and choose Go. Then choose Install, then Open, and sign in. For an older stick that says the app cannot be installed, use the Aurora Lite address from the website instead.</p></div>
+
+<div class="qa"><h3>What is a connection?</h3><p>One device playing at the same time. If your plan has two connections, two devices can play together. If a third tries to start, Aurora tells you to stop playback on another device first. You can be signed in on as many devices as you like. The limit is about playing at once, not about signing in.</p></div>
+
+<div class="qa"><h3>Why does a live channel sometimes change by itself?</h3><p>Because the main stream stopped working and the player moved to a backup, which is exactly what it is meant to do. It usually happens within a few seconds of the problem starting, and you see a short message that explains it. If a channel keeps failing, tell your reseller or use the request page and include the channel name and the time.</p></div>
+
+<div class="qa"><h3>It buffers. What should I do?</h3><p>First, run the speed test in the app to see whether your connection is up to the job. Second, try a larger live TV buffer in the settings. Third, if you are on Wi-Fi, move closer to the router or try a cable. Fourth, check the status page to see whether the service itself is answering. If it is still a problem, tell whoever looks after your account, because they can see a quality report for your account and tell you what is going on.</p></div>
+
+<div class="qa"><h3>Why does the app say my account has ended?</h3><p>Because the end date on your plan has passed. Ask for more time from inside the app or contact your reseller. As soon as the date is extended, your account switches back on, and your list and your place in each show are exactly as you left them.</p></div>
+
+<div class="qa"><h3>Why are some categories missing?</h3><p>There are two ordinary reasons. Your plan or your reseller may have limited your account to certain categories, for example Sports or Kids. And adult categories are off by default and need to be switched on for an adult account and protected by a PIN. Ask whoever looks after your account if you think something is missing.</p></div>
+
+<div class="qa"><h3>Can I watch without a connection?</h3><p>On Android devices, yes. Download a film or an episode while you are online and watch it later without any signal. Downloads are tied to your account and device and are removed from the same screen.</p></div>
+
+<div class="qa"><h3>How do I ask for a film or a show?</h3><p>Use the Requests tab in the app. For ideas about the app itself, or for a channel to add or a problem to fix, use the request page on the website.</p></div>
+
+<div class="qa"><h3>Do you show advertising or sell my information?</h3><p>No. There are no advertisements in the app, and your information is not sold or rented. The privacy page describes exactly what is kept and why.</p></div>
+
+<div class="qa"><h3>Who runs Aurora?</h3><p>Each Aurora service is run by an operator: the person or business that gave you access. They are responsible for your account and your information, and they are the first contact for any question. The website and apps are the same for everyone, and the operator is the person behind them.</p></div>
+
+<div class="qa"><h3>What if something is wrong with the service itself?</h3><p>Check the status page. If it shows the Guard or the server as offline, the problem is on our side and is already being looked at. If it shows both as online, the cause is more likely to be your own device or network, and the speed test and the tips above will help you find it.</p></div>
+
+</section>
+
+<section id="words">
+<h2><span class="n">16</span>A short glossary</h2>
+<p class="lede">A few words come up often. Here they are in plain language.</p>
+<dl class="gl">
+<dt>Aurora</dt><dd>The apps and website that you use, and the service behind them.</dd>
+<dt>Aurora server</dt><dd>The media server that holds accounts, passwords and the library, and streams films and shows to your device.</dd>
+<dt>Aurora Guard</dt><dd>The small program next to the server that enforces connection limits, end dates, plans and credits, shows announcements, and keeps the audit log.</dd>
+<dt>Aurora Lite</dt><dd>The edition of the Android app for older devices, from Android 7 up.</dd>
+<dt>Account</dt><dd>Your username and password, your plan, your end date and your settings.</dd>
+<dt>Connection</dt><dd>One device playing at the same time. A plan lists how many you have.</dd>
+<dt>Plan</dt><dd>A length of time and a number of connections, for example one month with two connections.</dd>
+<dt>Trial</dt><dd>A short free period that starts when you sign up, with no card needed.</dd>
+<dt>Reseller</dt><dd>An independent person who looks after their own customers using credits, and who is usually your first contact.</dd>
+<dt>Credit</dt><dd>What a reseller spends. One credit is one connection for one month.</dd>
+<dt>Sub-reseller</dt><dd>A reseller added by another reseller, who sees only their own customers.</dd>
+<dt>Administrator</dt><dd>A person who runs the service and has the widest access.</dd>
+<dt>Moderator</dt><dd>A helper who can answer customers and look at problems but cannot change money or settings.</dd>
+<dt>Admin PIN</dt><dd>A four-digit code that protects the most sensitive administrative screens.</dd>
+<dt>Audit log</dt><dd>A permanent record of who did what and when, for every administrative action.</dd>
+<dt>Backup stream</dt><dd>A second address for a live channel that the player moves to automatically when the first stops working.</dd>
+<dt>Buffer</dt><dd>Video held in reserve so that a brief slowdown in your connection does not interrupt the picture.</dd>
+<dt>Package</dt><dd>A named group of live categories, such as Sports or Kids, that a reseller can give to a customer.</dd>
+<dt>Stall</dt><dd>A moment when the picture freezes while the app waits for more video.</dd>
+<dt>TestFlight</dt><dd>Apple's way of installing an app before it is in the public store.</dd>
+<dt>Downloader code</dt><dd>A short number you type into the Downloader app to fetch the Android app onto a television.</dd>
+<dt>Status page</dt><dd>A public page that shows whether the Guard and the server are answering.</dd>
+</dl>
+</section>
+
+<section id="contact">
+<h2><span class="n">17</span>Say hello</h2>
+<p class="lede">We would like to hear from you, whether it is a question, a problem, an idea or just a thank-you.</p>
+<p>If you already have an account, the quickest route is the person who set it up. Their details are in the app under Help and Support. If you are new, start with the free trial on the home page, and if you get stuck, use the request page to tell us where.</p>
+<div class="cta-row">
+<a class="btn-a primary" href="../#signup">Start a free trial</a>
+<a class="btn-a" href="../requests/">Send a request</a>
+<a class="btn-a" href="../status/">Check the status</a>
+<a class="btn-a" href="../privacy/">Read the privacy policy</a>
+</div>
+<p class="small">Thank you for reading this far. It is a long page for a simple idea: that streaming should just work, and that the people behind it should be easy to reach.</p>
+</section>
+
+  </article>
+</div>
+<footer><a href="../">Home</a><a href="../requests/">Requests</a><a href="../status/">Status</a><a href="../privacy/">Privacy</a><div style="margin-top:12px">AURORA &middot; Where streaming is possible</div></footer>
+<script>
+(function () {
+  var links = [].slice.call(document.querySelectorAll('.toc a')), secs = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  if (!('IntersectionObserver' in window)) return;
+  var io = new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) { links.forEach(function (a) { a.classList.toggle('on', a.getAttribute('href') === '#' + e.target.id); }); } }); }, { rootMargin: '-20% 0px -70% 0px' });
+  secs.forEach(function (s) { if (s) io.observe(s); });
+})();
+</script>
+</body>
+</html>
