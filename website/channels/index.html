@@ -229,11 +229,12 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     }).catch(function () { msg($('pmsg'), 'Could not reach the Aurora Guard.', 'err'); });
   }
 
+  document.addEventListener('input', function (ev) { if (ev.target.hasAttribute && ev.target.hasAttribute('data-gq')) { var q = ev.target.value.trim().toLowerCase(); [].slice.call(ev.target.parentNode.querySelectorAll('[data-gname]')).forEach(function (r) { r.hidden = !!q && r.getAttribute('data-gname').indexOf(q) < 0; }); } });
   function paintProvs() {
     $('provcard').hidden = !!(session && session.mod);
     $('pcount').textContent = provs.length;
     $('provs').innerHTML = provs.map(function (p) {
-      return '<div class="chrow" data-prov="' + esc(p.id) + '"><div><span class="nm">' + esc(p.name) + '</span><span class="pillx">' + (p.type === 'm3u' ? 'M3U' : 'Xtream') + '</span><div class="meta">' + esc(p.host) + (p.username ? ' · ' + esc(p.username) : '') + '</div></div><div class="btns"><button class="btn line sm danger" data-delprov>Remove</button></div></div>';
+      return '<div class="chrow" data-prov="' + esc(p.id) + '"><div><span class="nm">' + esc(p.name) + '</span><span class="pillx">' + (p.type === 'm3u' ? 'M3U' : 'Xtream') + '</span><div class="meta">' + esc(p.host) + (p.username ? ' · ' + esc(p.username) : '') + '</div></div><div class="btns"><button class="btn sm" data-showprov>' + (p.shown && p.shown.channels ? 'Choose groups' : 'Show in the app') + '</button>' + (p.shown && p.shown.channels ? '<button class="btn line sm" data-syncprov>Update now</button><button class="btn line sm" data-stopprov>Stop showing</button>' : '') + '<button class="btn line sm danger" data-delprov>Remove</button></div>' + (p.shown && p.shown.channels ? '<div class="meta" style="flex-basis:100%">Showing ' + p.shown.channels + ' channels in ' + p.shown.categories + ' categories in the apps.</div>' : '') + '<div data-pick style="flex-basis:100%" hidden></div></div>';
     }).join('') || '<div class="empty">No other providers yet.</div>';
   }
   function backupsFor(t) { if (t.item) { var it = cu.items.filter(function (x) { return x.id === t.item; })[0]; return (it && it.backups) || []; } var e = cu.edits['k' + t.key]; return (e && e.backups) || []; }
@@ -292,6 +293,27 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       else { var bx = brow.querySelector('.editbox'); bkAct('POST', '/channels/backup', Object.assign({ url: bx.querySelector('[data-bkurl]').value, label: bx.querySelector('[data-bklabel]').value }, bk)); }
       return;
     }
+    if (t.hasAttribute('data-showprov')) {
+      var row = t.closest('[data-prov]'), box = row.querySelector('[data-pick]'), pid = row.getAttribute('data-prov');
+      if (!box.hidden) { box.hidden = true; return; }
+      box.hidden = false; box.innerHTML = '<div class="meta">Reading the provider...</div>';
+      api('GET', '/channels/providers/' + pid + '/groups').then(function (g) {
+        if (g.__status !== 200) { box.innerHTML = '<div class="meta">' + esc(g.error || 'That did not work.') + '</div>'; return; }
+        box.innerHTML = '<div class="meta">Tick the groups to show in the apps. Each becomes a category named after the provider. ' + g.total + ' channels in all.</div><input type="search" data-gq placeholder="Search groups" style="margin:8px 0;width:100%">' +
+          g.groups.map(function (x) { return '<label class="chrow" data-gname="' + esc(x.name.toLowerCase()) + '" style="cursor:pointer"><div><input type="checkbox" data-gcheck value="' + esc(x.name) + '"' + (x.shown ? ' checked' : '') + '> <span class="nm">' + esc(x.name) + '</span><span class="pillx">' + x.count + (x.count === 1 ? ' channel' : ' channels') + '</span>' + (x.adult ? '<span class="pillx">adult</span>' : '') + '</div></label>'; }).join('') +
+          '<div class="row" style="margin-top:10px"><button class="btn red" type="button" data-doimport>Show these in the app</button></div><p class="msg" data-pickmsg hidden></p>';
+      });
+      return;
+    }
+    if (t.hasAttribute('data-doimport')) {
+      var r2 = t.closest('[data-prov]'), picked = [].slice.call(r2.querySelectorAll('[data-gcheck]:checked')).map(function (x) { return x.value; }), pm = r2.querySelector('[data-pickmsg]');
+      if (!picked.length) { msg(pm, 'Tick at least one group.', 'err'); return; }
+      t.disabled = true; msg(pm, 'Adding channels...', '');
+      api('POST', '/channels/providers/' + r2.getAttribute('data-prov') + '/import', { groups: picked }).then(function (j) { if (j.__status === 200) load(); else { t.disabled = false; msg(pm, j.error || 'That did not work.', 'err'); } });
+      return;
+    }
+    if (t.hasAttribute('data-syncprov')) { t.disabled = true; api('POST', '/channels/providers/' + t.closest('[data-prov]').getAttribute('data-prov') + '/sync').then(function (j) { if (j.__status === 200) load(); else { t.disabled = false; msg($('pvmsg'), j.error || 'That did not work.', 'err'); } }); return; }
+    if (t.hasAttribute('data-stopprov')) { if (confirm('Stop showing this provider? Its categories and channels leave the apps. The provider stays added.')) api('DELETE', '/channels/providers/' + t.closest('[data-prov]').getAttribute('data-prov') + '/import').then(function (j) { if (j.__status === 200) load(); else msg($('pvmsg'), j.error || 'That did not work.', 'err'); }); return; }
     if (t.hasAttribute('data-delprov')) { var pr = t.closest('[data-prov]'); if (pr && confirm('Remove this provider? Backups that use it are removed too.')) { api('DELETE', '/channels/providers/' + pr.getAttribute('data-prov')).then(function (j) { if (j.__status === 200) load(); else msg($('pvmsg'), j.error || 'That did not work.', 'err'); }); } return; }
     if (cat) {
       var c = cu.cats.filter(function (x) { return x.id === cat.getAttribute('data-cat'); })[0];
