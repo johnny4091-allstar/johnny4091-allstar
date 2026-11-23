@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.45.0
+
+- Paused too long. A movie or TV show that has been paused for 2 hours (`"pausedKillMinutes": 120` in `config.json`, `0` switches it off) is stopped and the device is signed out, with a message saying why, which frees the connection for someone else. The timer starts when the Guard first sees the show paused and restarts if the viewer resumes, changes what they are watching, or the Guard restarts. Live TV is never touched, and neither are administrators. The sign-out shows in Admin -> Users like any other the Guard does (`paused for 2 hours`).
+
 ## 1.44.0
 
 - A fuller public status page. `GET /status/public` (no sign-in, nothing about any person) returns whether the Guard and the Aurora server answer, the Guard's version and how long it has been running, the server's response time, the last 24 hours and 90 days of checks, uptime percentages, recent outages, the Live TV and sports-score state, whether sign-ups are open, and the administrator's status message. The website's `/status/` page shows it. History builds up from the day the Guard is updated.
