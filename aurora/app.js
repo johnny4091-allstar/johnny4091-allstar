@@ -9926,7 +9926,8 @@
     if (!guardEnabled) return needGuard(body, 'Server health');
     // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
     const noteBox = document.createElement('div'), updBox = document.createElement('div'), sumBox = document.createElement('div'), main = document.createElement('div');
-    body.append(noteBox, updBox, sumBox, main);
+    const toolsHead = document.createElement('h3'); toolsHead.className = 'srv-tools-head'; toolsHead.textContent = 'Settings and tools';
+    body.append(main, toolsHead, noteBox, updBox, sumBox);
     guardUpdateCard(updBox, isCurrent);
     dailySummaryCard(sumBox, isCurrent);
     (async () => {
@@ -9943,43 +9944,86 @@
       $('[data-note-save]', noteBox).addEventListener('click', () => save($('[data-note]', noteBox).value.trim()));
       $('[data-note-clear]', noteBox).addEventListener('click', () => save(''));
     })();
+    let checkHtml = '<p class="muted">Press Run checks to test the Emby server, Aurora Guard, your TV provider, app updates and the last day of playback problems.</p>', checkBtn = 'Run checks', checking = false;
+    const ago = (t) => { const sec = Math.max(0, Math.round((Date.now() - t) / 1000)); return sec < 5 ? 'just now' : sec < 60 ? sec + ' seconds ago' : Math.round(sec / 60) + ' min ago'; };
+    let lastDrawn = null;
+    const pill = (lvl, kind) => `<span class="srv-pill ${lvl}">${lvl === 'ok' ? 'Healthy' : kind === 'disk' ? (lvl === 'warn' ? 'Getting full' : 'Almost full') : lvl === 'warn' ? 'Busy' : 'Needs attention'}</span>`;
     const draw = (s) => {
-      const hot = (v, at) => (v != null && v >= at ? 'bad' : '');
+      lastDrawn = s;
+      const cpuL = s.cpu == null ? 'ok' : s.cpu >= 90 ? 'bad' : s.cpu >= 75 ? 'warn' : 'ok';
+      const memL = s.mem.pct == null ? 'ok' : s.mem.pct >= 92 ? 'bad' : s.mem.pct >= 80 ? 'warn' : 'ok';
+      const embyL = s.emby.online ? 'ok' : 'bad';
+      const diskL = (d) => (d.error ? 'warn' : d.freePct < 10 ? 'bad' : d.freePct < 20 ? 'warn' : 'ok');
+      const problems = [];
+      if (!s.emby.online) problems.push('Emby cannot be reached, so nobody can watch. Check that Emby is running on the PC.');
+      if (cpuL !== 'ok') problems.push(cpuL === 'bad' ? 'The processor is almost maxed out. Streams may stutter. Fewer people converting video would help.' : 'The processor is working hard right now.');
+      if (memL !== 'ok') problems.push(memL === 'bad' ? 'The PC is nearly out of memory. Restart a heavy program or the PC at a quiet time.' : 'Memory use is high.');
+      for (const d of s.disks || []) { const l = diskL(d); if (l === 'bad') problems.push(`${d.path} is almost full (${d.freePct}% free). Free up space soon.`); else if (l === 'warn' && !d.error) problems.push(`${d.path} is getting full (${d.freePct}% free).`); }
+      const level = problems.length === 0 ? 'ok' : (!s.emby.online || cpuL === 'bad' || memL === 'bad' || (s.disks || []).some((d) => diskL(d) === 'bad')) ? 'bad' : 'warn';
+      const headline = level === 'ok' ? 'Everything is running smoothly' : level === 'warn' ? 'Running, with a few things to watch' : 'Something needs your attention';
+      const total = s.streams.playing + s.streams.live;
       const disks = (s.disks || []).map((d) => d.error ? `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong><div class="muted">${esc(d.error)}</div></div></div>`
-        : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> <span class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</span>
-          <div class="usage-bar${d.freePct < 10 ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
+        : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> ${pill(diskL(d), 'disk')}<div class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</div>
+          <div class="usage-bar${diskL(d) === 'bad' ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
+      const tile = (label, value, note, lvl) => statTile(label, value, `${note}`, lvl === 'ok' ? 'good' : lvl);
       main.innerHTML = `
+        <section class="admin-card srv-banner ${level}"><div class="srv-banner-icon" aria-hidden="true">${level === 'ok' ? '&#10003;' : '!'}</div>
+          <div class="srv-banner-text"><h2>${esc(headline)}</h2>
+            ${problems.length ? `<ul class="srv-problems">${problems.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="muted">Emby is online and the PC has plenty of room. Nothing to do.</p>'}
+            <p class="muted srv-stamp" data-stamp>Updated ${esc(ago(s.__at || Date.now()))} · refreshes by itself</p></div>
+          <button class="btn btn-gray" data-srv-refresh>Refresh</button></section>
         <div class="stat-grid">
-          ${statTile('Processor', s.cpu == null ? '…' : s.cpu + '%', `${s.cores} cores`, hot(s.cpu, 85))}
-          ${statTile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, hot(s.mem.pct, 90))}
-          ${statTile('Streams now', s.streams.playing + s.streams.live, `${s.streams.transcoding} converting · ${s.streams.direct} direct${s.streams.live ? ` · ${s.streams.live} live TV` : ''}`)}
-          ${statTile('Emby', s.emby.online ? 'Online' : 'Offline', s.emby.online ? 'Guard can reach it' : esc(s.emby.error || ''), s.emby.online ? 'good' : 'bad')}
+          ${tile('Emby', s.emby.online ? 'Online' : 'Offline', s.emby.online ? 'Aurora Guard can reach it' : esc(s.emby.error || 'Not answering'), embyL)}
+          ${tile('Processor', s.cpu == null ? '…' : s.cpu + '%', cpuL === 'ok' ? `Plenty of room · ${s.cores} cores` : cpuL === 'warn' ? 'Working hard' : 'Maxed out', cpuL)}
+          ${tile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, memL)}
+          ${tile('Watching now', total, total ? `${s.streams.playing} playing${s.streams.live ? ` · ${s.streams.live} live TV` : ''} · ${s.streams.transcoding} converting` : 'Nobody is watching', 'ok')}
         </div>
+        <section class="admin-card"><h2>Service checks</h2>
+          <div data-health>${checkHtml}</div>
+          <button class="btn btn-white" data-srv-check ${checking ? 'disabled' : ''}>${esc(checkBtn)}</button></section>
         <section class="admin-card"><h2>Last 24 hours</h2>
           <div class="spark-grid">
             <div><div class="spark-label">Processor</div>${sparkline(s.history, 'cpu')}</div>
             <div><div class="spark-label">Memory</div>${sparkline(s.history, 'mem')}</div>
-            <div><div class="spark-label">Streams playing</div>${sparkline(s.history, 'playing', Math.max(4, ...s.history.map((p) => p.playing || 0)))}</div>
-            <div><div class="spark-label">Converting (transcode)</div>${sparkline(s.history, 'transcoding', Math.max(4, ...s.history.map((p) => p.transcoding || 0)))}</div>
+            <div><div class="spark-label">People watching</div>${sparkline(s.history, 'playing', Math.max(4, ...s.history.map((x) => x.playing || 0)))}</div>
+            <div><div class="spark-label">Converting video</div>${sparkline(s.history, 'transcoding', Math.max(4, ...s.history.map((x) => x.transcoding || 0)))}</div>
           </div>
-          <p class="muted">One point a minute, kept while the guard is running (a restart starts the chart again).</p>
+          <p class="muted">One point a minute while Aurora Guard is running. A restart starts the charts again.</p>
         </section>
-        <section class="admin-card"><h2>Disk space</h2><div class="admin-list">${disks || '<p class="muted">No drives to show.</p>'}</div>
-          <p class="muted">To watch your media drives too, list them in the guard's config.json, for example <code>"diskPaths": ["D:\\\\", "E:\\\\"]</code>. An alert is sent when one drops under 10% free.</p></section>
-        <section class="admin-card"><h2>The PC</h2>
-          <div class="admin-row"><div class="admin-row-main">${esc(s.hostname)} · ${esc(s.platform)}</div></div>
-          <div class="admin-row"><div class="admin-row-main">PC on for ${esc(fmtUptime(s.pcUptime))} · Aurora Guard ${esc(s.version)} running for ${esc(fmtUptime(s.guardUptime))}</div></div>
-        </section>`;
+        <section class="admin-card"><h2>Storage</h2><div class="admin-list">${disks || '<p class="muted">No drives to show.</p>'}</div>
+          <p class="muted">An alert is sent when a drive drops under 10% free. To watch your media drives too, list them in the Guard's config.json, for example <code>"diskPaths": ["D:\\\\", "E:\\\\"]</code>.</p></section>
+        <section class="admin-card"><h2>About this server</h2>
+          <div class="srv-facts">
+            <div><span>Computer</span><strong>${esc(s.hostname)}</strong></div>
+            <div><span>System</span><strong>${esc(s.platform)}</strong></div>
+            <div><span>PC on for</span><strong>${esc(fmtUptime(s.pcUptime))}</strong></div>
+            <div><span>Aurora Guard</span><strong>${esc(s.version)} · up ${esc(fmtUptime(s.guardUptime))}</strong></div>
+          </div></section>`;
     };
+    // Admin tools (kept apart: they must not redraw every 15 s). Clicks on the health area are handled here once.
+    main.addEventListener('click', async (e) => {
+      const t = e.target.closest('button'); if (!t) return;
+      if (t.matches('[data-srv-refresh]')) { t.disabled = true; try { const f = await guard('/server'); f.__at = Date.now(); if (isCurrent()) draw(f); } catch (err) { toast("Couldn't refresh: " + err.message); } return; }
+      if (t.matches('[data-srv-check]')) {
+        if (checking) return; checking = true; checkBtn = 'Checking…'; t.disabled = true; t.textContent = checkBtn;
+        try {
+          const users = await api('/Users').catch(() => []);
+          const r = await runHealthCheck($('[data-health]', main), Array.isArray(users) ? users : []);
+          checkHtml = $('[data-health]', main).innerHTML;
+          checkBtn = r.bads ? `${r.bads} ${r.bads === 1 ? 'problem' : 'problems'} · check again` : r.warns ? `${r.warns} to look at · check again` : 'All good · check again';
+        } catch (err) { checkBtn = 'Run checks'; toast("Couldn't finish the checks: " + err.message); }
+        checking = false; if (lastDrawn) draw(lastDrawn);
+      }
+    });
     let s;
     try { s = await guard('/server'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Server health</h2><p class="live-result bad">${guardOldNote(e, 'server health')}</p></section>`; return; }
     if (!isCurrent()) return;
-    draw(s);
+    s.__at = Date.now(); draw(s);
     // Refresh every 15 s while the page is open.
     const timer = routeInterval(async () => {
       if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
       if (document.hidden) return;
-      try { const fresh = await guard('/server'); if (isCurrent()) draw(fresh); } catch { /* keep the last numbers */ }
+      try { const fresh = await guard('/server'); fresh.__at = Date.now(); if (isCurrent() && !checking) draw(fresh); } catch { const st = $('[data-stamp]', main); if (st && lastDrawn) st.textContent = 'Could not reach Aurora Guard just now. Showing the last reading from ' + ago(lastDrawn.__at || Date.now()) + '.'; }
     }, 15000);
   }
 
