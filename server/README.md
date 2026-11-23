@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.46.0
+
+- More than one provider for Live TV. Providers added under Admin -> Channels -> Other providers can now show their channels in the apps, not just serve as backups. `GET /channels/providers/:id/groups` lists a provider's groups (with counts); `POST /channels/providers/:id/import` (`{ groups: [...] }`) turns each chosen group into a category named "Provider · Group" whose channels play from that provider; `POST .../sync` refreshes what was imported (new channels added, changed addresses fixed, dropped channels removed; also done every 6 hours); `DELETE .../import` stops showing them. Adult-looking groups come in as adult categories (behind the adult switch and PIN). Aurora keeps up to 80 categories and 4000 channels in all. Removing a provider removes what it showed.
+
 ## 1.45.0
 
 - Paused too long. A movie or TV show that has been paused for 2 hours (`"pausedKillMinutes": 120` in `config.json`, `0` switches it off) is stopped and the device is signed out, with a message saying why, which frees the connection for someone else. The timer starts when the Guard first sees the show paused and restarts if the viewer resumes, changes what they are watching, or the Guard restarts. Live TV is never touched, and neither are administrators. The sign-out shows in Admin -> Users like any other the Guard does (`paused for 2 hours`).

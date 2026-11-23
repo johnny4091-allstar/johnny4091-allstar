@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.45.0';
+const VERSION = '1.46.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1057,6 +1057,7 @@ function chanItemFrom(b, old) {
   const pick = (k, f) => (b[k] !== undefined ? f(b[k]) : o[k] || '');
   const item = { id: o.id, cat: o.cat, name: pick('name', (v) => chanText(v, 80)), url: pick('url', chanUrl), logo: pick('logo', (v) => { const t = chanUrl(v); return t; }), num: pick('num', chanNum), epgId: pick('epgId', (v) => chanText(v, 80)), on: b.on !== undefined ? b.on !== false : o.on !== false };
   if (Array.isArray(o.backups) && o.backups.length) item.backups = o.backups; // editing a channel keeps its backups
+  if (o.from) item.from = o.from; // and, for a channel shown from another provider, which provider it came from
   return item;
 }
 const chanBump = () => { const c = chanStore(); c.v = (c.v || 1) + 1; };
@@ -1068,8 +1069,8 @@ const backupsOf = (x) => (Array.isArray(x && x.backups) ? x.backups : []);
 const backupView = (b, all) => (all ? (b.src ? { label: b.label || '', src: b.src } : { label: b.label || '', url: b.url }) : { label: b.label || '', url: b.url });
 function chanPublic(all) {
   const c = chanStore();
-  const cats = c.cats.map((x) => ({ id: x.id, name: x.name, adult: !!x.adult }));
-  const items = (all ? c.items : c.items.filter((i) => i.on !== false)).map((i) => ({ id: i.id, cat: i.cat, name: i.name, url: i.url, logo: i.logo, num: i.num, epgId: i.epgId, on: i.on !== false, backups: backupsOf(i).map((b) => backupView(b, all)) }));
+  const cats = c.cats.map((x) => ({ id: x.id, name: x.name, adult: !!x.adult, ...(all && x.from ? { from: x.from.src } : {}) }));
+  const items = (all ? c.items : c.items.filter((i) => i.on !== false)).map((i) => ({ id: i.id, cat: i.cat, ...(all && i.from ? { from: i.from.src } : {}), name: i.name, url: i.url, logo: i.logo, num: i.num, epgId: i.epgId, on: i.on !== false, backups: backupsOf(i).map((b) => backupView(b, all)) }));
   const edits = {};
   for (const [k, e] of Object.entries(c.edits || {})) edits[k] = Array.isArray(e.backups) ? { ...e, backups: e.backups.map((b) => backupView(b, all)) } : e;
   return { v: c.v || 1, cats, items, edits };
@@ -1164,6 +1165,53 @@ async function sabCall(params, opts = {}) {
   if (j && j.error) throw new Error(/api key/i.test(String(j.error)) ? 'SABnzbd refused the API key. Check sabnzbdApiKey in config.json.' : 'SABnzbd said: ' + String(j.error).slice(0, 120));
   return j || {};
 }
+// Show another provider's channels in the apps (guard 1.46.0). The administrator picks groups (categories) of an added provider; each becomes an Aurora
+// category named "<Provider> · <Group>" whose channels play from that provider. Updating re-reads the provider: new channels are added, changed
+// addresses and names are fixed, and channels the provider dropped are removed. Everything imported is tagged with { from: { src, group | ref } }.
+async function importFromProvider(prov, groupNames) {
+  const c = chanStore(), list = await providerChannels(prov.id), byGroup = new Map();
+  for (const ch of list) { const g = ch.group || 'Channels'; if (!byGroup.has(g)) byGroup.set(g, []); byGroup.get(g).push(ch); }
+  const out = { categories: 0, added: 0, updated: 0, removed: 0, skipped: 0, missing: [] };
+  for (const g of groupNames) {
+    const chans = byGroup.get(g);
+    if (!chans) { out.missing.push(g); continue; }
+    let cat = c.cats.find((x) => x.from && x.from.src === prov.id && x.from.group === g);
+    if (!cat) {
+      if (c.cats.length >= CHAN_LIMITS.cats) { out.skipped += chans.length; continue; }
+      let name = chanText(`${prov.name} \u00b7 ${g}`, 60), n = 2;
+      while (c.cats.some((x) => x.name.toLowerCase() === name.toLowerCase())) name = chanText(`${prov.name} \u00b7 ${g}`, 56) + ' ' + n++;
+      cat = { id: crypto.randomBytes(5).toString('hex'), name, adult: ADULT_CAT_NAME.test(g), from: { src: prov.id, group: g } };
+      c.cats.push(cat); out.categories++;
+    }
+    const mine = new Map(c.items.filter((i) => i.cat === cat.id && i.from && i.from.src === prov.id).map((i) => [i.from.ref, i])), seen = new Set();
+    for (const ch of chans) {
+      const url = chanUrl(ch.url), name = chanText(ch.name, 80);
+      if (!url || !name) { out.skipped++; continue; }
+      seen.add(ch.key);
+      const ex = mine.get(ch.key), logo = chanUrl(ch.logo), num = chanNum(ch.num);
+      if (ex) { if (ex.url !== url || ex.name !== name || (ex.logo || '') !== logo || (ex.num || '') !== num) { ex.url = url; ex.name = name; ex.logo = logo; ex.num = num; out.updated++; } continue; }
+      if (c.items.length >= CHAN_LIMITS.items) { out.skipped++; continue; }
+      c.items.push({ id: crypto.randomBytes(5).toString('hex'), cat: cat.id, name, url, logo, num, epgId: '', on: true, from: { src: prov.id, ref: ch.key } }); out.added++;
+    }
+    for (const [ref, it] of mine) if (!seen.has(ref)) { c.items.splice(c.items.indexOf(it), 1); out.removed++; }
+  }
+  return out;
+}
+const importedOf = (id) => { const c = chanStore(); return { categories: c.cats.filter((x) => x.from && x.from.src === id).length, channels: c.items.filter((i) => i.from && i.from.src === id).length }; };
+function dropImported(id) {
+  const c = chanStore(), ids = new Set(c.cats.filter((x) => x.from && x.from.src === id).map((x) => x.id));
+  c.cats = c.cats.filter((x) => !ids.has(x.id)); c.items = c.items.filter((i) => !(i.from && i.from.src === id) && !ids.has(i.cat));
+}
+// Once every 6 hours the Guard refreshes whatever was imported, so a provider's changes reach the apps by themselves.
+async function syncAllImports() {
+  const c = chanStore(); let any = false;
+  for (const prov of backupProviders()) {
+    const groups = c.cats.filter((x) => x.from && x.from.src === prov.id).map((x) => x.from.group);
+    if (!groups.length) continue;
+    try { const r = await importFromProvider(prov, groups); if (r.added || r.updated || r.removed || r.categories) { any = true; log('Provider', prov.name, 'refreshed:', `${r.added} added, ${r.updated} changed, ${r.removed} removed`); } } catch (e) { log('Could not refresh', prov.name, '-', e.message); }
+  }
+  if (any) { chanBump(); saveStore(); }
+}
 const backupProviders = () => { const c = chanStore(); if (!Array.isArray(c.providers)) c.providers = []; return c.providers; };
 async function providerChannels(src = 'main') {
   let cfgOf, label;
@@ -1202,7 +1250,7 @@ async function chanRoutes(req, url, res, auditBy) {
   }
   // Other providers (administrators only: they hold a login). Never returned with their password.
   if (p === '/channels/providers' && m === 'GET') {
-    send(res, 200, { providers: backupProviders().map((x) => ({ id: x.id, name: x.name, type: x.type, host: (() => { try { return new URL(provWithScheme(x.type === 'm3u' ? x.m3uUrl : x.server)).host; } catch { return ''; } })(), username: x.username || '' })) });
+    send(res, 200, { providers: backupProviders().map((x) => ({ id: x.id, name: x.name, type: x.type, shown: importedOf(x.id), host: (() => { try { return new URL(provWithScheme(x.type === 'm3u' ? x.m3uUrl : x.server)).host; } catch { return ''; } })(), username: x.username || '' })) });
     return true;
   }
   if (p === '/channels/providers' && m === 'POST') {
@@ -1219,9 +1267,46 @@ async function chanRoutes(req, url, res, auditBy) {
     backupProviders().push(rec); providerCache.set(rec.id, { key: JSON.stringify([rec.type, rec.server, rec.username, rec.password, rec.m3uUrl, rec.v]), at: Date.now(), list });
     saveStore(); send(res, 200, { ok: true, id: rec.id, channels: list.length }); return true;
   }
+  // Show an added provider's channels in the apps (guard 1.46.0)
+  let ip2;
+  if ((ip2 = p.match(/^\/channels\/providers\/([0-9a-f]{10})\/(groups|import|sync)$/))) {
+    const prov = backupProviders().find((x) => x.id === ip2[1]);
+    if (!prov) { send(res, 404, { error: 'That provider is not set up.' }); return true; }
+    if (ip2[2] === 'groups' && m === 'GET') {
+      let list;
+      try { list = await providerChannels(prov.id); } catch (e) { send(res, 502, { error: e.message }); return true; }
+      const by = new Map(); for (const ch of list) { const g = ch.group || 'Channels'; by.set(g, (by.get(g) || 0) + 1); }
+      const on = new Set(c.cats.filter((x) => x.from && x.from.src === prov.id).map((x) => x.from.group));
+      send(res, 200, { total: list.length, groups: [...by.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([name, count]) => ({ name, count, shown: on.has(name), adult: ADULT_CAT_NAME.test(name) })), limits: { categories: CHAN_LIMITS.cats, channels: CHAN_LIMITS.items }, now: importedOf(prov.id) });
+      return true;
+    }
+    if (ip2[2] === 'import' && m === 'POST') {
+      const b = await readJson(); if (!b) return true;
+      const groups = [...new Set((Array.isArray(b.groups) ? b.groups : []).map((x) => String(x).slice(0, 160)))].slice(0, 200);
+      if (!groups.length) { send(res, 400, { error: 'Choose at least one group.' }); return true; }
+      let r;
+      try { r = await importFromProvider(prov, groups); } catch (e) { send(res, 502, { error: e.message }); return true; }
+      if (!r.categories && !r.added && !r.updated && !r.removed && r.skipped) { send(res, 400, { error: 'Aurora cannot keep any more channels or categories. Remove some first.' }); return true; }
+      recordAudit(auditBy, `Showed ${prov.name} channels in the apps (${r.added} added, ${r.categories} new categories)`);
+      return done({ result: r, now: importedOf(prov.id) });
+    }
+    if (ip2[2] === 'sync' && m === 'POST') {
+      const groups = c.cats.filter((x) => x.from && x.from.src === prov.id).map((x) => x.from.group);
+      if (!groups.length) { send(res, 400, { error: 'None of this provider\'s channels are shown in the apps yet.' }); return true; }
+      let r;
+      try { r = await importFromProvider(prov, groups); } catch (e) { send(res, 502, { error: e.message }); return true; }
+      return done({ result: r, now: importedOf(prov.id) });
+    }
+    if (ip2[2] === 'import' && m === 'DELETE') {
+      const was = importedOf(prov.id); dropImported(prov.id);
+      recordAudit(auditBy, `Stopped showing ${prov.name} channels in the apps (${was.channels} channels)`);
+      return done({ now: importedOf(prov.id) });
+    }
+  }
   let pr;
   if ((pr = p.match(/^\/channels\/providers\/([0-9a-f]{10})$/)) && m === 'DELETE') {
     const id = pr[1];
+    dropImported(id);
     c.providers = backupProviders().filter((x) => x.id !== id); providerCache.delete(id);
     const drop = (x) => { if (Array.isArray(x.backups)) { x.backups = x.backups.filter((bk) => bk.src !== id); if (!x.backups.length) delete x.backups; } };
     c.items.forEach(drop);
@@ -4493,6 +4578,7 @@ function start() {
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
   if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
+  setTimeout(() => syncAllImports().catch(() => {}), 120000); setInterval(() => syncAllImports().catch(() => {}), 6 * 3600000).unref();
   setTimeout(() => maybeSendSummary().catch(() => {}), 20000); setInterval(() => maybeSendSummary().catch(() => {}), 60000);
   setTimeout(() => syncRequestsUsers().catch(() => {}), 25000); setInterval(() => syncRequestsUsers().catch(() => {}), 2 * 60000).unref();
   setTimeout(() => endingTick().catch(() => {}), 40000); setInterval(() => endingTick().catch(() => {}), 30 * 60000).unref();
