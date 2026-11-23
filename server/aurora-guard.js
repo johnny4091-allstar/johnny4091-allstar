@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.44.0';
+const VERSION = '1.45.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -82,6 +82,9 @@ function loadConfig() {
     exitOnCertError: false,
     intervalSeconds: 60,
     activeWindowMinutes: 5,
+    // Paused too long (guard 1.45.0): a movie or TV show left paused this many minutes is stopped and the device is signed out, which frees
+    // the connection for someone else. 120 = 2 hours. 0 switches it off. Live TV and administrators are never touched.
+    pausedKillMinutes: 120,
     // Set to true (and restart the guard) to remove a forgotten Reseller PIN. Then set it back to false.
     resetResellerPin: false,
     // Admin -> Sharing: flag an account seen on this many different networks in a week, or watching from two networks at once.
@@ -1501,6 +1504,7 @@ const windowMs = () => cfg.activeWindowMinutes * 60000;
 let lastRun = { at: 0, ok: false, error: '', actions: 0, ms: 0 };
 // Could the last every-minute check reach Emby with the configured key? (The public /status page shows this.)
 let embyReach = { at: 0, ok: false, error: '' };
+const pausedSince = new Map(); // session id + item id -> when the guard first saw it paused (guard 1.45.0)
 
 function activeByUser(sessions) {
   const now = Date.now(), byUser = new Map();
@@ -1638,6 +1642,35 @@ async function enforce(onlyUserId) {
         actions++;
       } catch (e) { log('Could not sign out', d.name, 'from', user.Name, '-', e.message); }
     }
+  }
+  // Paused too long (guard 1.45.0): free the connection of a movie or TV show that has been paused for a long time.
+  if (!onlyUserId) {
+    const limitMin = Number(cfg.pausedKillMinutes) || 0, seenPaused = new Set();
+    if (limitMin > 0) {
+      const byId = new Map((Array.isArray(users) ? users : []).map((u) => [u.Id, u]));
+      for (const sess of Array.isArray(sessions) ? sessions : []) {
+        const item = sess.NowPlayingItem;
+        if (!sess.Id || !sess.UserId || !sess.DeviceId || sess.DeviceId === 'aurora-guard' || !item || !sess.PlayState || !sess.PlayState.IsPaused) continue;
+        if (!['Movie', 'Episode', 'Video'].includes(item.Type)) continue; // live TV and anything else is left alone
+        const key = sess.Id + '|' + item.Id; seenPaused.add(key);
+        if (!pausedSince.has(key)) pausedSince.set(key, Date.now());
+        if (Date.now() - pausedSince.get(key) < limitMin * 60000) continue;
+        const user = byId.get(sess.UserId);
+        if (!user || user.Policy?.IsAdministrator || user.Policy?.IsDisabled) continue;
+        const dev = (active.get(user.Id) || new Map()).get(sess.DeviceId) || { deviceId: sess.DeviceId, name: sess.DeviceName || 'Device', client: sess.Client || '', sessions: [sess.Id] };
+        const span = limitMin >= 60 ? `${Math.round(limitMin / 6) / 10} ${limitMin === 60 ? 'hour' : 'hours'}` : `${limitMin} minutes`;
+        try {
+          await signOutDevice(user, dev, `Playback was paused for ${span}, so this device was signed out to free your connection. Sign in again to keep watching.`);
+          if (!cfg.dryRun) {
+            pausedSince.delete(key); seenPaused.delete(key);
+            recordAction({ type: 'signedOut', userId: user.Id, name: user.Name, device: dev.name, client: dev.client, why: `paused for ${span}` });
+            changed = true;
+          }
+          actions++;
+        } catch (e) { log('Could not sign out the paused device', dev.name, 'from', user.Name, '-', e.message); }
+      }
+    }
+    for (const k of [...pausedSince.keys()]) if (!seenPaused.has(k)) pausedSince.delete(k); // resumed, stopped or gone
   }
   // Forget devices not seen for a week.
   const cutoff = Date.now() - 7 * 86400000;
