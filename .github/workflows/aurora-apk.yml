@@ -5,6 +5,7 @@ on:
     paths:
       - 'aurora/**'
       - 'android/**'
+      - 'server/**'
       - '.github/workflows/aurora-apk.yml'
   workflow_dispatch:
 
