@@ -9927,7 +9927,7 @@
     // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
     const noteBox = document.createElement('div'), updBox = document.createElement('div'), sumBox = document.createElement('div'), main = document.createElement('div');
     const toolsHead = document.createElement('h3'); toolsHead.className = 'srv-tools-head'; toolsHead.textContent = 'Settings and tools';
-    body.append(main, toolsHead, noteBox, updBox, sumBox);
+    body.replaceChildren(main, toolsHead, noteBox, updBox, sumBox); // replaceChildren also clears the page's loading spinner
     guardUpdateCard(updBox, isCurrent);
     dailySummaryCard(sumBox, isCurrent);
     (async () => {
