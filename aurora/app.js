@@ -9365,7 +9365,7 @@
     function paintProvs() {
       const box = $('[data-provs]', body); if (!box) return;
       $('[data-pcount]', body).textContent = provs.length;
-      box.innerHTML = provs.map((p) => `<div class="admin-row" data-pvrow="${esc(p.id)}"><div class="admin-row-main"><strong>${esc(p.name)}</strong> <span class="pill">${p.type === 'm3u' ? 'M3U' : 'Xtream'}</span><div class="muted">${esc(p.host)}${p.username ? ' · ' + esc(p.username) : ''}</div></div><div class="plan-actions"><button class="btn btn-gray" data-del-prov>Remove</button></div></div>`).join('') || '<p class="muted">No other providers yet.</p>';
+      box.innerHTML = provs.map((p) => `<div class="admin-row" data-pvrow="${esc(p.id)}"><div class="admin-row-main"><strong>${esc(p.name)}</strong> <span class="pill">${p.type === 'm3u' ? 'M3U' : 'Xtream'}</span><div class="muted">${esc(p.host)}${p.username ? ' · ' + esc(p.username) : ''}</div></div><div class="plan-actions"><button class="btn btn-white" data-show-prov>${p.shown && p.shown.channels ? 'Choose groups' : 'Show in the app'}</button>${p.shown && p.shown.channels ? '<button class="btn btn-gray" data-sync-prov>Update now</button><button class="btn btn-gray" data-stop-prov>Stop showing</button>' : ''}<button class="btn btn-gray" data-del-prov>Remove</button></div>${p.shown && p.shown.channels ? `<div class="muted">Showing ${p.shown.channels} channels in ${p.shown.categories} categories in the apps.</div>` : ''}<div class="chan-edit hidden" data-pvpick></div></div>`).join('') || '<p class="muted">No other providers yet.</p>';
     }
     const bkTarget = (row) => (row.dataset.item ? { item: row.dataset.item } : { key: row.dataset.pkey });
     const bkList = (t) => (t.item ? (cu.items.find((x) => x.id === t.item) || {}).backups : (cu.edits['k' + t.key] || {}).backups) || [];
@@ -9417,7 +9417,7 @@
         <p class="muted">Like a channel manager: add channels of your own, import a playlist, and fix the provider's channels (rename, new picture, number, guide, another stream, or hide). Changes reach the apps within a few minutes. Adult categories stay behind the adult switch and PIN, and never show in the iPhone or Apple TV apps.</p>
         <div class="live-result" data-chan-result></div></section>
       ${isAdmin() ? `<section class="admin-card"><h2>Other providers <small data-pcount>0</small></h2>
-        <p class="muted">Add your other TV providers. Any channel can then use a channel from one of them as a backup: if the main one stops working, the app switches to the backup by itself. Only administrators see this (it holds the provider's login).</p>
+        <p class="muted">Add your other TV providers, then press Show in the app to put their channels in every customer's app next to your main provider's. Any channel can then use a channel from one of them as a backup: if the main one stops working, the app switches to the backup by itself. Only administrators see this (it holds the provider's login).</p>
         <div class="admin-list" data-provs></div>
         <div class="plan-grid">${field('pvname', 'Name', '', 'e.g. Provider B')}
           <label class="admin-field"><span>Kind</span><select data-k="pvtype"><option value="xtream">Xtream login</option><option value="m3u">M3U playlist link</option></select></label>
@@ -9467,6 +9467,7 @@
       if (ev.target.matches('[data-q]')) { q = ev.target.value.trim().toLowerCase(); paintLists(); const el = $('[data-q]', body); el.focus(); el.setSelectionRange(q.length, q.length); }
       if (ev.target.matches('[data-prov-q]')) { pq = ev.target.value.trim().toLowerCase(); paintProv(); const el = $('[data-prov-q]', body); el.focus(); el.setSelectionRange(pq.length, pq.length); }
     });
+    body.addEventListener('input', (ev) => { if (ev.target.matches('[data-pvq]')) { const q = ev.target.value.trim().toLowerCase(); for (const r of $$('[data-gname]', ev.target.closest('[data-pvpick]'))) r.classList.toggle('hidden', !!q && !r.dataset.gname.includes(q)); } });
     body.addEventListener('change', (ev) => { if (ev.target.matches('[data-filter-cat]')) { filterCat = ev.target.value; paintLists(); } });
     let bkTimer = null;
     body.addEventListener('input', (ev) => { if (ev.target.matches('[data-k="bkq"]')) { const row = ev.target.closest('[data-item],[data-pkey]'); clearTimeout(bkTimer); bkTimer = setTimeout(() => bkSearch(row), 350); } });
@@ -9478,6 +9479,36 @@
         say('[data-pv-result]', '<div class="spinner"></div> Checking the provider…');
         const r = await call('/channels/providers', 'POST', { name: get('pvname'), type: get('pvtype'), server: get('pvserver'), username: get('pvuser'), password: get('pvpass'), m3uUrl: get('pvm3u') }, '[data-pv-result]');
         if (r) { for (const k of ['pvname', 'pvserver', 'pvuser', 'pvpass', 'pvm3u']) $(`[data-k="${k}"]`, body).value = ''; say('[data-pv-result]', `Added. It has ${r.channels} channels.`, 'good'); }
+        return;
+      }
+      if (t.matches('[data-show-prov]')) {
+        const pr = t.closest('[data-pvrow]'), box = $('[data-pvpick]', pr), id = pr.dataset.pvrow;
+        if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+        box.classList.remove('hidden'); box.innerHTML = '<div class="spinner"></div> Reading the provider…';
+        let g; try { g = await guard(`/channels/providers/${id}/groups`); } catch (e) { box.innerHTML = `<div class="live-result bad">${esc(e.message)}</div>`; return; }
+        box.innerHTML = `<p class="muted">Tick the groups to show in the apps. Each becomes a category named after the provider. ${g.total} channels in all.</p>
+          <input class="st-note-input" data-pvq placeholder="Search groups" aria-label="Search groups">
+          <div class="admin-list" data-pvgroups>${g.groups.map((x) => `<label class="admin-row" data-gname="${esc(x.name.toLowerCase())}"><input type="checkbox" data-pvg value="${esc(x.name)}"${x.shown ? ' checked' : ''}> <span class="admin-row-main"><strong>${esc(x.name)}</strong> <span class="pill">${x.count} ${x.count === 1 ? "channel" : "channels"}</span>${x.adult ? ' <span class="pill warn">adult</span>' : ''}</span></label>`).join('')}</div>
+          <div class="m-actions"><button class="btn btn-white" data-pv-import>Show these in the app</button></div><div class="live-result" data-pv-pickresult></div>`;
+        return;
+      }
+      if (t.matches('[data-pv-import]')) {
+        const pr = t.closest('[data-pvrow]'), picked = $$('[data-pvg]:checked', pr).map((x) => x.value);
+        if (!picked.length) { say('[data-pv-pickresult]', 'Tick at least one group.', 'bad'); return; }
+        const sel = '[data-pv-pickresult]'; say(sel, '<div class="spinner"></div> Adding channels…');
+        const r = await call(`/channels/providers/${pr.dataset.pvrow}/import`, 'POST', { groups: picked }, sel);
+        if (r) { toast(`${r.result.added} channels added`); try { provs = (await guard('/channels/providers')).providers || []; } catch { /* */ } paintProvs(); paintLists(); }
+        return;
+      }
+      if (t.matches('[data-sync-prov]')) {
+        const pr = t.closest('[data-pvrow]'); t.disabled = true;
+        const r = await call(`/channels/providers/${pr.dataset.pvrow}/sync`, 'POST', null, '[data-pv-result]');
+        if (r) { toast(`${r.result.added} added, ${r.result.updated} changed, ${r.result.removed} taken out`); try { provs = (await guard('/channels/providers')).providers || []; } catch { /* */ } }
+        paintProvs(); paintLists(); return;
+      }
+      if (t.matches('[data-stop-prov]')) {
+        const pr = t.closest('[data-pvrow]');
+        if (await confirmAction('Stop showing this provider?', 'Its categories and channels leave the apps. The provider stays added, so you can show them again.', 'Stop showing') && await call(`/channels/providers/${pr.dataset.pvrow}/import`, 'DELETE', null, '[data-pv-result]')) { try { provs = (await guard('/channels/providers')).providers || []; } catch { /* */ } paintProvs(); paintLists(); }
         return;
       }
       if (t.matches('[data-del-prov]')) {
