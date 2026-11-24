@@ -6269,6 +6269,7 @@
         <dt>Alerts</dt><dd>${c.fromGuard ? (c.limit ? `Aurora Guard alerts at ${c.alertAt ? c.alertAt + ' and ' : ''}${c.limit} (full)` : 'Set the limit below to get alerts') : c.guardOld ? '<span class="pill warn">Update Aurora Guard to 1.3.0</span> for alerts and today\'s peak' : 'Aurora Guard is off: no alerts'}</dd>
       </dl>
       ${c.streams.length ? `<details class="conn-list"><summary>Who is using them</summary><div class="admin-list">${c.streams.map((s) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(s.user || '')}</strong> · ${esc(s.channel || '')}<div class="muted">${esc(s.device || '')} · ${s.source === 'emby' ? 'Emby Live TV' : 'Aurora live player'}</div></div></div>`).join('')}</div></details>` : ''}
+      ${acct && !acct.error && acct.max && c.limit && c.limit !== acct.max ? `<div class="live-result warn" role="status" data-conn-diff>Your provider says this account now allows <strong>${acct.max}</strong> connections, but Aurora is set to <strong>${c.limit}</strong>. <button class="btn btn-white" data-conn-sync data-max="${acct.max}">Use ${acct.max}${c.alertAt ? ` and warn at ${Math.max(1, Math.round(c.alertAt * acct.max / c.limit))}` : ''}</button></div>` : ''}
       <div class="conn-form">
         <label class="admin-field"><span>Connections on the account</span><input type="number" min="0" max="1000" inputmode="numeric" data-conn-limit value="${c.limit || acct?.max || ''}" placeholder="60"></label>
         <label class="admin-field"><span>Warn me at</span><input type="number" min="0" max="1000" inputmode="numeric" data-conn-alert value="${c.alertAt || ''}" placeholder="50"></label>
@@ -6285,6 +6286,13 @@
     el.innerHTML = html;
     el.__html = html;
     if (open) $('details', el)?.setAttribute('open', '');
+    $('[data-conn-sync]', el)?.addEventListener('click', (ev) => {
+      const max = Number(ev.currentTarget.dataset.max) || 0;
+      const oldLimit = Number($('[data-conn-limit]', el).value) || 0, oldAlert = Number($('[data-conn-alert]', el).value) || 0;
+      $('[data-conn-limit]', el).value = String(max);
+      $('[data-conn-alert]', el).value = oldAlert && oldLimit ? String(Math.max(1, Math.round(oldAlert * max / oldLimit))) : '';
+      $('[data-conn-save]', el).click();
+    });
     $('[data-conn-save]', el).addEventListener('click', async () => {
       const limit = Math.max(0, Math.round(Number($('[data-conn-limit]', el).value) || 0));
       const alertAt = Math.max(0, Math.round(Number($('[data-conn-alert]', el).value) || 0));
