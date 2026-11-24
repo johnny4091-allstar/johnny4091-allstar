@@ -2109,3 +2109,8 @@ html.tv .tm-preview { width: 320px; }
 .srv-facts span { display: block; font-size: .8rem; opacity: .65; margin-bottom: .15rem; }
 .srv-tools-head { margin: 2rem 0 .6rem; font-size: 1.05rem; opacity: .8; }
 @media (max-width: 640px) { .srv-banner { flex-direction: column; align-items: flex-start; } }
+
+/* Reseller rules and warnings (guard 1.49.0) */
+.res-rules { border-color: #8a6a1f; background: linear-gradient(180deg, rgba(255,212,121,.1), transparent 70%); }
+.res-warn { border-color: #8a3b48; background: linear-gradient(180deg, rgba(255,141,155,.1), transparent 70%); }
+.res-warn h2 { color: #ffb4bf; } .res-warn ul { margin: .4rem 0 0; padding-left: 1.1rem; line-height: 1.5; }

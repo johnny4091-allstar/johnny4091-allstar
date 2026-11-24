@@ -7459,9 +7459,9 @@
     queueMicrotask(pinHandlers);
     const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
     const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
-        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>
+        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>${r.warnings ? ` <span class="pill bad">${r.warnings} ${r.warnings === 1 ? 'warning' : 'warnings'}</span>` : ''}${r.rulesOk === false ? ' <span class="pill warn">Rules not agreed</span>' : ''}
         <div class="muted">${esc(r.userName)}${r.contact ? ' · ' + esc(r.contact) : ''}${r.parentName ? ' · sub-reseller of ' + esc(r.parentName) : ''} · ${r.customers} ${r.customers === 1 ? 'customer' : 'customers'}${r.subs ? ` · ${r.subs} sub-${r.subs === 1 ? 'reseller' : 'resellers'}` : ''}${r.status === 'active' && r.low ? ' · low on credits' : ''}</div></div>
-        <div class="plan-actions"><button class="btn btn-gray" data-cr>Credits</button><button class="btn btn-gray" data-ed>Edit</button><button class="btn btn-gray" data-pw>New password</button><button class="btn btn-gray" data-su>${r.status === 'active' ? 'Suspend' : 'Restore'}</button></div></div>`;
+        <div class="plan-actions"><button class="btn btn-gray" data-cr>Credits</button><button class="btn btn-gray" data-ed>Edit</button><button class="btn btn-gray" data-pw>New password</button><button class="btn btn-gray" data-wn>Warnings</button><button class="btn btn-gray" data-su>${r.status === 'active' ? 'Suspend' : 'Restore'}</button></div></div>`;
     const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
         <div class="muted">${esc(e.by)} · balance ${e.balance}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
     const viaResellers = d.resellers.reduce((n, r) => n + r.customers, 0);
@@ -7554,11 +7554,36 @@
       });
       form.scrollIntoView({ block: 'center' });
     };
+    const openWarnings = async (r) => {
+      form.classList.remove('hidden'); form.innerHTML = '<div class="spinner"></div>';
+      let w;
+      try { w = await guard(`/resellers/${encodeURIComponent(r.id)}/warnings`); } catch (e) { form.innerHTML = `<div class="live-result bad">${esc(e.status === 404 ? 'Update Aurora Guard to 1.49.0 to use warnings.' : e.message)}</div>`; return; }
+      const active = w.warnings.filter((x) => x.active).length;
+      form.innerHTML = `<h3 class="admin-sub">Warnings for ${esc(r.name)} <small>${active} of ${w.max} active</small></h3>
+        <p class="muted">${w.rulesOk ? 'They have agreed to the current rules.' : 'They have not agreed to the current rules yet, so they cannot make changes.'} A warning lasts 90 days. A warning when ${w.max} are already active suspends them automatically.</p>
+        <div class="admin-list">${w.warnings.map((x) => `<div class="admin-row" data-wid="${esc(x.id)}"><div class="admin-row-main">${esc(x.reason)}<div class="muted">${esc(x.by)} · ${esc(fmtDateTime(x.at))}${x.active ? '' : ' · expired'}</div></div><div class="plan-actions"><button class="btn btn-gray" data-wdel>Remove</button></div></div>`).join('') || '<p class="muted">No warnings yet.</p>'}</div>
+        <label class="admin-field"><span>Give a warning. What is it for?</span><input type="text" data-wreason maxlength="300" placeholder="For example: Gave a customer more than they paid for"></label>
+        <div class="m-actions"><button class="btn btn-red" data-wgive>Give a warning</button><button class="btn btn-gray" data-cancel>Close</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-wgive]', form).addEventListener('click', async () => {
+        const reason = $('[data-wreason]', form).value.trim();
+        if (!reason) return say('Say what the warning is for.', 'bad');
+        const over = active >= w.max;
+        if (!(await confirmAction(over ? `Suspend ${r.name}?` : `Warn ${r.name}?`, over ? `They already have ${w.max} active warnings, so this one suspends their reseller account.` : `This will be warning ${active + 1} of ${w.max}. They see it at the top of their panel.`, over ? 'Warn and suspend' : 'Give warning'))) return;
+        try { const x = await guard(`/resellers/${encodeURIComponent(r.id)}/warnings`, { method: 'POST', body: { reason } }); toast(x.suspended ? 'Warned and suspended' : 'Warning given', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $$('[data-wdel]', form).forEach((b) => b.addEventListener('click', async () => {
+        const id = b.closest('[data-wid]').dataset.wid;
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}/warnings/${id}`, { method: 'DELETE' }); toast('Removed', 1800); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      }));
+      form.scrollIntoView({ block: 'center' });
+    };
     $('[data-add]', body).addEventListener('click', openAdd);
     $$('[data-r]', body).forEach((el) => {
       const r = d.resellers.find((x) => x.id === el.dataset.r);
       $('[data-cr]', el).addEventListener('click', () => openCredits(r));
       $('[data-ed]', el).addEventListener('click', () => openEdit(r));
+      $('[data-wn]', el).addEventListener('click', () => openWarnings(r));
       $('[data-su]', el).addEventListener('click', async () => {
         const stop = r.status === 'active';
         if (stop && !(await confirmAction(`Suspend ${r.name}?`, 'They can no longer create or renew customers or see the panel. Their customers keep working.', 'Suspend'))) return;
@@ -8209,7 +8234,26 @@
     const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold']];
     const savedView = (() => { try { return JSON.parse(store.get('ef.resView') || '{}') || {}; } catch { return {}; } })();
     const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25 };
+    const RULES_URL = 'https://aurora-streaming.org/rules/';
+    const rules = d.rules || {}, warns = d.warnings || [];
+    const rulesHtml = `${warns.length ? `<section class="admin-card res-warn" role="alert"><h2>${warns.length >= (d.warningsMax || 3) ? 'Final warning' : 'Warning'}: ${warns.length} of ${d.warningsMax || 3} active</h2>
+        <p class="muted">${warns.length >= (d.warningsMax || 3) ? 'One more warning suspends your reseller account. ' : ''}Warnings expire after 90 days.</p>
+        <ul>${warns.map((x) => `<li>${esc(x.reason)} <span class="muted">(${esc(fmtDay(new Date(x.at).toISOString().slice(0, 10)))})</span></li>`).join('')}</ul></section>` : ''}
+      ${rules.required && !rules.accepted ? `<section class="admin-card res-rules" role="alert"><h2>Please read and agree to the reseller rules</h2>
+        <p class="muted">Until you agree you can look around, but you cannot add, renew or change anything.</p>
+        <p><a class="btn btn-gray" href="${RULES_URL}" target="_blank" rel="noopener">Read the rules and regulations</a></p>
+        <label class="admin-check"><input type="checkbox" data-rules-ck> I have read the rules and regulations (version ${esc(rules.version)}) and I agree to follow them.</label>
+        <div class="m-actions"><button class="btn btn-red" data-rules-go disabled>I have read and agree</button></div></section>`
+      : rules.accepted ? `<p class="muted">You agreed to the <a href="${RULES_URL}" target="_blank" rel="noopener">reseller rules</a> on ${esc(fmtDay(new Date(rules.at).toISOString().slice(0, 10)))}.</p>` : ''}`;
+    root.addEventListener('change', (e) => { if (e.target.matches('[data-rules-ck]')) { const go = $('[data-rules-go]', root); if (go) go.disabled = !e.target.checked; } });
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-rules-go]'); if (!b) return;
+      b.disabled = true;
+      try { await guard('/reseller/rules/accept', { method: 'POST', params: { userId: state.userId }, body: {} }); toast('Thank you. Your agreement is recorded.', 2500); renderReseller(page, isCurrent); }
+      catch (err) { toast(err.message || "Couldn't record that. Try again.", 4000); b.disabled = false; }
+    });
     root.innerHTML = `${head}
+      ${rulesHtml}
       <section class="res-hero"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
         <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
       <div class="plan-form hidden" data-askform></div>

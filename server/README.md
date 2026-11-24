@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.49.0
+
+- Stricter rules. (1) Website sign-in lock: after 5 wrong passwords in a row (`loginLockTries`) the website sign-in for that account is locked for 15 minutes (`loginLockMinutes`); this covers the website pages and the password change, not Emby's own sign-in from the apps. (2) Idle devices: a customer's device not used for 30 days (`idleDeviceDays`, `0` = off) is signed out; administrators are skipped. (3) Reseller warnings: `POST /resellers/:id/warnings` (`{ reason }`), `GET` the list, `DELETE /resellers/:id/warnings/:wid`. Three warnings may be active at once (`resellerWarningsMax`), each lasting 90 days (`resellerWarningDays`); the fourth suspends the reseller automatically and alerts you. (4) Reseller rules and regulations: a reseller must agree (`POST /reseller/rules/accept`) before any change (`resellerRulesRequired`, default true); when the rules text changes, bump `RESELLER_RULES_VERSION` and everyone agrees again. `GET /reseller/me` reports `rules`, `warnings` and `warningsMax`. Credits already could not go below zero: any add or renewal that costs more than the reseller has is refused.
+
 ## 1.48.0
 
 - Change your own password. `POST /account/password` (`{ current, next }`) checks the current password, then sets the new one (8 to 64 characters). Limited to 8 tries an hour per account. Used by the website account page, which also shows the viewing summary (`/stats`), messages (`/inbox`), support chat (`/support`) and referral code (`/referral`) with the routes that were already there.
