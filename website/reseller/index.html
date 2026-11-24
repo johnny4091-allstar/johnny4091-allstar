@@ -159,6 +159,27 @@ input,select { border-radius:10px; padding:12px 13px; }
   .credits .n { font-size:3.2rem; } .grid { grid-template-columns:1fr; }
 }
 @media (prefers-reduced-motion: reduce) { .btn, .tabbtn, .cust, .chip { transition:none; } }
+
+/* ---- Reseller tools ---- */
+.bulkbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:12px 14px; margin:0 0 12px; border-radius:12px; background:rgba(79,123,255,.12); border:1px solid #2f4a8f; }
+.bulkbar .bk-count { color:#cfd6f5; font-size:.9rem; flex:1; min-width:140px; }
+.cust .bk { width:20px; height:20px; flex:none; accent-color:#4f7bff; pointer-events:none; }
+.tk { background:var(--bg-2); border:1px solid var(--line); border-radius:14px; padding:14px 16px; }
+.tk-h { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:6px; }
+.thread { display:grid; gap:8px; max-height:300px; overflow:auto; margin-top:8px; }
+.bub { max-width:88%; padding:9px 12px; border-radius:12px; background:#0a1126; border:1px solid var(--line); font-size:.92rem; overflow-wrap:anywhere; } .bub.me { justify-self:end; background:#14264f; border-color:#2c4a8f; } .bub small { display:block; color:var(--dim); font-size:.72rem; margin-top:3px; }
+.tbl { width:100%; border-collapse:collapse; font-size:.9rem; } .tbl th, .tbl td { text-align:left; padding:9px 8px; border-top:1px solid var(--line); vertical-align:middle; } .tbl th { color:var(--muted); font-weight:600; border-top:0; }
+.pr-in { width:110px; padding:8px 10px; } .pr-m { color:#9ff0b3; font-weight:700; white-space:nowrap; }
+.scroll { overflow-x:auto; }
+.code { display:flex; gap:8px; margin:6px 0; } .code input { flex:1; min-width:0; font-size:.9rem; }
+textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; min-height:64px; resize:vertical; margin-bottom:12px; }
+.bars { display:flex; align-items:flex-end; gap:10px; height:210px; padding:6px 2px 0; }
+.bcol { flex:1; min-width:0; height:100%; display:flex; flex-direction:column; justify-content:flex-end; align-items:center; gap:4px; }
+.bstack { width:100%; max-width:56px; display:flex; flex-direction:column; justify-content:flex-end; border-radius:8px 8px 3px 3px; overflow:hidden; min-height:2px; background:rgba(255,255,255,.06); } .bstack .seg { display:block; min-height:0; } .seg.a { background:linear-gradient(180deg,#7a5cff,#4f7bff); } .seg.r { background:linear-gradient(180deg,#2ad4d0,#18b6d6); }
+.bval { font-weight:800; font-size:.9rem; min-height:1.2em; } .blab { color:var(--muted); font-size:.78rem; } .bmoney { color:#9ff0b3; font-size:.74rem; font-weight:700; }
+.legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:12px; color:var(--muted); font-size:.82rem; } .lg { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; } .lg.a { background:#6f6bff; } .lg.r { background:#2ad4d0; }
+.toast { position:fixed; left:50%; bottom:max(20px,env(safe-area-inset-bottom,0px)); transform:translateX(-50%); z-index:60; padding:12px 18px; border-radius:12px; background:#14264f; border:1px solid #2f4a8f; color:#fff; box-shadow:0 14px 40px rgba(0,0,0,.5); max-width:min(92vw,460px); }
+@media (max-width:560px) { .bars { gap:6px; height:180px; } .pr-in { width:92px; } }
 </style>
 </head>
 <body>
@@ -196,6 +217,9 @@ input,select { border-radius:10px; padding:12px 13px; }
       <button class="tabbtn" role="tab" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
       <button class="tabbtn" role="tab" type="button" data-pane="add" aria-selected="false">Add customer</button>
       <button class="tabbtn" role="tab" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
+      <button class="tabbtn" role="tab" type="button" data-pane="support" aria-selected="false">Support <span class="tcount hot" id="tc-support" hidden>0</span></button>
+      <button class="tabbtn" role="tab" type="button" data-pane="reports" aria-selected="false">Reports</button>
+      <button class="tabbtn" role="tab" type="button" data-pane="sales" aria-selected="false">Sales tools</button>
       <button class="tabbtn" role="tab" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
       <button class="tabbtn" role="tab" type="button" data-pane="settings" aria-selected="false">Settings</button>
     </nav>
@@ -220,8 +244,9 @@ input,select { border-radius:10px; padding:12px 13px; }
     </section>
 
     <section class="pane" data-pane="customers" id="pane-customers" hidden>
-    <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
+    <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name, email or phone" style="width:220px" aria-label="Search"><button class="btn line sm" id="bk-toggle" type="button">Bulk renew</button><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
     <div class="chips" id="chips" role="group" aria-label="Filter"></div>
+    <div class="bulkbar" id="bulkbar" hidden><label class="toggle" style="margin:0"><input type="checkbox" id="bk-all"> Select all shown</label><span id="bk-count" class="bk-count">0 selected</span><select id="bk-plan" aria-label="Plan to renew with" style="width:auto"></select><button class="btn red sm" id="bk-go" type="button" disabled>Renew selected</button><button class="btn line sm" id="bk-cancel" type="button">Cancel</button><p class="msg" id="bk-msg" role="status" hidden style="flex-basis:100%;margin:0"></p></div>
     <div class="list" id="list" aria-live="polite"></div>
     </section>
 
@@ -236,6 +261,7 @@ input,select { border-radius:10px; padding:12px 13px; }
         <div class="full" style="grid-column:1/-1"><label class="toggle" for="vod"><input id="vod" type="checkbox"> Include the provider's movies and TV shows</label></div>
         <div><label for="fn">Full name <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="fn" maxlength="60"></div>
         <div><label for="em">Email <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="em" type="email" maxlength="80"></div>
+        <div><label for="ph">Phone <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="ph" maxlength="30" inputmode="tel" placeholder="+1 555 123 4567"></div>
         <div class="full"><label for="nt">Note to yourself <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="nt" maxlength="300" placeholder="e.g. paid by cash, friend of John"></div>
       </div>
       <button class="btn red" id="add" type="button" style="margin-top:18px">Create customer</button>
@@ -255,6 +281,28 @@ input,select { border-radius:10px; padding:12px 13px; }
     </div>
 
       <div class="card" id="noreq"><h2>No customer requests right now</h2><p class="sub" style="margin:0">When a customer asks for more time, it shows up here. You approve it with the plan you pick.</p></div>
+    </section>
+
+    <section class="pane" data-pane="support" id="pane-support" hidden>
+      <div class="tools" style="margin-top:0"><h2>Support inbox</h2><button class="btn line sm" id="tk-refresh" type="button">Refresh</button></div>
+      <p class="sub" style="margin-top:-6px">Messages from your own customers. Your provider can see and answer them too, so you both work from one thread.</p>
+      <div class="list" id="tk-list" aria-live="polite"><div class="empty">Loading...</div></div>
+      <div class="tools"><h2>Channel problems your customers reported <span class="tag on">last 7 days</span></h2></div>
+      <div class="card" id="prob-card"><div id="prob-list"><p class="sub" style="margin:0">Loading...</p></div></div>
+    </section>
+
+    <section class="pane" data-pane="reports" id="pane-reports" hidden>
+      <div class="tools" style="margin-top:0"><h2>Reports</h2><div class="row"><select id="rp-months" style="width:auto" aria-label="Period"><option value="3">Last 3 months</option><option value="6" selected>Last 6 months</option><option value="12">Last 12 months</option></select><button class="btn line sm" id="rp-statement" type="button">Download statement (CSV)</button></div></div>
+      <div class="kpis" id="rp-kpis"></div>
+      <div class="card"><div class="sec-h"><h2>Sales by month</h2><span class="sub" style="margin:0" id="rp-note"></span></div><div class="bars" id="rp-bars" role="img" aria-label="Customers added and renewed each month"></div><div class="legend"><span><i class="lg a"></i>New customers</span><span><i class="lg r"></i>Renewals</span></div></div>
+      <div class="card"><div class="sec-h"><h2>Your activity</h2><span class="sub" style="margin:0">Everything you did in this panel, newest first</span></div><div id="rp-activity"></div></div>
+    </section>
+
+    <section class="pane" data-pane="sales" id="pane-sales" hidden>
+      <div class="card" id="tl-card"></div>
+      <div class="card" id="pr-card"></div>
+      <div class="card" id="pl-card"></div>
+      <div class="card" id="tp-card"></div>
     </section>
 
     <section class="pane" data-pane="team" id="pane-team" hidden>
@@ -323,7 +371,7 @@ input,select { border-radius:10px; padding:12px 13px; }
   var $ = function (i) { return document.getElementById(i); };
   var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
   var session = null, me = null, filter = 'all', openId = null, busy = false;
-  var catsCache = null;
+  var catsCache = null, bulk = false, picked = {}, lastRows = [], lastMade = null;
   try { session = JSON.parse(sessionStorage.getItem('aurora.reseller') || 'null'); } catch (e) { session = null; }
   function keep() { try { if (session) sessionStorage.setItem('aurora.reseller', JSON.stringify(session)); else sessionStorage.removeItem('aurora.reseller'); } catch (e) { /* private window */ } }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -331,7 +379,17 @@ input,select { border-radius:10px; padding:12px 13px; }
     var seen = {}, list = String(text || '').split(/[^0-9]+/).filter(Boolean).map(Number).filter(function (n) { if (n < 1 || n > 60 || seen[n]) return false; seen[n] = 1; return true; }).sort(function (a, b) { return b - a; });
     return list.length && list.length <= 5 ? list : null;
   }
-  function renewalMessage(name, expires) {
+  function fillTpl(t, c, extra) {
+    extra = extra || {};
+    var nm = (c.full || c.name || '').trim(), first = nm.split(/\s+/)[0] || 'there', left = c.daysLeft, date = c.expires ? new Date(c.expires + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+    var vals = { name: first, username: c.name || extra.username || '', date: date, days: left == null ? '' : String(Math.max(0, left)), plan: c.planName || extra.plan || '', password: extra.password || '' };
+    return String(t).replace(/\{(name|username|date|days|plan|password)\}/g, function (_, k) { return vals[k]; });
+  }
+  function renewalMessage(name, expires, cust) {
+    if (cust && me && me.templates) {
+      var kind = cust.expired ? 'expired' : (cust.daysLeft != null && cust.daysLeft <= 3 ? 'ending' : 'reminder'), tpl = me.templates[kind] || (kind === 'ending' ? me.templates.reminder : '');
+      if (tpl) return fillTpl(tpl, cust);
+    }
     var first = String(name || '').trim().split(/\s+/)[0] || 'there';
     if (!expires) return 'Hi ' + first + ', a quick note about your Aurora plan. Reply here if you need anything.';
     var left = Math.ceil((new Date(expires + 'T23:59:59').getTime() - Date.now()) / 86400000);
@@ -361,18 +419,24 @@ input,select { border-radius:10px; padding:12px 13px; }
   var label = { on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold' };
   function planOptions() { return (me.plans || []).map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + p.credits + ' credits)</option>'; }).join(''); }
 
+  function matchFilter(c, k) {
+    k = k || filter; if (k === 'all') return true;
+    if (/^due/.test(k)) return !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(k.slice(3));
+    return state(c) === k;
+  }
   function chips() {
-    var cs = me.customers || [], counts = { all: cs.length }, names = { all: 'All', on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold' };
-    ['on', 'soon', 'exp', 'trial', 'hold'].forEach(function (k) { counts[k] = cs.filter(function (c) { return state(c) === k; }).length; });
+    var cs = me.customers || [], counts = { all: cs.length }, names = { all: 'All', on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold', due14: 'Due in 14 days', due30: 'Due in 30 days' };
+    Object.keys(names).forEach(function (k) { if (k !== 'all') counts[k] = cs.filter(function (c) { return matchFilter(c, k); }).length; });
     $('chips').innerHTML = Object.keys(names).map(function (k) { return '<button class="chip" type="button" data-k="' + k + '" aria-pressed="' + (filter === k) + '">' + names[k] + ' ' + counts[k] + '</button>'; }).join('');
   }
-  var PANES = ['overview', 'customers', 'add', 'requests', 'team', 'settings'], pane = 'overview';
+  var PANES = ['overview', 'customers', 'add', 'requests', 'support', 'reports', 'sales', 'team', 'settings'], pane = 'overview';
   function setPane(name, quiet) {
     if (PANES.indexOf(name) < 0 || (name === 'team' && me && !me.canAddSubs)) name = 'overview';
     pane = name;
     [].forEach.call(document.querySelectorAll('.pane'), function (el) { el.hidden = el.getAttribute('data-pane') !== name; });
     [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { b.setAttribute('aria-selected', b.getAttribute('data-pane') === name ? 'true' : 'false'); });
     if (!quiet) { try { history.replaceState(null, '', '#' + name); } catch (e) { /* ignore */ } window.scrollTo(0, 0); }
+    if (me) onPane(name);
   }
   function initials(n) { var p = String(n || '?').trim().split(/[\s_.-]+/).filter(Boolean); return ((p[0] || '?').charAt(0) + (p.length > 1 ? p[1].charAt(0) : '')).toUpperCase(); }
   function hue(n) { var h = 0, t = String(n || ''); for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 360; return h; }
@@ -400,6 +464,7 @@ input,select { border-radius:10px; padding:12px 13px; }
     var pend = ((me.extensions && me.extensions.pending) || []).length + (me.request ? 0 : 0);
     $('tc-customers').textContent = cs.length; $('tc-requests').hidden = !pend; $('tc-requests').textContent = pend;
     $('tab-team').hidden = !me.canAddSubs;
+    var tko = me.ticketsOpen || 0; $('tc-support').hidden = !tko; $('tc-support').textContent = tko;
     $('noreq').hidden = !!pend || !$('extsec').hidden;
   }
   function render() {
@@ -415,8 +480,9 @@ input,select { border-radius:10px; padding:12px 13px; }
     if (me.request) { $('askmsg').hidden = false; $('askmsg').className = 'msg ok'; $('askmsg').textContent = 'Your request for ' + me.request.amount + ' credits is waiting.'; $('askbtn').disabled = true; } else { $('askbtn').disabled = false; }
     chips();
     var q = $('q').value.trim().toLowerCase(), list = $('list'); list.innerHTML = '';
-    var rows = (me.customers || []).filter(function (c) { return (filter === 'all' || state(c) === filter) && (!q || ((c.name || '') + ' ' + (c.full || '') + ' ' + (c.email || '')).toLowerCase().indexOf(q) >= 0); });
+    var rows = (me.customers || []).filter(function (c) { return matchFilter(c) && (!q || ((c.name || '') + ' ' + (c.full || '') + ' ' + (c.email || '') + ' ' + (c.phone || '')).toLowerCase().indexOf(q) >= 0); });
     if (!rows.length) { list.innerHTML = '<div class="empty">' + ((me.customers || []).length ? 'No customers here.' : 'No customers yet. Add your first one above.') + '</div>'; return; }
+    lastRows = rows; bulkUi();
     rows.forEach(function (c) {
       var s = state(c), el = document.createElement('div'); el.className = 'cust' + (openId === c.id ? ' open' : '');
       var ends = c.expires ? ((c.daysLeft != null && c.daysLeft < 0 ? 'Ended ' : 'Ends ') + fmt(c.expires) + (c.daysLeft != null && c.daysLeft >= 0 ? ' (' + c.daysLeft + ' day' + (c.daysLeft === 1 ? '' : 's') + ')' : '')) : 'No end date';
@@ -427,7 +493,9 @@ input,select { border-radius:10px; padding:12px 13px; }
         (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div><div class="pbox" hidden></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       el.querySelector('.top').insertAdjacentHTML('afterbegin', avatar(c));
-      var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
+      if (bulk) el.querySelector('.top').insertAdjacentHTML('afterbegin', '<input type="checkbox" class="bk" tabindex="-1" aria-label="Select ' + esc(c.full || c.name) + '"' + (picked[c.id] ? ' checked' : '') + '>');
+      var firstNote = el.querySelector('.act .note'); if (firstNote) firstNote.insertAdjacentHTML('beforebegin', '<button class="btn line sm ed" type="button">Edit details</button>');
+      var top = el.querySelector('.top'), toggle = function () { if (bulk) { picked[c.id] = !picked[c.id]; render(); return; } openId = openId === c.id ? null : c.id; render(); };
       top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
       function act(btn, method, path, body, ok) {
         if (busy) return; busy = true; btn.disabled = true;
@@ -453,11 +521,23 @@ input,select { border-radius:10px; padding:12px 13px; }
         act(b, 'POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/remind', { days: days }, function () { reload(); });
       };
       el.querySelector('.cm').onclick = function () {
-        var text = renewalMessage(c.full || c.name, c.expires);
+        var text = renewalMessage(c.full || c.name, c.expires, c);
         copyText(text).then(function (ok) { say(ok ? 'Copied. Paste it into Messenger, Text or WhatsApp: ' + text : 'Could not copy here. Copy this: ' + text, !ok); });
       };
       var pbox = el.querySelector('.pbox');
       function showBox(kind, html) { pbox.hidden = false; pbox.setAttribute('data-kind', kind); pbox.innerHTML = html; }
+      el.querySelector('.ed').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 'e') { pbox.hidden = true; return; }
+        showBox('e', '<strong>Edit details</strong><div class="grid" style="margin-top:10px"><div><label>Full name</label><input class="e-full" maxlength="60" value="' + esc(c.full) + '"></div><div><label>Email</label><input class="e-email" type="email" maxlength="80" value="' + esc(c.email) + '"></div><div><label>Phone</label><input class="e-phone" maxlength="30" inputmode="tel" value="' + esc(c.phone) + '"></div><div><label>Note to yourself</label><input class="e-note" maxlength="300" value="' + esc(c.note) + '"></div></div><div class="row" style="margin-top:10px"><button class="btn red sm e-save" type="button">Save details</button></div><p class="meta e-msg"></p>');
+        pbox.querySelector('.e-save').onclick = function () {
+          var b = this, m = pbox.querySelector('.e-msg'); b.disabled = true; m.textContent = '';
+          api('PUT', '/reseller/customers/' + encodeURIComponent(c.id) + '/details', { full: pbox.querySelector('.e-full').value.trim(), email: pbox.querySelector('.e-email').value.trim(), phone: pbox.querySelector('.e-phone').value.trim(), note: pbox.querySelector('.e-note').value.trim() }).then(function (j) {
+            b.disabled = false;
+            if (j.__status !== 200) { m.style.color = '#ff8d9b'; m.textContent = j.error || 'That did not work.'; return; }
+            reload();
+          }).catch(function () { b.disabled = false; m.textContent = 'Could not reach Aurora.'; });
+        };
+      };
       function qualityHtml(q) {
         if (!q.reported) return '<p class="meta">Nothing reported yet. The numbers arrive after this customer updates to the newest app and watches something.</p>';
         var l = q.you.live, v = q.you.vod, a = q.everyone, last = q.last || {};
@@ -758,7 +838,7 @@ input,select { border-radius:10px; padding:12px 13px; }
     var go = e.target.closest('[data-go]'); if (go) { setPane(go.getAttribute('data-go')); return; }
     var b = e.target.closest('#attnlist [data-a]'); if (!b || !me) return;
     var id = b.closest('.arow').getAttribute('data-id'), c = (me.customers || []).filter(function (x) { return x.id === id; })[0]; if (!c) return;
-    if (b.getAttribute('data-a') === 'copy') { var t = renewalMessage(c.full || c.name, c.expires); copyText(t).then(function (ok) { b.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(function () { b.textContent = 'Copy reminder'; }, 1800); }); return; }
+    if (b.getAttribute('data-a') === 'copy') { var t = renewalMessage(c.full || c.name, c.expires, c); copyText(t).then(function (ok) { b.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(function () { b.textContent = 'Copy reminder'; }, 1800); }); return; }
     filter = 'all'; $('q').value = ''; openId = id; setPane('customers'); render();
     setTimeout(function () { var open = document.querySelector('.cust.open'); if (open) open.scrollIntoView({ block: 'center' }); }, 50);
   });
@@ -800,12 +880,13 @@ input,select { border-radius:10px; padding:12px 13px; }
     if (!$('plan').value) return msg(err, 'You have no plans to sell yet. Ask your provider.', 'err');
     var pw = $('np').value.trim(); if (pw && pw.length < 6) return msg(err, 'The password must be at least 6 characters.', 'err');
     if (busy) return; busy = true; msg(err, '', 'err'); $('add').disabled = true;
-    api('POST', '/reseller/customers', { username: u, password: pw || undefined, planId: $('plan').value, trial: trial, vod: $('vod').checked, fullName: $('fn').value.trim(), email: $('em').value.trim(), note: $('nt').value.trim() }).then(function (j) {
+    api('POST', '/reseller/customers', { username: u, password: pw || undefined, planId: $('plan').value, trial: trial, vod: $('vod').checked, fullName: $('fn').value.trim(), email: $('em').value.trim(), phone: $('ph').value.trim(), note: $('nt').value.trim() }).then(function (j) {
       busy = false; $('add').disabled = false;
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200) return msg(err, j.error || 'Could not make the customer.', 'err');
       $('madeu').textContent = u; $('madep').textContent = 'Password: ' + j.password; $('made').hidden = false;
-      ['nu', 'np', 'fn', 'em', 'nt'].forEach(function (i) { $(i).value = ''; }); $('trial').checked = false; reload();
+      lastMade = { username: u, password: j.password, full: $('fn').value.trim(), plan: ($('plan').selectedOptions[0] || {}).text || '' };
+      ['nu', 'np', 'fn', 'em', 'ph', 'nt'].forEach(function (i) { $(i).value = ''; }); $('trial').checked = false; reload();
     }).catch(function () { busy = false; $('add').disabled = false; msg(err, 'Could not reach Aurora. Check your connection.', 'err'); });
   };
   $('subtoggle').onclick = function () { var f = $('subform'); f.hidden = !f.hidden; $('subtoggle').textContent = f.hidden ? '+ Add a sub-reseller' : 'Close'; };
@@ -832,6 +913,7 @@ input,select { border-radius:10px; padding:12px 13px; }
   };
   $('cp').onclick = function () {
     var t = 'Aurora login\nUsername: ' + $('madeu').textContent + '\n' + $('madep').textContent, b = $('cp');
+    if (me && me.templates && me.templates.welcome && lastMade) t = fillTpl(me.templates.welcome, { name: lastMade.username, full: lastMade.full, planName: lastMade.plan }, { username: lastMade.username, password: lastMade.password, plan: lastMade.plan });
     try { navigator.clipboard.writeText(t).then(function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy login message'; }, 1500); }, function () { b.textContent = 'Select and copy it'; }); } catch (e) { b.textContent = 'Select and copy it'; }
   };
   $('csv').onclick = function () {
@@ -842,6 +924,169 @@ input,select { border-radius:10px; padding:12px 13px; }
     var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = 'aurora-customers.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
   };
+
+  // ===================== Reseller tools: support inbox, reports, sales tools, bulk renew =====================
+  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); }
+  function money(n) { return '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
+  function ago(t) { var m = Math.round((Date.now() - t) / 60000); return m < 2 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; }
+
+  // ----- bulk renew
+  function bulkUi() {
+    $('bulkbar').hidden = !bulk; $('bk-toggle').textContent = bulk ? 'Done' : 'Bulk renew';
+    if (!bulk) return;
+    var ids = Object.keys(picked).filter(function (k) { return picked[k]; }), plan = (me.plans || []).filter(function (p) { return p.id === $('bk-plan').value; })[0], cost = plan ? plan.credits * ids.length : 0;
+    $('bk-count').textContent = ids.length + ' selected' + (ids.length && plan ? ' · ' + cost + ' credits (you have ' + me.credits + ')' : '');
+    $('bk-go').disabled = !ids.length || !plan || cost > me.credits;
+    $('bk-all').checked = lastRows.length > 0 && lastRows.every(function (c) { return picked[c.id]; });
+  }
+  $('bk-toggle').onclick = function () { bulk = !bulk; picked = {}; if (bulk) { var keep = $('bk-plan').value; $('bk-plan').innerHTML = planOptions(); if (keep) $('bk-plan').value = keep; } msg($('bk-msg'), '', ''); render(); };
+  $('bk-cancel').onclick = function () { bulk = false; picked = {}; render(); };
+  $('bk-plan').onchange = bulkUi;
+  $('bk-all').onchange = function () { var on = this.checked; lastRows.forEach(function (c) { picked[c.id] = on; }); render(); };
+  $('bk-go').onclick = function () {
+    var ids = Object.keys(picked).filter(function (k) { return picked[k]; }); if (!ids.length || busy) return;
+    busy = true; $('bk-go').disabled = true; msg($('bk-msg'), 'Renewing...', '');
+    api('POST', '/reseller/renew-many', { ids: ids, planId: $('bk-plan').value }).then(function (j) {
+      busy = false;
+      if (j.__status !== 200) { msg($('bk-msg'), j.error || 'That did not work.', 'err'); bulkUi(); return; }
+      bulk = false; picked = {}; reload().then(function () { msg($('bk-msg'), '', ''); }); toastMsg('Renewed ' + j.renewed + ' customer' + (j.renewed === 1 ? '' : 's') + ' for ' + j.spent + ' credits.');
+    }).catch(function () { busy = false; msg($('bk-msg'), 'Could not reach Aurora.', 'err'); bulkUi(); });
+  };
+  function toastMsg(text) { var t = document.createElement('div'); t.className = 'toast'; t.setAttribute('role', 'status'); t.textContent = text; document.body.appendChild(t); setTimeout(function () { t.remove(); }, 4200); }
+
+  // ----- support inbox and channel problems
+  var tkTimer = null;
+  function loadSupport() {
+    api('GET', '/reseller/tickets').then(function (j) {
+      if (j.__status === 409) { setTimeout(loadSupport, 800); return; }
+      if (j.__status !== 200) { $('tk-list').innerHTML = '<div class="empty">' + esc(j.error || 'Could not load the messages.') + '</div>'; return; }
+      me.ticketsOpen = j.open || 0; $('tc-support').hidden = !j.open; $('tc-support').textContent = j.open;
+      paintTickets(j.tickets || []);
+    }).catch(function () { $('tk-list').innerHTML = '<div class="empty">Could not reach Aurora.</div>'; });
+    api('GET', '/reseller/problems').then(function (j) {
+      if (j.__status !== 200) { $('prob-list').innerHTML = '<p class="sub" style="margin:0">' + esc(j.error || 'Could not load.') + '</p>'; return; }
+      var rows = j.problems || [];
+      $('prob-list').innerHTML = rows.length ? '<div class="scroll"><table class="tbl"><tr><th>Channel</th><th>Problem</th><th>Reports</th><th>Customers</th><th>Last</th></tr>' + rows.map(function (x) { return '<tr><td><b>' + esc(x.channel) + '</b></td><td>' + esc(x.reason) + '</td><td>' + x.count + '</td><td>' + esc(x.customers.join(', ')) + '</td><td>' + esc(ago(x.last)) + '</td></tr>'; }).join('') + '</table></div><p class="sub" style="margin:10px 0 0">Several customers on one channel usually means the channel is down. One customer usually means their own connection or device.</p>' :
+        '<div class="goodnews"><b>No problems reported</b><span>None of your customers reported a channel problem in the last 7 days.</span></div>';
+    });
+  }
+  function paintTickets(list) {
+    var el = $('tk-list');
+    if (!list.length) { el.innerHTML = '<div class="empty">No messages from your customers yet. When one writes to support, it shows up here.</div>'; return; }
+    el.innerHTML = list.map(function (t) {
+      var open = t.status === 'open', who = t.full || t.name;
+      return '<div class="tk" data-id="' + esc(t.id) + '"><div class="tk-h"><b>' + esc(who) + '</b>' + (who !== t.name ? ' <span class="meta">' + esc(t.name) + '</span>' : '') + '<span class="tag ' + (open ? 'soon' : 'on') + '">' + (open ? 'Open' : 'Solved') + '</span><span class="meta" style="margin-left:auto">' + esc(ago(t.updated || t.at)) + '</span></div>' +
+        '<div class="thread">' + (t.messages || []).slice(-8).map(function (m) { return '<div class="bub' + (m.from === 'user' ? '' : ' me') + '">' + esc(m.text) + '<small>' + (m.from === 'user' ? esc(who) : esc(m.by || 'Support')) + ' · ' + esc(ago(m.at)) + '</small></div>'; }).join('') + '</div>' +
+        '<div class="row" style="margin-top:10px"><input class="tk-text" maxlength="1000" placeholder="Write a reply..." aria-label="Reply to ' + esc(who) + '"><button class="btn red sm tk-send" type="button">Send</button><button class="btn line sm tk-state" type="button">' + (open ? 'Mark solved' : 'Reopen') + '</button></div><p class="msg tk-msg" hidden></p></div>';
+    }).join('');
+  }
+  $('tk-list').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return; var card = b.closest('.tk'), id = card.getAttribute('data-id'), m = card.querySelector('.tk-msg');
+    if (b.classList.contains('tk-send')) {
+      var inp = card.querySelector('.tk-text'), text = inp.value.trim(); if (!text) return msg(m, 'Write a reply first.', 'err');
+      b.disabled = true;
+      api('POST', '/reseller/tickets/' + encodeURIComponent(id) + '/reply', { text: text }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, j.error || 'That did not work.', 'err'); loadSupport(); }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+    } else if (b.classList.contains('tk-state')) {
+      var solve = /solved/i.test(b.textContent); b.disabled = true;
+      api('POST', '/reseller/tickets/' + encodeURIComponent(id) + '/' + (solve ? 'solve' : 'reopen'), {}).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, j.error || 'That did not work.', 'err'); loadSupport(); });
+    }
+  });
+  $('tk-refresh').onclick = loadSupport;
+
+  // ----- reports
+  function loadReports() {
+    var n = $('rp-months').value;
+    api('GET', '/reseller/reports?months=' + n).then(function (j) {
+      if (j.__status === 409) { setTimeout(loadReports, 800); return; }
+      if (j.__status !== 200) { $('rp-bars').innerHTML = '<div class="empty">' + esc(j.error || 'Could not load the report. Your provider may need to update Aurora Guard.') + '</div>'; return; }
+      var t = j.total, sales = t.added + t.renewed, profit = t.revenue - t.cost;
+      $('rp-kpis').innerHTML = [['Customers', j.customers, j.activeNow + ' active now', ''], ['Sales', sales, t.added + ' new · ' + t.renewed + ' renewals', 'good'], ['Credits used', t.used, 'in this period', ''],
+        j.pricesSet ? ['Estimated income', money(t.revenue), 'profit about ' + money(profit), profit >= 0 ? 'good' : 'bad'] : ['Estimated income', '-', 'set your prices in Sales tools', 'warn']].map(function (k) { return '<div class="kpi ' + k[3] + '"><small>' + k[0] + '</small><b>' + k[1] + '</b><span>' + k[2] + '</span></div>'; }).join('');
+      var max = Math.max.apply(null, j.months.map(function (m) { return m.added + m.renewed; }).concat([1]));
+      $('rp-bars').innerHTML = j.months.map(function (m) {
+        var tot = m.added + m.renewed;
+        return '<div class="bcol"><span class="bval">' + (tot || '') + '</span><div class="bstack" style="height:' + Math.round(tot / max * 100) + '%" title="' + esc(m.label) + ': ' + m.added + ' new, ' + m.renewed + ' renewals"><i class="seg a" style="flex:' + m.added + '"></i><i class="seg r" style="flex:' + m.renewed + '"></i></div><span class="blab">' + esc(m.label.replace(/ \d{4}$/, '')) + '</span>' + (j.pricesSet && m.revenue ? '<span class="bmoney">' + money(m.revenue) + '</span>' : '') + '</div>';
+      }).join('');
+      $('rp-note').textContent = j.pricesSet ? 'Income is an estimate from the prices you entered' : 'Set your prices to see income';
+    });
+    api('GET', '/reseller/activity').then(function (j) {
+      if (j.__status !== 200) { $('rp-activity').innerHTML = '<p class="sub" style="margin:0">' + esc(j.error || 'Could not load.') + '</p>'; return; }
+      var a = j.activity || [];
+      $('rp-activity').innerHTML = a.length ? a.slice(0, 40).map(function (x) { return '<div class="wrow"><span>' + esc(x.text) + '</span><span class="meta" style="float:right">' + esc(ago(x.at)) + '</span></div>'; }).join('') : '<p class="sub" style="margin:0">Nothing yet.</p>';
+    });
+  }
+  $('rp-months').onchange = loadReports;
+  $('rp-statement').onclick = function () {
+    var b = this; b.disabled = true;
+    api('GET', '/reseller/ledger').then(function (j) {
+      b.disabled = false; if (j.__status !== 200) return toastMsg(j.error || 'Could not make the statement.');
+      var q = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""').replace(/^([=+\-@])/, "'$1") + '"'; };
+      var lines = [['Date', 'Description', 'Customer', 'Credits', 'Balance', 'By'].map(q).join(',')];
+      (j.ledger || []).forEach(function (e) { lines.push([new Date(e.at).toISOString().slice(0, 16).replace('T', ' '), e.why, e.customer || '', e.delta, e.balance, e.by].map(q).join(',')); });
+      var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' }), a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'aurora-credit-statement.csv'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+    }).catch(function () { b.disabled = false; toastMsg('Could not reach Aurora.'); });
+  };
+
+  // ----- sales tools: trial link, prices, price list, templates
+  var TPL_DEFAULTS = {
+    welcome: 'Welcome to Aurora, {name}!\nUsername: {username}\nPassword: {password}\nPlan: {plan}',
+    reminder: 'Hi {name}, your Aurora plan ends on {date} (in {days} days). Reply here to renew.',
+    ending: 'Hi {name}, your Aurora plan ends on {date}, very soon. Reply here to renew and keep watching.',
+    expired: 'Hi {name}, your Aurora plan ended on {date}. Reply here to renew and get back to watching.'
+  };
+  function trialUrl(code) { return new URL('../trial/?r=' + code, location.href).href; }
+  function paintSales() {
+    var tl = me.trialLink || {}, plans = me.plans || [], pr = me.prices || {}, tp = me.templates || {};
+    $('tl-card').innerHTML = '<div class="sec-h"><h2>Your free-trial link</h2><span class="tag ' + (tl.on ? 'on' : 'hold') + '">' + (tl.on ? 'On' : 'Off') + '</span></div>' +
+      '<p class="sub">Share this link. Anyone who opens it can start a free trial that lands in your customer list, with no work from you. Each trial uses one of your ' + (tl.limit || 5) + ' free trials a day, and the same person can not use one email twice.</p>' +
+      (tl.code ? '<div class="code"><input id="tl-url" readonly value="' + esc(trialUrl(tl.code)) + '" aria-label="Your trial link"><button class="btn gray sm" id="tl-copy" type="button">Copy</button></div>' : '') +
+      '<p class="meta" style="margin:8px 0 12px">' + (tl.made || 0) + ' trials started with your link · ' + (tl.today || 0) + ' of ' + (tl.limit || 5) + ' daily trials used today</p>' +
+      '<div class="row" style="flex-wrap:wrap"><button class="btn ' + (tl.on ? 'line' : 'red') + '" id="tl-on" type="button">' + (tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')) + '</button>' + (tl.code ? '<button class="btn line" id="tl-new" type="button">Make a new link</button>' : '') + '</div><p class="msg" id="tl-msg" role="status" hidden></p>';
+    $('pr-card').innerHTML = '<div class="sec-h"><h2>Your prices</h2></div><p class="sub">What you charge your customers. This is private, only you see it. It powers your income report and price list.</p>' +
+      (plans.length ? '<div class="scroll"><table class="tbl"><tr><th>Plan</th><th>You pay</th><th>You charge</th><th>Margin</th></tr>' + plans.map(function (p) { return '<tr><td><b>' + esc(p.name) + '</b></td><td>' + p.credits + (p.credits === 1 ? ' credit' : ' credits') + '</td><td><input class="pr-in" data-id="' + esc(p.id) + '" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="' + (pr[p.id] != null ? pr[p.id] : '') + '" aria-label="Price for ' + esc(p.name) + '"></td><td class="pr-m" data-id="' + esc(p.id) + '"></td></tr>'; }).join('') + '</table></div>' : '<p class="sub">You have no plans to sell yet.</p>') +
+      '<div class="grid" style="margin-top:14px"><div><label for="pr-cc">What you pay for one credit <span style="font-weight:400;color:var(--dim)">(optional, for profit)</span></label><input id="pr-cc" type="number" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 8.00" value="' + (me.creditCost || '') + '"></div></div>' +
+      '<div class="row" style="margin-top:12px"><button class="btn red" id="pr-save" type="button">Save prices</button></div><p class="msg" id="pr-msg" role="status" hidden></p>';
+    paintMargins(); paintPriceList();
+    $('tp-card').innerHTML = '<div class="sec-h"><h2>Your messages</h2></div><p class="sub">Write the messages you send to customers once, then copy them in one tap. Leave a box empty to use the standard wording. You can use <b>{name}</b> <b>{username}</b> <b>{password}</b> <b>{plan}</b> <b>{date}</b> <b>{days}</b>.</p>' +
+      [['welcome', 'Welcome message (after you create a customer)'], ['reminder', 'Renewal reminder'], ['ending', 'Ending very soon (3 days or less)'], ['expired', 'Expired']].map(function (x) { return '<label for="tp-' + x[0] + '">' + x[1] + '</label><textarea id="tp-' + x[0] + '" maxlength="600" placeholder="' + esc(TPL_DEFAULTS[x[0]]) + '">' + esc(tp[x[0]] || '') + '</textarea>'; }).join('') +
+      '<div class="row" style="margin-top:12px"><button class="btn red" id="tp-save" type="button">Save messages</button></div><p class="msg" id="tp-msg" role="status" hidden></p>';
+  }
+  function paintMargins() {
+    var cc = Number($('pr-cc') && $('pr-cc').value) || 0;
+    [].forEach.call(document.querySelectorAll('.pr-m'), function (td) {
+      var id = td.getAttribute('data-id'), inp = document.querySelector('.pr-in[data-id="' + id + '"]'), price = Number(inp && inp.value), plan = (me.plans || []).filter(function (p) { return p.id === id; })[0];
+      td.textContent = price > 0 && cc > 0 && plan ? money(price - plan.credits * cc) : '';
+    });
+  }
+  function priceListText() {
+    var pr = me.prices || {}, rows = (me.plans || []).filter(function (p) { return pr[p.id] > 0; });
+    if (!rows.length) return '';
+    return (me.name || 'Aurora') + ' · Aurora plans\n\n' + rows.map(function (p) { return '• ' + p.name + ' — ' + p.length + ' ' + p.unit + (p.length === 1 ? '' : 's') + ' · ' + p.connections + (p.connections === 1 ? ' device' : ' devices') + ' — ' + money(pr[p.id]); }).join('\n') + '\n\nMessage me to get started.';
+  }
+  function paintPriceList() {
+    var t = priceListText();
+    $('pl-card').innerHTML = '<div class="sec-h"><h2>Your price list</h2></div><p class="sub">A ready-to-send list of your plans and prices. Copy it into a text, WhatsApp or Messenger.</p>' +
+      (t ? '<textarea id="pl-text" readonly rows="' + Math.min(12, t.split('\n').length + 1) + '" aria-label="Price list">' + esc(t) + '</textarea><div class="row" style="margin-top:10px"><button class="btn gray" id="pl-copy" type="button">Copy price list</button></div>' : '<div class="empty">Enter your prices above and your price list appears here.</div>');
+  }
+  document.getElementById('pane-sales').addEventListener('input', function (e) { if (e.target.classList.contains('pr-in') || e.target.id === 'pr-cc') paintMargins(); });
+  document.getElementById('pane-sales').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'tl-copy') { copyText($('tl-url').value).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select it'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }); }
+    else if (b.id === 'tl-on' || b.id === 'tl-new') {
+      if (b.id === 'tl-new' && !confirm('Make a new link? The old one stops working straight away.')) return;
+      var tl = me.trialLink || {}, body = b.id === 'tl-new' ? { regenerate: true, on: true } : { on: !tl.on }; b.disabled = true;
+      api('POST', '/reseller/trial-link', body).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg($('tl-msg'), j.error || 'That did not work.', 'err'); me.trialLink = j.trialLink; paintSales(); });
+    } else if (b.id === 'pr-save') {
+      var prices = {}; [].forEach.call(document.querySelectorAll('.pr-in'), function (i) { if (i.value !== '') prices[i.getAttribute('data-id')] = Number(i.value); });
+      b.disabled = true;
+      api('PUT', '/reseller/prices', { prices: prices, creditCost: $('pr-cc').value }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg($('pr-msg'), j.error || 'That did not work.', 'err'); me.prices = j.prices; me.creditCost = j.creditCost; msg($('pr-msg'), 'Saved.', 'ok'); paintPriceList(); });
+    } else if (b.id === 'pl-copy') { copyText($('pl-text').value).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select and copy it'; setTimeout(function () { b.textContent = 'Copy price list'; }, 1500); }); }
+    else if (b.id === 'tp-save') {
+      var t = {}; ['welcome', 'reminder', 'ending', 'expired'].forEach(function (k) { t[k] = $('tp-' + k).value.trim(); }); b.disabled = true;
+      api('PUT', '/reseller/templates', t).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg($('tp-msg'), j.error || 'That did not work.', 'err'); me.templates = j.templates; msg($('tp-msg'), 'Saved. Your messages are used when you copy a reminder or login message.', 'ok'); });
+    }
+  });
   if (session && session.token) { show(true); reload(); } else show(false);
 })();
 </script>
