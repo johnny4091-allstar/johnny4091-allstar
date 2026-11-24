@@ -44,6 +44,19 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
 .note.good { border-color:#2f7a4a; } .note.bad { border-color:#8a3b48; }
 .contact { display:grid; gap:6px; } .contact a { color:var(--accent); }
 .empty { color:var(--muted); padding:8px 0; }
+.msg-i { padding:11px 0; border-top:1px solid var(--line); } .msg-i:first-of-type { border-top:0; }
+.msg-i b { display:block; } .msg-i span { color:var(--muted); font-size:.86rem; } .msg-i.unread b::before { content:''; display:inline-block; width:8px; height:8px; margin-right:8px; border-radius:50%; background:var(--accent); }
+.msg-i.warn b { color:var(--amber); } .msg-i.bad b { color:var(--red); }
+.nums { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:12px 0 4px; } .nums .stat b { font-size:1.35rem; }
+.top3 { margin:10px 0 0; padding:0; list-style:none; } .top3 li { display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-top:1px solid var(--line); font-size:.92rem; } .top3 li span { color:var(--muted); white-space:nowrap; }
+.code { display:flex; gap:8px; align-items:center; margin:10px 0; } .code b { flex:1; min-width:0; padding:12px; border-radius:10px; border:1px dashed #3b4a85; background:#0a1126; font-size:1.15rem; letter-spacing:.08em; text-align:center; overflow-wrap:anywhere; }
+.thread { display:grid; gap:8px; margin:10px 0; max-height:320px; overflow:auto; } .bub { padding:9px 12px; border-radius:12px; background:#0a1126; border:1px solid var(--line); max-width:88%; font-size:.92rem; overflow-wrap:anywhere; } .bub.me { justify-self:end; background:#14264f; border-color:#2c4a8f; } .bub small { display:block; color:var(--dim); font-size:.72rem; margin-top:3px; }
+textarea.txt { min-height:90px; resize:vertical; }
+details.card > summary { cursor:pointer; font-size:1.1rem; font-weight:800; list-style:none; display:flex; justify-content:space-between; align-items:center; gap:10px; } details.card > summary::-webkit-details-marker { display:none; } details.card > summary::after { content:'+'; color:var(--muted); font-size:1.3rem; } details[open].card > summary::after { content:'\2212'; }
+details.card[open] > summary { margin-bottom:12px; }
+.apps { display:grid; gap:10px; } .apps a.btn { text-decoration:none; text-align:center; display:block; } .apps .sub { color:var(--muted); font-size:.85rem; margin:-4px 0 4px; }
+.badge { display:inline-block; min-width:1.4rem; padding:1px 8px; border-radius:99px; background:var(--accent); color:#04201f; font-size:.75rem; font-weight:800; margin-left:8px; vertical-align:middle; }
+@media (max-width:420px) { .nums { grid-template-columns:1fr 1fr; } }
 </style>
 </head>
 <body>
@@ -89,6 +102,51 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
       </div>
       <p class="ok" id="renewok" role="status" hidden></p><p class="err" id="renewerr" role="alert" hidden></p>
     </div>
+
+    <div class="card" id="msgcard" hidden>
+      <h2>Messages <span class="badge" id="unread" hidden></span></h2>
+      <div id="msgs"></div>
+    </div>
+
+    <div class="card" id="weekcard" hidden>
+      <h2>Your viewing this week</h2>
+      <div class="nums" id="weeknums"></div>
+      <div id="weektop"></div>
+    </div>
+
+    <div class="card" id="refcard" hidden>
+      <h2>Refer a friend</h2>
+      <p class="hint" style="margin:0" id="refintro"></p>
+      <div class="code"><b id="refcode"></b><button class="btn line" type="button" id="refcopy">Copy</button></div>
+      <p class="hint" style="margin:0" id="refstats"></p>
+      <div id="redeem" hidden>
+        <label class="f" for="rcode" style="margin-top:14px">Were you invited? Enter your friend's code</label>
+        <div style="display:flex;gap:8px"><input class="txt" id="rcode" maxlength="20" autocapitalize="characters" placeholder="NAME-ABC"><button class="btn" type="button" id="rgo">Apply</button></div>
+        <p class="ok" id="rok" hidden></p><p class="err" id="rerr" hidden></p>
+      </div>
+    </div>
+
+    <div class="card" id="supcard">
+      <h2>Contact support</h2>
+      <p class="hint" style="margin:0 0 4px">Something not working? Tell us and we will reply here.</p>
+      <div class="thread" id="thread"></div>
+      <textarea class="txt" id="suptext" maxlength="1000" placeholder="Describe what is happening, and on which device"></textarea>
+      <button class="btn block" id="supsend" type="button" style="margin-top:10px">Send message</button>
+      <p class="ok" id="supok" hidden></p><p class="err" id="superr" role="alert" hidden></p>
+    </div>
+
+    <details class="card" id="appcard"><summary>Get the app</summary>
+      <div class="apps" id="apps"></div>
+    </details>
+
+    <details class="card" id="pwcard"><summary>Change my password</summary>
+      <label class="f" for="pw0">Current password</label><input class="txt" id="pw0" type="password" autocomplete="current-password">
+      <label class="f" for="pw1" style="margin-top:12px">New password (8 or more characters)</label><input class="txt" id="pw1" type="password" autocomplete="new-password">
+      <label class="f" for="pw2" style="margin-top:12px">New password again</label><input class="txt" id="pw2" type="password" autocomplete="new-password">
+      <button class="btn block" id="pwgo" type="button" style="margin-top:14px">Change password</button>
+      <p class="ok" id="pwok" role="status" hidden></p><p class="err" id="pwerr" role="alert" hidden></p>
+      <p class="hint">You will stay signed in here. Other devices may ask for the new password the next time they sign in.</p>
+    </details>
 
     <div class="card" id="helpcard" hidden>
       <h2>Need help?</h2>
@@ -176,8 +234,55 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
       if (a.__status !== 200) { out(a.error || 'Could not load your account.'); return; }
       if (a.admin) { out('Administrator accounts have no plan to show here. Use the Admin page instead.'); return; }
       acct = a; $('hello').textContent = 'Hello, ' + a.name; $('sub').textContent = 'Here is where your Aurora account stands.';
-      paintStatus(); paintRenew(); paintHelp(); loadDevices();
+      paintStatus(); paintRenew(); paintHelp(); loadDevices(); loadMessages(); loadWeek(); loadReferral(); loadSupport(); paintApps();
     }).catch(function () { out('Could not reach Aurora. Check your connection.'); });
+  }
+  function mins(m) { m = Math.round(m || 0); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; }
+  function loadMessages() {
+    api('GET', '/inbox').then(function (j) {
+      if (j.__status !== 200) return;
+      var items = j.items || [];
+      $('msgcard').hidden = !items.length; $('unread').hidden = !j.unread; $('unread').textContent = j.unread || '';
+      $('msgs').innerHTML = items.slice(0, 8).map(function (i) { return '<div class="msg-i ' + esc(i.level || '') + (i.unread ? ' unread' : '') + '"><b>' + esc(i.title) + '</b><span>' + esc(i.text || '') + (i.at <= Date.now() ? ' · ' + esc(ago(new Date(i.at).toISOString())) : '') + '</span></div>'; }).join('');
+      if (j.unread) api('POST', '/inbox/read').then(function () { setTimeout(function () { $('unread').hidden = true; }, 4000); });
+    });
+  }
+  function loadWeek() {
+    api('GET', '/stats').then(function (j) {
+      if (j.__status !== 200) return;
+      var any = j.thisWeek || j.lastWeek || j.live; $('weekcard').hidden = !any; if (!any) return;
+      var diff = j.thisWeek - j.lastWeek;
+      $('weeknums').innerHTML = '<div class="stat"><small>This week</small><b>' + esc(mins(j.thisWeek)) + '</b></div><div class="stat"><small>Last week</small><b>' + esc(mins(j.lastWeek)) + '</b></div><div class="stat"><small>Live TV</small><b>' + esc(mins(j.live)) + '</b></div>';
+      $('weektop').innerHTML = (j.top && j.top.length ? '<ul class="top3">' + j.top.map(function (t) { return '<li>' + esc(t.title) + '<span>' + esc(mins(t.minutes)) + '</span></li>'; }).join('') + '</ul>' : '') + (j.lastWeek ? '<p class="hint">' + (diff === 0 ? 'The same as last week.' : (diff > 0 ? 'Up ' : 'Down ') + esc(mins(Math.abs(diff))) + ' from last week.') + '</p>' : '');
+    });
+  }
+  function loadReferral() {
+    api('GET', '/referral').then(function (j) {
+      if (j.__status !== 200 || !j.enabled) { $('refcard').hidden = true; return; }
+      $('refcard').hidden = false;
+      $('refintro').textContent = 'Give a friend your code. When they join, you each get ' + j.days + ' free days.';
+      $('refcode').textContent = j.code || ''; $('refcode').dataset.code = j.code || '';
+      var n = (j.friends || []).length;
+      $('refstats').textContent = n ? n + (n === 1 ? ' friend has' : ' friends have') + ' joined with your code. You have earned ' + j.earned + ' free days.' : 'No friends have used your code yet.';
+      $('redeem').hidden = !j.canRedeem;
+    });
+  }
+  function loadSupport() {
+    api('GET', '/support').then(function (j) {
+      if (j.__status !== 200) { $('supcard').hidden = j.__status === 404; return; }
+      var t = j.ticket, msgs = (t && t.messages) || [];
+      $('thread').hidden = !msgs.length;
+      $('thread').innerHTML = msgs.slice(-12).map(function (m) { return '<div class="bub' + (m.from === 'user' ? ' me' : '') + '">' + esc(m.text) + '<small>' + (m.from === 'user' ? 'You' : 'Support') + ' · ' + esc(ago(new Date(m.at).toISOString())) + '</small></div>'; }).join('');
+      var th = $('thread'); th.scrollTop = th.scrollHeight;
+    });
+  }
+  function paintApps() {
+    var rows = [];
+    if (C.apkUrl) rows.push('<a class="btn" href="' + esc(C.apkUrl) + '" rel="noopener">Android phone, tablet or TV</a>');
+    rows.push('<a class="btn line" href="../lite" rel="noopener">Aurora Lite (older Android 7 devices)</a><div class="sub">For the Fire TV Stick 4K (1st generation) and other older sticks.</div>');
+    if (C.testflightUrl) rows.push('<a class="btn line" href="' + esc(C.testflightUrl) + '" rel="noopener">iPhone and iPad (TestFlight)</a>');
+    if (C.downloaderCode) rows.push('<div class="note">On a TV, open the <b>Downloader</b> app and type <b>' + esc(C.downloaderCode) + '</b>.</div>');
+    $('apps').innerHTML = rows.join('');
   }
   function login() {
     var u = $('lu').value.trim(), p = $('lp').value, err = $('lerr');
@@ -209,6 +314,43 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
       if (j.__status !== 200) { say('renewerr', j.error || 'Could not send the request.'); return; }
       say('renewok', 'Request sent. You will see the answer here.'); $('note').value = '';
       api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintRenew(); } });
+    });
+  };
+
+  $('refcopy').onclick = function () {
+    var code = $('refcode').dataset.code || '', b = $('refcopy');
+    function done(ok) { b.textContent = ok ? 'Copied' : 'Select and copy'; setTimeout(function () { b.textContent = 'Copy'; }, 2000); }
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(function () { done(true); }, function () { done(false); }); else done(false);
+  };
+  $('rgo').onclick = function () {
+    var code = $('rcode').value.trim(); say('rerr', ''); say('rok', ''); if (!code) { say('rerr', 'Type the code you were given.'); return; }
+    $('rgo').disabled = true;
+    api('POST', '/referral/redeem', { userId: session.userId, code: code }).then(function (j) {
+      $('rgo').disabled = false;
+      if (j.__status !== 200) { say('rerr', j.error || 'That did not work.'); return; }
+      say('rok', 'Done. ' + (j.days ? j.days + ' free days were added.' : 'Your friend was credited.')); loadReferral();
+      api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintStatus(); } });
+    });
+  };
+  $('supsend').onclick = function () {
+    var t = $('suptext').value.trim(); say('superr', ''); say('supok', ''); if (!t) { say('superr', 'Write a message first.'); return; }
+    var b = $('supsend'); b.disabled = true;
+    api('POST', '/support', { text: t }).then(function (j) {
+      b.disabled = false;
+      if (j.__status !== 200) { say('superr', j.error || 'Could not send that.'); return; }
+      $('suptext').value = ''; say('supok', 'Sent. We will reply here.'); loadSupport();
+    });
+  };
+  $('pwgo').onclick = function () {
+    var a = $('pw0').value, n = $('pw1').value, n2 = $('pw2').value; say('pwerr', ''); say('pwok', '');
+    if (!a) { say('pwerr', 'Type your current password.'); return; }
+    if (n.length < 8) { say('pwerr', 'Your new password needs at least 8 characters.'); return; }
+    if (n !== n2) { say('pwerr', 'The two new passwords do not match.'); return; }
+    var b = $('pwgo'); b.disabled = true;
+    api('POST', '/account/password', { current: a, next: n }).then(function (j) {
+      b.disabled = false;
+      if (j.__status !== 200) { say('pwerr', j.error || 'That did not work.'); return; }
+      $('pw0').value = $('pw1').value = $('pw2').value = ''; say('pwok', 'Your password was changed.');
     });
   };
 

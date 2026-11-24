@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.47.0';
+const VERSION = '1.48.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2814,6 +2814,27 @@ async function handle(req, res) {
     const sessions = ((await emby('GET', '/Sessions')) || []).filter((x) => x.DeviceId === did && x.UserId === me.Id).map((x) => x.Id);
     try { await signOutDevice({ Id: me.Id, Name: me.Name }, { name: dev.Name || 'Device', client: dev.AppName || '', deviceId: did, sessions }, 'Signed out from your account page'); } catch (e) { return send(res, 502, { error: 'Could not sign it out: ' + e.message }); }
     recordAudit(me.Name, `Signed out their device ${dev.Name || did} from the account page`); saveStore();
+    return send(res, 200, { ok: true });
+  }
+  // A customer changes their own password (guard 1.48.0, for the website account page). The current password is checked first.
+  if (url.pathname === '/account/password' && req.method === 'POST') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    if (overLimit('acct-pw', me.Id, 8, 3600000) || overLimit('acct-pw-ip', ip, 30, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+    const current = String(body.current || ''), next = String(body.next || '');
+    if (!current) return send(res, 400, { error: 'Type your current password.' });
+    if (next.length < 8 || next.length > 64) return send(res, 400, { error: 'Your new password needs 8 to 64 characters.' });
+    if (next === current) return send(res, 400, { error: 'Pick a password that is different from the current one.' });
+    let check;
+    try { check = await emby('POST', '/Users/AuthenticateByName', { body: { Username: me.Name, Pw: current } }); } catch (e) { return send(res, e.status === 401 || e.status === 400 || e.status === 403 ? 403 : 502, { error: e.status === 401 || e.status === 400 || e.status === 403 ? 'That is not your current password.' : "Can't reach the Aurora server right now." }); }
+    if (check && check.AccessToken) emby('POST', '/Sessions/Logout', { token: check.AccessToken }).catch(() => {}); // don't leave a session behind for the check
+    try {
+      await emby('POST', `/Users/${me.Id}/Password`, { body: { Id: me.Id, ResetPassword: true } });
+      await emby('POST', `/Users/${me.Id}/Password`, { body: { Id: me.Id, CurrentPw: '', NewPw: next } });
+    } catch (e) { log('Password change failed for', me.Name, '-', e.message); return send(res, 502, { error: 'Could not change the password. Please try again in a moment.' }); }
+    recordAudit(me.Name, 'Changed their own password from the account page'); saveStore();
     return send(res, 200, { ok: true });
   }
   // The plans a customer can ask for (active ones only; name, price, length, connections).
