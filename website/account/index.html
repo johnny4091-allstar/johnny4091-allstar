@@ -56,10 +56,46 @@ details.card > summary { cursor:pointer; font-size:1.1rem; font-weight:800; list
 details.card[open] > summary { margin-bottom:12px; }
 .apps { display:grid; gap:10px; } .apps a.btn { text-decoration:none; text-align:center; display:block; } .apps .sub { color:var(--muted); font-size:.85rem; margin:-4px 0 4px; }
 .badge { display:inline-block; min-width:1.4rem; padding:1px 8px; border-radius:99px; background:var(--accent); color:#04201f; font-size:.75rem; font-weight:800; margin-left:8px; vertical-align:middle; }
+
+/* ---- Renewal-first look: status ring, plan cards, sticky renew bar ---- */
+.hero { position:relative; overflow:hidden; border-radius:20px; padding:26px 22px; margin-bottom:16px; border:1px solid rgba(255,255,255,.1);
+  background:radial-gradient(90% 140% at 0% 0%,rgba(42,212,208,.22),transparent 60%),radial-gradient(80% 120% at 100% 0%,rgba(122,92,255,.34),transparent 60%),#0e1530; }
+.hero.soon { background:radial-gradient(90% 140% at 0% 0%,rgba(255,212,121,.24),transparent 60%),radial-gradient(80% 120% at 100% 0%,rgba(255,122,69,.28),transparent 60%),#0e1530; }
+.hero.exp { background:radial-gradient(90% 140% at 0% 0%,rgba(255,77,110,.26),transparent 60%),radial-gradient(80% 120% at 100% 0%,rgba(122,92,255,.22),transparent 60%),#0e1530; }
+.hero-in { display:grid; grid-template-columns:auto minmax(0,1fr); gap:22px; align-items:center; }
+.ring { position:relative; width:128px; height:128px; flex:none; } .ring svg { width:100%; height:100%; transform:rotate(-90deg); }
+.ring .trk { stroke:rgba(255,255,255,.12); } .ring .val { stroke:url(#rg); stroke-linecap:round; transition:stroke-dashoffset .9s ease; }
+.hero.soon .ring .val { stroke:#ffd479; } .hero.exp .ring .val { stroke:#ff6b81; }
+.ring .mid { position:absolute; inset:0; display:grid; place-content:center; text-align:center; }
+.ring .mid b { font-size:2.5rem; line-height:1; font-weight:800; font-variant-numeric:tabular-nums; } .ring .mid small { color:var(--muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.08em; font-weight:700; margin-top:4px; }
+.eyebrow { font-size:.74rem; letter-spacing:.1em; text-transform:uppercase; font-weight:800; color:#9fe8e5; margin:0 0 6px; } .hero.soon .eyebrow { color:#ffd479; } .hero.exp .eyebrow { color:#ff9aa9; }
+.hero h1 { margin:0 0 6px; font-size:clamp(1.45rem,5vw,2rem); } .hero p { margin:0; color:#cfd6f5; }
+.facts { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; } .fact { padding:6px 12px; border-radius:999px; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.1); font-size:.82rem; color:#e6ebff; }
+.cta { display:inline-block; margin-top:16px; border:0; border-radius:12px; padding:14px 24px; font:800 1rem var(--font); color:#fff; background:var(--grad); cursor:pointer; text-decoration:none; text-shadow:0 1px 2px rgba(0,0,0,.35); box-shadow:0 10px 30px rgba(79,123,255,.35); }
+.hero.soon .cta, .hero.exp .cta { animation:pulse 2.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { box-shadow:0 10px 30px rgba(79,123,255,.35); } 50% { box-shadow:0 10px 44px rgba(122,92,255,.7); } }
+@media (prefers-reduced-motion: reduce) { .hero .cta { animation:none !important; } .ring .val { transition:none; } }
+.trust { display:flex; flex-wrap:wrap; gap:8px 18px; color:var(--muted); font-size:.82rem; margin:0 0 18px; padding:0 4px; } .trust span::before { content:'\2713'; color:var(--green); margin-right:6px; font-weight:800; }
+.sec-h { display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:12px; } .sec-h h2 { margin:0; font-size:1.25rem; }
+.incl { display:flex; flex-wrap:wrap; gap:6px; margin:0 0 14px; } .incl span { padding:4px 10px; border-radius:99px; background:#0a1126; border:1px solid var(--line); font-size:.78rem; color:#cfd6f5; }
+.plans { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin:0 0 14px; }
+.pl { position:relative; text-align:left; font:inherit; color:var(--text); cursor:pointer; padding:16px 14px; border-radius:14px; background:#0a1126; border:2px solid var(--line); transition:border-color .15s, transform .15s; }
+.pl:hover { border-color:#3b4a85; transform:translateY(-1px); } .pl[aria-checked="true"] { border-color:#4f7bff; background:linear-gradient(180deg,rgba(79,123,255,.18),#0a1126); box-shadow:0 0 0 3px rgba(79,123,255,.18); }
+.pl .nm { font-weight:800; font-size:.98rem; } .pl .pr { font-size:1.7rem; font-weight:800; margin:6px 0 2px; font-variant-numeric:tabular-nums; } .pl .pr small { font-size:.8rem; color:var(--muted); font-weight:600; }
+.pl .ln { color:#cfd6f5; font-size:.86rem; } .pl .mo { color:var(--dim); font-size:.78rem; margin-top:4px; }
+.pl .tg { position:absolute; top:-10px; right:10px; padding:3px 9px; border-radius:99px; font-size:.66rem; font-weight:800; letter-spacing:.06em; text-transform:uppercase; background:var(--grad); color:#fff; }
+.pl .tg.cur { background:#1b2549; color:#9fb2ff; border:1px solid #33407a; }
+.preview { padding:12px 14px; border-radius:12px; background:rgba(70,211,105,.08); border:1px solid rgba(70,211,105,.25); margin:0 0 12px; font-size:.92rem; } .preview b { color:#9ff0b3; }
+.stick { position:fixed; left:0; right:0; bottom:0; z-index:20; padding:10px max(16px,env(safe-area-inset-left,0px)) calc(10px + env(safe-area-inset-bottom,0px)); background:rgba(7,12,28,.94); border-top:1px solid var(--line); backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:space-between; gap:12px; transform:translateY(110%); transition:transform .25s; }
+.stick.on { transform:none; } .stick span { font-size:.9rem; color:#e6ebff; font-weight:600; } .stick .cta { margin:0; padding:11px 20px; font-size:.92rem; animation:none; }
+@media (prefers-reduced-motion: reduce) { .stick { transition:none; } }
+@media (max-width:460px) { .hero-in { grid-template-columns:1fr; justify-items:center; text-align:center; } .facts { justify-content:center; } .ring { width:112px; height:112px; } }
+.wrap { padding-bottom:110px; }
 @media (max-width:420px) { .nums { grid-template-columns:1fr 1fr; } }
 </style>
 </head>
 <body>
+<div class="stick" id="stick" aria-live="polite"><span id="sticktxt"></span><a class="cta" href="#renew" id="stickgo">Renew now</a></div>
 <div class="wrap">
   <div class="bar">
     <div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>My account</span></div>
@@ -78,29 +114,45 @@ details.card[open] > summary { margin-bottom:12px; }
   </section>
 
   <section id="app" hidden>
-    <h1 id="hello">Hello</h1>
-    <p class="lead" id="sub"></p>
+    <section class="hero" id="hero" aria-live="polite">
+      <div class="hero-in">
+        <div class="ring" id="ring" aria-hidden="true">
+          <svg viewBox="0 0 120 120"><defs><linearGradient id="rg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#2ad4d0"/><stop offset="1" stop-color="#7a5cff"/></linearGradient></defs><circle class="trk" cx="60" cy="60" r="52" fill="none" stroke-width="10"/><circle class="val" id="ringval" cx="60" cy="60" r="52" fill="none" stroke-width="10" stroke-dasharray="326.7" stroke-dashoffset="326.7"/></svg>
+          <div class="mid"><b id="ringnum">&nbsp;</b><small id="ringlbl"></small></div>
+        </div>
+        <div>
+          <p class="eyebrow" id="eyebrow">My account</p>
+          <h1 id="hello">Hello</h1>
+          <p id="sub"></p>
+          <div class="facts" id="facts"></div>
+          <a class="cta" id="herocta" href="#renew" hidden>Renew now</a>
+        </div>
+      </div>
+    </section>
+    <div class="trust"><span>Secure sign-in</span><span>Answers appear right here</span><span>Support one tap away</span></div>
+    <div id="status" hidden></div>
 
-    <div class="card" id="status"></div>
+    <div class="card" id="renew" hidden>
+      <div class="sec-h"><h2 id="renewh">Renew your subscription</h2></div>
+      <div class="incl" id="incl"></div>
+      <div id="renewnote"></div>
+      <div id="renewform" hidden>
+        <div class="plans" id="plans" role="radiogroup" aria-label="Choose a plan"></div>
+        <input type="hidden" id="plan" value="">
+        <div class="preview" id="preview" hidden></div>
+        <label class="f" for="note">A note for your provider (optional)</label>
+        <input class="txt" id="note" maxlength="200" placeholder="For example: I would like to pay by...">
+        <button class="btn block" id="ask" type="button" style="margin-top:14px;padding:16px;font-size:1.05rem">Request renewal</button>
+        <p class="hint" style="text-align:center">Your provider confirms the request and adds the time. You will see the answer on this page.</p>
+      </div>
+      <p class="ok" id="renewok" role="status" hidden></p><p class="err" id="renewerr" role="alert" hidden></p>
+    </div>
 
     <div class="card">
       <h2>Your devices</h2>
       <p class="hint" style="margin:0 0 6px" id="devhint"></p>
       <div id="devs"><div class="empty">Loading...</div></div>
       <p class="err" id="devmsg" role="status" hidden></p>
-    </div>
-
-    <div class="card" id="renew" hidden>
-      <h2>Need more time?</h2>
-      <div id="renewnote"></div>
-      <div id="renewform" hidden>
-        <label class="f" for="plan" style="margin-top:8px">What would you like?</label>
-        <select id="plan"></select>
-        <label class="f" for="note" style="margin-top:12px">A note (optional)</label>
-        <input class="txt" id="note" maxlength="200" placeholder="Anything you want us to know">
-        <button class="btn block" id="ask" type="button" style="margin-top:14px">Request an extension</button>
-      </div>
-      <p class="ok" id="renewok" role="status" hidden></p><p class="err" id="renewerr" role="alert" hidden></p>
     </div>
 
     <div class="card" id="msgcard" hidden>
@@ -180,31 +232,82 @@ details.card[open] > summary { margin-bottom:12px; }
   function out(text) { session = null; acct = null; keep(); show(false); if (text) { $('lerr').hidden = false; $('lerr').textContent = text; } }
   function say(id, text) { var el = $(id); el.hidden = !text; el.textContent = text || ''; }
 
+  function unitDays(u) { return u === 'year' ? 365 : u === 'month' ? 30 : u === 'week' ? 7 : 1; }
+  function addDays(d, n) { var x = new Date(d + 'T12:00:00'); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); }
+  function today() { var n = new Date(); return n.getFullYear() + '-' + ('0' + (n.getMonth() + 1)).slice(-2) + '-' + ('0' + n.getDate()).slice(-2); }
+  function plural(n, w) { return n + ' ' + w + (n === 1 ? '' : 's'); }
+  function lenText(p) { return plural(p.length, p.unit === 'year' ? 'year' : p.unit === 'month' ? 'month' : p.unit === 'week' ? 'week' : 'day'); }
+  var picked = '';
   function paintStatus() {
-    var a = acct, n = a.limit || 1;
-    var cls = a.expired ? 'exp' : (a.daysLeft != null && a.daysLeft <= 7) ? 'soon' : 'on';
-    var word = a.expired ? 'Ended' : cls === 'soon' ? 'Ending soon' : 'Active';
-    var left = a.expires ? (a.expired ? 'Ended ' + fmt(a.expires) : a.daysLeft <= 0 ? 'Ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left') : 'No end date';
-    var pct = a.expires && a.plan && a.plan.length && !a.expired ? Math.max(3, Math.min(100, Math.round(a.daysLeft / (a.plan.unit === 'month' ? a.plan.length * 30 : a.plan.unit === 'year' ? a.plan.length * 365 : a.plan.unit === 'week' ? a.plan.length * 7 : a.plan.length) * 100))) : (a.expired ? 0 : 100);
-    $('status').innerHTML = '<h2>Your plan <span class="tag ' + cls + '">' + word + '</span></h2>' +
-      '<div class="big" style="margin-top:12px"><div class="stat"><small>Plan</small><b>' + esc(a.plan ? a.plan.name : 'Aurora') + '</b></div>' +
-      '<div class="stat"><small>Access until</small><b>' + esc(a.expires ? fmt(a.expires) : 'No end date') + '</b></div>' +
-      '<div class="stat"><small>Devices at once</small><b>' + (a.activeDevices || 0) + ' of ' + n + '</b></div></div>' +
-      '<div class="bar2" aria-hidden="true"><i style="width:' + pct + '%"></i></div><div class="hint" style="margin:0">' + esc(left) + (a.disabled ? ' · This account is switched off. Please contact your provider.' : '') + '</div>';
+    var a = acct, n = a.limit || 1, hero = $('hero');
+    var cls = a.expired ? 'exp' : (a.expires && a.daysLeft != null && a.daysLeft <= 14) ? 'soon' : 'on';
+    hero.className = 'hero ' + cls;
+    var total = a.plan && a.plan.length ? a.plan.length * unitDays(a.plan.unit) : 30;
+    var left = a.expires && !a.expired ? Math.max(0, a.daysLeft) : 0;
+    var pct = !a.expires ? 100 : a.expired ? 0 : Math.max(4, Math.min(100, Math.round(left / Math.max(total, left) * 100)));
+    var C = 326.7; $('ringval').style.strokeDashoffset = String(C - C * pct / 100);
+    $('ringnum').textContent = !a.expires ? '∞' : a.expired ? '0' : String(left);
+    $('ringlbl').textContent = !a.expires ? 'no end date' : a.expired ? 'days left' : left === 1 ? 'day left' : 'days left';
+    $('eyebrow').textContent = a.expired ? 'Access ended' : cls === 'soon' ? (left <= 3 ? 'Ending very soon' : 'Ending soon') : 'Active';
+    if (!a.expires) { $('hello').textContent = 'Hello, ' + a.name; $('sub').textContent = 'Your Aurora access has no end date. Enjoy everything, any time.'; }
+    else if (a.expired) { $('hello').textContent = 'Welcome back, ' + a.name; $('sub').textContent = 'Your access ended ' + fmt(a.expires) + '. Renew below and you are watching again as soon as it is confirmed.'; }
+    else if (cls === 'soon') { $('hello').textContent = left <= 1 ? 'Your plan ends ' + (left === 0 ? 'today' : 'tomorrow') : 'Your plan ends in ' + left + ' days'; $('sub').textContent = 'Hello ' + a.name + '. Renew now so you never miss a game or a show.'; }
+    else { $('hello').textContent = 'You are all set, ' + a.name; $('sub').textContent = 'Your Aurora access runs until ' + fmt(a.expires) + '.'; }
+    var facts = [];
+    if (a.plan) facts.push('Plan: ' + esc(a.plan.name));
+    if (a.expires) facts.push((a.expired ? 'Ended ' : 'Until ') + esc(fmt(a.expires)));
+    facts.push((a.activeDevices || 0) + ' of ' + n + (n === 1 ? ' device' : ' devices') + ' in use');
+    $('facts').innerHTML = facts.map(function (f) { return '<span class="fact">' + f + '</span>'; }).join('');
+    var need = a.expires && (a.expired || cls === 'soon') && !a.disabled;
+    var cta = $('herocta'); cta.hidden = !(a.expires && (a.canRequest || a.expired)); cta.textContent = a.expired ? 'Renew and start watching' : need ? 'Renew now' : 'Add more time';
+    if (a.request && a.request.status === 'pending') { cta.hidden = true; }
+    if (a.disabled) $('sub').textContent = 'This account is switched off. Please contact your provider.';
+    var st = $('stick'); st.dataset.need = need && a.canRequest ? '1' : '';
+    $('sticktxt').textContent = a.expired ? 'Your access has ended' : need ? (left <= 1 ? 'Your plan ends ' + (left === 0 ? 'today' : 'tomorrow') : 'Ends in ' + left + ' days') : '';
+    syncStick();
+  }
+  function syncStick() {
+    var st = $('stick'), r = $('renew').getBoundingClientRect(), seen = !$('renew').hidden && r.top < window.innerHeight * 0.8 && r.bottom > 0;
+    st.classList.toggle('on', st.dataset.need === '1' && !seen && !$('app').hidden);
+  }
+  window.addEventListener('scroll', syncStick, { passive: true }); window.addEventListener('resize', syncStick);
+  function selectPlan(id) {
+    picked = id; $('plan').value = id;
+    [].forEach.call(document.querySelectorAll('.pl'), function (b) { b.setAttribute('aria-checked', b.getAttribute('data-id') === id ? 'true' : 'false'); });
+    var p = (acct.__plans || []).filter(function (x) { return x.id === id; })[0], len = p ? p.length * unitDays(p.unit) : (acct.plan && acct.plan.length ? acct.plan.length * unitDays(acct.plan.unit) : 30);
+    var from = acct.expires && acct.expires > today() ? acct.expires : today(), to = addDays(from, len), pv = $('preview');
+    pv.hidden = false; pv.innerHTML = 'If approved, your new end date is <b>' + esc(fmt(to)) + '</b>' + (acct.expires && acct.expires > today() ? '. The time is added to what you have left, so nothing is lost.' : '.');
+    $('ask').textContent = p ? 'Request ' + p.name + (p.price ? ' · $' + Number(p.price).toFixed(2) : '') : 'Request renewal';
   }
   function paintRenew() {
     var a = acct, r = a.request, note = '';
     $('renew').hidden = !a.expires;
-    if (!a.expires) return;
-    if (r && r.status === 'pending') note = '<div class="note">Request sent ' + esc(ago(new Date(r.at).toISOString())) + (r.wantedPlan ? ' (' + esc(r.wantedPlan) + ')' : '') + '. ' + (r.to === 'reseller' ? 'Your reseller' : 'The admin') + ' will review it.</div>';
-    else if (r && r.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) note = '<div class="note good">Your extension was approved' + (r.newExpires ? ': access now runs until ' + esc(fmt(r.newExpires)) : '') + '.' + (r.message ? ' ' + esc(r.message) : '') + '</div>';
+    if (!a.expires) { syncStick(); return; }
+    $('renewh').textContent = a.expired ? 'Renew to keep watching' : 'Renew your subscription';
+    var inc = ['Live TV', 'Movies and shows', 'Sports', 'Requests', (a.limit || 1) + (a.limit === 1 ? ' device' : ' devices')];
+    $('incl').innerHTML = inc.map(function (x) { return '<span>' + esc(x) + '</span>'; }).join('');
+    if (r && r.status === 'pending') note = '<div class="note">Request sent ' + esc(ago(new Date(r.at).toISOString())) + (r.wantedPlan ? ': ' + esc(r.wantedPlan) : '') + '. ' + (r.to === 'reseller' ? 'Your reseller' : 'The admin') + ' will review it. You will see the answer right here.</div>';
+    else if (r && r.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) note = '<div class="note good">Your renewal was approved' + (r.newExpires ? ': access now runs until ' + esc(fmt(r.newExpires)) : '') + '.' + (r.message ? ' ' + esc(r.message) : '') + '</div>';
     else if (r && r.status === 'denied' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) note = '<div class="note bad">Your last request was not approved.' + (r.message ? ' ' + esc(r.message) : ' Please contact your provider.') + '</div>';
     $('renewnote').innerHTML = note;
     $('renewform').hidden = !a.canRequest;
     if (a.canRequest) api('GET', '/plans/public').then(function (j) {
-      var plans = j.plans || [];
-      $('plan').innerHTML = '<option value="">More time on my current plan</option>' + plans.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + (p.price ? ' · $' + esc(Number(p.price).toFixed(2)) : '') + '</option>'; }).join('');
+      var plans = (j.plans || []).slice(); a.__plans = plans;
+      var per = function (p) { var m = p.length * unitDays(p.unit) / 30; return m > 0 && p.price ? p.price / m : 0; };
+      var priced = plans.filter(function (p) { return p.price > 0; }), best = priced.length > 1 ? priced.reduce(function (x, y) { return per(y) < per(x) ? y : x; }) : null;
+      var html = '<button type="button" class="pl" role="radio" data-id="" aria-checked="false"><div class="nm">Same plan</div><div class="pr">+' + esc(a.plan ? lenText(a.plan) : '1 month') + '</div><div class="ln">More time on ' + esc(a.plan ? a.plan.name : 'your current plan') + '</div></button>';
+      if (plans.length) html = plans.map(function (p) {
+        var cur = a.plan && a.plan.name === p.name, mo = per(p);
+        return '<button type="button" class="pl" role="radio" data-id="' + esc(p.id) + '" aria-checked="false">' + (best && best.id === p.id ? '<span class="tg">Best value</span>' : cur ? '<span class="tg cur">Your plan</span>' : '') +
+          '<div class="nm">' + esc(p.name) + '</div><div class="pr">' + (p.price ? '$' + esc(Number(p.price).toFixed(2).replace(/\.00$/, '')) : 'Free') + '</div><div class="ln">' + esc(lenText(p)) + ' · ' + plural(p.connections, 'device') + '</div>' +
+          (mo && p.length * unitDays(p.unit) > 35 ? '<div class="mo">about $' + esc(mo.toFixed(2)) + ' a month</div>' : '') + '</button>';
+      }).join('');
+      $('plans').innerHTML = html;
+      var cur = plans.filter(function (p) { return a.plan && a.plan.name === p.name; })[0];
+      selectPlan(picked && plans.some(function (p) { return p.id === picked; }) ? picked : (cur ? cur.id : (plans[0] ? plans[0].id : '')));
+      syncStick();
     });
+    syncStick();
   }
   function paintHelp() {
     var s = acct.support, rows = [];
@@ -233,7 +336,7 @@ details.card[open] > summary { margin-bottom:12px; }
       if (a.__status === 401) { out('Please sign in again.'); return; }
       if (a.__status !== 200) { out(a.error || 'Could not load your account.'); return; }
       if (a.admin) { out('Administrator accounts have no plan to show here. Use the Admin page instead.'); return; }
-      acct = a; $('hello').textContent = 'Hello, ' + a.name; $('sub').textContent = 'Here is where your Aurora account stands.';
+      acct = a;
       paintStatus(); paintRenew(); paintHelp(); loadDevices(); loadMessages(); loadWeek(); loadReferral(); loadSupport(); paintApps();
     }).catch(function () { out('Could not reach Aurora. Check your connection.'); });
   }
@@ -307,13 +410,16 @@ details.card[open] > summary { margin-bottom:12px; }
       else { b.disabled = false; say('devmsg', j.error || 'That did not work.'); $('devmsg').className = 'err'; }
     });
   });
+  $('plans').addEventListener('click', function (e) { var b = e.target.closest('.pl'); if (b) selectPlan(b.getAttribute('data-id')); });
+  $('herocta').addEventListener('click', function (e) { e.preventDefault(); $('renew').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+  $('stickgo').addEventListener('click', function (e) { e.preventDefault(); $('renew').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   $('ask').onclick = function () {
     var b = $('ask'); b.disabled = true; say('renewerr', ''); say('renewok', '');
     api('POST', '/extension', { userId: session.userId, note: $('note').value.trim(), planId: $('plan').value || undefined }).then(function (j) {
       b.disabled = false;
       if (j.__status !== 200) { say('renewerr', j.error || 'Could not send the request.'); return; }
       say('renewok', 'Request sent. You will see the answer here.'); $('note').value = '';
-      api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintRenew(); } });
+      api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintStatus(); paintRenew(); } });
     });
   };
 
