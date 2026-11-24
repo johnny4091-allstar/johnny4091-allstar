@@ -58,6 +58,10 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 .livedot { display:inline-block; width:8px; height:8px; margin-right:7px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(70,211,105,.6); animation:livepulse 1.8s infinite; vertical-align:middle; }
 @keyframes livepulse { 70% { box-shadow:0 0 0 7px rgba(70,211,105,0); } 100% { box-shadow:0 0 0 0 rgba(70,211,105,0); } }
 @media (prefers-reduced-motion: reduce) { .livedot { animation:none; } }
+.rules-card { border-color:#8a6a1f; background:linear-gradient(180deg,rgba(255,212,121,.1),var(--bg-2)); margin-bottom:16px; }
+.rules-card h2 { font-size:1.15rem; } .rules-card label { display:flex; gap:10px; align-items:flex-start; font-weight:600; margin:12px 0; color:#fff; font-size:.95rem; } .rules-card input[type=checkbox] { width:auto; margin-top:4px; accent-color:#4f7bff; }
+.warn-card { border-color:#8a3b48; background:linear-gradient(180deg,rgba(255,141,155,.1),var(--bg-2)); margin-bottom:16px; } .warn-card h2 { font-size:1.1rem; color:#ffb4bf; } .warn-card ul { margin:8px 0 0; padding-left:1.1rem; } .warn-card li { margin:4px 0; }
+.rules-ok { color:var(--muted); font-size:.82rem; margin:0 0 12px; } .rules-ok a { color:var(--accent); }
 .nowp { margin-top:3px; font-size:.8rem; color:var(--green); } .nowp:empty { display:none; }
 .wrow { padding:9px 0; border-top:1px solid var(--line); } .wrow:first-child { border-top:0; }
 .tag.trial { background:rgba(79,123,255,.2); color:#9db4ff; } .tag.hold { background:rgba(255,255,255,.08); color:var(--muted); }
@@ -102,9 +106,11 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     <label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password" placeholder="Your password">
     <button class="btn red" id="go" type="button">Sign in</button>
     <p class="msg err" id="lerr" role="alert" hidden></p>
+    <p class="sub" style="margin:14px 0 0">New here? Read the <a href="../rules/" style="color:var(--accent)">reseller rules and regulations</a>. You agree to them after signing in.</p>
   </div>
 
   <div id="app" hidden>
+    <div id="rulesbox"></div>
     <div class="hero">
       <div class="card credits"><small>Signed in as <b id="who"></b> · Your credits</small><div class="n" id="cr">0</div><small>1 credit = 1 connection for 1 month</small><div><span class="low" id="low" hidden>Running low</span></div></div>
       <div class="card" id="askcard"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
@@ -563,12 +569,36 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     }).catch(function () { b.disabled = false; msg($('sp-msg'), 'Could not reach Aurora.', 'err'); });
   };
 
+  function paintRules() {
+    var box = $('rulesbox'), html = '', r = me.rules || {};
+    var w = me.warnings || [];
+    if (w.length) {
+      var max = me.warningsMax || 3;
+      html += '<div class="card warn-card" role="alert"><h2>' + (w.length >= max ? 'Final warning: ' : 'Warning: ') + w.length + ' of ' + max + ' active</h2><p class="sub" style="margin:0">' + (w.length >= max ? 'One more warning suspends your reseller account. ' : '') + 'Warnings expire after 90 days. Read the <a href="../rules/" style="color:var(--accent)">rules</a>.</p><ul>' +
+        w.map(function (x) { return '<li>' + esc(x.reason) + ' <span style="color:var(--dim)">(' + esc(new Date(x.at).toLocaleDateString()) + ')</span></li>'; }).join('') + '</ul></div>';
+    }
+    if (r.required && !r.accepted) {
+      html += '<div class="card rules-card" role="alert"><h2>Please read and agree to the reseller rules</h2><p class="sub" style="margin:0">Until you agree, you can look around but you cannot add, renew or change anything.</p>' +
+        '<p style="margin:10px 0 0"><a class="btn line" href="../rules/" target="_blank" rel="noopener">Read the rules and regulations</a></p>' +
+        '<label><input type="checkbox" id="rulesck"> I have read the rules and regulations (version ' + esc(r.version) + ') and I agree to follow them.</label>' +
+        '<button class="btn red" type="button" id="rulesgo" disabled>I have read and agree</button><p class="msg err" id="rulesmsg" hidden></p></div>';
+    } else if (r.accepted) {
+      html += '<p class="rules-ok">You agreed to the <a href="../rules/" target="_blank" rel="noopener">reseller rules</a> on ' + esc(new Date(r.at).toLocaleDateString()) + '.</p>';
+    }
+    box.innerHTML = html;
+    var ck = $('rulesck'), go = $('rulesgo');
+    if (ck) ck.onchange = function () { go.disabled = !ck.checked; };
+    if (go) go.onclick = function () {
+      go.disabled = true;
+      api('POST', '/reseller/rules/accept').then(function (j) { if (j.__status === 200) reload(); else { go.disabled = false; msg($('rulesmsg'), j.error || 'That did not work.', 'err'); } });
+    };
+  }
   function reload() {
     return api('GET', '/reseller/me').then(function (j) {
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; render(); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
+      var first = !watchTimer; me = j; paintRules(); render(); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
     }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 

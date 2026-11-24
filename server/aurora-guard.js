@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.48.0';
+const VERSION = '1.49.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -85,6 +85,11 @@ function loadConfig() {
     // Paused too long (guard 1.45.0): a movie or TV show left paused this many minutes is stopped and the device is signed out, which frees
     // the connection for someone else. 120 = 2 hours. 0 switches it off. Live TV and administrators are never touched.
     pausedKillMinutes: 120,
+    // Stricter rules (guard 1.49.0)
+    loginLockTries: 5, loginLockMinutes: 15, // website sign-in for one account locks for a while after this many wrong passwords in a row
+    idleDeviceDays: 30, // a customer's device not used for this many days is signed out (0 = off)
+    resellerWarningsMax: 3, resellerWarningDays: 90, // warnings that may be active at once, and how long one counts; one more suspends the reseller
+    resellerRulesRequired: true, // a reseller must agree to the rules and regulations before changing anything
     // Set to true (and restart the guard) to remove a forgotten Reseller PIN. Then set it back to false.
     resetResellerPin: false,
     // Admin -> Sharing: flag an account seen on this many different networks in a week, or watching from two networks at once.
@@ -576,10 +581,15 @@ function cleanDays(v, max = 5) {
 const remindDefault = () => cleanDays(store.remindDefault) || REMIND_FALLBACK;
 const remindDaysOf = (rec) => cleanDays(rec && rec.remind) || remindDefault();
 
+// The reseller rules and regulations (guard 1.49.0). Change this date when the rules page changes: every reseller then agrees again.
+const RESELLER_RULES_VERSION = '2026-11-24';
+const rulesOk = (r) => !!(r.rules && r.rules.v === RESELLER_RULES_VERSION);
+const warnActive = (r) => (r.warnings || []).filter((w) => !w.expires || w.expires > Date.now());
+const warnPublic = (r) => warnActive(r).map((w) => ({ id: w.id, at: w.at, reason: w.reason, expires: w.expires || null }));
 function publicReseller(r) {
   const customers = Object.values(store.users).filter((u) => u.reseller === r.id).length;
   const up = r.parent ? resellerList()[r.parent] : null;
-  return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits,
+  return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', rulesOk: rulesOk(r), rulesAt: r.rules ? r.rules.at : 0, warnings: warnActive(r).length, credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits,
     parent: up ? up.id : '', parentName: up ? up.name : '', subs: subsOf(r).length };
 }
 // The contact details a reseller shows their own customers under Help (guard 1.33.0). A sub-reseller without any shows the one above them.
@@ -851,18 +861,39 @@ function overLimit(bucket, ip, max, windowMs) {
 const emailOk = (v) => /^[^@\s]{1,64}@[^@\s]{1,120}\.[^@\s]{2,30}$/.test(v) && v.length <= 120;
 
 // Checks an Emby username and password from a request body. Resolves { r } (Emby's answer) or { error, status } to send back as it is.
+// Sign-in lock per account (guard 1.49.0): after loginLockTries wrong passwords in a row the website sign-in for that name is locked for
+// loginLockMinutes. This covers the website pages and the password change; Emby's own sign-in from the apps is Emby's to protect.
+const acctFails = new Map();
+const acctKey = (name) => String(name || '').trim().toLowerCase().slice(0, 64);
+function acctLockedMinutes(name) { const f = acctFails.get(acctKey(name)); return f && f.until > Date.now() ? Math.max(1, Math.ceil((f.until - Date.now()) / 60000)) : 0; }
+function acctFail(name) {
+  const k = acctKey(name); if (!k) return;
+  const f = acctFails.get(k) || { n: 0, until: 0, at: 0 };
+  if (Date.now() - f.at > 3600000) f.n = 0;
+  f.n++; f.at = Date.now();
+  if (f.n >= Math.max(2, Number(cfg.loginLockTries) || 5)) {
+    f.n = 0; f.until = Date.now() + Math.max(1, Number(cfg.loginLockMinutes) || 15) * 60000;
+    recordAudit('Guard', `Locked the website sign-in for ${String(name).slice(0, 40)} for ${cfg.loginLockMinutes} minutes after ${cfg.loginLockTries} wrong passwords`);
+  }
+  acctFails.set(k, f);
+  if (acctFails.size > 5000) for (const [key, v] of acctFails) if (v.until < Date.now() && Date.now() - v.at > 3600000) acctFails.delete(key);
+}
+const lockMsg = (m) => `Too many wrong passwords. This account's website sign-in is locked for ${m} more minute${m === 1 ? '' : 's'}.`;
 async function embyLoginFor(req, ip) {
   if (tooManyFailures(ip)) return { status: 429, error: 'Too many failed attempts. Try again in a few minutes.' };
   let body;
   try { body = await readBody(req); } catch (e) { return { status: 400, error: e.message }; }
   const name = String(body.username || '').trim().slice(0, 64), pw = String(body.password || '').slice(0, 128);
   if (!name || !pw) return { status: 400, error: 'Enter your username and password.' };
+  const locked = acctLockedMinutes(name);
+  if (locked) return { status: 429, error: lockMsg(locked) };
   let r;
   try { r = await emby('POST', '/Users/AuthenticateByName', { body: { Username: name, Pw: pw } }); } catch (e) {
-    if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); return { status: 401, error: 'That username or password is not right.' }; }
+    if (e.status === 401 || e.status === 400 || e.status === 403 || e.status === 404) { noteFailure(ip); acctFail(name); return { status: 401, error: 'That username or password is not right.' }; }
     return { status: 502, error: `Can't reach Emby: ${e.message}` };
   }
-  if (!r?.AccessToken || !r.User?.Id) { noteFailure(ip); return { status: 401, error: 'That username or password is not right.' }; }
+  if (!r?.AccessToken || !r.User?.Id) { noteFailure(ip); acctFail(name); return { status: 401, error: 'That username or password is not right.' }; }
+  acctFails.delete(acctKey(name));
   return { r };
 }
 // One sign-up at a time: its limits (per address, per day, code uses, email, username) are read and then updated around slow calls to Emby,
@@ -1196,6 +1227,27 @@ async function importFromProvider(prov, groupNames) {
     for (const [ref, it] of mine) if (!seen.has(ref)) { c.items.splice(c.items.indexOf(it), 1); out.removed++; }
   }
   return out;
+}
+// Devices not used for idleDeviceDays are signed out (guard 1.49.0). Administrators are skipped. Runs a few minutes after start and every 6 hours.
+async function sweepIdleDevices() {
+  const days = Number(cfg.idleDeviceDays) || 0;
+  if (days <= 0) return;
+  const [list, users] = await Promise.all([emby('GET', '/Devices'), emby('GET', '/Users')]);
+  const admins = new Set((Array.isArray(users) ? users : []).filter((u) => u.Policy && u.Policy.IsAdministrator).map((u) => u.Id));
+  const cutoff = Date.now() - days * 86400000;
+  let n = 0;
+  for (const d of (list && list.Items) || []) {
+    if (d.Id === 'aurora-guard' || !d.LastUserId || admins.has(d.LastUserId)) continue;
+    const at = Date.parse(d.DateLastActivity || 0) || 0;
+    if (!at || at > cutoff) continue;
+    if (cfg.dryRun) { log('[dry run] would sign out the idle device', d.Name || d.Id); continue; }
+    try {
+      await emby('DELETE', '/Devices', { query: { Id: d.Id } }); n++;
+      recordAction({ type: 'signedOut', userId: d.LastUserId, name: d.LastUserName || '', device: d.Name || 'Device', client: d.AppName || '', why: `not used for ${days} days` });
+    } catch (e) { log('Could not sign out the idle device', d.Name || d.Id, '-', e.message); }
+    if (n >= 200) break;
+  }
+  if (n) { log('Signed out', n, 'devices not used for', days, 'days'); saveStore(); }
 }
 const importedOf = (id) => { const c = chanStore(); return { categories: c.cats.filter((x) => x.from && x.from.src === id).length, channels: c.items.filter((i) => i.from && i.from.src === id).length }; };
 function dropImported(id) {
@@ -2827,8 +2879,10 @@ async function handle(req, res) {
     if (!current) return send(res, 400, { error: 'Type your current password.' });
     if (next.length < 8 || next.length > 64) return send(res, 400, { error: 'Your new password needs 8 to 64 characters.' });
     if (next === current) return send(res, 400, { error: 'Pick a password that is different from the current one.' });
+    const lockedPw = acctLockedMinutes(me.Name);
+    if (lockedPw) return send(res, 429, { error: lockMsg(lockedPw) });
     let check;
-    try { check = await emby('POST', '/Users/AuthenticateByName', { body: { Username: me.Name, Pw: current } }); } catch (e) { return send(res, e.status === 401 || e.status === 400 || e.status === 403 ? 403 : 502, { error: e.status === 401 || e.status === 400 || e.status === 403 ? 'That is not your current password.' : "Can't reach the Aurora server right now." }); }
+    try { check = await emby('POST', '/Users/AuthenticateByName', { body: { Username: me.Name, Pw: current } }); } catch (e) { if (e.status === 401 || e.status === 400 || e.status === 403) acctFail(me.Name); return send(res, e.status === 401 || e.status === 400 || e.status === 403 ? 403 : 502, { error: e.status === 401 || e.status === 400 || e.status === 403 ? 'That is not your current password.' : "Can't reach the Aurora server right now." }); }
     if (check && check.AccessToken) emby('POST', '/Sessions/Logout', { token: check.AccessToken }).catch(() => {}); // don't leave a session behind for the check
     try {
       await emby('POST', `/Users/${me.Id}/Password`, { body: { Id: me.Id, ResetPassword: true } });
@@ -3091,7 +3145,7 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
@@ -3108,6 +3162,12 @@ async function handle(req, res) {
     }
     if (!r) return send(res, 403, { error: 'This account is not a reseller.' });
     if (r.status !== 'active') return send(res, 403, { error: 'This reseller account is suspended. Contact your provider.' });
+    if (url.pathname === '/reseller/rules/accept' && req.method === 'POST') {
+      r.rules = { v: RESELLER_RULES_VERSION, at: Date.now() };
+      recordAudit(`${r.name} (reseller)`, `Agreed to the reseller rules and regulations (${RESELLER_RULES_VERSION})`); saveStore();
+      return send(res, 200, { ok: true });
+    }
+    if (req.method !== 'GET' && cfg.resellerRulesRequired !== false && !rulesOk(r)) return send(res, 403, { error: 'Please read and agree to the reseller rules and regulations first (the Rules card on your panel).', rulesRequired: true });
     if (resellerBusy.has(r.id)) return send(res, 409, { error: 'Another change is in progress. Try again in a moment.' });
     resellerBusy.add(r.id);
     try {
@@ -4037,6 +4097,34 @@ async function handle(req, res) {
     copyAppDefaults(user.Id).catch(() => {});
     return send(res, 200, { ok: true, password, reseller: publicReseller(r) });
   }
+  // Warnings against a reseller (guard 1.49.0). Up to resellerWarningsMax count at once; one more suspends the reseller. Each lasts resellerWarningDays.
+  const wm = url.pathname.match(/^\/resellers\/([\w-]{1,32})\/warnings(?:\/([0-9a-f]{10}))?$/);
+  if (wm) {
+    const r = resellerList()[wm[1]];
+    if (!r) return send(res, 404, { error: 'No such reseller' });
+    if (req.method === 'GET' && !wm[2]) return send(res, 200, { warnings: (r.warnings || []).slice(0, 30).map((w) => ({ id: w.id, at: w.at, reason: w.reason, by: w.by, expires: w.expires || null, active: !w.expires || w.expires > Date.now() })), max: cfg.resellerWarningsMax, rulesOk: rulesOk(r) });
+    if (req.method === 'POST' && !wm[2]) {
+      let body;
+      try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+      const reason = cleanText(body.reason, 300);
+      if (!reason) return send(res, 400, { error: 'Say what the warning is for.' });
+      r.warnings = [{ id: crypto.randomBytes(5).toString('hex'), at: Date.now(), reason, by: auditBy, expires: Date.now() + Math.max(1, Number(cfg.resellerWarningDays) || 90) * 86400000 }, ...(r.warnings || [])].slice(0, 50);
+      const active = warnActive(r).length, max = Math.max(1, Number(cfg.resellerWarningsMax) || 3);
+      const suspended = active > max && r.status === 'active';
+      if (suspended) r.status = 'suspended';
+      recordAudit(auditBy, `Warned the reseller ${r.name} (${active > max ? 'over the limit' : active + ' of ' + max}): ${reason}${suspended ? '. Suspended automatically.' : ''}`);
+      queueAlert(`Reseller ${r.name}: warning ${Math.min(active, max)} of ${max}${suspended ? ' (suspended)' : ''}: ${reason}`);
+      saveStore();
+      return send(res, 200, { ok: true, active, max, suspended, reseller: publicReseller(r) });
+    }
+    if (req.method === 'DELETE' && wm[2]) {
+      const before = (r.warnings || []).length;
+      r.warnings = (r.warnings || []).filter((w) => w.id !== wm[2]);
+      if (r.warnings.length === before) return send(res, 404, { error: 'No such warning.' });
+      recordAudit(auditBy, `Removed a warning from the reseller ${r.name}`); saveStore();
+      return send(res, 200, { ok: true, reseller: publicReseller(r) });
+    }
+  }
   const rm = url.pathname.match(/^\/resellers\/([\w-]{1,32})(?:\/(credits|log|password))?$/);
   if (rm) {
     const r = resellerList()[rm[1]];
@@ -4620,6 +4708,7 @@ function start() {
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
   if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
+  setTimeout(() => sweepIdleDevices().catch(() => {}), (Number(cfg.idleSweepStartSeconds) || 300) * 1000); setInterval(() => sweepIdleDevices().catch(() => {}), 6 * 3600000).unref();
   setTimeout(() => syncAllImports().catch(() => {}), 120000); setInterval(() => syncAllImports().catch(() => {}), 6 * 3600000).unref();
   setTimeout(() => maybeSendSummary().catch(() => {}), 20000); setInterval(() => maybeSendSummary().catch(() => {}), 60000);
   setTimeout(() => syncRequestsUsers().catch(() => {}), 25000); setInterval(() => syncRequestsUsers().catch(() => {}), 2 * 60000).unref();
