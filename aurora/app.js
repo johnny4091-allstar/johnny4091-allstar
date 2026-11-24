@@ -240,6 +240,8 @@
     teens: ['Teens (up to PG-13)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G', 'PG', 'TV-PG', 'PG-13', 'TV-14']],
   };
   const kidsOn = () => store.get('ef.kids.on') === '1' && !!store.get('ef.kids.pin');
+  // Kids mode keeps Live TV, but only the children's categories (by name: Kids, Cartoon, Disney, Nick, Junior, Baby, Family ...). Adult ones never show.
+  const KIDS_LIVE_NAME = /\b(kids?|children|child|cartoons?|toons?|disney|nick(elodeon)?|junior|jr|baby|boomerang|sprout|animation|family)\b/i;
   const kidsLevel = () => (KIDS_LEVELS[store.get('ef.kids.level')] ? store.get('ef.kids.level') : 'kids');
   const kidsPinHash = (pin) => { let h = 2166136261; for (const c of 'aurora-kids:' + pin + ':' + pin.length) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
   const kidsPinOk = (pin) => kidsPinHash(pin) === store.get('ef.kids.pin');
@@ -263,6 +265,7 @@
     const on = kidsOn();
     document.documentElement.classList.toggle('kids', on);
     rowCache.clear(); // rows kept from before were not filtered
+    resetIptvCaches(); $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
     const st = $('#profile-dropdown [data-action="settings"]');
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
     $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isStaff());
@@ -314,7 +317,7 @@
   }
   function renderKidsGate(page, isCurrent) {
     page.innerHTML = `<div class="page-pad"><section class="settings-section kids-gate"><h2>Kids mode is on</h2>
-      <p class="muted">Only titles rated up to ${esc(KIDS_LEVELS[kidsLevel()][0])} are shown. Live TV, Requests and Settings are closed. Ask a grown-up to leave Kids mode.</p>
+      <p class="muted">Only titles rated up to ${esc(KIDS_LEVELS[kidsLevel()][0])} are shown, and Live TV has only the kids channels. Requests and Settings are closed. Ask a grown-up to leave Kids mode.</p>
       <div class="m-actions"><button class="btn btn-red" data-kids-leave>Enter PIN to leave</button><a class="btn btn-gray" href="#/home">Back to Home</a></div></section></div>`;
     $('[data-kids-leave]', page).addEventListener('click', async () => { if (await kidsLeave() && isCurrent()) route(); });
     autoFocus($('[data-kids-leave]', page));
@@ -369,6 +372,9 @@
     try {
       const p = await readAuroraPref(PROFILE_PREFS);
       if (p || !profile) { profile = p || null; store.set(profileKey(), JSON.stringify(profile)); }
+      // The Kids PIN and allowed ratings are kept on the account, so they are set once and work on every device.
+      if (profile?.kidsPin && store.get('ef.kids.pin') !== profile.kidsPin) store.set('ef.kids.pin', profile.kidsPin);
+      if (profile?.kidsLevel && KIDS_LEVELS[profile.kidsLevel] && store.get('ef.kids.level') !== profile.kidsLevel) store.set('ef.kids.level', profile.kidsLevel);
     } catch { ok = false; /* keep what this device has */ }
     applyProfileUi();
     return ok;
@@ -1078,7 +1084,8 @@
     const mkey = maintKeyOfRoute(name, params);
     if (mkey && maintOn(mkey)) return renderMaintenance(page, mkey);
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
+      if (name === 'livetv' && !iptvOn()) { location.hash = '#/home'; return; }
+      if (['requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1382,7 +1389,7 @@
   const providerFlags = {};
   const providerKey = () => 'ef.vod.' + state.userId;
   function setProviderAllowed(on) { providerFlags[state.userId] = !!on; try { store.set(providerKey(), on ? '1' : '0'); } catch { /* ignore */ } }
-  const providerOk = () => !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
+  const providerOk = () => !kidsOn() && !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
     && (state.userId in providerFlags ? providerFlags[state.userId] : store.get(providerKey()) === '1');
   const pvCache = new Map();
   async function pvGet(action, params = {}) {
@@ -2061,7 +2068,7 @@
   const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
   const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null, catNames: new Map() };
   const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
-  const showLiveLink = () => hasLiveTv() || iptvOn();
+  const showLiveLink = () => (kidsOn() ? iptvOn() : hasLiveTv() || iptvOn());
 
   function iptvLocalKey() { return 'ef.iptv.' + state.userId; }
   function loadIptvConfigLocal() {
@@ -2292,6 +2299,7 @@
     // Adult categories (Admin -> Live TV tags them) are shown only to an account that has the switch on and has entered its PIN.
     // They are shown even when the plan or the admin's choice leaves them out: the switch is what decides.
     const isAdult = adultTest(cfg), allowAdult = adultUnlocked();
+    if (kidsOn()) return (id) => !isAdult(id) && KIDS_LIVE_NAME.test(String(iptv.catNames.get(String(id)) ?? '')) && (!mine || mine.has(String(id))) && (!base || base(id));
     return (id) => {
       if (isAdult(id)) return allowAdult;
       if (mine && !mine.has(String(id))) return false;
@@ -2369,7 +2377,7 @@
     resetIptvCaches();
     route();
   }
-  const adultRow = () => (adultSwitchOn() && !isAdmin() ? [{ id: '__adult', name: adultUnlocked() ? '\u{1F513} Adult (tap to lock)' : '\u{1F512} Adult', adultRow: true }] : []);
+  const adultRow = () => (adultSwitchOn() && !isAdmin() && !kidsOn() ? [{ id: '__adult', name: adultUnlocked() ? '\u{1F513} Adult (tap to lock)' : '\u{1F512} Adult', adultRow: true }] : []);
   const planCatsKey = () => 'ef.planCats.' + state.userId;
   function planCategories() {
     try { const v = JSON.parse(store.get(planCatsKey()) || 'null'); return Array.isArray(v) ? new Set(v.map(String)) : null; } catch { return null; }
@@ -5686,8 +5694,8 @@
         ${settingRow('Avatar and name', profile?.avatar || profile?.name ? `${profile?.name ? esc(profile.name) + ' · ' : ''}Shown in the top bar and as a greeting on Home.` : 'Pick an avatar, a name and what you like.', `<span class="su-set">${profile?.avatar ? avatarSvg(profile.avatar, 40) : ''}<button class="btn btn-gray" data-redo-setup>${profile?.done ? 'Set up again' : 'Set up my profile'}</button></span>`)}
       </section>
       <section class="settings-section">
-        <h2>Kids mode <small>This device</small></h2>
-        ${settingRow('Kids mode', 'Shows only titles rated for children and closes Live TV, Requests and Settings. You need a PIN to leave it.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
+        <h2>Kids mode <small>Turn it on per device</small></h2>
+        ${settingRow('Kids mode', 'Shows only titles rated for children, only the kids channels in Live TV, and closes Requests and Settings. You need a PIN to leave it. The PIN is the same on all your devices.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
         ${settingRow('Allowed ratings', 'Titles with no rating are hidden.', selectHtml('kidsLevel', Object.entries(KIDS_LEVELS).map(([k, v]) => [k, v[0]]), kidsLevel()))}
         ${settingRow('PIN', store.get('ef.kids.pin') ? 'Needed to leave Kids mode.' : 'Not set yet. You choose one when you turn Kids mode on.', '<button class="btn btn-gray" data-kids-pin>' + (store.get('ef.kids.pin') ? 'Change PIN' : 'Set PIN') + '</button>')}
       </section>
@@ -5753,10 +5761,10 @@
         case 'subMode': saveAccount({ SubtitleMode: v }); break;
         case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
         case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
-        case 'kidsLevel': store.set('ef.kids.level', v); toast('Saved', 1500); break;
+        case 'kidsLevel': store.set('ef.kids.level', v); saveProfile({ kidsLevel: v }); toast('Saved', 1500); break;
         case 'kidsMode': (async () => {
           if (v === 'on') {
-            if (!store.get('ef.kids.pin')) { const pin = await kidsAskNewPin(); if (!pin) { sel.value = 'off'; return; } store.set('ef.kids.pin', kidsPinHash(pin)); }
+            if (!store.get('ef.kids.pin')) { const pin = await kidsAskNewPin(); if (!pin) { sel.value = 'off'; return; } store.set('ef.kids.pin', kidsPinHash(pin)); saveProfile({ kidsPin: kidsPinHash(pin), kidsLevel: kidsLevel() }); }
             store.set('ef.kids.on', '1'); applyKidsUi(); toast('Kids mode is on', 2500); location.hash = '#/home';
           } else { sel.value = 'on'; if (await kidsLeave()) sel.value = 'off'; }
         })(); break;
@@ -5771,7 +5779,7 @@
       if (store.get('ef.kids.pin')) { const old = await pinPad('Current PIN', 'Enter your PIN first.'); if (old == null) return; if (!kidsPinOk(old)) return toast('Wrong PIN', 2500); }
       const pin = await kidsAskNewPin();
       if (!pin) return;
-      store.set('ef.kids.pin', kidsPinHash(pin));
+      store.set('ef.kids.pin', kidsPinHash(pin)); saveProfile({ kidsPin: kidsPinHash(pin) });
       toast('PIN saved', 2000);
       if (isCurrent()) renderSettings(page, isCurrent);
     });

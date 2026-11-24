@@ -1390,7 +1390,7 @@ a.user-row { border-radius: var(--radius-sm); }
 .user-row.picked { background: rgba(255,255,255,.07); }
 
 /* ---- Kids mode, notices, PIN pad ---- */
-.kids [data-route="livetv"], .kids [data-route="requests"],
+.kids [data-route="requests"],
 .kids #profile-dropdown [data-action="admin"], .kids #profile-dropdown [data-action="switch"], .kids #profile-dropdown [data-action="signout"] { display: none !important; }
 .notice-banner { display: flex; align-items: center; gap: .6rem; margin: 0 var(--pad, 1rem) 1rem; padding: .7rem 1rem; border-radius: 14px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); }
 .notice-banner .notice-text { flex: 1; min-width: 0; color: #fff; text-decoration: none; line-height: 1.4; }

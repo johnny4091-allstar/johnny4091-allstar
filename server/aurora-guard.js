@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.46.0';
+const VERSION = '1.47.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -2794,6 +2794,27 @@ async function handle(req, res) {
       canRequest: !!expires && !(latest && latest.status === 'pending')
         && mine.filter((x) => Date.now() - x.at < 30 * 86400000).length < MAX_REQUESTS_PER_MONTH,
     });
+  }
+  // A customer's own devices (guard 1.47.0, for the website account page): which devices are signed in, and signing one out.
+  if ((url.pathname === '/account/devices' && req.method === 'GET') || (url.pathname === '/account/devices/remove' && req.method === 'POST')) {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    if (overLimit('acct-dev', me.Id, 60, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+    let list = [];
+    try { const d = await emby('GET', '/Devices', { query: { UserId: me.Id } }); list = ((d && d.Items) || []).filter((x) => x.Id !== 'aurora-guard' && (!x.LastUserId || x.LastUserId === me.Id)); } catch (e) { return send(res, 502, { error: "Can't reach the Aurora server right now." }); }
+    if (req.method === 'GET') {
+      const live = activeByUser(await sessionsShared()).get(me.Id);
+      return send(res, 200, { devices: list.map((x) => ({ id: x.Id, name: x.Name || 'Device', app: x.AppName || '', last: x.DateLastActivity || '', active: !!(live && live.has(x.Id)) })).sort((a, b) => String(b.last).localeCompare(String(a.last))).slice(0, 30) });
+    }
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const did = String(body.deviceId || '');
+    const dev = list.find((x) => x.Id === did);
+    if (!dev) return send(res, 404, { error: "That device isn't on your account." });
+    const sessions = ((await emby('GET', '/Sessions')) || []).filter((x) => x.DeviceId === did && x.UserId === me.Id).map((x) => x.Id);
+    try { await signOutDevice({ Id: me.Id, Name: me.Name }, { name: dev.Name || 'Device', client: dev.AppName || '', deviceId: did, sessions }, 'Signed out from your account page'); } catch (e) { return send(res, 502, { error: 'Could not sign it out: ' + e.message }); }
+    recordAudit(me.Name, `Signed out their device ${dev.Name || did} from the account page`); saveStore();
+    return send(res, 200, { ok: true });
   }
   // The plans a customer can ask for (active ones only; name, price, length, connections).
   // Sports (signed-in customers read; counts and names only): scores, a league's teams, and the admin's name aliases.

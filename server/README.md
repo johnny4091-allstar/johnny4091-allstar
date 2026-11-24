@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.47.0
+
+- Customer account page support. `GET /account/devices` lists the signed-in customer's own devices (name, app, last seen, whether in use right now), and `POST /account/devices/remove` (`{ deviceId }`) signs one out, which frees its connection. Only the customer's own devices can be reached. The website page `/account/` uses these together with `/account` and `/extension`.
+
 ## 1.46.0
 
 - More than one provider for Live TV. Providers added under Admin -> Channels -> Other providers can now show their channels in the apps, not just serve as backups. `GET /channels/providers/:id/groups` lists a provider's groups (with counts); `POST /channels/providers/:id/import` (`{ groups: [...] }`) turns each chosen group into a category named "Provider · Group" whose channels play from that provider; `POST .../sync` refreshes what was imported (new channels added, changed addresses fixed, dropped channels removed; also done every 6 hours); `DELETE .../import` stops showing them. Adult-looking groups come in as adult categories (behind the adult switch and PIN). Aurora keeps up to 80 categories and 4000 channels in all. Removing a provider removes what it showed.
