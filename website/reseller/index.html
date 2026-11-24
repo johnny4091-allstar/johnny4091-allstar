@@ -90,40 +90,142 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
 #extsec { margin-bottom:18px; }
 .done-list { margin-top:10px; color:var(--muted); font-size:.85rem; display:grid; gap:4px; }
 @media (max-width:720px) { .hero,.grid { grid-template-columns:1fr; } .pill span { display:none; } }
+
+/* ================= Reseller panel: dashboard look ================= */
+.wrap { max-width:1080px; padding-bottom:90px; }
+.top-bar { position:sticky; top:0; z-index:30; display:flex; justify-content:space-between; align-items:center; gap:12px; padding:12px 0; margin:0 0 6px;
+  background:rgba(7,12,28,.9); box-shadow:0 0 0 100vmax rgba(7,12,28,.9); clip-path:inset(0 -100vmax); }
+.top-right { display:flex; align-items:center; gap:10px; }
+.credchip { padding:7px 14px; border-radius:999px; background:rgba(42,212,208,.12); border:1px solid rgba(42,212,208,.35); color:#bff5f3; font-size:.85rem; } .credchip b { font-size:1rem; color:#fff; margin-right:2px; font-variant-numeric:tabular-nums; }
+.credchip.low { background:rgba(255,212,121,.14); border-color:rgba(255,212,121,.45); color:#ffe2a1; }
+.eyebrow { font-size:.74rem; letter-spacing:.12em; text-transform:uppercase; font-weight:800; color:#9fe8e5; margin:0 0 6px; }
+h1 { margin:0; line-height:1.12; font-weight:800; text-wrap:balance; }
+.btn { transition:transform .12s, filter .12s, box-shadow .12s; } .btn.red { box-shadow:0 8px 22px rgba(79,123,255,.28); } .btn:active { transform:translateY(1px); }
+.btn:focus-visible, .tabbtn:focus-visible, .chip:focus-visible, .cust .top:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+
+/* sign in */
+.login-wrap { display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr); gap:34px; align-items:center; min-height:62vh; padding:20px 0; }
+.login-copy h1 { font-size:clamp(1.9rem,5vw,2.9rem); margin-bottom:18px; background:linear-gradient(100deg,#fff 30%,#9fe8e5 70%,#b7a6ff); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.perks { list-style:none; margin:0 0 20px; padding:0; display:grid; gap:12px; } .perks li { padding:12px 14px 12px 44px; border-radius:12px; background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08); color:#cfd6f5; position:relative; }
+.perks li::before { content:'\2713'; position:absolute; left:14px; top:50%; transform:translateY(-50%); width:20px; height:20px; border-radius:50%; background:var(--accent-grad); display:grid; place-items:center; font-size:.7rem; font-weight:800; color:#fff; }
+.perks b { color:#fff; }
+.login-wrap .login { margin:0; max-width:none; padding:28px; box-shadow:0 30px 70px rgba(0,0,0,.45); }
+.login-wrap .login h2 { font-size:1.5rem; }
+
+/* tabs */
+.tabs { position:sticky; top:62px; z-index:25; display:flex; gap:6px; overflow-x:auto; padding:8px; margin:0 0 20px; border-radius:16px; background:rgba(14,21,48,.92); border:1px solid var(--line); backdrop-filter:blur(10px); scrollbar-width:none; }
+.tabs::-webkit-scrollbar { display:none; }
+.tabbtn { flex:none; font:700 .92rem var(--font); color:#b9c3ea; background:none; border:0; padding:10px 16px; border-radius:11px; cursor:pointer; white-space:nowrap; transition:background .15s,color .15s; }
+.tabbtn:hover { background:rgba(255,255,255,.06); color:#fff; }
+.tabbtn[aria-selected="true"] { background:var(--accent-grad); color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.3); box-shadow:0 6px 18px rgba(79,123,255,.3); }
+.tcount { display:inline-block; min-width:20px; padding:1px 7px; margin-left:6px; border-radius:999px; background:rgba(255,255,255,.14); font-size:.72rem; font-weight:800; text-align:center; }
+.tcount.hot { background:#ff5470; color:#fff; }
+
+/* overview */
+.welcome { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-end; gap:14px; margin:0 0 18px; } .welcome h1 { font-size:clamp(1.6rem,4.5vw,2.3rem); }
+.hero .credits { border-color:rgba(42,212,208,.3); } .credits .n { font-size:4rem; background:linear-gradient(100deg,#fff,#9fe8e5); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:0 0 16px; }
+.kpi { padding:16px 18px; border-radius:14px; background:var(--bg-2); border:1px solid var(--line); position:relative; overflow:hidden; }
+.kpi::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:#3b4a85; } .kpi.good::before { background:var(--green); } .kpi.warn::before { background:var(--amber); } .kpi.bad::before { background:#ff5470; }
+.kpi small { display:block; color:var(--muted); font-size:.74rem; text-transform:uppercase; letter-spacing:.08em; font-weight:700; } .kpi b { display:block; font-size:2rem; line-height:1.15; font-variant-numeric:tabular-nums; } .kpi span { color:var(--dim); font-size:.8rem; }
+.split { display:grid; grid-template-columns:minmax(0,1.5fr) minmax(0,1fr); gap:16px; margin-bottom:6px; align-items:start; }
+.sec-h { display:flex; justify-content:space-between; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:12px; } .sec-h h2 { margin:0; }
+.arow { display:flex; align-items:center; gap:12px; padding:11px 0; border-top:1px solid var(--line); } .arow:first-child { border-top:0; }
+.ainfo { flex:1; min-width:0; } .ainfo b { margin-right:2px; overflow-wrap:anywhere; } .ainfo small { display:block; color:var(--muted); font-size:.82rem; margin-top:2px; }
+.aact { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+.av { flex:none; width:38px; height:38px; border-radius:50%; display:grid; place-items:center; font-size:.82rem; font-weight:800; color:#fff; letter-spacing:.02em; }
+.goodnews { padding:18px; border-radius:12px; background:rgba(70,211,105,.08); border:1px solid rgba(70,211,105,.25); } .goodnews b { display:block; color:#9ff0b3; } .goodnews span { color:var(--muted); font-size:.9rem; }
+.mstats { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; } .mstats div { padding:12px; border-radius:12px; background:#0a1126; border:1px solid var(--line); text-align:center; } .mstats b { display:block; font-size:1.7rem; font-variant-numeric:tabular-nums; } .mstats small { color:var(--muted); font-size:.75rem; }
+
+/* sections */
+.pane > .tools:first-child, .pane > .card:first-child { margin-top:0; }
+.card { box-shadow:0 1px 0 rgba(255,255,255,.04) inset; } .card h2 { letter-spacing:-.005em; }
+input:focus, select:focus { outline:2px solid #4f7bff; outline-offset:0; border-color:#4f7bff; }
+input,select { border-radius:10px; padding:12px 13px; }
+
+/* customers */
+.cust { padding:0; overflow:hidden; transition:border-color .15s, background .15s; } .cust:hover { border-color:#3b4a85; } .cust.open { border-color:#4f7bff; background:linear-gradient(180deg,rgba(79,123,255,.08),var(--bg-2)); }
+.cust .top { padding:14px 16px; cursor:pointer; gap:12px; flex-wrap:nowrap; align-items:center; } .cust .top > div:nth-child(2) { flex:1; min-width:0; } .cust .top > div:last-child { flex:none; }
+.cust .act { margin:0; padding:14px 16px 16px; background:rgba(0,0,0,.12); }
+.chips { gap:8px; overflow-x:auto; flex-wrap:nowrap; padding-bottom:4px; scrollbar-width:none; } .chips::-webkit-scrollbar { display:none; } .chip { flex:none; transition:background .15s; } .chip:hover { border-color:#3b4a85; }
+.empty { padding:34px 20px; }
+
+@media (max-width:860px) { .login-wrap { grid-template-columns:1fr; gap:22px; min-height:0; } .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .split { grid-template-columns:1fr; } }
+@media (max-width:560px) {
+  .credchip, #out { white-space:nowrap; } .credchip { padding:6px 11px; font-size:.8rem; } .top-bar .pill { padding:.4rem .8rem; } .top-bar .pill svg { height:17px; }
+  .top-bar { padding:10px 0; } .tabs { top:56px; padding:6px; } .tabbtn { padding:9px 13px; font-size:.86rem; }
+  .arow { flex-wrap:wrap; } .aact { width:100%; justify-content:flex-start; padding-left:50px; }
+  .cust .top { flex-wrap:wrap; } .cust .top > div:last-child { width:100%; padding-left:50px; text-align:left !important; }
+  .credits .n { font-size:3.2rem; } .grid { grid-template-columns:1fr; }
+}
+@media (prefers-reduced-motion: reduce) { .btn, .tabbtn, .cust, .chip { transition:none; } }
 </style>
 </head>
 <body>
 
 <div class="wrap">
-  <div class="bar">
+  <header class="top-bar">
     <div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Reseller panel</span></div>
-    <button class="btn line sm" id="out" hidden>Sign out</button>
-  </div>
+    <div class="top-right"><span class="credchip" id="credchip" hidden title="Your credits"><b id="credchipn">0</b> credits</span><button class="btn line sm" id="out" hidden>Sign out</button></div>
+  </header>
 
-  <div class="card login" id="login">
-    <h2>Reseller sign in</h2><p class="sub">Use the username and password we gave you (the same ones you use in the Aurora app).</p>
-    <label for="lu">Username</label><input id="lu" autocomplete="username">
-    <label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password" placeholder="Your password">
-    <button class="btn red" id="go" type="button">Sign in</button>
-    <p class="msg err" id="lerr" role="alert" hidden></p>
-    <p class="sub" style="margin:14px 0 0">New here? Read the <a href="../rules/" style="color:var(--accent)">reseller rules and regulations</a>. You agree to them after signing in.</p>
+  <div class="login-wrap" id="loginwrap">
+    <div class="login-copy">
+      <p class="eyebrow">For Aurora resellers</p>
+      <h1>Run your Aurora business from one place</h1>
+      <ul class="perks">
+        <li><b>Add and renew in seconds.</b> Create a customer and copy the login message in two taps.</li>
+        <li><b>See who needs you.</b> Ending soon and expired customers rise to the top.</li>
+        <li><b>Stay in the loop.</b> Requests, alerts and what your customers are watching, live.</li>
+      </ul>
+      <p class="sub">New here? Read the <a href="../rules/" style="color:var(--accent)">reseller rules and regulations</a>. You agree to them after signing in.</p>
+    </div>
+    <div class="card login" id="login">
+      <h2>Reseller sign in</h2><p class="sub">Use the username and password we gave you (the same ones you use in the Aurora app).</p>
+      <label for="lu">Username</label><input id="lu" autocomplete="username" autocapitalize="none" spellcheck="false">
+      <label for="lp">Password</label><input id="lp" type="password" autocomplete="current-password" placeholder="Your password">
+      <button class="btn red" id="go" type="button">Sign in</button>
+      <p class="msg err" id="lerr" role="alert" hidden></p>
+    </div>
   </div>
 
   <div id="app" hidden>
     <div id="rulesbox"></div>
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Reseller panel sections">
+      <button class="tabbtn" role="tab" type="button" data-pane="overview" aria-selected="true">Overview</button>
+      <button class="tabbtn" role="tab" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
+      <button class="tabbtn" role="tab" type="button" data-pane="add" aria-selected="false">Add customer</button>
+      <button class="tabbtn" role="tab" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
+      <button class="tabbtn" role="tab" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
+      <button class="tabbtn" role="tab" type="button" data-pane="settings" aria-selected="false">Settings</button>
+    </nav>
+
+    <section class="pane" data-pane="overview" id="pane-overview">
+      <div class="welcome"><div><p class="eyebrow">Reseller panel</p><h1 id="welcome">Welcome back</h1><p class="sub" style="margin:4px 0 0" id="welcomesub"></p></div>
+        <button class="btn red" type="button" data-go="add">+ Add a customer</button></div>
     <div class="hero">
       <div class="card credits"><small>Signed in as <b id="who"></b> · Your credits</small><div class="n" id="cr">0</div><small>1 credit = 1 connection for 1 month</small><div><span class="low" id="low" hidden>Running low</span></div></div>
       <div class="card" id="askcard"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
         <div class="row"><input id="ask" type="number" min="1" placeholder="How many" inputmode="numeric"><button class="btn gray" id="askbtn" type="button">Ask</button></div><p class="msg ok" id="askmsg" hidden></p></div>
     </div>
 
-    <div id="extsec" hidden>
-      <div class="tools"><h2>Extension requests<span class="badge" id="extbadge" hidden>0</span></h2></div>
-      <p class="sub" style="margin-top:-6px">Your customers ask for more time here. Approving renews them with the plan you pick, so it costs you credits like any renewal.</p>
-      <div class="list" id="extlist" aria-live="polite"></div>
-      <div class="done-list" id="extdone"></div>
-    </div>
+      <div class="kpis" id="kpis"></div>
+      <div class="split">
+        <div class="card" id="attn"><div class="sec-h"><h2>Needs your attention</h2><span class="sub" style="margin:0" id="attnsub"></span></div><div id="attnlist"></div></div>
+        <div class="card" id="monthcard"><div class="sec-h"><h2 id="monthname">This month</h2></div><div class="mstats" id="mstats"></div></div>
+      </div>
+    <div class="tools"><h2>Watching now <span class="tag on" id="wcount">0</span></h2></div>
+    <div class="card" id="watchcard"><p class="sub">What your customers are watching right now. It updates by itself every 20 seconds.</p><div id="watchlist" aria-live="polite"></div></div>
 
+    </section>
+
+    <section class="pane" data-pane="customers" id="pane-customers" hidden>
+    <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
+    <div class="chips" id="chips" role="group" aria-label="Filter"></div>
+    <div class="list" id="list" aria-live="polite"></div>
+    </section>
+
+    <section class="pane" data-pane="add" id="pane-add" hidden>
     <div class="card">
       <h2>Add a customer</h2><p class="sub">Their account is ready straight away. <span id="trialnote"></span></p>
       <div class="grid">
@@ -142,6 +244,20 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     </div>
 
 
+    </section>
+
+    <section class="pane" data-pane="requests" id="pane-requests" hidden>
+    <div id="extsec" hidden>
+      <div class="tools"><h2>Extension requests<span class="badge" id="extbadge" hidden>0</span></h2></div>
+      <p class="sub" style="margin-top:-6px">Your customers ask for more time here. Approving renews them with the plan you pick, so it costs you credits like any renewal.</p>
+      <div class="list" id="extlist" aria-live="polite"></div>
+      <div class="done-list" id="extdone"></div>
+    </div>
+
+      <div class="card" id="noreq"><h2>No customer requests right now</h2><p class="sub" style="margin:0">When a customer asks for more time, it shows up here. You approve it with the plan you pick.</p></div>
+    </section>
+
+    <section class="pane" data-pane="team" id="pane-team" hidden>
     <div id="subsec" hidden>
       <div class="tools"><h2>Your sub-resellers</h2><button class="btn red sm" id="subtoggle" type="button">+ Add a sub-reseller</button></div>
       <div class="card" id="subform" hidden style="margin-bottom:14px">
@@ -163,6 +279,9 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <p class="demo">You see each sub-reseller's credits and how many customers they have. Their customers stay private to them (and to your provider).</p>
     </div>
 
+    </section>
+
+    <section class="pane" data-pane="settings" id="pane-settings" hidden>
     <div class="tools"><h2>Notifications</h2></div>
     <div class="card" id="notifycard">
       <h2>Get alerts where you already are</h2><p class="sub">Aurora messages you when a customer asks for an extension. Pick where.</p>
@@ -196,13 +315,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       <div class="row" style="margin-top:12px"><button class="btn red" id="sp-save" type="button">Save</button></div><p class="msg" id="sp-msg" role="status" hidden></p>
     </div>
 
-    <div class="tools"><h2>Watching now <span class="tag on" id="wcount">0</span></h2></div>
-    <div class="card" id="watchcard"><p class="sub">What your customers are watching right now. It updates by itself every 20 seconds.</p><div id="watchlist" aria-live="polite"></div></div>
-
-    <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name or email" style="width:220px" aria-label="Search"><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
-    <div class="chips" id="chips" role="group" aria-label="Filter"></div>
-    <div class="list" id="list" aria-live="polite"></div>
-    
+    </section>
   </div>
 </div>
 <script>
@@ -239,7 +352,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     return fetch(G + path + q, { method: method, headers: h, body: body ? JSON.stringify(body) : undefined })
       .then(function (r) { return r.json().catch(function () { return {}; }).then(function (j) { j.__status = r.status; return j; }); });
   }
-  function show(inn) { $('login').hidden = inn; $('app').hidden = !inn; $('out').hidden = !inn; }
+  function show(inn) { $('loginwrap').hidden = inn; $('app').hidden = !inn; $('out').hidden = !inn; if (!inn) $('credchip').hidden = true; }
   function out(text) { session = null; me = null; clearInterval(watchTimer); watchTimer = null; keep(); show(false); if (text) { $('lerr').hidden = false; $('lerr').textContent = text; } }
   function msg(el, text, kind) { el.hidden = !text; el.textContent = text || ''; el.className = 'msg ' + kind; }
   function gen() { var w = ['Blue','Tiger','Maple','River','Cloud','Amber','Falcon','Cedar','Pearl','Comet'], r = new Uint32Array(3); crypto.getRandomValues(r); return w[r[0] % 10] + w[r[1] % 10] + (10 + r[2] % 90); }
@@ -253,8 +366,45 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
     ['on', 'soon', 'exp', 'trial', 'hold'].forEach(function (k) { counts[k] = cs.filter(function (c) { return state(c) === k; }).length; });
     $('chips').innerHTML = Object.keys(names).map(function (k) { return '<button class="chip" type="button" data-k="' + k + '" aria-pressed="' + (filter === k) + '">' + names[k] + ' ' + counts[k] + '</button>'; }).join('');
   }
+  var PANES = ['overview', 'customers', 'add', 'requests', 'team', 'settings'], pane = 'overview';
+  function setPane(name, quiet) {
+    if (PANES.indexOf(name) < 0 || (name === 'team' && me && !me.canAddSubs)) name = 'overview';
+    pane = name;
+    [].forEach.call(document.querySelectorAll('.pane'), function (el) { el.hidden = el.getAttribute('data-pane') !== name; });
+    [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { b.setAttribute('aria-selected', b.getAttribute('data-pane') === name ? 'true' : 'false'); });
+    if (!quiet) { try { history.replaceState(null, '', '#' + name); } catch (e) { /* ignore */ } window.scrollTo(0, 0); }
+  }
+  function initials(n) { var p = String(n || '?').trim().split(/[\s_.-]+/).filter(Boolean); return ((p[0] || '?').charAt(0) + (p.length > 1 ? p[1].charAt(0) : '')).toUpperCase(); }
+  function hue(n) { var h = 0, t = String(n || ''); for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 360; return h; }
+  function avatar(c) { var nm = c.full || c.name; return '<span class="av" style="background:linear-gradient(135deg,hsl(' + hue(nm) + ' 70% 45%),hsl(' + ((hue(nm) + 50) % 360) + ' 70% 38%))" aria-hidden="true">' + esc(initials(nm)) + '</span>'; }
+  function paintDash() {
+    var cs = me.customers || [], n = function (k) { return cs.filter(function (c) { return state(c) === k; }).length; };
+    var first = String(me.name || '').split(/\s+/)[0] || 'there', h = new Date().getHours();
+    $('welcome').textContent = (h < 12 ? 'Good morning, ' : h < 18 ? 'Good afternoon, ' : 'Good evening, ') + first;
+    var needN = cs.filter(function (c) { return !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)); }).length;
+    $('welcomesub').textContent = needN ? needN + (needN === 1 ? ' customer needs' : ' customers need') + ' your attention today.' : 'Everything looks good. Nobody is due for a renewal this week.';
+    $('credchip').hidden = false; $('credchipn').textContent = me.credits; $('credchip').classList.toggle('low', !!me.low);
+    $('kpis').innerHTML = [
+      ['Customers', cs.length, 'in total', ''], ['Active', n('on') + n('trial'), 'running now', 'good'], ['Ending soon', n('soon'), 'within 7 days', n('soon') ? 'warn' : ''], ['Expired', n('exp'), n('hold') ? n('hold') + ' on hold' : 'need renewing', n('exp') ? 'bad' : '']
+    ].map(function (k) { return '<div class="kpi ' + k[3] + '"><small>' + k[0] + '</small><b>' + k[1] + '</b><span>' + k[2] + '</span></div>'; }).join('');
+    var attn = cs.filter(function (c) { return !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)); }).sort(function (a, b) { return (a.daysLeft == null ? 9999 : a.daysLeft) - (b.daysLeft == null ? 9999 : b.daysLeft); });
+    $('attnsub').textContent = attn.length ? 'Ending within 7 days, or already ended' : '';
+    $('attnlist').innerHTML = attn.length ? attn.slice(0, 6).map(function (c) {
+      var s = state(c), when = c.expired ? 'Ended ' + fmt(c.expires) : c.daysLeft === 0 ? 'Ends today' : c.daysLeft === 1 ? 'Ends tomorrow' : 'Ends in ' + c.daysLeft + ' days';
+      return '<div class="arow" data-id="' + esc(c.id) + '">' + avatar(c) + '<div class="ainfo"><b>' + esc(c.full || c.name) + '</b><span class="tag ' + s + '">' + label[s] + '</span><small>' + esc(when) + (c.planName ? ' · ' + esc(c.planName) : '') + '</small></div>' +
+        '<div class="aact"><button class="btn red sm" type="button" data-a="open">Renew</button><button class="btn line sm" type="button" data-a="copy">Copy reminder</button></div></div>';
+    }).join('') + (attn.length > 6 ? '<p class="sub" style="margin:10px 0 0">and ' + (attn.length - 6) + ' more in Customers.</p>' : '') : '<div class="goodnews"><b>All caught up</b><span>No one is ending in the next 7 days.</span></div>';
+    var r = me.report;
+    $('monthcard').hidden = !r;
+    if (r) { $('monthname').textContent = r.month; $('mstats').innerHTML = [['Added', r.added], ['Renewed', r.renewed], ['Credits used', r.used]].map(function (x) { return '<div><b>' + x[1] + '</b><small>' + x[0] + '</small></div>'; }).join(''); }
+    var pend = ((me.extensions && me.extensions.pending) || []).length + (me.request ? 0 : 0);
+    $('tc-customers').textContent = cs.length; $('tc-requests').hidden = !pend; $('tc-requests').textContent = pend;
+    $('tab-team').hidden = !me.canAddSubs;
+    $('noreq').hidden = !!pend || !$('extsec').hidden;
+  }
   function render() {
     if (!me) return;
+    paintDash();
     $('cr').textContent = me.credits; $('low').hidden = !me.low; $('who').textContent = me.name;
     $('subsec').hidden = !me.canAddSubs; $('askcard').hidden = !!me.parent;
     renderExt(); if (!$('nfields').children.length || !$('nchan').__painted) { $('nchan').__painted = true; paintNotify(); } else { $('ntest').disabled = !(me.notify && me.notify.type); $('noff').hidden = !(me.notify && me.notify.type); }
@@ -276,6 +426,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
         '<button class="btn line sm so" type="button">Sign out devices</button><button class="btn line sm hd" type="button">' + (c.hold ? 'Resume' : 'Put on hold') + '</button><button class="btn line sm vd" type="button" aria-pressed="' + (!!c.vod) + '">Provider movies and TV: ' + (c.vod ? 'On' : 'Off') + '</button><button class="btn line sm ad" type="button" aria-pressed="' + (!!c.adult) + '" title="Only switch this on for adults">Adult channels: ' + (c.adult ? 'On' : 'Off') + '</button><button class="btn line sm rm" type="button" title="When this customer gets the reminder in the app">Reminders: ' + (c.remind ? c.remind.join(', ') + ' days' : 'default') + '</button><button class="btn line sm cm" type="button" title="A message to paste into Messenger, Text or WhatsApp">Copy reminder message</button><button class="btn line sm pq" type="button" title="Is it their internet, their app settings or the provider?">Playback quality</button><button class="btn line sm dv" type="button" title="See where they are signed in and remove one device">Devices</button><button class="btn line sm cg" type="button" title="Choose which Live TV categories this customer sees, like the 24/7 channels">Channels: ' + (c.cats == null ? 'all' : c.cats) + '</button><button class="btn line sm danger del" type="button">Delete</button>' +
         (c.note ? '<div class="note">Note: ' + esc(c.note) + '</div>' : '') + '<div class="note say" aria-live="polite"></div><div class="pbox" hidden></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
+      el.querySelector('.top').insertAdjacentHTML('afterbegin', avatar(c));
       var top = el.querySelector('.top'), toggle = function () { openId = openId === c.id ? null : c.id; render(); };
       top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
       function act(btn, method, path, body, ok) {
@@ -598,10 +749,20 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; paintRules(); render(); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
+      var first = !watchTimer; me = j; paintRules(); render(); if (first) setPane(location.hash.replace('#', '') || 'overview', true); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
     }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 
+  document.addEventListener('click', function (e) {
+    var tb = e.target.closest('.tabbtn'); if (tb) { setPane(tb.getAttribute('data-pane')); return; }
+    var go = e.target.closest('[data-go]'); if (go) { setPane(go.getAttribute('data-go')); return; }
+    var b = e.target.closest('#attnlist [data-a]'); if (!b || !me) return;
+    var id = b.closest('.arow').getAttribute('data-id'), c = (me.customers || []).filter(function (x) { return x.id === id; })[0]; if (!c) return;
+    if (b.getAttribute('data-a') === 'copy') { var t = renewalMessage(c.full || c.name, c.expires); copyText(t).then(function (ok) { b.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(function () { b.textContent = 'Copy reminder'; }, 1800); }); return; }
+    filter = 'all'; $('q').value = ''; openId = id; setPane('customers'); render();
+    setTimeout(function () { var open = document.querySelector('.cust.open'); if (open) open.scrollIntoView({ block: 'center' }); }, 50);
+  });
+  window.addEventListener('hashchange', function () { if (me) setPane(location.hash.replace('#', ''), true); });
   function login() {
     var u = $('lu').value.trim(), p = $('lp').value, err = $('lerr');
     if (!u || !p) { err.hidden = false; err.textContent = 'Enter your username and password.'; return; }
@@ -613,7 +774,7 @@ input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px soli
         b.disabled = false;
         if (j.__status !== 200) { err.hidden = false; err.textContent = j.error || 'Could not sign in.'; return; }
         if (!j.reseller) { err.hidden = false; err.textContent = 'This account is not a reseller. Ask your provider to set you up.'; return; }
-        session = { token: j.token, userId: j.userId, name: j.name }; keep(); $('lp').value = ''; show(true); reload();
+        session = { token: j.token, userId: j.userId, name: j.name }; keep(); $('lp').value = ''; show(true); window.scrollTo(0, 0); reload();
       }).catch(function () { b.disabled = false; err.hidden = false; err.textContent = 'Could not reach Aurora. Check your connection.'; });
   }
   $('go').onclick = login; $('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
