@@ -1390,7 +1390,7 @@ a.user-row { border-radius: var(--radius-sm); }
 .user-row.picked { background: rgba(255,255,255,.07); }
 
 /* ---- Kids mode, notices, PIN pad ---- */
-.kids [data-route="livetv"], .kids [data-route="requests"],
+.kids [data-route="requests"],
 .kids #profile-dropdown [data-action="admin"], .kids #profile-dropdown [data-action="switch"], .kids #profile-dropdown [data-action="signout"] { display: none !important; }
 .notice-banner { display: flex; align-items: center; gap: .6rem; margin: 0 var(--pad, 1rem) 1rem; padding: .7rem 1rem; border-radius: 14px; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.12); }
 .notice-banner .notice-text { flex: 1; min-width: 0; color: #fff; text-decoration: none; line-height: 1.4; }
@@ -2088,3 +2088,24 @@ html.tv .tm-preview { width: 320px; }
 
 /* Reseller PIN */
 .pin-input { max-width: 160px; letter-spacing: .5em; text-align: center; font-size: 1.4rem; }
+
+/* Server health (professional summary) */
+.srv-banner { display: flex; gap: 1.1rem; align-items: center; border-left: 6px solid #2fbf71; }
+.srv-banner.warn { border-left-color: #e0a800; }
+.srv-banner.bad { border-left-color: #e5484d; }
+.srv-banner-icon { flex: none; width: 3rem; height: 3rem; border-radius: 50%; display: grid; place-items: center; font-size: 1.5rem; font-weight: 700; background: rgba(47,191,113,.18); color: #7ee2a8; }
+.srv-banner.warn .srv-banner-icon { background: rgba(224,168,0,.18); color: #ffd166; }
+.srv-banner.bad .srv-banner-icon { background: rgba(229,72,77,.2); color: #ff8a8f; }
+.srv-banner-text { flex: 1; min-width: 0; }
+.srv-banner-text h2 { margin: 0 0 .3rem; }
+.srv-problems { margin: .2rem 0 .4rem 1.1rem; padding: 0; line-height: 1.5; }
+.srv-stamp { margin: .2rem 0 0; font-size: .85rem; }
+.srv-pill { display: inline-block; font-size: .72rem; font-weight: 600; padding: .1rem .55rem; border-radius: 999px; margin-left: .4rem; vertical-align: middle; }
+.srv-pill.ok { background: rgba(47,191,113,.18); color: #7ee2a8; }
+.srv-pill.warn { background: rgba(224,168,0,.18); color: #ffd166; }
+.srv-pill.bad { background: rgba(229,72,77,.2); color: #ff8a8f; }
+.stat-tile.warn .stat-value { color: #ffd166; }
+.srv-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .9rem 1.4rem; }
+.srv-facts span { display: block; font-size: .8rem; opacity: .65; margin-bottom: .15rem; }
+.srv-tools-head { margin: 2rem 0 .6rem; font-size: 1.05rem; opacity: .8; }
+@media (max-width: 640px) { .srv-banner { flex-direction: column; align-items: flex-start; } }

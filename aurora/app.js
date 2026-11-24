@@ -240,6 +240,8 @@
     teens: ['Teens (up to PG-13)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G', 'PG', 'TV-PG', 'PG-13', 'TV-14']],
   };
   const kidsOn = () => store.get('ef.kids.on') === '1' && !!store.get('ef.kids.pin');
+  // Kids mode keeps Live TV, but only the children's categories (by name: Kids, Cartoon, Disney, Nick, Junior, Baby, Family ...). Adult ones never show.
+  const KIDS_LIVE_NAME = /\b(kids?|children|child|cartoons?|toons?|disney|nick(elodeon)?|junior|jr|baby|boomerang|sprout|animation|family)\b/i;
   const kidsLevel = () => (KIDS_LEVELS[store.get('ef.kids.level')] ? store.get('ef.kids.level') : 'kids');
   const kidsPinHash = (pin) => { let h = 2166136261; for (const c of 'aurora-kids:' + pin + ':' + pin.length) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
   const kidsPinOk = (pin) => kidsPinHash(pin) === store.get('ef.kids.pin');
@@ -263,6 +265,7 @@
     const on = kidsOn();
     document.documentElement.classList.toggle('kids', on);
     rowCache.clear(); // rows kept from before were not filtered
+    resetIptvCaches(); $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
     const st = $('#profile-dropdown [data-action="settings"]');
     if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
     $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isStaff());
@@ -314,7 +317,7 @@
   }
   function renderKidsGate(page, isCurrent) {
     page.innerHTML = `<div class="page-pad"><section class="settings-section kids-gate"><h2>Kids mode is on</h2>
-      <p class="muted">Only titles rated up to ${esc(KIDS_LEVELS[kidsLevel()][0])} are shown. Live TV, Requests and Settings are closed. Ask a grown-up to leave Kids mode.</p>
+      <p class="muted">Only titles rated up to ${esc(KIDS_LEVELS[kidsLevel()][0])} are shown, and Live TV has only the kids channels. Requests and Settings are closed. Ask a grown-up to leave Kids mode.</p>
       <div class="m-actions"><button class="btn btn-red" data-kids-leave>Enter PIN to leave</button><a class="btn btn-gray" href="#/home">Back to Home</a></div></section></div>`;
     $('[data-kids-leave]', page).addEventListener('click', async () => { if (await kidsLeave() && isCurrent()) route(); });
     autoFocus($('[data-kids-leave]', page));
@@ -369,6 +372,9 @@
     try {
       const p = await readAuroraPref(PROFILE_PREFS);
       if (p || !profile) { profile = p || null; store.set(profileKey(), JSON.stringify(profile)); }
+      // The Kids PIN and allowed ratings are kept on the account, so they are set once and work on every device.
+      if (profile?.kidsPin && store.get('ef.kids.pin') !== profile.kidsPin) store.set('ef.kids.pin', profile.kidsPin);
+      if (profile?.kidsLevel && KIDS_LEVELS[profile.kidsLevel] && store.get('ef.kids.level') !== profile.kidsLevel) store.set('ef.kids.level', profile.kidsLevel);
     } catch { ok = false; /* keep what this device has */ }
     applyProfileUi();
     return ok;
@@ -1078,7 +1084,8 @@
     const mkey = maintKeyOfRoute(name, params);
     if (mkey && maintOn(mkey)) return renderMaintenance(page, mkey);
     if (kidsOn()) {
-      if (['livetv', 'requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
+      if (name === 'livetv' && !iptvOn()) { location.hash = '#/home'; return; }
+      if (['requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
       if (name === 'settings') return renderKidsGate(page, isCurrent);
     }
     switch (name) {
@@ -1382,7 +1389,7 @@
   const providerFlags = {};
   const providerKey = () => 'ef.vod.' + state.userId;
   function setProviderAllowed(on) { providerFlags[state.userId] = !!on; try { store.set(providerKey(), on ? '1' : '0'); } catch { /* ignore */ } }
-  const providerOk = () => !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
+  const providerOk = () => !kidsOn() && !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
     && (state.userId in providerFlags ? providerFlags[state.userId] : store.get(providerKey()) === '1');
   const pvCache = new Map();
   async function pvGet(action, params = {}) {
@@ -2061,7 +2068,7 @@
   const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
   const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null, catNames: new Map() };
   const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
-  const showLiveLink = () => hasLiveTv() || iptvOn();
+  const showLiveLink = () => (kidsOn() ? iptvOn() : hasLiveTv() || iptvOn());
 
   function iptvLocalKey() { return 'ef.iptv.' + state.userId; }
   function loadIptvConfigLocal() {
@@ -2292,6 +2299,7 @@
     // Adult categories (Admin -> Live TV tags them) are shown only to an account that has the switch on and has entered its PIN.
     // They are shown even when the plan or the admin's choice leaves them out: the switch is what decides.
     const isAdult = adultTest(cfg), allowAdult = adultUnlocked();
+    if (kidsOn()) return (id) => !isAdult(id) && KIDS_LIVE_NAME.test(String(iptv.catNames.get(String(id)) ?? '')) && (!mine || mine.has(String(id))) && (!base || base(id));
     return (id) => {
       if (isAdult(id)) return allowAdult;
       if (mine && !mine.has(String(id))) return false;
@@ -2369,7 +2377,7 @@
     resetIptvCaches();
     route();
   }
-  const adultRow = () => (adultSwitchOn() && !isAdmin() ? [{ id: '__adult', name: adultUnlocked() ? '\u{1F513} Adult (tap to lock)' : '\u{1F512} Adult', adultRow: true }] : []);
+  const adultRow = () => (adultSwitchOn() && !isAdmin() && !kidsOn() ? [{ id: '__adult', name: adultUnlocked() ? '\u{1F513} Adult (tap to lock)' : '\u{1F512} Adult', adultRow: true }] : []);
   const planCatsKey = () => 'ef.planCats.' + state.userId;
   function planCategories() {
     try { const v = JSON.parse(store.get(planCatsKey()) || 'null'); return Array.isArray(v) ? new Set(v.map(String)) : null; } catch { return null; }
@@ -5686,8 +5694,8 @@
         ${settingRow('Avatar and name', profile?.avatar || profile?.name ? `${profile?.name ? esc(profile.name) + ' · ' : ''}Shown in the top bar and as a greeting on Home.` : 'Pick an avatar, a name and what you like.', `<span class="su-set">${profile?.avatar ? avatarSvg(profile.avatar, 40) : ''}<button class="btn btn-gray" data-redo-setup>${profile?.done ? 'Set up again' : 'Set up my profile'}</button></span>`)}
       </section>
       <section class="settings-section">
-        <h2>Kids mode <small>This device</small></h2>
-        ${settingRow('Kids mode', 'Shows only titles rated for children and closes Live TV, Requests and Settings. You need a PIN to leave it.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
+        <h2>Kids mode <small>Turn it on per device</small></h2>
+        ${settingRow('Kids mode', 'Shows only titles rated for children, only the kids channels in Live TV, and closes Requests and Settings. You need a PIN to leave it. The PIN is the same on all your devices.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
         ${settingRow('Allowed ratings', 'Titles with no rating are hidden.', selectHtml('kidsLevel', Object.entries(KIDS_LEVELS).map(([k, v]) => [k, v[0]]), kidsLevel()))}
         ${settingRow('PIN', store.get('ef.kids.pin') ? 'Needed to leave Kids mode.' : 'Not set yet. You choose one when you turn Kids mode on.', '<button class="btn btn-gray" data-kids-pin>' + (store.get('ef.kids.pin') ? 'Change PIN' : 'Set PIN') + '</button>')}
       </section>
@@ -5753,10 +5761,10 @@
         case 'subMode': saveAccount({ SubtitleMode: v }); break;
         case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
         case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
-        case 'kidsLevel': store.set('ef.kids.level', v); toast('Saved', 1500); break;
+        case 'kidsLevel': store.set('ef.kids.level', v); saveProfile({ kidsLevel: v }); toast('Saved', 1500); break;
         case 'kidsMode': (async () => {
           if (v === 'on') {
-            if (!store.get('ef.kids.pin')) { const pin = await kidsAskNewPin(); if (!pin) { sel.value = 'off'; return; } store.set('ef.kids.pin', kidsPinHash(pin)); }
+            if (!store.get('ef.kids.pin')) { const pin = await kidsAskNewPin(); if (!pin) { sel.value = 'off'; return; } store.set('ef.kids.pin', kidsPinHash(pin)); saveProfile({ kidsPin: kidsPinHash(pin), kidsLevel: kidsLevel() }); }
             store.set('ef.kids.on', '1'); applyKidsUi(); toast('Kids mode is on', 2500); location.hash = '#/home';
           } else { sel.value = 'on'; if (await kidsLeave()) sel.value = 'off'; }
         })(); break;
@@ -5771,7 +5779,7 @@
       if (store.get('ef.kids.pin')) { const old = await pinPad('Current PIN', 'Enter your PIN first.'); if (old == null) return; if (!kidsPinOk(old)) return toast('Wrong PIN', 2500); }
       const pin = await kidsAskNewPin();
       if (!pin) return;
-      store.set('ef.kids.pin', kidsPinHash(pin));
+      store.set('ef.kids.pin', kidsPinHash(pin)); saveProfile({ kidsPin: kidsPinHash(pin) });
       toast('PIN saved', 2000);
       if (isCurrent()) renderSettings(page, isCurrent);
     });
@@ -9926,7 +9934,8 @@
     if (!guardEnabled) return needGuard(body, 'Server health');
     // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
     const noteBox = document.createElement('div'), updBox = document.createElement('div'), sumBox = document.createElement('div'), main = document.createElement('div');
-    body.append(noteBox, updBox, sumBox, main);
+    const toolsHead = document.createElement('h3'); toolsHead.className = 'srv-tools-head'; toolsHead.textContent = 'Settings and tools';
+    body.replaceChildren(main, toolsHead, noteBox, updBox, sumBox); // replaceChildren also clears the page's loading spinner
     guardUpdateCard(updBox, isCurrent);
     dailySummaryCard(sumBox, isCurrent);
     (async () => {
@@ -9943,43 +9952,86 @@
       $('[data-note-save]', noteBox).addEventListener('click', () => save($('[data-note]', noteBox).value.trim()));
       $('[data-note-clear]', noteBox).addEventListener('click', () => save(''));
     })();
+    let checkHtml = '<p class="muted">Press Run checks to test the Emby server, Aurora Guard, your TV provider, app updates and the last day of playback problems.</p>', checkBtn = 'Run checks', checking = false;
+    const ago = (t) => { const sec = Math.max(0, Math.round((Date.now() - t) / 1000)); return sec < 5 ? 'just now' : sec < 60 ? sec + ' seconds ago' : Math.round(sec / 60) + ' min ago'; };
+    let lastDrawn = null;
+    const pill = (lvl, kind) => `<span class="srv-pill ${lvl}">${lvl === 'ok' ? 'Healthy' : kind === 'disk' ? (lvl === 'warn' ? 'Getting full' : 'Almost full') : lvl === 'warn' ? 'Busy' : 'Needs attention'}</span>`;
     const draw = (s) => {
-      const hot = (v, at) => (v != null && v >= at ? 'bad' : '');
+      lastDrawn = s;
+      const cpuL = s.cpu == null ? 'ok' : s.cpu >= 90 ? 'bad' : s.cpu >= 75 ? 'warn' : 'ok';
+      const memL = s.mem.pct == null ? 'ok' : s.mem.pct >= 92 ? 'bad' : s.mem.pct >= 80 ? 'warn' : 'ok';
+      const embyL = s.emby.online ? 'ok' : 'bad';
+      const diskL = (d) => (d.error ? 'warn' : d.freePct < 10 ? 'bad' : d.freePct < 20 ? 'warn' : 'ok');
+      const problems = [];
+      if (!s.emby.online) problems.push('Emby cannot be reached, so nobody can watch. Check that Emby is running on the PC.');
+      if (cpuL !== 'ok') problems.push(cpuL === 'bad' ? 'The processor is almost maxed out. Streams may stutter. Fewer people converting video would help.' : 'The processor is working hard right now.');
+      if (memL !== 'ok') problems.push(memL === 'bad' ? 'The PC is nearly out of memory. Restart a heavy program or the PC at a quiet time.' : 'Memory use is high.');
+      for (const d of s.disks || []) { const l = diskL(d); if (l === 'bad') problems.push(`${d.path} is almost full (${d.freePct}% free). Free up space soon.`); else if (l === 'warn' && !d.error) problems.push(`${d.path} is getting full (${d.freePct}% free).`); }
+      const level = problems.length === 0 ? 'ok' : (!s.emby.online || cpuL === 'bad' || memL === 'bad' || (s.disks || []).some((d) => diskL(d) === 'bad')) ? 'bad' : 'warn';
+      const headline = level === 'ok' ? 'Everything is running smoothly' : level === 'warn' ? 'Running, with a few things to watch' : 'Something needs your attention';
+      const total = s.streams.playing + s.streams.live;
       const disks = (s.disks || []).map((d) => d.error ? `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong><div class="muted">${esc(d.error)}</div></div></div>`
-        : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> <span class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</span>
-          <div class="usage-bar${d.freePct < 10 ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
+        : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> ${pill(diskL(d), 'disk')}<div class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</div>
+          <div class="usage-bar${diskL(d) === 'bad' ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
+      const tile = (label, value, note, lvl) => statTile(label, value, `${note}`, lvl === 'ok' ? 'good' : lvl);
       main.innerHTML = `
+        <section class="admin-card srv-banner ${level}"><div class="srv-banner-icon" aria-hidden="true">${level === 'ok' ? '&#10003;' : '!'}</div>
+          <div class="srv-banner-text"><h2>${esc(headline)}</h2>
+            ${problems.length ? `<ul class="srv-problems">${problems.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="muted">Emby is online and the PC has plenty of room. Nothing to do.</p>'}
+            <p class="muted srv-stamp" data-stamp>Updated ${esc(ago(s.__at || Date.now()))} · refreshes by itself</p></div>
+          <button class="btn btn-gray" data-srv-refresh>Refresh</button></section>
         <div class="stat-grid">
-          ${statTile('Processor', s.cpu == null ? '…' : s.cpu + '%', `${s.cores} cores`, hot(s.cpu, 85))}
-          ${statTile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, hot(s.mem.pct, 90))}
-          ${statTile('Streams now', s.streams.playing + s.streams.live, `${s.streams.transcoding} converting · ${s.streams.direct} direct${s.streams.live ? ` · ${s.streams.live} live TV` : ''}`)}
-          ${statTile('Emby', s.emby.online ? 'Online' : 'Offline', s.emby.online ? 'Guard can reach it' : esc(s.emby.error || ''), s.emby.online ? 'good' : 'bad')}
+          ${tile('Emby', s.emby.online ? 'Online' : 'Offline', s.emby.online ? 'Aurora Guard can reach it' : esc(s.emby.error || 'Not answering'), embyL)}
+          ${tile('Processor', s.cpu == null ? '…' : s.cpu + '%', cpuL === 'ok' ? `Plenty of room · ${s.cores} cores` : cpuL === 'warn' ? 'Working hard' : 'Maxed out', cpuL)}
+          ${tile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, memL)}
+          ${tile('Watching now', total, total ? `${s.streams.playing} playing${s.streams.live ? ` · ${s.streams.live} live TV` : ''} · ${s.streams.transcoding} converting` : 'Nobody is watching', 'ok')}
         </div>
+        <section class="admin-card"><h2>Service checks</h2>
+          <div data-health>${checkHtml}</div>
+          <button class="btn btn-white" data-srv-check ${checking ? 'disabled' : ''}>${esc(checkBtn)}</button></section>
         <section class="admin-card"><h2>Last 24 hours</h2>
           <div class="spark-grid">
             <div><div class="spark-label">Processor</div>${sparkline(s.history, 'cpu')}</div>
             <div><div class="spark-label">Memory</div>${sparkline(s.history, 'mem')}</div>
-            <div><div class="spark-label">Streams playing</div>${sparkline(s.history, 'playing', Math.max(4, ...s.history.map((p) => p.playing || 0)))}</div>
-            <div><div class="spark-label">Converting (transcode)</div>${sparkline(s.history, 'transcoding', Math.max(4, ...s.history.map((p) => p.transcoding || 0)))}</div>
+            <div><div class="spark-label">People watching</div>${sparkline(s.history, 'playing', Math.max(4, ...s.history.map((x) => x.playing || 0)))}</div>
+            <div><div class="spark-label">Converting video</div>${sparkline(s.history, 'transcoding', Math.max(4, ...s.history.map((x) => x.transcoding || 0)))}</div>
           </div>
-          <p class="muted">One point a minute, kept while the guard is running (a restart starts the chart again).</p>
+          <p class="muted">One point a minute while Aurora Guard is running. A restart starts the charts again.</p>
         </section>
-        <section class="admin-card"><h2>Disk space</h2><div class="admin-list">${disks || '<p class="muted">No drives to show.</p>'}</div>
-          <p class="muted">To watch your media drives too, list them in the guard's config.json, for example <code>"diskPaths": ["D:\\\\", "E:\\\\"]</code>. An alert is sent when one drops under 10% free.</p></section>
-        <section class="admin-card"><h2>The PC</h2>
-          <div class="admin-row"><div class="admin-row-main">${esc(s.hostname)} · ${esc(s.platform)}</div></div>
-          <div class="admin-row"><div class="admin-row-main">PC on for ${esc(fmtUptime(s.pcUptime))} · Aurora Guard ${esc(s.version)} running for ${esc(fmtUptime(s.guardUptime))}</div></div>
-        </section>`;
+        <section class="admin-card"><h2>Storage</h2><div class="admin-list">${disks || '<p class="muted">No drives to show.</p>'}</div>
+          <p class="muted">An alert is sent when a drive drops under 10% free. To watch your media drives too, list them in the Guard's config.json, for example <code>"diskPaths": ["D:\\\\", "E:\\\\"]</code>.</p></section>
+        <section class="admin-card"><h2>About this server</h2>
+          <div class="srv-facts">
+            <div><span>Computer</span><strong>${esc(s.hostname)}</strong></div>
+            <div><span>System</span><strong>${esc(s.platform)}</strong></div>
+            <div><span>PC on for</span><strong>${esc(fmtUptime(s.pcUptime))}</strong></div>
+            <div><span>Aurora Guard</span><strong>${esc(s.version)} · up ${esc(fmtUptime(s.guardUptime))}</strong></div>
+          </div></section>`;
     };
+    // Admin tools (kept apart: they must not redraw every 15 s). Clicks on the health area are handled here once.
+    main.addEventListener('click', async (e) => {
+      const t = e.target.closest('button'); if (!t) return;
+      if (t.matches('[data-srv-refresh]')) { t.disabled = true; try { const f = await guard('/server'); f.__at = Date.now(); if (isCurrent()) draw(f); } catch (err) { toast("Couldn't refresh: " + err.message); } return; }
+      if (t.matches('[data-srv-check]')) {
+        if (checking) return; checking = true; checkBtn = 'Checking…'; t.disabled = true; t.textContent = checkBtn;
+        try {
+          const users = await api('/Users').catch(() => []);
+          const r = await runHealthCheck($('[data-health]', main), Array.isArray(users) ? users : []);
+          checkHtml = $('[data-health]', main).innerHTML;
+          checkBtn = r.bads ? `${r.bads} ${r.bads === 1 ? 'problem' : 'problems'} · check again` : r.warns ? `${r.warns} to look at · check again` : 'All good · check again';
+        } catch (err) { checkBtn = 'Run checks'; toast("Couldn't finish the checks: " + err.message); }
+        checking = false; if (lastDrawn) draw(lastDrawn);
+      }
+    });
     let s;
     try { s = await guard('/server'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Server health</h2><p class="live-result bad">${guardOldNote(e, 'server health')}</p></section>`; return; }
     if (!isCurrent()) return;
-    draw(s);
+    s.__at = Date.now(); draw(s);
     // Refresh every 15 s while the page is open.
     const timer = routeInterval(async () => {
       if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
       if (document.hidden) return;
-      try { const fresh = await guard('/server'); if (isCurrent()) draw(fresh); } catch { /* keep the last numbers */ }
+      try { const fresh = await guard('/server'); fresh.__at = Date.now(); if (isCurrent() && !checking) draw(fresh); } catch { const st = $('[data-stamp]', main); if (st && lastDrawn) st.textContent = 'Could not reach Aurora Guard just now. Showing the last reading from ' + ago(lastDrawn.__at || Date.now()) + '.'; }
     }, 15000);
   }
 
