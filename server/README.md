@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.48.0
+
+- Change your own password. `POST /account/password` (`{ current, next }`) checks the current password, then sets the new one (8 to 64 characters). Limited to 8 tries an hour per account. Used by the website account page, which also shows the viewing summary (`/stats`), messages (`/inbox`), support chat (`/support`) and referral code (`/referral`) with the routes that were already there.
+
 ## 1.47.0
 
 - Customer account page support. `GET /account/devices` lists the signed-in customer's own devices (name, app, last seen, whether in use right now), and `POST /account/devices/remove` (`{ deviceId }`) signs one out, which frees its connection. Only the customer's own devices can be reached. The website page `/account/` uses these together with `/account` and `/extension`.
