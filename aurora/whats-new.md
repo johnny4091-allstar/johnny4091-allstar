@@ -1,3 +1,4 @@
+- New: Aurora for Windows laptops and PCs (download from the Aurora website), and Aurora can now be installed from a web browser too. Resellers have setup guides for both.
 - The Admin PIN now also locks Admin → Users, next to Resellers and credit requests. Needs Aurora Guard 1.36.0.
 - New: add an administrator or a moderator at any time from Admin → Users ("Admins and moderators"), and remove them again. Who is an administrator is now decided by Emby's administrator switch, not a fixed list of names. Needs Aurora Guard 1.35.0.
 - New: Reseller PIN. Lock Admin → Resellers and credit requests behind a 4-digit PIN so another administrator can't open them. Set it in Admin → Resellers. Needs Aurora Guard 1.34.0.

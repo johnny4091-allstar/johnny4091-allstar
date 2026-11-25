@@ -9,7 +9,9 @@ window.AURORA_SITE = {
   // The code people type into the Downloader app on their TV.
   downloaderCode: '3643447',
   // Address of Aurora in a browser, for "Open on the web". Leave blank to hide that card.
-  webAppUrl: '',
+  webAppUrl: 'https://aurora-streaming.org/app/',
+  // The Windows installer. Leave blank to hide that card.
+  winUrl: 'https://aurora-streaming.org/windows',
   // How to reach you (an email address or a phone number). Leave blank to hide the "Questions?" box.
   contact: '',
 };

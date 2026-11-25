@@ -1,0 +1,32 @@
+{
+  "name": "aurora-windows",
+  "productName": "Aurora",
+  "version": "2.0.0",
+  "description": "Aurora for Windows",
+  "main": "main.js",
+  "private": true,
+  "author": "Aurora",
+  "scripts": {
+    "prepare-app": "node scripts/copy-app.js",
+    "start": "npm run prepare-app && electron .",
+    "dist": "npm run prepare-app && electron-builder --win --x64 --publish never",
+    "test": "node test/serve.test.js"
+  },
+  "dependencies": {
+    "electron-updater": "6.3.9"
+  },
+  "devDependencies": {
+    "electron": "33.2.1",
+    "electron-builder": "25.1.8"
+  },
+  "build": {
+    "appId": "org.aurora-streaming.aurora",
+    "productName": "Aurora",
+    "copyright": "Aurora",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["main.js", "preload.js", "serve.js", "app/**/*", "build/icon.png", "package.json"],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "icon": "build/icon.png", "artifactName": "Aurora-Setup.exe" },
+    "nsis": { "oneClick": true, "perMachine": false, "runAfterFinish": true, "deleteAppDataOnUninstall": false, "createDesktopShortcut": true, "createStartMenuShortcut": true, "shortcutName": "Aurora" },
+    "publish": [{ "provider": "generic", "url": "https://github.com/johnny4091-allstar/johnny4091-allstar/releases/download/aurora-windows/" }]
+  }
+}

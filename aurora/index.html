@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Aurora</title>
+  <meta name="theme-color" content="#070c1c">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-180.png">
   <link rel="stylesheet" href="styles.css">
   <!-- Splash styles are inline so it shows on the very first frame. -->
   <style>
@@ -19,6 +23,7 @@
 <body>
   <!-- Splash: shown while Aurora starts and loads; app.js fades it out. -->
   <div id="splash" aria-label="Aurora is loading" role="img"><canvas id="splash-cv"></canvas></div>
+  <script src="pwa.js"></script>
   <script src="splash.js"></script>
   <!-- Connect screen -->
   <section id="setup" class="screen hidden">

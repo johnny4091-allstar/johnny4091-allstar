@@ -180,6 +180,13 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 .legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:12px; color:var(--muted); font-size:.82rem; } .lg { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; } .lg.a { background:#6f6bff; } .lg.r { background:#2ad4d0; }
 .toast { position:fixed; left:50%; bottom:max(20px,env(safe-area-inset-bottom,0px)); transform:translateX(-50%); z-index:60; padding:12px 18px; border-radius:12px; background:#14264f; border:1px solid #2f4a8f; color:#fff; box-shadow:0 14px 40px rgba(0,0,0,.5); max-width:min(92vw,460px); }
 @media (max-width:560px) { .bars { gap:6px; height:180px; } .pr-in { width:92px; } }
+/* ---- Reseller tools, part 2 ---- */
+.mlist { max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:12px; background:#0a1126; }
+.mrow { display:flex; align-items:center; gap:12px; padding:10px 12px; border-top:1px solid var(--line); cursor:pointer; margin:0; font-weight:400; color:#fff; } .mrow:first-child { border-top:0; } .mrow input { width:auto; accent-color:#4f7bff; } .mrow > span:nth-child(2) { flex:1; min-width:0; }
+#imp-card summary::-webkit-details-marker { display:none; } #imp-card[open] summary { margin-bottom:6px; } #imp-file { padding:9px; }
+#gd-text { min-height:200px; } @media (max-width:560px) { .help-link { display:none; } }
+@media (max-width:560px) { .mrow { flex-wrap:wrap; } }
+
 </style>
 </head>
 <body>
@@ -187,7 +194,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 <div class="wrap">
   <header class="top-bar">
     <div class="pill"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg><span>Reseller panel</span></div>
-    <div class="top-right"><span class="credchip" id="credchip" hidden title="Your credits"><b id="credchipn">0</b> credits</span><button class="btn line sm" id="out" hidden>Sign out</button></div>
+    <div class="top-right"><a class="btn line sm help-link" href="help/" target="_blank" rel="noopener">Help</a><span class="credchip" id="credchip" hidden title="Your credits"><b id="credchipn">0</b> credits</span><button class="btn line sm" id="out" hidden>Sign out</button></div>
   </header>
 
   <div class="login-wrap" id="loginwrap">
@@ -217,9 +224,12 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       <button class="tabbtn" role="tab" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
       <button class="tabbtn" role="tab" type="button" data-pane="add" aria-selected="false">Add customer</button>
       <button class="tabbtn" role="tab" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
+      <button class="tabbtn" role="tab" type="button" data-pane="money" aria-selected="false">Money <span class="tcount hot" id="tc-money" hidden>0</span></button>
+      <button class="tabbtn" role="tab" type="button" data-pane="messages" aria-selected="false">Messages</button>
       <button class="tabbtn" role="tab" type="button" data-pane="support" aria-selected="false">Support <span class="tcount hot" id="tc-support" hidden>0</span></button>
       <button class="tabbtn" role="tab" type="button" data-pane="reports" aria-selected="false">Reports</button>
       <button class="tabbtn" role="tab" type="button" data-pane="sales" aria-selected="false">Sales tools</button>
+      <button class="tabbtn" role="tab" type="button" data-pane="guides" aria-selected="false">Guides</button>
       <button class="tabbtn" role="tab" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
       <button class="tabbtn" role="tab" type="button" data-pane="settings" aria-selected="false">Settings</button>
     </nav>
@@ -238,6 +248,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
         <div class="card" id="attn"><div class="sec-h"><h2>Needs your attention</h2><span class="sub" style="margin:0" id="attnsub"></span></div><div id="attnlist"></div></div>
         <div class="card" id="monthcard"><div class="sec-h"><h2 id="monthname">This month</h2></div><div class="mstats" id="mstats"></div></div>
       </div>
+    <div class="card" id="fc-card"></div>
     <div class="tools"><h2>Watching now <span class="tag on" id="wcount">0</span></h2></div>
     <div class="card" id="watchcard"><p class="sub">What your customers are watching right now. It updates by itself every 20 seconds.</p><div id="watchlist" aria-live="polite"></div></div>
 
@@ -246,6 +257,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     <section class="pane" data-pane="customers" id="pane-customers" hidden>
     <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name, email or phone" style="width:220px" aria-label="Search"><button class="btn line sm" id="bk-toggle" type="button">Bulk renew</button><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
     <div class="chips" id="chips" role="group" aria-label="Filter"></div>
+    <div class="chips" id="lblchips" role="group" aria-label="Labels"></div>
     <div class="bulkbar" id="bulkbar" hidden><label class="toggle" style="margin:0"><input type="checkbox" id="bk-all"> Select all shown</label><span id="bk-count" class="bk-count">0 selected</span><select id="bk-plan" aria-label="Plan to renew with" style="width:auto"></select><button class="btn red sm" id="bk-go" type="button" disabled>Renew selected</button><button class="btn line sm" id="bk-cancel" type="button">Cancel</button><p class="msg" id="bk-msg" role="status" hidden style="flex-basis:100%;margin:0"></p></div>
     <div class="list" id="list" aria-live="polite"></div>
     </section>
@@ -270,6 +282,47 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     </div>
 
 
+      <details class="card" id="imp-card" style="margin-top:16px"><summary style="cursor:pointer;font-weight:800;font-size:1.1rem">Import many customers at once</summary>
+        <p class="sub" style="margin-top:8px">Paste rows from a spreadsheet (Excel or Google Sheets) or a CSV file. Columns: <b>Full name, Email, Phone, Note</b> (a header row is fine). Usernames and passwords are made for you. Up to 50 at a time. Each one uses the plan's credits.</p>
+        <div class="grid"><div><label for="imp-plan">Plan for everyone</label><select id="imp-plan"></select></div><div style="display:flex;align-items:end"><input type="file" id="imp-file" accept=".csv,.tsv,.txt,text/csv" aria-label="Choose a CSV file"></div></div>
+        <label for="imp-text" style="margin-top:12px">Customers</label><textarea id="imp-text" rows="6" placeholder="Mike Turner, mike@example.com, +1 555 0100, pays on the 1st&#10;Sara Lee, sara@example.com"></textarea>
+        <div id="imp-prev" class="meta"></div>
+        <div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn line" id="imp-check" type="button">Preview</button><button class="btn red" id="imp-go" type="button" disabled>Import</button></div>
+        <p class="msg" id="imp-msg" role="status" hidden></p>
+        <div id="imp-res"></div></details>
+    </section>
+
+    <section class="pane" data-pane="money" id="pane-money" hidden>
+      <div class="card" id="mn-fc"></div>
+      <div class="kpis" id="mn-kpis"></div>
+      <div class="card"><div class="sec-h"><h2>Record a payment</h2></div>
+        <div class="grid"><div><label for="pm-cust">Customer</label><select id="pm-cust"></select></div><div><label for="pm-amt">Amount</label><input id="pm-amt" type="number" min="0" step="0.01" inputmode="decimal" placeholder="25.00"></div>
+          <div><label for="pm-status">Status</label><select id="pm-status"><option value="paid">Paid</option><option value="owes">Still owes</option></select></div><div><label for="pm-method">Method</label><select id="pm-method"><option value="">-</option><option>Cash</option><option>Zelle</option><option>Cash App</option><option>PayPal</option><option>Venmo</option><option>Bank</option><option>Other</option></select></div>
+          <div><label for="pm-date">Date</label><input id="pm-date" type="date"></div><div><label for="pm-note">Note</label><input id="pm-note" maxlength="80" placeholder="e.g. November"></div></div>
+        <button class="btn red" id="pm-go" type="button" style="margin-top:14px">Save payment</button><p class="msg" id="pm-msg" role="status" hidden></p></div>
+      <div class="card" id="mn-owed"></div>
+      <div class="card"><div class="sec-h"><h2>Recent payments</h2><span class="sub" style="margin:0">Last 3 months</span></div><div id="mn-list"></div></div>
+    </section>
+
+    <section class="pane" data-pane="messages" id="pane-messages" hidden>
+      <div class="card"><div class="sec-h"><h2>Message your customers</h2></div>
+        <p class="sub">The message shows in each customer's inbox in the Aurora app and on their account page, for 30 days. It comes from you. Pick who gets it.</p>
+        <div class="row" style="flex-wrap:wrap;margin-bottom:10px"><select id="ms-filter" aria-label="Who" style="width:auto"></select><button class="btn line sm" id="ms-all" type="button">Select all shown</button><button class="btn line sm" id="ms-none" type="button">Clear</button></div>
+        <div class="mlist" id="ms-list"></div>
+        <label for="ms-text" style="margin-top:14px">Message <span class="cnt" id="ms-cnt">0 / 300</span></label><textarea id="ms-text" maxlength="300" rows="3" placeholder="Write your message..."></textarea>
+        <div class="chan" id="ms-tpl"></div>
+        <button class="btn red" id="ms-send" type="button">Send message</button><p class="msg" id="ms-msg" role="status" hidden></p></div>
+      <div class="card"><div class="sec-h"><h2>Sent</h2></div><div id="ms-sent"><p class="sub" style="margin:0">Nothing sent yet.</p></div></div>
+    </section>
+
+    <section class="pane" data-pane="guides" id="pane-guides" hidden>
+      <div class="card"><div class="sec-h"><h2>Setup guides for your customers</h2></div>
+        <p class="sub">Pick a device, then copy the instructions into a message, or share the link. The page opens in a customer's browser with the steps for that device.</p>
+        <div class="chan" id="gd-tabs" role="tablist"></div>
+        <label for="gd-cust">Add a customer's username to the message <span style="font-weight:400;color:var(--dim)">(optional)</span></label><select id="gd-cust"><option value="">No one in particular</option></select>
+        <textarea id="gd-text" rows="10" readonly style="margin-top:12px" aria-label="Instructions"></textarea>
+        <div class="row" style="flex-wrap:wrap"><button class="btn red" id="gd-copy" type="button">Copy instructions</button><button class="btn line" id="gd-link" type="button">Copy link to this guide</button></div><p class="msg" id="gd-msg" role="status" hidden></p></div>
+      <div class="card"><h2>Reseller help center</h2><p class="sub">Answers to common questions: adding and renewing customers, trials, prices, coupons, payments, messages and fixing problems.</p><a class="btn red" href="help/" target="_blank" rel="noopener" style="display:inline-block;text-decoration:none">Open the help center</a></div>
     </section>
 
     <section class="pane" data-pane="requests" id="pane-requests" hidden>
@@ -302,6 +355,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       <div class="card" id="tl-card"></div>
       <div class="card" id="pr-card"></div>
       <div class="card" id="pl-card"></div>
+      <div class="card" id="cp-card"></div>
       <div class="card" id="tp-card"></div>
     </section>
 
@@ -371,7 +425,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   var $ = function (i) { return document.getElementById(i); };
   var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, '');
   var session = null, me = null, filter = 'all', openId = null, busy = false;
-  var catsCache = null, bulk = false, picked = {}, lastRows = [], lastMade = null;
+  var catsCache = null, bulk = false, picked = {}, lastRows = [], lastMade = null, lblFilter = '', inactiveSet = null, msgPick = {}, gdKey = 'firetv';
   try { session = JSON.parse(sessionStorage.getItem('aurora.reseller') || 'null'); } catch (e) { session = null; }
   function keep() { try { if (session) sessionStorage.setItem('aurora.reseller', JSON.stringify(session)); else sessionStorage.removeItem('aurora.reseller'); } catch (e) { /* private window */ } }
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -422,14 +476,21 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   function matchFilter(c, k) {
     k = k || filter; if (k === 'all') return true;
     if (/^due/.test(k)) return !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(k.slice(3));
+    if (k === 'inact') return !!inactiveSet && inactiveSet.has(c.id);
     return state(c) === k;
   }
+  function lblChips() {
+    var all = {}; (me.customers || []).forEach(function (c) { (c.labels || []).forEach(function (l) { all[l] = (all[l] || 0) + 1; }); });
+    var names = Object.keys(all).sort();
+    $('lblchips').innerHTML = names.length ? '<span class="meta" style="align-self:center;margin-right:4px">Labels:</span>' + names.map(function (l) { return '<button class="chip" type="button" data-l="' + esc(l) + '" aria-pressed="' + (lblFilter === l) + '">' + esc(l) + ' ' + all[l] + '</button>'; }).join('') : '';
+  }
+  function loadInactive() { api('GET', '/reseller/inactive?days=14').then(function (j) { if (j.__status === 200) { inactiveSet = new Set((j.customers || []).map(function (c) { return c.id; })); chips(); if (pane === 'customers' || pane === 'messages') render(); } }).catch(function () { /* older guard */ }); }
   function chips() {
-    var cs = me.customers || [], counts = { all: cs.length }, names = { all: 'All', on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold', due14: 'Due in 14 days', due30: 'Due in 30 days' };
+    var cs = me.customers || [], counts = { all: cs.length }, names = { all: 'All', on: 'Active', soon: 'Ending soon', exp: 'Expired', trial: 'Trial', hold: 'On hold', due14: 'Due in 14 days', due30: 'Due in 30 days', inact: 'Inactive 14 days' };
     Object.keys(names).forEach(function (k) { if (k !== 'all') counts[k] = cs.filter(function (c) { return matchFilter(c, k); }).length; });
     $('chips').innerHTML = Object.keys(names).map(function (k) { return '<button class="chip" type="button" data-k="' + k + '" aria-pressed="' + (filter === k) + '">' + names[k] + ' ' + counts[k] + '</button>'; }).join('');
   }
-  var PANES = ['overview', 'customers', 'add', 'requests', 'support', 'reports', 'sales', 'team', 'settings'], pane = 'overview';
+  var PANES = ['overview', 'customers', 'add', 'requests', 'money', 'messages', 'support', 'reports', 'sales', 'guides', 'team', 'settings'], pane = 'overview';
   function setPane(name, quiet) {
     if (PANES.indexOf(name) < 0 || (name === 'team' && me && !me.canAddSubs)) name = 'overview';
     pane = name;
@@ -463,7 +524,8 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     if (r) { $('monthname').textContent = r.month; $('mstats').innerHTML = [['Added', r.added], ['Renewed', r.renewed], ['Credits used', r.used]].map(function (x) { return '<div><b>' + x[1] + '</b><small>' + x[0] + '</small></div>'; }).join(''); }
     var pend = ((me.extensions && me.extensions.pending) || []).length + (me.request ? 0 : 0);
     $('tc-customers').textContent = cs.length; $('tc-requests').hidden = !pend; $('tc-requests').textContent = pend;
-    $('tab-team').hidden = !me.canAddSubs;
+    $('tab-team').hidden = !me.canAddSubs; paintForecast();
+    $('pm-cust') && !$('pm-cust').options.length && fillCustSelect($('pm-cust'));
     var tko = me.ticketsOpen || 0; $('tc-support').hidden = !tko; $('tc-support').textContent = tko;
     $('noreq').hidden = !!pend || !$('extsec').hidden;
   }
@@ -478,9 +540,9 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     $('trialnote').textContent = 'A free trial costs nothing (you have ' + me.trialsLeft + ' left today).';
     var keepPlan = $('plan').value; $('plan').innerHTML = planOptions(); if (keepPlan) $('plan').value = keepPlan;
     if (me.request) { $('askmsg').hidden = false; $('askmsg').className = 'msg ok'; $('askmsg').textContent = 'Your request for ' + me.request.amount + ' credits is waiting.'; $('askbtn').disabled = true; } else { $('askbtn').disabled = false; }
-    chips();
+    chips(); lblChips();
     var q = $('q').value.trim().toLowerCase(), list = $('list'); list.innerHTML = '';
-    var rows = (me.customers || []).filter(function (c) { return matchFilter(c) && (!q || ((c.name || '') + ' ' + (c.full || '') + ' ' + (c.email || '') + ' ' + (c.phone || '')).toLowerCase().indexOf(q) >= 0); });
+    var rows = (me.customers || []).filter(function (c) { return matchFilter(c) && (!lblFilter || (c.labels || []).indexOf(lblFilter) >= 0) && (!q || ((c.name || '') + ' ' + (c.full || '') + ' ' + (c.email || '') + ' ' + (c.phone || '')).toLowerCase().indexOf(q) >= 0); });
     if (!rows.length) { list.innerHTML = '<div class="empty">' + ((me.customers || []).length ? 'No customers here.' : 'No customers yet. Add your first one above.') + '</div>'; return; }
     lastRows = rows; bulkUi();
     rows.forEach(function (c) {
@@ -494,7 +556,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       el.querySelector('.top').insertAdjacentHTML('afterbegin', avatar(c));
       if (bulk) el.querySelector('.top').insertAdjacentHTML('afterbegin', '<input type="checkbox" class="bk" tabindex="-1" aria-label="Select ' + esc(c.full || c.name) + '"' + (picked[c.id] ? ' checked' : '') + '>');
-      var firstNote = el.querySelector('.act .note'); if (firstNote) firstNote.insertAdjacentHTML('beforebegin', '<button class="btn line sm ed" type="button">Edit details</button>');
+      var firstNote = el.querySelector('.act .note'); if (firstNote) firstNote.insertAdjacentHTML('beforebegin', '<button class="btn line sm ed" type="button">Edit details</button><button class="btn line sm lb" type="button">Labels</button><button class="btn line sm pmt" type="button">Record payment</button><button class="btn line sm tlb" type="button">Timeline</button>');
       var top = el.querySelector('.top'), toggle = function () { if (bulk) { picked[c.id] = !picked[c.id]; render(); return; } openId = openId === c.id ? null : c.id; render(); };
       top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
       function act(btn, method, path, body, ok) {
@@ -548,6 +610,31 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
           (facts.length ? '<p class="meta">' + esc(facts.join(' · ')) + '</p>' : '') +
           (q.hints.length ? '<strong>What to try</strong><ul>' + q.hints.map(function (h) { return '<li>' + esc(h) + '</li>'; }).join('') + '</ul>' : '<p class="meta">Nothing stands out: their viewing looks normal.</p>');
       }
+      el.querySelector('.lb').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 'l') { pbox.hidden = true; return; }
+        showBox('l', '<strong>Labels</strong><p class="meta">Private tags only you see, like Family, VIP or Sports fan. Separate them with commas (up to 5).</p><div class="row"><input class="l-in" maxlength="120" value="' + esc((c.labels || []).join(', ')) + '" placeholder="Family, VIP" aria-label="Labels"><button class="btn red sm l-save" type="button">Save</button></div><p class="meta l-msg"></p>');
+        pbox.querySelector('.l-save').onclick = function () {
+          var b = this, m = pbox.querySelector('.l-msg'); b.disabled = true;
+          api('PUT', '/reseller/customers/' + encodeURIComponent(c.id) + '/labels', { labels: pbox.querySelector('.l-in').value.split(',').map(function (x) { return x.trim(); }).filter(Boolean) }).then(function (j) { b.disabled = false; if (j.__status !== 200) { m.style.color = '#ff8d9b'; m.textContent = j.error || 'That did not work.'; return; } reload(); }).catch(function () { b.disabled = false; m.textContent = 'Could not reach Aurora.'; });
+        };
+      };
+      el.querySelector('.pmt').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 'p') { pbox.hidden = true; return; }
+        var price = me.prices && me.prices[c.planId];
+        showBox('p', '<strong>Record a payment</strong><div class="grid" style="margin-top:10px"><div><label>Amount</label><input class="p-amt" type="number" min="0" step="0.01" inputmode="decimal" value="' + (price || '') + '" placeholder="25.00"></div><div><label>Status</label><select class="p-st"><option value="paid">Paid</option><option value="owes">Still owes</option></select></div><div><label>Method</label><select class="p-me"><option value="">-</option><option>Cash</option><option>Zelle</option><option>Cash App</option><option>PayPal</option><option>Venmo</option><option>Bank</option><option>Other</option></select></div><div><label>Note</label><input class="p-no" maxlength="80"></div></div><div class="row" style="margin-top:10px"><button class="btn red sm p-save" type="button">Save payment</button></div><p class="meta p-msg"></p>');
+        pbox.querySelector('.p-save').onclick = function () {
+          var b = this, m = pbox.querySelector('.p-msg'); b.disabled = true;
+          api('POST', '/reseller/customers/' + encodeURIComponent(c.id) + '/payments', { amount: Number(pbox.querySelector('.p-amt').value), paid: pbox.querySelector('.p-st').value === 'paid', method: pbox.querySelector('.p-me').value, note: pbox.querySelector('.p-no').value.trim() }).then(function (j) { b.disabled = false; if (j.__status !== 200) { m.style.color = '#ff8d9b'; m.textContent = j.error || 'That did not work.'; return; } m.style.color = 'var(--green)'; m.textContent = 'Saved. See it under Money.'; loadMoney(); }).catch(function () { b.disabled = false; m.textContent = 'Could not reach Aurora.'; });
+        };
+      };
+      el.querySelector('.tlb').onclick = function () {
+        if (!pbox.hidden && pbox.getAttribute('data-kind') === 't') { pbox.hidden = true; return; }
+        showBox('t', '<p class="meta">Loading...</p>');
+        api('GET', '/reseller/customers/' + encodeURIComponent(c.id) + '/timeline').then(function (j) {
+          if (j.__status !== 200) return showBox('t', '<p class="meta">' + esc(j.error || 'Could not load. Your provider may need to update Aurora Guard.') + '</p>');
+          showBox('t', '<strong>Timeline</strong>' + ((j.events || []).length ? (j.events || []).map(function (x) { return '<div class="prow"><span>' + esc(x.text) + '</span><span class="meta">' + esc(fmt(new Date(x.at).toISOString().slice(0, 10))) + '</span></div>'; }).join('') : '<p class="meta">Nothing yet.</p>'));
+        });
+      };
       el.querySelector('.pq').onclick = function () {
         if (!pbox.hidden && pbox.getAttribute('data-kind') === 'q') { pbox.hidden = true; return; }
         showBox('q', '<p class="meta">Loading...</p>');
@@ -636,7 +723,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       var opts = (me.plans || []).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === x.wantedPlanId ? ' selected' : '') + '>' + esc(p.name) + ' (' + p.credits + ' credits)</option>'; }).join('');
       el.innerHTML = '<div class="top"><div><span class="nm">' + esc(x.full || x.name) + '</span>' + tag + '<div class="meta">' + esc(x.name) + ' · asked ' + esc(fmtAt(x.at)) + (x.wantedPlan ? ' · wants: ' + esc(x.wantedPlan) : ' · no plan chosen') + '</div></div>' +
         '<div class="meta" style="text-align:right">' + (x.expires ? (x.expired ? 'Ended ' : 'Ends ') + esc(fmt(x.expires)) : 'No end date') + '</div></div>' +
-        (x.note ? '<div class="quote">\u201c' + esc(x.note) + '\u201d</div>' : '') +
+        (x.coupon ? '<div class="quote"><b>Coupon ' + esc(x.coupon.code) + '</b> (' + esc(x.coupon.label) + ')' + (x.coupon.price != null ? '. They should pay <b>' + money(x.coupon.price) + '</b>' + (x.coupon.original ? ' instead of ' + money(x.coupon.original) : '') : '') + '</div>' : '') + (x.note ? '<div class="quote">\u201c' + esc(x.note) + '\u201d</div>' : '') +
         '<div class="act"><select class="xp" aria-label="Plan to renew on">' + opts + '</select><input class="msg2" maxlength="200" placeholder="Message to them (optional)" aria-label="Message to the customer">' +
         '<button class="btn red sm ok" type="button">Approve and renew</button><button class="btn line sm danger no" type="button">Deny</button><div class="note say" style="width:100%;font-size:.85rem" aria-live="polite"></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
@@ -829,7 +916,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; paintRules(); render(); if (first) setPane(location.hash.replace('#', '') || 'overview', true); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
+      var first = !watchTimer; me = j; paintRules(); render(); loadInactive(); if (first) setPane(location.hash.replace('#', '') || 'overview', true); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
     }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 
@@ -860,6 +947,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   $('go').onclick = login; $('lp').addEventListener('keydown', function (e) { if (e.key === 'Enter') login(); });
   $('out').onclick = function () { out(''); $('lp').value = ''; };
   $('chips').addEventListener('click', function (e) { var b = e.target.closest('.chip'); if (b) { filter = b.getAttribute('data-k'); render(); } });
+  $('lblchips').addEventListener('click', function (e) { var b = e.target.closest('[data-l]'); if (b) { lblFilter = lblFilter === b.getAttribute('data-l') ? '' : b.getAttribute('data-l'); render(); } });
   $('q').addEventListener('input', render);
   $('gp').onclick = function () { $('np').value = gen(); };
 
@@ -926,7 +1014,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   };
 
   // ===================== Reseller tools: support inbox, reports, sales tools, bulk renew =====================
-  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); }
+  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMessages(); else if (name === 'guides') paintGuides(); else if (name === 'add') paintImportPlans(); }
   function money(n) { return '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
   function ago(t) { var m = Math.round((Date.now() - t) / 60000); return m < 2 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; }
 
@@ -1037,6 +1125,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   };
   function trialUrl(code) { return new URL('../trial/?r=' + code, location.href).href; }
   function paintSales() {
+    loadCoupons();
     var tl = me.trialLink || {}, plans = me.plans || [], pr = me.prices || {}, tp = me.templates || {};
     $('tl-card').innerHTML = '<div class="sec-h"><h2>Your free-trial link</h2><span class="tag ' + (tl.on ? 'on' : 'hold') + '">' + (tl.on ? 'On' : 'Off') + '</span></div>' +
       '<p class="sub">Share this link. Anyone who opens it can start a free trial that lands in your customer list, with no work from you. Each trial uses one of your ' + (tl.limit || 5) + ' free trials a day, and the same person can not use one email twice.</p>' +
@@ -1085,6 +1174,194 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     else if (b.id === 'tp-save') {
       var t = {}; ['welcome', 'reminder', 'ending', 'expired'].forEach(function (k) { t[k] = $('tp-' + k).value.trim(); }); b.disabled = true;
       api('PUT', '/reseller/templates', t).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg($('tp-msg'), j.error || 'That did not work.', 'err'); me.templates = j.templates; msg($('tp-msg'), 'Saved. Your messages are used when you copy a reminder or login message.', 'ok'); });
+    }
+  });
+
+  // ===================== Reseller tools, part 2: forecast, money, messages, guides, import, coupons =====================
+  function fillCustSelect(sel, keep) {
+    var cur = keep || sel.value, list = (me.customers || []).slice().sort(function (a, b) { return String(a.full || a.name).localeCompare(String(b.full || b.name)); });
+    sel.innerHTML = list.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.full || c.name) + ' (' + esc(c.name) + ')</option>'; }).join('') || '<option value="">No customers yet</option>';
+    if (cur) sel.value = cur;
+  }
+  // ----- credits forecast
+  function forecastData() {
+    var plans = me.plans || [], buckets = [{ k: 'ended', label: 'Already ended', n: 0, c: 0 }, { k: 'w1', label: 'Due this week (7 days)', n: 0, c: 0 }, { k: 'w2', label: 'Due in 8 to 14 days', n: 0, c: 0 }, { k: 'w4', label: 'Due in 15 to 30 days', n: 0, c: 0 }];
+    (me.customers || []).forEach(function (c) {
+      if (c.hold || !c.expires) return;
+      var plan = plans.filter(function (p) { return p.id === c.planId; })[0] || plans[0], cr = plan ? plan.credits : 0, b = c.expired ? buckets[0] : c.daysLeft <= 7 ? buckets[1] : c.daysLeft <= 14 ? buckets[2] : c.daysLeft <= 30 ? buckets[3] : null;
+      if (b) { b.n++; b.c += cr; }
+    });
+    var n = 0, cr = 0; buckets.forEach(function (b) { n += b.n; cr += b.c; });
+    return { buckets: buckets, n: n, credits: cr, short: Math.max(0, cr - me.credits) };
+  }
+  function paintForecast() {
+    if (!me) return; var f = forecastData();
+    var sum = f.n ? '<b>' + f.n + '</b> renewal' + (f.n === 1 ? '' : 's') + ' due in the next 30 days (including anyone already ended) would use <b>' + f.credits + ' credits</b>. You have <b>' + me.credits + '</b>. ' + (f.short ? '<span style="color:#ffd479;font-weight:700">You are ' + f.short + ' short, so ask for more credits soon.</span>' : '<span style="color:var(--green);font-weight:700">You have enough.</span>') : 'Nobody is due for renewal in the next 30 days.';
+    $('fc-card').innerHTML = '<div class="sec-h"><h2>Credits forecast</h2><button class="btn line sm" type="button" data-go="money">Details</button></div><p class="sub" style="margin:0">' + sum + '</p>';
+    $('mn-fc').innerHTML = '<div class="sec-h"><h2>Credits forecast</h2><span class="sub" style="margin:0">Next 30 days</span></div><p class="sub">' + sum + '</p>' + (f.n ? '<div class="scroll"><table class="tbl"><tr><th>When</th><th>Renewals</th><th>Credits</th></tr>' + f.buckets.map(function (b) { return '<tr><td>' + b.label + '</td><td>' + b.n + '</td><td>' + b.c + '</td></tr>'; }).join('') + '<tr><td><b>Total</b></td><td><b>' + f.n + '</b></td><td><b>' + f.credits + '</b></td></tr></table></div>' : '');
+  }
+  document.addEventListener('click', function (e) { var g = e.target.closest('#fc-card [data-go]'); if (g) setPane(g.getAttribute('data-go')); });
+
+  // ----- money: payments and what is owed
+  function loadMoney() {
+    paintForecast(); fillCustSelect($('pm-cust'));
+    if (!$('pm-date').value) $('pm-date').value = new Date().toISOString().slice(0, 10);
+    api('GET', '/reseller/payments?months=3').then(function (j) {
+      if (j.__status === 409) { setTimeout(loadMoney, 800); return; }
+      if (j.__status !== 200) { $('mn-list').innerHTML = '<div class="empty">' + esc(j.error || 'Could not load. Your provider may need to update Aurora Guard.') + '</div>'; return; }
+      var key = new Date().toISOString().slice(0, 7), cur = (j.months || []).filter(function (m) { return m.key === key; })[0] || { paid: 0, unpaid: 0 };
+      var tc = $('tc-money'); tc.hidden = !(j.owed || []).length; tc.textContent = (j.owed || []).length;
+      $('mn-kpis').innerHTML = [['Received this month', money(cur.paid), 'cash you recorded', 'good'], ['Still owed to you', money(j.owedTotal), (j.owed || []).length + (((j.owed || []).length === 1) ? ' customer' : ' customers'), j.owedTotal ? 'warn' : ''], ['Payments recorded', (j.payments || []).length, 'last 3 months', '']].map(function (k) { return '<div class="kpi ' + k[3] + '"><small>' + k[0] + '</small><b>' + k[1] + '</b><span>' + k[2] + '</span></div>'; }).join('');
+      $('mn-owed').innerHTML = '<div class="sec-h"><h2>Who owes you</h2></div>' + ((j.owed || []).length ? (j.owed || []).map(function (o) { return '<div class="wrow"><b>' + esc(o.full || o.name) + '</b> <span class="meta">' + esc(o.name) + '</span><span style="float:right"><b>' + money(o.amount) + '</b> <span class="meta">since ' + esc(fmt(new Date(o.since).toISOString().slice(0, 10))) + '</span></span></div>'; }).join('') : '<p class="sub" style="margin:0">Nobody owes you anything. Record an amount as "Still owes" when someone hasn\'t paid yet.</p>');
+      $('mn-list').innerHTML = (j.payments || []).length ? '<div class="scroll"><table class="tbl"><tr><th>Date</th><th>Customer</th><th>Amount</th><th>Status</th><th></th></tr>' + (j.payments || []).slice(0, 60).map(function (x) { return '<tr data-pid="' + esc(x.id) + '"><td>' + esc(fmt(new Date(x.at).toISOString().slice(0, 10))) + '</td><td>' + esc(x.name) + (x.method ? ' <span class="meta">' + esc(x.method) + '</span>' : '') + (x.note ? '<div class="meta">' + esc(x.note) + '</div>' : '') + '</td><td><b>' + money(x.amount) + '</b></td><td><span class="tag ' + (x.paid ? 'on' : 'soon') + '">' + (x.paid ? 'Paid' : 'Owes') + '</span></td><td style="white-space:nowrap">' + (x.paid ? '' : '<button class="btn line sm pd" type="button">Mark paid</button> ') + '<button class="btn line sm danger dl" type="button">Delete</button></td></tr>'; }).join('') + '</table></div>' : '<div class="empty">No payments recorded yet.</div>';
+    }).catch(function () { $('mn-list').innerHTML = '<div class="empty">Could not reach Aurora.</div>'; });
+  }
+  $('pm-cust').addEventListener('change', function () { var c = (me.customers || []).filter(function (x) { return x.id === $('pm-cust').value; })[0], pr = c && me.prices && me.prices[c.planId]; if (pr) $('pm-amt').value = pr; });
+  $('pm-go').onclick = function () {
+    var m = $('pm-msg'), id = $('pm-cust').value, amt = Number($('pm-amt').value);
+    if (!id) return msg(m, 'Choose a customer first.', 'err'); if (!(amt > 0)) return msg(m, 'Enter the amount.', 'err');
+    var b = $('pm-go'); b.disabled = true;
+    api('POST', '/reseller/customers/' + encodeURIComponent(id) + '/payments', { amount: amt, paid: $('pm-status').value === 'paid', method: $('pm-method').value, note: $('pm-note').value.trim(), date: $('pm-date').value }).then(function (j) {
+      b.disabled = false; if (j.__status !== 200) return msg(m, j.error || 'That did not work.', 'err');
+      msg(m, 'Saved.', 'ok'); $('pm-amt').value = ''; $('pm-note').value = ''; loadMoney();
+    }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+  };
+  $('mn-list').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return; var id = b.closest('[data-pid]').getAttribute('data-pid'); b.disabled = true;
+    if (b.classList.contains('pd')) api('POST', '/reseller/payments/' + encodeURIComponent(id) + '/paid', { paid: true }).then(loadMoney);
+    else if (b.classList.contains('dl')) { if (!confirm('Delete this payment record?')) { b.disabled = false; return; } api('DELETE', '/reseller/payments/' + encodeURIComponent(id)).then(loadMoney); }
+  });
+
+  // ----- messages to chosen customers
+  var MS_TPL = [['We miss you', 'Hi! We noticed you have not watched Aurora in a while. Is anything wrong? Reply and I will help.'], ['Maintenance', 'Heads up: Aurora may be slow for a few minutes tonight while we do maintenance. Thanks for your patience.'], ['New channels', 'Good news: new channels were just added to Aurora. Restart the app to see them.'], ['Renew soon', 'Your Aurora plan ends soon. Reply here when you are ready to renew.']];
+  function msgRows() {
+    var f = $('ms-filter').value || 'all';
+    return (me.customers || []).filter(function (c) {
+      if (f === 'all') return true; if (f === 'inact') return !!inactiveSet && inactiveSet.has(c.id);
+      if (f.indexOf('l:') === 0) return (c.labels || []).indexOf(f.slice(2)) >= 0;
+      return state(c) === f;
+    });
+  }
+  function paintMessages() {
+    var fsel = $('ms-filter'), keep = fsel.value, labels = {}; (me.customers || []).forEach(function (c) { (c.labels || []).forEach(function (l) { labels[l] = 1; }); });
+    fsel.innerHTML = '<option value="all">Everyone</option><option value="on">Active</option><option value="soon">Ending soon</option><option value="exp">Expired</option><option value="trial">On a trial</option><option value="inact">Inactive 14 days</option>' + Object.keys(labels).sort().map(function (l) { return '<option value="l:' + esc(l) + '">Label: ' + esc(l) + '</option>'; }).join('');
+    if (keep) fsel.value = keep;
+    paintMsgList();
+    $('ms-tpl').innerHTML = MS_TPL.map(function (t, i) { return '<button class="c" type="button" data-t="' + i + '">' + esc(t[0]) + '</button>'; }).join('');
+    api('GET', '/reseller/messages').then(function (j) {
+      if (j.__status !== 200) { $('ms-sent').innerHTML = '<p class="sub" style="margin:0">' + esc(j.error || 'Could not load.') + '</p>'; return; }
+      $('ms-sent').innerHTML = (j.sent || []).length ? (j.sent || []).map(function (x) { return '<div class="wrow">' + esc(x.text) + '<div class="meta">to ' + x.count + ' customer' + (x.count === 1 ? '' : 's') + ' · ' + esc(fmt(new Date(x.at).toISOString().slice(0, 10))) + '</div></div>'; }).join('') : '<p class="sub" style="margin:0">Nothing sent yet.</p>';
+    });
+  }
+  function paintMsgList() {
+    var rows = msgRows();
+    $('ms-list').innerHTML = rows.length ? rows.map(function (c) { return '<label class="mrow"><input type="checkbox" data-id="' + esc(c.id) + '"' + (msgPick[c.id] ? ' checked' : '') + '><span><b>' + esc(c.full || c.name) + '</b> <span class="meta">' + esc(c.name) + '</span></span><span class="tag ' + state(c) + '">' + label[state(c)] + '</span></label>'; }).join('') : '<div class="empty">Nobody matches.</div>';
+    var n = Object.keys(msgPick).filter(function (k) { return msgPick[k]; }).length; $('ms-send').textContent = n ? 'Send to ' + n + ' customer' + (n === 1 ? '' : 's') : 'Send message';
+  }
+  $('ms-filter').onchange = paintMsgList;
+  $('ms-list').addEventListener('change', function (e) { var c = e.target; if (c.dataset && c.dataset.id) { msgPick[c.dataset.id] = c.checked; paintMsgList(); } });
+  $('ms-all').onclick = function () { msgRows().forEach(function (c) { msgPick[c.id] = true; }); paintMsgList(); };
+  $('ms-none').onclick = function () { msgPick = {}; paintMsgList(); };
+  $('ms-text').addEventListener('input', function () { $('ms-cnt').textContent = $('ms-text').value.length + ' / 300'; });
+  $('ms-tpl').addEventListener('click', function (e) { var b = e.target.closest('[data-t]'); if (b) { $('ms-text').value = MS_TPL[Number(b.getAttribute('data-t'))][1]; $('ms-cnt').textContent = $('ms-text').value.length + ' / 300'; } });
+  $('ms-send').onclick = function () {
+    var ids = Object.keys(msgPick).filter(function (k) { return msgPick[k]; }), text = $('ms-text').value.trim(), m = $('ms-msg');
+    if (!ids.length) return msg(m, 'Choose at least one customer.', 'err'); if (!text) return msg(m, 'Write the message first.', 'err');
+    if (ids.length > 40) return msg(m, 'You can send to up to 40 customers at a time.', 'err');
+    var b = $('ms-send'); b.disabled = true;
+    api('POST', '/reseller/messages', { ids: ids, text: text }).then(function (j) {
+      b.disabled = false; if (j.__status !== 200) return msg(m, j.error || 'That did not work.', 'err');
+      msg(m, 'Sent to ' + j.sent + ' customer' + (j.sent === 1 ? '' : 's') + '.', 'ok'); $('ms-text').value = ''; $('ms-cnt').textContent = '0 / 300'; msgPick = {}; paintMessages();
+    }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+  };
+
+  // ----- setup guides
+  var GUIDES = {
+    firetv: { title: 'Fire TV Stick or Android TV', steps: function () { return ['On the TV, open the app store and install the free "Downloader" app.', 'Open Downloader and type this code: ' + (C.downloaderCode || '3643447') + ', then press Go.', 'Choose Install, then Open.', 'Sign in with your username and password.', 'Older Fire Stick 4K (1st generation)? Use Aurora Lite instead: in Downloader type aurora-streaming.org/lite']; } },
+    android: { title: 'Android phone or tablet', steps: function () { return ['Open this link on the phone: ' + (C.apkUrl || 'https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk'), 'Open the downloaded file and allow "install from this source" if asked.', 'Open Aurora and sign in with your username and password.']; } },
+    iphone: { title: 'iPhone or iPad', steps: function () { return ['Install the free TestFlight app from the App Store.', 'Open this link on the iPhone: ' + (C.testflightUrl || 'https://testflight.apple.com/join/appxqJyp'), 'Tap Accept, then Install, then Open.', 'Sign in with your username and password.']; } },
+    windows: { title: 'Windows laptop or PC', steps: function () { return ['Download the Aurora installer: ' + (C.winUrl || 'https://aurora-streaming.org/windows'), 'Open it. If Windows says "Windows protected your PC", choose More info, then Run anyway.', 'Aurora opens by itself. Sign in with your username and password.', 'Aurora updates itself. Press F11 for full screen.']; } },
+    web: { title: 'Web browser', steps: function () { return ['Open ' + (C.webAppUrl || 'https://aurora-streaming.org/app/') + ' in Chrome, Edge or Safari.', 'Sign in with your username and password.', 'In Chrome or Edge, open Settings in Aurora and press Install to add it as an app.']; } },
+    lite: { title: 'Aurora Lite (older devices)', steps: function () { return ['For older Android 7 devices and the Fire TV Stick 4K (1st generation).', 'In the Downloader app, type: aurora-streaming.org/lite', 'Choose Install, then Open.', 'Sign in with your username and password.']; } }
+  };
+  function guideText() {
+    var g = GUIDES[gdKey], cust = (me.customers || []).filter(function (c) { return c.id === $('gd-cust').value; })[0];
+    return 'Aurora setup: ' + g.title + '\n\n' + g.steps().map(function (t, i) { return (i + 1) + '. ' + t; }).join('\n') + (cust ? '\n\nYour username: ' + cust.name + '\n(Your password is the one I sent you.)' : '') + '\n\nNeed help? Just reply to me.';
+  }
+  function paintGuides() {
+    $('gd-tabs').innerHTML = Object.keys(GUIDES).map(function (k) { return '<button class="c" type="button" data-g="' + k + '" aria-pressed="' + (gdKey === k) + '">' + esc(GUIDES[k].title) + '</button>'; }).join('');
+    var sel = $('gd-cust'), keep = sel.value; sel.innerHTML = '<option value="">No one in particular</option>' + (me.customers || []).map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.full || c.name) + ' (' + esc(c.name) + ')</option>'; }).join(''); if (keep) sel.value = keep;
+    $('gd-text').value = guideText();
+  }
+  $('gd-tabs').addEventListener('click', function (e) { var b = e.target.closest('[data-g]'); if (b) { gdKey = b.getAttribute('data-g'); paintGuides(); } });
+  $('gd-cust').onchange = function () { $('gd-text').value = guideText(); };
+  $('gd-copy').onclick = function () { copyText($('gd-text').value).then(function (ok) { msg($('gd-msg'), ok ? 'Copied. Paste it into a message.' : 'Select the text and copy it.', ok ? 'ok' : 'err'); }); };
+  $('gd-link').onclick = function () { copyText(new URL('../setup/#' + gdKey, location.href).href).then(function (ok) { msg($('gd-msg'), ok ? 'Link copied.' : 'Could not copy.', ok ? 'ok' : 'err'); }); };
+
+  // ----- import many customers
+  var impRows = [];
+  function splitLine(line, d) {
+    var out = [], cur = '', q = false;
+    for (var i = 0; i < line.length; i++) { var ch = line.charAt(i); if (q) { if (ch === '"' && line.charAt(i + 1) === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === d) { out.push(cur.trim()); cur = ''; } else cur += ch; }
+    out.push(cur.trim()); return out;
+  }
+  function parseImport(text) {
+    var lines = String(text || '').split(/\r?\n/).filter(function (l) { return l.trim(); }); if (!lines.length) return [];
+    var d = lines[0].indexOf('\t') >= 0 ? '\t' : (lines[0].split(';').length > lines[0].split(',').length ? ';' : ',');
+    var first = splitLine(lines[0], d).map(function (x) { return x.toLowerCase(); }), keys = ['name', 'full name', 'fullname', 'email', 'phone', 'note', 'username', 'user'];
+    var header = first.some(function (x) { return keys.indexOf(x) >= 0; }) && !first.some(function (x) { return /@/.test(x); });
+    var idx = { full: 0, email: 1, phone: 2, note: 3, username: -1 };
+    if (header) { idx = { full: -1, email: -1, phone: -1, note: -1, username: -1 }; first.forEach(function (h, i) { if (/^(name|full name|fullname)$/.test(h)) idx.full = i; else if (h === 'email') idx.email = i; else if (h === 'phone') idx.phone = i; else if (h === 'note') idx.note = i; else if (/^(username|user)$/.test(h)) idx.username = i; }); lines = lines.slice(1); }
+    return lines.slice(0, 200).map(function (l) { var c = splitLine(l, d), g = function (i) { return i >= 0 && c[i] ? c[i] : ''; }; return { full: g(idx.full), email: g(idx.email), phone: g(idx.phone), note: g(idx.note), username: g(idx.username) }; }).filter(function (r) { return r.full || r.email || r.username; });
+  }
+  function paintImportPlans() { var sel = $('imp-plan'), keep = sel.value; sel.innerHTML = planOptions(); if (keep) sel.value = keep; }
+  $('imp-file').onchange = function () { var f = this.files && this.files[0]; if (!f) return; var r = new FileReader(); r.onload = function () { $('imp-text').value = String(r.result || ''); $('imp-check').click(); }; r.readAsText(f); };
+  $('imp-check').onclick = function () {
+    impRows = parseImport($('imp-text').value); var m = $('imp-msg'), plan = (me.plans || []).filter(function (p) { return p.id === $('imp-plan').value; })[0];
+    $('imp-res').innerHTML = '';
+    if (!impRows.length) { $('imp-go').disabled = true; $('imp-prev').textContent = ''; return msg(m, 'Nothing to import yet. Paste your rows above.', 'err'); }
+    var n = Math.min(impRows.length, 50), cost = plan ? plan.credits * n : 0;
+    $('imp-prev').innerHTML = '<b>' + impRows.length + ' rows found.</b> ' + (impRows.length > 50 ? 'Only the first 50 are imported at a time. ' : '') + 'This will use <b>' + cost + ' credits</b> (you have ' + me.credits + ').' + '<div class="scroll"><table class="tbl" style="margin-top:8px"><tr><th>Name</th><th>Email</th><th>Phone</th></tr>' + impRows.slice(0, 5).map(function (r) { return '<tr><td>' + esc(r.full || r.username) + '</td><td>' + esc(r.email) + '</td><td>' + esc(r.phone) + '</td></tr>'; }).join('') + '</table></div>' + (impRows.length > 5 ? '<div class="meta">and ' + (impRows.length - 5) + ' more</div>' : '');
+    $('imp-go').disabled = !plan || cost > me.credits; msg(m, cost > me.credits ? 'Not enough credits for all of them.' : '', 'err');
+  };
+  $('imp-text').addEventListener('input', function () { $('imp-go').disabled = true; });
+  $('imp-go').onclick = function () {
+    var m = $('imp-msg'); if (!impRows.length || busy) return; busy = true; $('imp-go').disabled = true; msg(m, 'Importing... this takes a few seconds.', '');
+    api('POST', '/reseller/import', { planId: $('imp-plan').value, rows: impRows.slice(0, 50) }).then(function (j) {
+      busy = false;
+      if (j.__status !== 200 && !j.results) { $('imp-go').disabled = false; return msg(m, j.error || 'That did not work.', 'err'); }
+      msg(m, j.created != null ? 'Created ' + j.created + ' customer' + (j.created === 1 ? '' : 's') + (j.failed ? ', ' + j.failed + ' could not be created.' : '.') : (j.error || ''), j.failed ? 'err' : 'ok');
+      var res = j.results || [];
+      $('imp-res').innerHTML = '<div class="scroll"><table class="tbl" style="margin-top:12px"><tr><th>Row</th><th>Username</th><th>Result</th></tr>' + res.map(function (x) { return '<tr><td>' + (x.row + 1) + '</td><td>' + esc(x.username) + '</td><td>' + (x.ok ? 'Password: <b>' + esc(x.password) + '</b>' : '<span style="color:#ff8d9b">' + esc(x.error) + '</span>') + '</td></tr>'; }).join('') + '</table></div><div class="row" style="margin-top:10px;flex-wrap:wrap"><button class="btn gray sm" id="imp-copy" type="button">Copy all logins</button></div>';
+      $('imp-copy').onclick = function () { copyText(res.filter(function (x) { return x.ok; }).map(function (x) { return (x.full || x.username) + '\nUsername: ' + x.username + '\nPassword: ' + x.password; }).join('\n\n')).then(function (ok) { $('imp-copy').textContent = ok ? 'Copied' : 'Select and copy'; }); };
+      impRows = []; $('imp-text').value = ''; $('imp-prev').textContent = ''; reload();
+    }).catch(function () { busy = false; $('imp-go').disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+  };
+
+  // ----- coupons (in Sales tools)
+  function loadCoupons() {
+    api('GET', '/reseller/coupons').then(function (j) {
+      var box = $('cp-card'), list = j.coupons || [];
+      if (j.__status !== 200) { box.innerHTML = '<div class="sec-h"><h2>Coupons</h2></div><p class="sub" style="margin:0">' + esc(j.error || 'Could not load. Your provider may need to update Aurora Guard.') + '</p>'; return; }
+      var plans = me.plans || [];
+      box.innerHTML = '<div class="sec-h"><h2>Coupons for your customers</h2></div><p class="sub">Make a discount code and send it to a customer. They type it on their account page when they ask for more time, and you see the discounted price on their request.</p>' +
+        '<div class="grid"><div><label for="cp-code">Code <span style="font-weight:400;color:var(--dim)">(blank = make one)</span></label><input id="cp-code" maxlength="20" autocapitalize="characters" placeholder="WELCOME10"></div><div><label for="cp-type">Discount</label><select id="cp-type"><option value="percent">Percent off</option><option value="amount">Money off</option></select></div>' +
+        '<div><label for="cp-val">Amount</label><input id="cp-val" type="number" min="0" step="0.01" inputmode="decimal" placeholder="10"></div><div><label for="cp-max">Most uses <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="cp-max" type="number" min="0" inputmode="numeric" placeholder="e.g. 5"></div>' +
+        '<div><label for="cp-end">Ends <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="cp-end" type="date"></div></div>' +
+        '<button class="btn red" id="cp-make" type="button" style="margin-top:14px">Make coupon</button><p class="msg" id="cp-msg" role="status" hidden></p>' +
+        (list.length ? '<div class="scroll" style="margin-top:14px"><table class="tbl"><tr><th>Code</th><th>Discount</th><th>Used</th><th>Ends</th><th></th></tr>' + list.map(function (c) { return '<tr data-cid="' + esc(c.id) + '"><td><b>' + esc(c.code) + '</b>' + (c.on === false ? ' <span class="tag hold">Off</span>' : '') + '</td><td>' + (c.type === 'percent' ? c.value + '% off' : money(c.value) + ' off') + '</td><td>' + (c.used || 0) + (c.max ? ' of ' + c.max : '') + '</td><td>' + (c.expires ? esc(fmt(c.expires)) : 'No end') + '</td><td style="white-space:nowrap"><button class="btn line sm cc" type="button">Copy</button> <button class="btn line sm ct" type="button">' + (c.on === false ? 'Turn on' : 'Turn off') + '</button> <button class="btn line sm danger cd" type="button">Delete</button></td></tr>'; }).join('') + '</table></div>' : '<p class="meta" style="margin-top:12px">No coupons yet.</p>');
+    });
+  }
+  document.getElementById('pane-sales').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'cp-make') {
+      var m = $('cp-msg'); b.disabled = true;
+      api('POST', '/reseller/coupons', { code: $('cp-code').value.trim(), type: $('cp-type').value, value: Number($('cp-val').value), max: Number($('cp-max').value) || 0, expires: $('cp-end').value || null }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, j.error || 'That did not work.', 'err'); loadCoupons(); }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+    } else if (b.closest('[data-cid]')) {
+      var id = b.closest('[data-cid]').getAttribute('data-cid');
+      if (b.classList.contains('cc')) copyText(b.closest('tr').querySelector('b').textContent).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select it'; setTimeout(function () { b.textContent = 'Copy'; }, 1400); });
+      else if (b.classList.contains('ct')) api('POST', '/reseller/coupons/' + encodeURIComponent(id) + '/toggle', {}).then(loadCoupons);
+      else if (b.classList.contains('cd')) { if (confirm('Delete this coupon?')) api('DELETE', '/reseller/coupons/' + encodeURIComponent(id)).then(loadCoupons); }
     }
   });
   if (session && session.token) { show(true); reload(); } else show(false);

@@ -88,7 +88,7 @@
   // Playback problems for Admin → Playback problems: a video that wouldn't play, one that kept stopping to buffer,
   // a live channel that failed. Kept in the viewer's own Emby display preferences ("aurora-playlog"), so the admin
   // page can read every account's. Written a few seconds after the event, together with any others.
-  const deviceLabel = () => nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser');
+  const deviceLabel = () => nativeApp?.getDeviceName?.() || (window.AuroraDesktop ? 'Windows app' : /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser');
   const playLog = {
     PREFS: 'aurora-playlog', KEEP: 60, DAYS: 14, queue: [], timer: null,
     add(e) {
@@ -695,7 +695,7 @@
 
   function authHeader() {
     // The Android app reports its real model and version so they show in the admin dashboard and Emby's.
-    const device = nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser');
+    const device = nativeApp?.getDeviceName?.() || (window.AuroraDesktop ? 'Windows app' : /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser');
     const version = nativeApp?.getVersionName?.() || CLIENT.version;
     return `Emby UserId="${state.userId || ''}", Client="${CLIENT.name}", Device="${hdr(device)}", DeviceId="${state.deviceId}", Version="${hdr(version)}"`;
   }
@@ -5445,6 +5445,7 @@
         ${reqHtml}
         ${a.canRequest ? `<div class="account-request">
           ${offered.length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}</select></label>` : ''}
+          ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-coupon maxlength="20" placeholder="Coupon code (optional)" autocomplete="off" autocapitalize="characters">'}
           ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-note maxlength="200" placeholder="Add a note for the admin (optional)" autocomplete="off">'}
           <button class="btn btn-white" data-ext-send>Request an extension</button></div>` : ''}`;
       // While a request waits, look again every 30 s so the answer appears without leaving the page.
@@ -5454,7 +5455,7 @@
         btn.disabled = true;
         btn.textContent = 'Sending…';
         try {
-          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: $('[data-ext-plan]', box)?.value || undefined } });
+          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: $('[data-ext-plan]', box)?.value || undefined, coupon: $('[data-ext-coupon]', box)?.value.trim() || undefined } });
           toast('Request sent to the admin', 3000);
         } catch (err) { toast(err.message || "Couldn't send the request. Try again in a moment.", 5000); }
         draw();
@@ -5732,8 +5733,15 @@
         ${tourConfig() && tourSteps().length ? settingRow('Guided tour', 'A quick walk through the main screens of Aurora.', '<button class="btn btn-gray" data-replay-tour>Replay tour</button>') : ''}
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
         ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
+        ${window.AuroraDesktop ? settingRow('Updates', 'The Windows app updates itself. It checks when it opens, and installs the update when you close it.', '<div class="update-check"><span class="setting-value" data-desk-status></span><button class="btn btn-gray" data-desk-check>Check for updates</button></div>') : ''}
+        ${!nativeApp && !window.AuroraDesktop && (window.AuroraInstall?.available || window.AuroraInstall?.installed) ? settingRow('Install Aurora', window.AuroraInstall.installed ? 'Aurora is installed on this device.' : 'Add Aurora to this computer or phone as an app, with its own icon and window.', window.AuroraInstall.installed ? '<span class="setting-value">Installed</span>' : '<button class="btn btn-gray" data-install-app>Install</button>') : ''}
         ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
       </section>`;
+    $('[data-install-app]', page)?.addEventListener('click', async () => { const ip = window.AuroraInstall?.prompt; if (!ip) return; ip.prompt(); try { await ip.userChoice; } catch { /* ignore */ } });
+    $('[data-desk-check]', page)?.addEventListener('click', async () => {
+      const st = $('[data-desk-status]', page); st.textContent = 'Checking…';
+      try { st.textContent = await window.AuroraDesktop.checkForUpdates(); } catch { st.textContent = 'Could not check. Try again later.'; }
+    });
     applySubtitleStyle();
     showServiceStatus($('[data-service-status]', page), isCurrent);
     showAccountInfo($('[data-account]', page), isCurrent);
@@ -8009,7 +8017,7 @@
     } catch { inboxState.ok = false; }
     paintBell(); paintBanners();
   }
-  const inboxIcon = (i) => ({ announcement: '📣', plan: '⏳', new: '🎬', support: '💬', reminder: '🏀' })[i.type] || '🔔';
+  const inboxIcon = (i) => ({ announcement: '📣', plan: '⏳', new: '🎬', support: '💬', reminder: '🏀', message: '✉️' })[i.type] || '🔔';
   async function renderInbox(page, isCurrent) {
     page.innerHTML = '<div class="page-pad inbox-page"><div class="page-head"><h1>Notifications</h1></div><div class="spinner"></div></div>';
     const root = $('.inbox-page', page);
@@ -8246,10 +8254,11 @@
     const cnt = (k) => d.customers.filter((c) => statusOf(c).k === k).length;
     const soon = cnt('soon'), gone = cnt('expired'), held = cnt('hold');
     const need = d.customers.filter((c) => !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)));
-    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold'], ['due14', 'Due in 14 days'], ['due30', 'Due in 30 days']];
+    let inactiveSet = null;
+    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold'], ['due14', 'Due in 14 days'], ['due30', 'Due in 30 days'], ['inact', 'Inactive 14 days']];
     const dueCount = (k) => d.customers.filter((c) => !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(k.slice(3))).length;
     const savedView = (() => { try { return JSON.parse(store.get('ef.resView') || '{}') || {}; } catch { return {}; } })();
-    const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25 };
+    const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25, label: '' };
     const RULES_URL = 'https://aurora-streaming.org/rules/';
     const rules = d.rules || {}, warns = d.warnings || [];
     const rulesHtml = `${warns.length ? `<section class="admin-card res-warn" role="alert"><h2>${warns.length >= (d.warningsMax || 3) ? 'Final warning' : 'Warning'}: ${warns.length} of ${d.warningsMax || 3} active</h2>
@@ -8268,14 +8277,18 @@
       try { await guard('/reseller/rules/accept', { method: 'POST', params: { userId: state.userId }, body: {} }); toast('Thank you. Your agreement is recorded.', 2500); renderReseller(page, isCurrent); }
       catch (err) { toast(err.message || "Couldn't record that. Try again.", 4000); b.disabled = false; }
     });
+    const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
     root.innerHTML = `${head}
       ${rulesHtml}
       <div class="res-chips res-tabs" role="tablist" aria-label="Reseller panel sections" data-rtabs>
         <button class="chip on" role="tab" data-rtab="overview">Overview</button>
         <button class="chip" role="tab" data-rtab="customers">Customers</button>
+        <button class="chip" role="tab" data-rtab="money">Money <span class="pill bad hidden" data-moneybadge></span></button>
+        <button class="chip" role="tab" data-rtab="messages">Messages</button>
         <button class="chip" role="tab" data-rtab="support">Support <span class="pill bad${d.ticketsOpen ? '' : ' hidden'}" data-tkbadge>${d.ticketsOpen || ''}</span></button>
         <button class="chip" role="tab" data-rtab="reports">Reports</button>
         <button class="chip" role="tab" data-rtab="sales">Sales tools</button>
+        <button class="chip" role="tab" data-rtab="guides">Guides</button>
         <button class="chip" role="tab" data-rtab="settings">Settings</button>
       </div>
       <div class="plan-form hidden" data-form></div>
@@ -8314,6 +8327,7 @@
         <div class="res-tools"><input type="search" class="st-note-input" data-search placeholder="Search name, username, email, phone, note" autocomplete="off">
           <select class="st-note-input" data-sort aria-label="Sort"><option value="days">Ending soonest first</option><option value="name">Name A–Z</option><option value="new">Newest first</option><option value="plan">Plan</option></select></div>
         <div class="res-chips" data-chips>${FILTERS.map(([k, l]) => `<button class="chip${view.filter === k ? ' on' : ''}" data-filter="${k}">${l} <span data-n-${k}></span></button>`).join('')}</div>
+        <div class="res-chips" data-lblchips></div>
         <div class="m-actions"><button class="btn btn-gray" data-renewshown>Renew everyone shown</button></div>
         <div class="admin-list res-list" data-list></div>
         <div class="m-actions"><button class="btn btn-gray hidden" data-more>Show more</button></div>
@@ -8336,12 +8350,50 @@
       <section class="admin-card" data-rp="sales" hidden data-s-tl></section>
       <section class="admin-card" data-rp="sales" hidden data-s-pr></section>
       <section class="admin-card" data-rp="sales" hidden data-s-pl></section>
-      <section class="admin-card" data-rp="sales" hidden data-s-tp></section>`;
+      <section class="admin-card" data-rp="sales" hidden data-s-cp></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-tp></section>
+      <section class="admin-card" data-rp="overview" data-fc></section>
+      <section class="admin-card" data-rp="money" hidden data-mfc></section>
+      <div class="stat-grid" data-rp="money" hidden data-mkpis></div>
+      <section class="admin-card" data-rp="money" hidden><h2>Record a payment</h2>
+        <p class="muted">Your own record of who paid you. Aurora does not take payments.</p>
+        <label class="admin-field"><span>Customer</span><select data-pm-cust></select></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Amount</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-pm-amt placeholder="25.00"></label>
+          <label class="admin-field"><span>Status</span><select data-pm-st><option value="paid">Paid</option><option value="owes">Still owes</option></select></label>
+          <label class="admin-field"><span>Method</span><select data-pm-me><option value="">-</option><option>Cash</option><option>Zelle</option><option>Cash App</option><option>PayPal</option><option>Venmo</option><option>Bank</option><option>Other</option></select></label>
+          <label class="admin-field"><span>Note</span><input type="text" class="st-note-input" data-pm-no maxlength="80" placeholder="e.g. November"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-pm-save>Save payment</button></div><div class="live-result" data-pm-msg></div></section>
+      <section class="admin-card" data-rp="money" hidden data-pm-owed></section>
+      <section class="admin-card" data-rp="money" hidden><h2>Recent payments <small>last 3 months</small></h2><div class="admin-list" data-pm-list><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="messages" hidden><h2>Message your customers</h2>
+        <p class="muted">It shows in each customer's inbox in the app and on their account page for 30 days, and it comes from you.</p>
+        <label class="admin-field"><span>Who</span><select data-ms-filter></select></label>
+        <div class="m-actions"><button class="btn btn-gray" data-ms-all>Select all shown</button><button class="btn btn-gray" data-ms-none>Clear</button></div>
+        <div class="admin-list res-msglist" data-ms-list></div>
+        <label class="admin-field"><span>Message (300 characters)</span><textarea class="st-note-input" rows="3" maxlength="300" data-ms-text placeholder="Write your message..."></textarea></label>
+        <div class="chip-row" data-ms-tpl></div>
+        <div class="m-actions"><button class="btn btn-red" data-ms-send>Send message</button></div><div class="live-result" data-ms-msg></div></section>
+      <section class="admin-card" data-rp="messages" hidden><h2>Sent</h2><div class="admin-list" data-ms-sent><p class="muted">Nothing sent yet.</p></div></section>
+      <section class="admin-card" data-rp="guides" hidden><h2>Setup guides for your customers</h2>
+        <p class="muted">Pick a device and copy the instructions into a message. Or share the link to the public setup page.</p>
+        <div class="chip-row" data-gd-tabs></div>
+        <label class="admin-field"><span>Add a customer's username (optional)</span><select data-gd-cust></select></label>
+        <textarea class="st-note-input" rows="10" readonly data-gd-text aria-label="Instructions"></textarea>
+        <div class="m-actions"><button class="btn btn-red" data-gd-copy>Copy instructions</button><button class="btn btn-gray" data-gd-link>Copy link to this guide</button></div></section>
+      <section class="admin-card" data-rp="guides" hidden><h2>Reseller help center</h2><p class="muted">Answers to common questions about customers, trials, prices, coupons, payments and messages.</p>
+        <div class="m-actions"><a class="btn btn-white" href="https://aurora-streaming.org/reseller/help/" target="_blank" rel="noopener">Open the help center</a></div></section>
+      <details class="admin-card res-fold" data-rp="customers" data-imp><summary>Import many customers at once</summary>
+        <p class="muted">Paste rows from a spreadsheet or a CSV file. Columns: Full name, Email, Phone, Note (a header row is fine). Usernames and passwords are made for you. Up to 50 at a time, and each one uses the plan's credits.</p>
+        <label class="admin-field"><span>Plan for everyone</span><select data-imp-plan>${planOpts('')}</select></label>
+        <input type="file" accept=".csv,.tsv,.txt,text/csv" data-imp-file aria-label="Choose a CSV file">
+        <label class="admin-field"><span>Customers</span><textarea class="st-note-input" rows="6" data-imp-text placeholder="Mike Turner, mike@example.com, +1 555 0100, pays on the 1st"></textarea></label>
+        <p class="muted" data-imp-prev></p>
+        <div class="m-actions"><button class="btn btn-gray" data-imp-check>Preview</button><button class="btn btn-red" data-imp-go disabled>Import</button></div><div class="live-result" data-imp-msg></div><div data-imp-res></div></details>`;
     const form = $('[data-form]', root);
     const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
     const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
     const q = (k) => $(`[data-f="${k}"]`, form);
-    const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
     const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el?.select(); toast('Select and copy the text', 3000); }); } catch { el?.select(); toast('Select and copy the text', 3000); } };
     const makePw = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; const r = (n) => Math.floor(Math.random() * n); return w[r(w.length)] + w[r(w.length)] + (10 + r(90)); };
     const closeForm = () => { form.classList.add('hidden'); form.innerHTML = ''; };
@@ -8400,6 +8452,7 @@
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
         <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
         <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button><button class="btn btn-gray" data-cg>Channels: ${c.cats == null ? 'all' : c.cats}</button></div><div class="res-extra hidden" data-extra></div>
+        <div class="m-actions"><button class="btn btn-gray" data-lb>Labels${(c.labels || []).length ? ': ' + esc(c.labels.join(', ')) : ''}</button><button class="btn btn-gray" data-pmt>Record payment</button><button class="btn btn-gray" data-tlx>Timeline</button></div>
         <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
       $('[data-cancel]', form).addEventListener('click', closeForm);
       const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
@@ -8450,6 +8503,32 @@
       $('[data-dev]', form).addEventListener('click', () => {
         if (!extra.classList.contains('hidden') && extra.dataset.kind === 'd') { extra.classList.add('hidden'); return; }
         showExtra('d', '<div class="spinner"></div>'); loadDevices();
+      });
+      // Labels, payments and the timeline (guard 1.51.0).
+      $('[data-lb]', form).addEventListener('click', () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'l') { extra.classList.add('hidden'); return; }
+        showExtra('l', `<strong>Labels</strong><p class="muted">Private tags only you see, like Family, VIP or Sports fan. Separate them with commas (up to 5).</p><input type="text" class="st-note-input" data-l-in maxlength="120" value="${esc((c.labels || []).join(', '))}" placeholder="Family, VIP"><div class="m-actions"><button class="btn btn-red" data-l-save>Save labels</button></div>`);
+        $('[data-l-save]', extra).addEventListener('click', async () => {
+          try { await guard(path('/labels'), { method: 'PUT', params: { userId: state.userId }, body: { labels: $('[data-l-in]', extra).value.split(',').map((x) => x.trim()).filter(Boolean) } }); toast('Labels saved', 2000); reload(); }
+          catch (err) { say(oldGuard(err, 'labels'), 'bad'); }
+        });
+      });
+      $('[data-pmt]', form).addEventListener('click', () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'p') { extra.classList.add('hidden'); return; }
+        const pr = (d.prices || {})[c.planId];
+        showExtra('p', `<strong>Record a payment</strong><div class="plan-grid"><label class="admin-field"><span>Amount</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-p-amt value="${pr || ''}"></label><label class="admin-field"><span>Status</span><select data-p-st><option value="paid">Paid</option><option value="owes">Still owes</option></select></label><label class="admin-field"><span>Method</span><select data-p-me><option value="">-</option><option>Cash</option><option>Zelle</option><option>Cash App</option><option>PayPal</option><option>Venmo</option><option>Bank</option><option>Other</option></select></label></div><div class="m-actions"><button class="btn btn-red" data-p-save>Save payment</button></div>`);
+        $('[data-p-save]', extra).addEventListener('click', async () => {
+          try { await guard(path('/payments'), { method: 'POST', params: { userId: state.userId }, body: { amount: Number($('[data-p-amt]', extra).value), paid: $('[data-p-st]', extra).value === 'paid', method: $('[data-p-me]', extra).value } }); toast('Payment saved. See it under Money.', 3000); extra.classList.add('hidden'); }
+          catch (err) { say(oldGuard(err, 'payments'), 'bad'); }
+        });
+      });
+      $('[data-tlx]', form).addEventListener('click', async () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 't') { extra.classList.add('hidden'); return; }
+        showExtra('t', '<div class="spinner"></div>');
+        try {
+          const r = await guard(path('/timeline'), { params: { userId: state.userId } });
+          showExtra('t', `<strong>Timeline</strong><div class="admin-list">${(r.events || []).map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.text)}</div><div class="admin-row-time">${esc(timeAgo(x.at))}</div></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>`);
+        } catch (err) { showExtra('t', `<p class="muted">${oldGuard(err, 'the timeline')}</p>`); }
       });
       // Live TV categories for this customer, like the 24/7 channels (guard 1.40.0).
       $('[data-cg]', form).addEventListener('click', async () => {
@@ -8565,6 +8644,8 @@
       const t = view.q.trim().toLowerCase();
       if (t && ![c.name, c.full, c.email, c.phone, c.note, c.planName].some((x) => String(x || '').toLowerCase().includes(t))) return false;
       const k = statusOf(c).k;
+      if (view.label && !(c.labels || []).includes(view.label)) return false;
+      if (view.filter === 'inact') return !!inactiveSet && inactiveSet.has(c.id);
       if (/^due/.test(view.filter)) return !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(view.filter.slice(3));
       return view.filter === 'all' || k === view.filter || (view.filter === 'active' && k === 'soon') ;
     };
@@ -8603,7 +8684,8 @@
       $('[data-count]', root).textContent = all.length === d.customers.length ? `${d.customers.length}` : `${all.length} of ${d.customers.length}`;
       moreBtn.classList.toggle('hidden', all.length <= shown.length);
       moreBtn.textContent = `Show more (${all.length - shown.length} left)`;
-      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : /^due/.test(k) ? dueCount(k) : cnt(k); });
+      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : /^due/.test(k) ? dueCount(k) : k === 'inact' ? (inactiveSet ? inactiveSet.size : '') : cnt(k); });
+      paintLbl();
     };
     $('[data-sort]', root).value = view.sort;
     $('[data-search]', root).addEventListener('input', (e) => { view.q = e.target.value; view.shown = 25; paintList(); });
@@ -8640,12 +8722,12 @@
     // ===== Reseller tools (guard 1.50.0): tabs, support inbox, reports, sales tools, renew everyone shown =====
     const SITE = 'https://aurora-streaming.org/';
     const money = (n) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.50.0 to use ${what}.` : esc(e.message));
+    const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.51.0 to use ${what}.` : esc(e.message));
     const setRp = (name) => {
       try { store.set('ef.resTab', name); } catch { /* ignore */ }
       $$('[data-rp]', root).forEach((el) => { el.hidden = el.dataset.rp !== name; });
       $$('[data-rtab]', root).forEach((b) => b.classList.toggle('on', b.dataset.rtab === name));
-      if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales();
+      if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMsgs(); else if (name === 'guides') paintGuides();
     };
     $$('[data-rtab]', root).forEach((b) => b.addEventListener('click', () => { setRp(b.dataset.rtab); root.scrollIntoView({ block: 'start' }); }));
 
@@ -8741,6 +8823,7 @@
         (t ? `<textarea class="st-note-input" data-s-pltext rows="${Math.min(12, t.split('\n').length + 1)}" readonly>${esc(t)}</textarea><div class="m-actions"><button class="btn btn-white" data-s-plcopy>Copy price list</button></div>` : '<p class="muted">Enter your prices above and your price list appears here.</p>');
     };
     const paintSales = () => {
+      loadCoupons();
       const tl = d.trialLink || {}, pr = d.prices || {}, tp = d.templates || {}, url = tl.code ? `${SITE}trial/?r=${tl.code}` : '';
       $('[data-s-tl]', root).innerHTML = `<h2>Your free-trial link <span class="pill ${tl.on ? 'good' : ''}">${tl.on ? 'On' : 'Off'}</span></h2>
         <p class="muted">Share this link. Anyone who opens it can start a free trial that lands in your customer list. Each trial uses one of your ${tl.limit || 5} free trials a day, and one email can only be used once.</p>
@@ -8779,6 +8862,194 @@
         try { const r = await guard('/reseller/templates', { method: 'PUT', params: { userId: state.userId }, body }); d.templates = r.templates; b.disabled = false; say2('[data-s-tpmsg]', 'Saved. Your messages are used when you copy a reminder or a welcome message.', 'good'); }
         catch (err) { b.disabled = false; say2('[data-s-tpmsg]', oldGuard(err, 'message templates'), 'bad'); }
       }
+    });
+
+    // ===== Reseller tools, part 2 (guard 1.51.0): forecast, money, messages, guides, labels, inactive, import, coupons =====
+    const gq = (path, opts = {}) => guard(path, { ...opts, params: { userId: state.userId, ...(opts.params || {}) } });
+    const retry409 = async (fn, tries = 4) => { for (let i = 0; ; i++) { try { return await fn(); } catch (e) { if (e.status !== 409 || i >= tries) throw e; await new Promise((r) => setTimeout(r, 800)); } } };
+    function paintLbl() {
+      const all = {}; d.customers.forEach((c) => (c.labels || []).forEach((l) => { all[l] = (all[l] || 0) + 1; }));
+      const box = $('[data-lblchips]', root); if (!box) return;
+      box.innerHTML = Object.keys(all).sort().map((l) => `<button class="chip${view.label === l ? ' on' : ''}" data-lbl="${esc(l)}">${esc(l)} ${all[l]}</button>`).join('');
+    }
+    root.addEventListener('click', (e) => { const b = e.target.closest('[data-lbl]'); if (!b) return; view.label = view.label === b.dataset.lbl ? '' : b.dataset.lbl; view.shown = 25; paintList(); });
+    retry409(() => gq('/reseller/inactive', { params: { days: 14 } })).then((r) => { if (!isCurrent()) return; inactiveSet = new Set((r.customers || []).map((c) => c.id)); paintList(); }).catch(() => { /* an older Guard */ });
+
+    // ----- credits forecast
+    const forecast = () => {
+      const bs = [{ label: 'Already ended', n: 0, c: 0 }, { label: 'Due this week (7 days)', n: 0, c: 0 }, { label: 'Due in 8 to 14 days', n: 0, c: 0 }, { label: 'Due in 15 to 30 days', n: 0, c: 0 }];
+      d.customers.forEach((c) => {
+        if (c.hold || !c.expires) return;
+        const cr = (d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits || 0;
+        const b = c.expired ? bs[0] : c.daysLeft <= 7 ? bs[1] : c.daysLeft <= 14 ? bs[2] : c.daysLeft <= 30 ? bs[3] : null;
+        if (b) { b.n++; b.c += cr; }
+      });
+      const n = bs.reduce((a, b) => a + b.n, 0), credits = bs.reduce((a, b) => a + b.c, 0);
+      return { bs, n, credits, short: Math.max(0, credits - d.credits) };
+    };
+    const forecastLine = (f) => f.n ? `<strong>${f.n}</strong> ${f.n === 1 ? 'renewal' : 'renewals'} due in the next 30 days (including anyone already ended) would use <strong>${creditsWord(f.credits)}</strong>. You have <strong>${d.credits}</strong>. ${f.short ? `<span class="res-low">You are ${f.short} short, so ask for more credits soon.</span>` : 'You have enough.'}` : 'Nobody is due for renewal in the next 30 days.';
+    const paintForecast = () => {
+      const f = forecast();
+      $('[data-fc]', root).innerHTML = `<h2>Credits forecast</h2><p class="muted">${forecastLine(f)}</p><div class="m-actions"><button class="btn btn-gray" data-rtab-go="money">Details</button></div>`;
+      $('[data-mfc]', root).innerHTML = `<h2>Credits forecast <small>next 30 days</small></h2><p class="muted">${forecastLine(f)}</p>${f.n ? `<div class="admin-list">${f.bs.map((b) => `<div class="admin-row"><div class="admin-row-main">${esc(b.label)}</div><div class="admin-row-time">${b.n} · ${creditsWord(b.c)}</div></div>`).join('')}</div>` : ''}`;
+    };
+    root.addEventListener('click', (e) => { const b = e.target.closest('[data-rtab-go]'); if (b) setRp(b.dataset.rtabGo); });
+    paintForecast();
+
+    // ----- money
+    const custOptions = (keep) => d.customers.slice().sort((a, b) => String(a.full || a.name).localeCompare(String(b.full || b.name))).map((c) => `<option value="${esc(c.id)}"${c.id === keep ? ' selected' : ''}>${esc(c.full || c.name)} (${esc(c.name)})</option>`).join('') || '<option value="">No customers yet</option>';
+    const loadMoney = async () => {
+      paintForecast();
+      const sel = $('[data-pm-cust]', root); if (sel && !sel.options.length) sel.innerHTML = custOptions();
+      try {
+        const r = await retry409(() => gq('/reseller/payments', { params: { months: 3 } }));
+        const key = new Date().toISOString().slice(0, 7), cur = (r.months || []).find((m) => m.key === key) || { paid: 0 };
+        const bd = $('[data-moneybadge]', root); bd.textContent = (r.owed || []).length || ''; bd.classList.toggle('hidden', !(r.owed || []).length);
+        $('[data-mkpis]', root).innerHTML = statTile('Received this month', money(cur.paid), 'cash you recorded') + statTile('Still owed to you', money(r.owedTotal), `${(r.owed || []).length} ${(r.owed || []).length === 1 ? 'customer' : 'customers'}`) + statTile('Payments recorded', (r.payments || []).length, 'last 3 months');
+        $('[data-pm-owed]', root).innerHTML = `<h2>Who owes you</h2>${(r.owed || []).length ? `<div class="admin-list">${r.owed.map((o) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(o.full || o.name)}</strong><div class="muted">${esc(o.name)} · since ${esc(timeAgo(o.since))}</div></div><div class="admin-row-time"><strong>${esc(money(o.amount))}</strong></div></div>`).join('')}</div>` : '<p class="muted">Nobody owes you anything. Save an amount as "Still owes" when someone has not paid yet.</p>'}`;
+        $('[data-pm-list]', root).innerHTML = (r.payments || []).slice(0, 40).map((x) => `<div class="admin-row" data-pid="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.name)}</strong> <span class="pill ${x.paid ? 'good' : 'warn'}">${x.paid ? 'Paid' : 'Owes'}</span><div class="muted">${esc(money(x.amount))}${x.method ? ' · ' + esc(x.method) : ''}${x.note ? ' · ' + esc(x.note) : ''} · ${esc(timeAgo(x.at))}</div></div><div class="plan-actions">${x.paid ? '' : '<button class="btn btn-gray" data-pm-paid>Mark paid</button>'}<button class="btn btn-gray" data-pm-del>Delete</button></div></div>`).join('') || '<p class="muted">No payments recorded yet.</p>';
+      } catch (e) { $('[data-pm-list]', root).innerHTML = `<p class="muted">${oldGuard(e, 'the money page')}</p>`; }
+    };
+    $('[data-pm-cust]', root).addEventListener('change', () => { const c = d.customers.find((x) => x.id === $('[data-pm-cust]', root).value), pr = c && (d.prices || {})[c.planId]; if (pr) $('[data-pm-amt]', root).value = pr; });
+    $('[data-pm-save]', root).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const id = $('[data-pm-cust]', root).value, amt = Number($('[data-pm-amt]', root).value);
+      if (!id) { say2('[data-pm-msg]', 'Choose a customer first.', 'bad'); return; }
+      if (!(amt > 0)) { say2('[data-pm-msg]', 'Enter the amount.', 'bad'); return; }
+      btn.disabled = true;
+      try { await gq(`/reseller/customers/${encodeURIComponent(id)}/payments`, { method: 'POST', body: { amount: amt, paid: $('[data-pm-st]', root).value === 'paid', method: $('[data-pm-me]', root).value, note: $('[data-pm-no]', root).value.trim() } }); say2('[data-pm-msg]', 'Saved.', 'good'); $('[data-pm-amt]', root).value = ''; $('[data-pm-no]', root).value = ''; loadMoney(); }
+      catch (err) { say2('[data-pm-msg]', oldGuard(err, 'payments'), 'bad'); }
+      btn.disabled = false;
+    });
+    $('[data-pm-list]', root).addEventListener('click', async (e) => {
+      const row = e.target.closest('[data-pid]'); if (!row) return; const id = row.dataset.pid;
+      try {
+        if (e.target.closest('[data-pm-paid]')) { await gq(`/reseller/payments/${encodeURIComponent(id)}/paid`, { method: 'POST', body: { paid: true } }); loadMoney(); }
+        else if (e.target.closest('[data-pm-del]')) { if (!(await confirmAction('Delete this payment record?', 'This only removes your own note of it.', 'Delete'))) return; await gq(`/reseller/payments/${encodeURIComponent(id)}`, { method: 'DELETE' }); loadMoney(); }
+      } catch (err) { toast(err.message, 4000); }
+    });
+
+    // ----- messages to chosen customers
+    const MS_TPL = [['We miss you', 'Hi! We noticed you have not watched Aurora in a while. Is anything wrong? Reply and I will help.'], ['Maintenance', 'Heads up: Aurora may be slow for a few minutes tonight while we do maintenance. Thanks for your patience.'], ['New channels', 'Good news: new channels were just added to Aurora. Restart the app to see them.'], ['Renew soon', 'Your Aurora plan ends soon. Reply here when you are ready to renew.']];
+    let msPick = {};
+    const msRows = () => {
+      const f = $('[data-ms-filter]', root).value || 'all';
+      return d.customers.filter((c) => f === 'all' ? true : f === 'inact' ? !!inactiveSet && inactiveSet.has(c.id) : f.startsWith('l:') ? (c.labels || []).includes(f.slice(2)) : f === 'on' ? ['active', 'soon'].includes(statusOf(c).k) : statusOf(c).k === f);
+    };
+    const paintMsList = () => {
+      const rows = msRows(), n = Object.keys(msPick).filter((k) => msPick[k]).length;
+      $('[data-ms-list]', root).innerHTML = rows.slice(0, 200).map((c) => `<label class="admin-row need-row"><input type="checkbox" data-ms-id="${esc(c.id)}"${msPick[c.id] ? ' checked' : ''}><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(statusOf(c).label)}</span><div class="muted">${esc(c.name)}</div></div></label>`).join('') || '<p class="muted">Nobody matches.</p>';
+      $('[data-ms-send]', root).textContent = n ? `Send to ${n} ${n === 1 ? 'customer' : 'customers'}` : 'Send message';
+    };
+    const paintMsgs = async () => {
+      const f = $('[data-ms-filter]', root), keep = f.value, labels = [...new Set(d.customers.flatMap((c) => c.labels || []))].sort();
+      f.innerHTML = '<option value="all">Everyone</option><option value="on">Active</option><option value="soon">Ending soon</option><option value="expired">Expired</option><option value="trial">On a trial</option><option value="inact">Inactive 14 days</option>' + labels.map((l) => `<option value="l:${esc(l)}">Label: ${esc(l)}</option>`).join('');
+      if (keep) f.value = keep;
+      $('[data-ms-tpl]', root).innerHTML = MS_TPL.map((t, i) => `<button class="chip" data-ms-t="${i}">${esc(t[0])}</button>`).join('');
+      paintMsList();
+      try {
+        const r = await retry409(() => gq('/reseller/messages'));
+        $('[data-ms-sent]', root).innerHTML = (r.sent || []).map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.text)}<div class="muted">to ${x.count} ${x.count === 1 ? 'customer' : 'customers'} · ${esc(timeAgo(x.at))}</div></div></div>`).join('') || '<p class="muted">Nothing sent yet.</p>';
+      } catch (e) { $('[data-ms-sent]', root).innerHTML = `<p class="muted">${oldGuard(e, 'messages')}</p>`; }
+    };
+    $('[data-ms-filter]', root).addEventListener('change', paintMsList);
+    $('[data-ms-list]', root).addEventListener('change', (e) => { const id = e.target.dataset.msId; if (id) { msPick[id] = e.target.checked; paintMsList(); } });
+    $('[data-ms-all]', root).addEventListener('click', () => { msRows().forEach((c) => { msPick[c.id] = true; }); paintMsList(); });
+    $('[data-ms-none]', root).addEventListener('click', () => { msPick = {}; paintMsList(); });
+    $('[data-ms-tpl]', root).addEventListener('click', (e) => { const b = e.target.closest('[data-ms-t]'); if (b) $('[data-ms-text]', root).value = MS_TPL[Number(b.dataset.msT)][1]; });
+    $('[data-ms-send]', root).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const ids = Object.keys(msPick).filter((k) => msPick[k]), text = $('[data-ms-text]', root).value.trim();
+      if (!ids.length) { say2('[data-ms-msg]', 'Choose at least one customer.', 'bad'); return; }
+      if (!text) { say2('[data-ms-msg]', 'Write the message first.', 'bad'); return; }
+      if (ids.length > 40) { say2('[data-ms-msg]', 'You can send to up to 40 customers at a time.', 'bad'); return; }
+      btn.disabled = true;
+      try { const r = await gq('/reseller/messages', { method: 'POST', body: { ids, text } }); say2('[data-ms-msg]', `Sent to ${r.sent} ${r.sent === 1 ? 'customer' : 'customers'}.`, 'good'); $('[data-ms-text]', root).value = ''; msPick = {}; paintMsgs(); }
+      catch (err) { say2('[data-ms-msg]', oldGuard(err, 'messages'), 'bad'); }
+      btn.disabled = false;
+    });
+
+    // ----- setup guides
+    const GUIDES = {
+      firetv: ['Fire TV Stick or Android TV', ['On the TV, open the app store and install the free "Downloader" app.', 'Open Downloader and type this code: 3643447, then press Go.', 'Choose Install, then Open.', 'Sign in with your username and password.', 'Older Fire Stick 4K (1st generation)? Use Aurora Lite instead: in Downloader type aurora-streaming.org/lite']],
+      android: ['Android phone or tablet', ['Open this link on the phone: https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk', 'Open the downloaded file and allow "install from this source" if asked.', 'Open Aurora and sign in with your username and password.']],
+      iphone: ['iPhone or iPad', ['Install the free TestFlight app from the App Store.', 'Open this link on the iPhone: https://testflight.apple.com/join/appxqJyp', 'Tap Accept, then Install, then Open.', 'Sign in with your username and password.']],
+      windows: ['Windows laptop or PC', ['Download the Aurora installer: https://aurora-streaming.org/windows', 'Open it. If Windows says "Windows protected your PC", choose More info, then Run anyway.', 'Aurora opens by itself. Sign in with your username and password.', 'Aurora updates itself. Press F11 for full screen.']],
+      web: ['Web browser', ['Open https://aurora-streaming.org/app/ in Chrome, Edge or Safari.', 'Sign in with your username and password.', 'In Chrome or Edge, open Settings in Aurora and press Install to add it as an app.']],
+      lite: ['Aurora Lite (older devices)', ['For older Android 7 devices and the Fire TV Stick 4K (1st generation).', 'In the Downloader app, type: aurora-streaming.org/lite', 'Choose Install, then Open.', 'Sign in with your username and password.']]
+    };
+    let gdKey = 'firetv';
+    const guideText = () => {
+      const g = GUIDES[gdKey], c = d.customers.find((x) => x.id === $('[data-gd-cust]', root).value);
+      return `Aurora setup: ${g[0]}\n\n${g[1].map((t, i) => `${i + 1}. ${t}`).join('\n')}${c ? `\n\nYour username: ${c.name}\n(Your password is the one I sent you.)` : ''}\n\nNeed help? Just reply to me.`;
+    };
+    const paintGuides = () => {
+      $('[data-gd-tabs]', root).innerHTML = Object.keys(GUIDES).map((k) => `<button class="chip${gdKey === k ? ' on' : ''}" data-gd-k="${k}">${esc(GUIDES[k][0])}</button>`).join('');
+      const sel = $('[data-gd-cust]', root), keep = sel.value;
+      sel.innerHTML = '<option value="">No one in particular</option>' + custOptions(keep); if (keep) sel.value = keep;
+      $('[data-gd-text]', root).value = guideText();
+    };
+    $('[data-gd-tabs]', root).addEventListener('click', (e) => { const b = e.target.closest('[data-gd-k]'); if (b) { gdKey = b.dataset.gdK; paintGuides(); } });
+    $('[data-gd-cust]', root).addEventListener('change', () => { $('[data-gd-text]', root).value = guideText(); });
+    $('[data-gd-copy]', root).addEventListener('click', () => copyText($('[data-gd-text]', root).value, $('[data-gd-text]', root)));
+    $('[data-gd-link]', root).addEventListener('click', () => copyText(`${SITE}setup/#${gdKey}`));
+
+    // ----- import many customers
+    let impRows = [];
+    const splitLine = (line, dl) => { const out = []; let cur = '', q = false; for (let i = 0; i < line.length; i++) { const ch = line[i]; if (q) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === dl) { out.push(cur.trim()); cur = ''; } else cur += ch; } out.push(cur.trim()); return out; };
+    const parseImport = (text) => {
+      let lines = String(text || '').split(/\r?\n/).filter((l) => l.trim()); if (!lines.length) return [];
+      const dl = lines[0].includes('\t') ? '\t' : (lines[0].split(';').length > lines[0].split(',').length ? ';' : ',');
+      const first = splitLine(lines[0], dl).map((x) => x.toLowerCase());
+      const header = first.some((x) => ['name', 'full name', 'fullname', 'email', 'phone', 'note', 'username', 'user'].includes(x)) && !first.some((x) => x.includes('@'));
+      let idx = { full: 0, email: 1, phone: 2, note: 3, username: -1 };
+      if (header) { idx = { full: -1, email: -1, phone: -1, note: -1, username: -1 }; first.forEach((h, i) => { if (['name', 'full name', 'fullname'].includes(h)) idx.full = i; else if (h === 'email') idx.email = i; else if (h === 'phone') idx.phone = i; else if (h === 'note') idx.note = i; else if (['username', 'user'].includes(h)) idx.username = i; }); lines = lines.slice(1); }
+      return lines.slice(0, 200).map((l) => { const c = splitLine(l, dl), g = (i) => (i >= 0 && c[i] ? c[i] : ''); return { full: g(idx.full), email: g(idx.email), phone: g(idx.phone), note: g(idx.note), username: g(idx.username) }; }).filter((r) => r.full || r.email || r.username);
+    };
+    $('[data-imp-file]', root).addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { $('[data-imp-text]', root).value = String(r.result || ''); $('[data-imp-check]', root).click(); }; r.readAsText(f); });
+    $('[data-imp-text]', root).addEventListener('input', () => { $('[data-imp-go]', root).disabled = true; });
+    $('[data-imp-check]', root).addEventListener('click', () => {
+      impRows = parseImport($('[data-imp-text]', root).value); $('[data-imp-res]', root).innerHTML = '';
+      const plan = d.plans.find((p) => p.id === $('[data-imp-plan]', root).value);
+      if (!impRows.length) { $('[data-imp-go]', root).disabled = true; $('[data-imp-prev]', root).textContent = ''; say2('[data-imp-msg]', 'Nothing to import yet. Paste your rows above.', 'bad'); return; }
+      const n = Math.min(impRows.length, 50), cost = (plan?.credits || 0) * n;
+      $('[data-imp-prev]', root).innerHTML = `<strong>${impRows.length} rows found.</strong> ${impRows.length > 50 ? 'Only the first 50 are imported at a time. ' : ''}This will use ${esc(creditsWord(cost))} (you have ${d.credits}).<br>${impRows.slice(0, 5).map((r) => esc([r.full || r.username, r.email, r.phone].filter(Boolean).join(' · '))).join('<br>')}${impRows.length > 5 ? `<br>and ${impRows.length - 5} more` : ''}`;
+      $('[data-imp-go]', root).disabled = !plan || cost > d.credits; say2('[data-imp-msg]', cost > d.credits ? 'Not enough credits for all of them.' : '', 'bad');
+    });
+    $('[data-imp-go]', root).addEventListener('click', async (e) => {
+      if (!impRows.length) return; const b = e.currentTarget; b.disabled = true; say2('[data-imp-msg]', 'Importing... this takes a few seconds.');
+      try {
+        const r = await gq('/reseller/import', { method: 'POST', body: { planId: $('[data-imp-plan]', root).value, rows: impRows.slice(0, 50) } });
+        say2('[data-imp-msg]', `Created ${r.created} ${r.created === 1 ? 'customer' : 'customers'}${r.failed ? `, ${r.failed} could not be created.` : '.'}`, r.failed ? 'bad' : 'good');
+        const res = r.results || [];
+        $('[data-imp-res]', root).innerHTML = `<div class="admin-list">${res.map((x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.username || '')}</strong><div class="muted">${x.ok ? 'Password: ' + esc(x.password) : esc(x.error)}</div></div></div>`).join('')}</div><div class="m-actions"><button class="btn btn-gray" data-imp-copy>Copy all logins</button></div>`;
+        $('[data-imp-copy]', root).addEventListener('click', () => copyText(res.filter((x) => x.ok).map((x) => `${x.full || x.username}\nUsername: ${x.username}\nPassword: ${x.password}`).join('\n\n')));
+        d.credits = r.credits ?? d.credits; impRows = []; $('[data-imp-text]', root).value = '';
+      } catch (err) { b.disabled = false; say2('[data-imp-msg]', oldGuard(err, 'import'), 'bad'); }
+    });
+
+    // ----- coupons (Sales tools)
+    const loadCoupons = async () => {
+      const box = $('[data-s-cp]', root);
+      try {
+        const r = await retry409(() => gq('/reseller/coupons')), list = r.coupons || [];
+        box.innerHTML = `<h2>Coupons for your customers</h2><p class="muted">Make a discount code and send it to a customer. They type it on their account page when they ask for more time, and you see the discounted price on their request (on the website panel).</p>
+          <div class="plan-grid"><label class="admin-field"><span>Code (blank = make one)</span><input type="text" class="st-note-input" data-cp-code maxlength="20" autocapitalize="characters" placeholder="WELCOME10"></label>
+          <label class="admin-field"><span>Discount</span><select data-cp-type><option value="percent">Percent off</option><option value="amount">Money off</option></select></label>
+          <label class="admin-field"><span>Amount</span><input type="number" class="st-note-input" data-cp-val min="0" step="0.01" inputmode="decimal" placeholder="10"></label>
+          <label class="admin-field"><span>Most uses (optional)</span><input type="number" class="st-note-input" data-cp-max min="0" inputmode="numeric"></label></div>
+          <div class="m-actions"><button class="btn btn-red" data-cp-make>Make coupon</button></div><div class="live-result" data-cp-msg></div>
+          <div class="admin-list">${list.map((c) => `<div class="admin-row" data-cid="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.code)}</strong> ${c.on === false ? '<span class="pill bad">Off</span>' : ''}<div class="muted">${c.type === 'percent' ? c.value + '% off' : esc(money(c.value)) + ' off'} · used ${c.used || 0}${c.max ? ' of ' + c.max : ''}${c.expires ? ' · ends ' + esc(fmtDay(c.expires)) : ''}</div></div><div class="plan-actions"><button class="btn btn-gray" data-cp-copy>Copy</button><button class="btn btn-gray" data-cp-tog>${c.on === false ? 'Turn on' : 'Turn off'}</button><button class="btn btn-gray" data-cp-del>Delete</button></div></div>`).join('') || '<p class="muted">No coupons yet.</p>'}</div>`;
+      } catch (e) { box.innerHTML = `<h2>Coupons</h2><p class="muted">${oldGuard(e, 'coupons')}</p>`; }
+    };
+    $('[data-s-cp]', root).addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return; const row = b.closest('[data-cid]'), id = row?.dataset.cid;
+      try {
+        if (b.matches('[data-cp-make]')) { b.disabled = true; await gq('/reseller/coupons', { method: 'POST', body: { code: $('[data-cp-code]', root).value.trim(), type: $('[data-cp-type]', root).value, value: Number($('[data-cp-val]', root).value), max: Number($('[data-cp-max]', root).value) || 0 } }); loadCoupons(); }
+        else if (b.matches('[data-cp-copy]')) copyText($('strong', row).textContent);
+        else if (b.matches('[data-cp-tog]')) { await gq(`/reseller/coupons/${encodeURIComponent(id)}/toggle`, { method: 'POST', body: {} }); loadCoupons(); }
+        else if (b.matches('[data-cp-del]')) { if (!(await confirmAction('Delete this coupon?', 'The code stops working straight away.', 'Delete'))) return; await gq(`/reseller/coupons/${encodeURIComponent(id)}`, { method: 'DELETE' }); loadCoupons(); }
+      } catch (err) { b.disabled = false; say2('[data-cp-msg]', esc(err.message), 'bad'); }
     });
     setRp((() => { try { return store.get('ef.resTab') || 'overview'; } catch { return 'overview'; } })());
   }

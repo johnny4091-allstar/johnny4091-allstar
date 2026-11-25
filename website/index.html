@@ -203,7 +203,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
       <h1>Where streaming <span>is possible</span></h1>
       <p class="lead">Movies, shows and live TV in one app, made to feel like the best streaming services. Sign in on your phone, your TV or a web browser and pick up exactly where you stopped.</p>
       <div class="actions"><a class="btn btn-red" href="#signup">Start free trial</a><a class="btn btn-gray" href="#app">Get the app</a></div>
-      <div class="devices"><span>Android phones</span><span>Android and Google TV</span><span>Web browser</span></div>
+      <div class="devices"><span>Android phones</span><span>Android and Google TV</span><span>Windows</span><span>Web browser</span></div>
     </div>
     <div class="hero-art">
       <img class="art-desk" src="assets/img/shot-home.jpg" width="1280" height="720" alt="The Aurora home screen with a featured movie and rows of titles to continue watching" fetchpriority="high">
@@ -371,10 +371,21 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
         </ol>
         <a class="btn btn-red" id="testflight" href="https://testflight.apple.com/join/appxqJyp" rel="noopener">Get Aurora on TestFlight</a>
       </div>
+      <div class="panel" id="winpanel">
+        <span class="tag">Windows laptop and PC</span>
+        <h3>Install Aurora for Windows</h3>
+        <p class="sub2">A real Windows app with its own icon and window. It updates itself.</p>
+        <ol class="steps">
+          <li>Download the installer below and open it.</li>
+          <li>If Windows says <strong>Windows protected your PC</strong>, choose <strong>More info</strong>, then <strong>Run anyway</strong>.</li>
+          <li>Open Aurora and sign in.</li>
+        </ol>
+        <a class="btn btn-red" id="winlink" href="/windows" rel="noopener">Download for Windows</a>
+      </div>
       <div class="panel" id="webcard" hidden>
         <span class="tag">Web browser</span>
         <h3>Watch on a computer</h3>
-        <p class="sub2">No install needed. Open Aurora in any modern browser and sign in.</p>
+        <p class="sub2">No install needed. Open Aurora in Chrome, Edge or Safari and sign in. In Chrome or Edge you can also install it as an app from Settings.</p>
         <a class="btn btn-gray" id="weblink" href="#app" rel="noopener">Open on the web</a>
       </div>
     </div>
@@ -427,6 +438,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
   var dl = document.querySelector('.code'); if (dl && C.downloaderCode) dl.setAttribute('aria-label', 'Downloader code ' + String(C.downloaderCode).split('').join(' '));
   if (C.apkUrl) $('apk').href = C.apkUrl;
   if (C.testflightUrl) $('testflight').href = C.testflightUrl; else if (C.testflightUrl === '') $('iospanel').hidden = true;
+  if (C.winUrl) $('winlink').href = C.winUrl; else if (C.winUrl === '') $('winpanel').hidden = true;
   if (C.webAppUrl) { $('weblink').href = C.webAppUrl; $('webcard').hidden = false; }
   if (C.contact) { $('ask').hidden = false; $('contact').textContent = 'Contact: ' + C.contact; }
 
@@ -515,7 +527,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
   window.addEventListener('resize', function () { if (window.innerWidth > 900) setMenu(false); });
 
   // highlight the section in the menu
-  var links = [].slice.call(document.querySelectorAll('.nav-pill a.l')), ids = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  var links = [].slice.call(document.querySelectorAll('.nav-pill a.l')), ids = links.map(function (a) { var h = a.getAttribute('href') || ''; return h.charAt(0) === '#' && h.length > 1 ? document.querySelector(h) : null; });
   function spy() { var y = window.scrollY + 140, cur = 0; ids.forEach(function (s, i) { if (s && s.offsetTop <= y) cur = i; }); links.forEach(function (a, i) { a.classList.toggle('on', i === cur); }); }
   window.addEventListener('scroll', spy, { passive: true }); spy();
 })();

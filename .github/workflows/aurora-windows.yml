@@ -1,0 +1,83 @@
+name: Build Aurora for Windows
+
+on:
+  push:
+    paths:
+      - 'aurora/**'
+      - 'windows/**'
+      - '.github/workflows/aurora-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+
+      # Same numbering as the Android app: build N becomes 2.(N div 50).(N mod 50), and only ever goes up, so installed copies see updates.
+      - name: Set version
+        shell: bash
+        run: |
+          CODE=$((${{ github.run_number }} + 100))
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=2.$((CODE / 50)).$((CODE % 50))" >> "$GITHUB_ENV"
+
+      - name: Install
+        working-directory: windows
+        run: npm ci --no-audit --no-fund
+
+      - name: Check the file server
+        working-directory: windows
+        run: npm test
+
+      - name: Build the installer
+        working-directory: windows
+        shell: bash
+        run: |
+          npm version "$VERSION_NAME" --no-git-tag-version --allow-same-version
+          npm run dist
+
+      - name: Check what was built
+        shell: bash
+        run: |
+          ls -la windows/dist
+          test -s windows/dist/Aurora-Setup.exe
+          test -s windows/dist/latest.yml
+
+      - name: Write release notes
+        shell: bash
+        run: |
+          {
+            echo "## Aurora for Windows"
+            echo "Download **Aurora-Setup.exe** below and open it. Aurora installs for your Windows account (no administrator needed) and updates itself."
+            echo
+            echo "Windows may say **Windows protected your PC** the first time, because this app is not signed with a paid certificate. Choose **More info**, then **Run anyway**."
+            echo
+            echo "Version ${VERSION_NAME}, build ${VERSION_CODE}."
+          } > windows-notes.md
+
+      # One release that always holds the newest files, so the download link on the website never changes and the app finds its updates here.
+      - name: Publish the newest Windows files
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aurora-windows
+          name: Aurora for Windows (newest)
+          target_commitish: ${{ github.sha }}
+          make_latest: false
+          files: |
+            windows/dist/Aurora-Setup.exe
+            windows/dist/Aurora-Setup.exe.blockmap
+            windows/dist/latest.yml
+          body_path: windows-notes.md
