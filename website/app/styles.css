@@ -2132,3 +2132,6 @@ html.tv .tm-preview { width: 320px; }
 .res-msglist { max-height: 320px; overflow: auto; margin: 8px 0 14px; }
 [data-rp][hidden] { display: none !important; }
 .res-tabs { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; } .res-tabs::-webkit-scrollbar { display: none; } .res-tabs .chip { flex: 0 0 auto; }
+
+/* Provider Live TV in a web browser: no quality or track settings, the Guard picks the stream */
+.player.iptv-web #osd-tracks { display: none; }

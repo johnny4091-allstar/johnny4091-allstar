@@ -27,6 +27,7 @@ const https = require('https');
 const crypto = require('crypto');
 const os = require('os');
 const dns = require('dns');
+const zlib = require('zlib');
 const net = require('net');
 
 // ---------- Keep-alive (guard 1.17.0) ----------
@@ -60,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.51.0';
+const VERSION = '1.52.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -90,6 +91,7 @@ function loadConfig() {
     idleDeviceDays: 30, // a customer's device not used for this many days is signed out (0 = off)
     resellerWarningsMax: 3, resellerWarningDays: 90, // warnings that may be active at once, and how long one counts; one more suspends the reseller
     resellerTrialLinkPerIpPerDay: 3, // reseller trial links (guard 1.50.0): most trials from one internet address in a day
+    liveRelay: true, liveRelayPerUser: 3, liveRelayMax: 60, // Live TV in a web browser or the Windows app (guard 1.52.0): on or off, streams per person, streams in all
     resellerRulesRequired: true, // a reseller must agree to the rules and regulations before changing anything
     // Set to true (and restart the guard) to remove a forgotten Reseller PIN. Then set it back to false.
     resetResellerPin: false,
@@ -685,6 +687,171 @@ function plainRequest(address, { method = 'GET', headers = {}, body, timeoutMs =
       req.end(data || undefined);
     } catch (e) { done({ status: 0, text: '', error: String((e && e.message) || e) }); }
   });
+}
+
+// ---------- Live TV relay (guard 1.52.0) ----------
+// A web browser (and the Windows app) can't fetch a TV provider's channel list or streams itself: providers answer with plain http,
+// which a secure page may not use, and don't allow web pages to read what they send. So Aurora asks the Guard, and the Guard
+// fetches it and passes it on. It is NOT an open proxy: a signed-in person (not expired) can only reach addresses that belong to the
+// providers set up in Aurora, and the pictures, streams and playlist parts those providers point to.
+const relay = { perUser: new Map(), total: 0, hosts: new Set(), hostsAt: 0, learned: new Map(), userHosts: new Map() };
+const relayHostKey = (u) => { try { const x = new URL(u); return x.hostname.toLowerCase() + ':' + (x.port || (x.protocol === 'https:' ? '443' : '80')); } catch { return ''; } };
+function relaySecret() { if (!store.relaySecret) { store.relaySecret = crypto.randomBytes(32).toString('hex'); saveStore(); } return store.relaySecret; }
+const relaySign = (u) => crypto.createHmac('sha256', relaySecret()).update(u).digest('base64url').slice(0, 24);
+const relayError = (status, message) => { const e = new Error(message); e.relayStatus = status; return e; };
+function relayPrivate(ip) {
+  const a = String(ip || '').toLowerCase();
+  if (a.startsWith('::ffff:')) return relayPrivate(a.slice(7));
+  if (net.isIPv4(a)) { const [x, y] = a.split('.').map(Number); return x === 0 || x === 10 || x === 127 || (x === 169 && y === 254) || (x === 172 && y >= 16 && y <= 31) || (x === 192 && y === 168) || (x === 100 && y >= 64 && y <= 127) || x >= 224; }
+  return a === '::1' || a === '::' || /^f[cd]/.test(a) || /^fe[89ab]/.test(a);
+}
+async function relayResolve(host, allowPrivate) {
+  const bare = host.replace(/^\[|\]$/g, '');
+  const r = net.isIP(bare) ? { address: bare, family: net.isIP(bare) } : await dns.promises.lookup(bare);
+  if (!allowPrivate && relayPrivate(r.address)) throw relayError(403, 'That address is on a private network.');
+  return r;
+}
+// The addresses of the providers set up in Aurora: the main one, the other providers, the administrator's own channels, and (below) this person's own.
+async function relayAllowedHosts() {
+  if (Date.now() - relay.hostsAt < 60000) return relay.hosts;
+  const set = new Set(), add = (a) => { const k = a ? relayHostKey(provWithScheme(String(a))) : ''; if (k) set.add(k); };
+  try { const m = await mainProviderConfig(); add(m.type === 'm3u' ? m.m3uUrl : m.server); } catch { /* not set up */ }
+  try { for (const b of backupProviders()) add(b.type === 'm3u' ? b.m3uUrl : b.server); } catch { /* none */ }
+  try {
+    const c = chanStore();
+    for (const i of c.items || []) { add(i.url); for (const b of i.backups || []) add(b.url); }
+    for (const e of Object.values(c.edits || {})) { add(e.url); for (const b of e.backups || []) add(b.url); }
+  } catch { /* none */ }
+  relay.hosts = set; relay.hostsAt = Date.now();
+  return set;
+}
+async function relayUserHost(me, token) {
+  const hit = relay.userHosts.get(me.Id);
+  if (hit && hit.until > Date.now()) return hit.key;
+  let key = '';
+  try {
+    const prefs = await emby('GET', '/DisplayPreferences/aurora-livetv', { token, query: { userId: me.Id, client: 'aurora' } });
+    const c = JSON.parse((prefs && prefs.CustomPrefs && prefs.CustomPrefs.config) || 'null');
+    if (c && c.type) key = relayHostKey(provWithScheme(String(c.type === 'm3u' ? c.m3uUrl : c.server || '')));
+  } catch { /* use the shared providers only */ }
+  relay.userHosts.set(me.Id, { key, until: Date.now() + 60000 });
+  if (relay.userHosts.size > 2000) relay.userHosts.delete(relay.userHosts.keys().next().value);
+  return key;
+}
+// Addresses found inside a provider's own channel list (pictures, streams on other servers) may be used for the next few hours.
+function relayLearn(text) {
+  const until = Date.now() + 6 * 3600000; let n = 0;
+  for (const m of String(text).matchAll(/https?:\/\/[^\s"'<>,\\]+/g)) {
+    const k = relayHostKey(m[0]); if (!k) continue;
+    relay.learned.set(k, until); if (++n >= 20000) break;
+  }
+  while (relay.learned.size > 50000) relay.learned.delete(relay.learned.keys().next().value);
+}
+// Opens the provider's address (following its redirects) and gives back the answer, still streaming.
+async function relayOpen(address, headers, allowPrivate) {
+  let current = address;
+  for (let hop = 0; hop < 6; hop++) {
+    const u = new URL(current);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') throw relayError(400, 'Only http and https addresses can be used.');
+    const ip = await relayResolve(u.hostname, allowPrivate && hop === 0);
+    const out = await new Promise((resolve, reject) => {
+      const rq = (u.protocol === 'https:' ? https : http).request(u, { method: 'GET', headers, timeout: 20000, lookup: (h, o, cb) => (o && o.all ? cb(null, [{ address: ip.address, family: ip.family }]) : cb(null, ip.address, ip.family)) }, (up) => resolve({ up, rq }));
+      rq.on('timeout', () => rq.destroy(new Error('timed out')));
+      rq.on('error', reject);
+      rq.end();
+    });
+    const code = out.up.statusCode || 0;
+    if (code >= 300 && code < 400 && out.up.headers.location) { out.up.resume(); current = new URL(out.up.headers.location, current).href; continue; }
+    return { ...out, url: current };
+  }
+  throw relayError(502, 'The provider sent too many redirects.');
+}
+const relayRead = (up, max) => new Promise((resolve, reject) => {
+  const chunks = []; let size = 0;
+  up.on('data', (c) => { size += c.length; if (size > max) { up.destroy(); reject(relayError(413, 'That was too large to pass on.')); } else chunks.push(c); });
+  up.on('end', () => resolve(Buffer.concat(chunks)));
+  up.on('error', reject);
+});
+// An HLS playlist: every address in it is changed to go through the relay too (signed, so only what this playlist names can be fetched).
+function relayRewrite(text, base, userId) {
+  const one = (a) => { let abs; try { abs = new URL(a, base).href; } catch { return a; } return `/relay?u=${encodeURIComponent(abs)}&s=${relaySign(abs)}&userId=${encodeURIComponent(userId)}`; };
+  return String(text).split(/\r?\n/).map((line) => {
+    if (!line.trim()) return line;
+    if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (m, a) => `URI="${one(a)}"`);
+    return one(line.trim());
+  }).join('\n');
+}
+async function relayRoute(req, res, url, token) {
+  const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'X-Emby-Token, X-Aurora-User, Content-Type, Range', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Content-Type', 'Cache-Control': 'no-store' };
+  if (url.pathname === '/relay/info') return send(res, 200, { enabled: cfg.liveRelay !== false, version: VERSION });
+  if (cfg.liveRelay === false) return send(res, 503, { error: 'Live TV in a browser is switched off on this server.' });
+  const kind = ['list', 'img'].includes(url.searchParams.get('kind')) ? url.searchParams.get('kind') : 'stream';
+  const tok = token || (kind === 'img' ? String(url.searchParams.get('token') || '') : '');
+  const me = await userOfToken(tok, url.searchParams.get('userId'));
+  if (!me) return send(res, 401, { error: 'Not signed in' });
+  if (!me.Policy?.IsAdministrator && isExpired(store.users[me.Id])) return send(res, 403, { error: 'This account has expired.' });
+  const target = String(url.searchParams.get('u') || '').slice(0, 4000), sig = String(url.searchParams.get('s') || '');
+  if (!/^https?:\/\//i.test(target)) return send(res, 400, { error: 'No address given.' });
+  const signed = !!sig && sig === relaySign(target), key = relayHostKey(target);
+  const listed = (await relayAllowedHosts()).has(key) || key === await relayUserHost(me, tok); // a provider the administrator or this person set up: may be on the home network
+  if (!signed) {
+    if (!listed && !(relay.learned.get(key) > Date.now())) return send(res, 403, { error: 'That address does not belong to one of your TV providers.' });
+    if (kind === 'list' && overLimit('relay-list', me.Id, 40, 3600000)) return send(res, 429, { error: 'Too many channel list requests. Please wait a while.' });
+    if (kind === 'stream' && overLimit('relay-start', me.Id, 400, 3600000)) return send(res, 429, { error: 'Too many channel changes. Please wait a moment.' });
+  }
+  const ua = String(url.searchParams.get('ua') || '').replace(/[^\x20-\x7E]/g, '').slice(0, 120) || 'VLC/3.0.20 LibVLC/3.0.20';
+  const headers = { 'User-Agent': ua, Accept: '*/*', Connection: 'close', 'Accept-Encoding': 'identity' };
+  if (req.headers.range && kind === 'stream') headers.Range = String(req.headers.range).slice(0, 80);
+  // One person only holds a few streams at once; changing channel quickly closes the oldest instead of failing.
+  let mine = null;
+  if (kind === 'stream' && !signed) {
+    if (relay.total >= (Number(cfg.liveRelayMax) || 60)) return send(res, 503, { error: 'The server is busy with other viewers. Try again in a moment.' });
+    mine = relay.perUser.get(me.Id) || new Set(); relay.perUser.set(me.Id, mine);
+    while (mine.size >= (Number(cfg.liveRelayPerUser) || 3)) { const old = mine.values().next().value; mine.delete(old); try { old.destroy(); } catch { /* gone */ } }
+  }
+  let opened;
+  try { opened = await relayOpen(target, headers, listed); }
+  catch (e) { return send(res, e.relayStatus || 502, { error: e.relayStatus ? e.message : `Could not reach the TV provider (${e.message || 'no answer'}).` }); }
+  const { up, rq } = opened, status = up.statusCode || 502, ctype = String(up.headers['content-type'] || '');
+  const closeAll = () => { try { up.destroy(); } catch { /* gone */ } try { rq.destroy(); } catch { /* gone */ } };
+  res.on('close', closeAll);
+  try {
+    if (status >= 400) { up.resume(); return send(res, status === 404 ? 404 : 502, { error: `The TV provider answered ${status}.` }); }
+    const isHls = /mpegurl/i.test(ctype) || /\.m3u8$/i.test(new URL(opened.url).pathname);
+    if (kind === 'list' || kind === 'img' || (kind === 'stream' && isHls)) {
+      const max = kind === 'list' ? 80 * 1024 * 1024 : kind === 'img' ? 3 * 1024 * 1024 : 4 * 1024 * 1024;
+      const body = await relayRead(up, max);
+      if (kind === 'img') {
+        if (!/^image\//i.test(ctype)) return send(res, 415, { error: 'That is not a picture.' });
+        res.writeHead(200, { ...cors, 'Content-Type': ctype, 'Content-Length': body.length, 'Cache-Control': 'private, max-age=86400' });
+        return res.end(body);
+      }
+      if (kind === 'list') {
+        const text = body.toString('utf8');
+        relayLearn(text);
+        const gz = /\bgzip\b/.test(String(req.headers['accept-encoding'] || ''));
+        const out = gz ? zlib.gzipSync(body) : body;
+        res.writeHead(200, { ...cors, 'Content-Type': ctype || 'text/plain; charset=utf-8', 'Content-Length': out.length, ...(gz ? { 'Content-Encoding': 'gzip' } : {}) });
+        return res.end(out);
+      }
+      const text = relayRewrite(body.toString('utf8'), opened.url, me.Id);
+      res.writeHead(200, { ...cors, 'Content-Type': 'application/vnd.apple.mpegurl' });
+      return res.end(text);
+    }
+    // A stream: passed on as it arrives. A stream that stops sending for 45 seconds is closed.
+    const head = { ...cors, 'Content-Type': ctype || 'video/mp2t' };
+    for (const h of ['content-length', 'content-range', 'accept-ranges']) if (up.headers[h]) head[h.replace(/(^|-)(\w)/g, (m, a, b) => a + b.toUpperCase())] = up.headers[h];
+    res.writeHead(status, head);
+    if (mine) { mine.add(res); relay.total++; res.on('close', () => { if (mine.delete(res)) relay.total = Math.max(0, relay.total - 1); }); }
+    let idle = setTimeout(closeAll, 45000);
+    up.on('data', () => { clearTimeout(idle); idle = setTimeout(closeAll, 45000); });
+    const stop = () => clearTimeout(idle);
+    up.on('end', stop); up.on('close', stop); res.on('close', stop);
+    up.on('error', () => { try { res.destroy(); } catch { /* gone */ } });
+    up.pipe(res);
+  } catch (e) {
+    if (!res.headersSent) send(res, e.relayStatus || 502, { error: e.relayStatus ? e.message : 'The stream stopped.' }); else try { res.destroy(); } catch { /* gone */ }
+  }
 }
 let requestsRemote = { at: 0, url: '' };
 // Where Seerr is: config.json, else the address the admin set in the app (Admin -> Requests), else aurora-config.json in the repo.
@@ -2749,6 +2916,9 @@ async function handle(req, res) {
     }
     return send(res, 200, { allowed: true });
   }
+
+  // Live TV in a web browser or the Windows app (guard 1.52.0): the Guard fetches the provider's list, pictures and streams.
+  if (url.pathname === '/relay' || url.pathname === '/relay/info') { if (req.method !== 'GET') return send(res, 405, { error: 'Use GET' }); return relayRoute(req, res, url, token); }
 
   // A signed-in customer reporting a channel. Kept (and, if the admin set up the provider, passed on). Repeats of the
   // same channel from the same account within 10 minutes are ignored, and each account gets 30 reports an hour.
