@@ -1,0 +1,17 @@
+const assert = require('assert');
+const path = require('path');
+const { resolveAsset } = require('../serve');
+const root = path.join(__dirname, 'fakeroot');
+const t = (p) => resolveAsset(root, p);
+assert.strictEqual(t('/').file, path.join(root, 'index.html'));
+assert.strictEqual(t('/app.js').type, 'text/javascript; charset=utf-8');
+assert.strictEqual(t('/icons/icon-192.png').type, 'image/png');
+assert.strictEqual(t('/styles.css?x=1').file, path.join(root, 'styles.css'));
+assert.strictEqual(t('/sounds/aurora-pulse.mp3').type, 'audio/mpeg');
+assert.strictEqual(t('/../secret.txt'), null);
+assert.strictEqual(t('/..%2f..%2fsecret.txt'), null);
+assert.strictEqual(t('/a/../../x'), null);
+assert.strictEqual(t('/%E0%A4%A'), null);
+assert.strictEqual(t('/x\0y'), null);
+assert.strictEqual(t('/unknown.bin').type, 'application/octet-stream');
+console.log('serve tests passed');

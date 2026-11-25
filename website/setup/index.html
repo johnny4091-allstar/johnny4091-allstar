@@ -45,12 +45,13 @@ h2 { margin:22px 0 8px; font-size:1.25rem; } a { color:#9fe8e5; }
   <p class="eyebrow">Getting started</p>
   <h1>Set up Aurora on your device</h1>
   <p class="lead">Pick your device. You will need the username and password you were given.</p>
-  <div class="tabs" role="navigation" aria-label="Devices"><a href="#firetv">Fire TV / Android TV</a><a href="#android">Android phone</a><a href="#iphone">iPhone / iPad</a><a href="#lite">Older devices</a><a href="#web">Web</a></div>
+  <div class="tabs" role="navigation" aria-label="Devices"><a href="#firetv">Fire TV / Android TV</a><a href="#android">Android phone</a><a href="#iphone">iPhone / iPad</a><a href="#windows">Windows laptop</a><a href="#lite">Older devices</a><a href="#web">Web</a></div>
   <div class="card dev" id="firetv"><h2 style="margin-top:0">Fire TV Stick or Android TV</h2><ol class="steps"><li>On the TV, open the app store and install the free <b>Downloader</b> app.</li><li>Open Downloader and type the code <b data-dl>3643447</b>, then press Go.</li><li>Choose <b>Install</b>, then <b>Open</b>.</li><li>Sign in with your username and password.</li></ol><p class="hint">If the TV asks, allow Downloader to install apps in Settings.</p></div>
   <div class="card dev" id="android"><h2 style="margin-top:0">Android phone or tablet</h2><ol class="steps"><li><a id="apk" href="https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk">Download the Aurora app</a>.</li><li>Open the downloaded file. Allow "install from this source" if asked.</li><li>Open Aurora and sign in with your username and password.</li></ol></div>
   <div class="card dev" id="iphone"><h2 style="margin-top:0">iPhone or iPad</h2><ol class="steps"><li>Install the free <b>TestFlight</b> app from the App Store.</li><li><a id="tf" href="https://testflight.apple.com/join/appxqJyp">Open the Aurora TestFlight link</a> on the iPhone.</li><li>Tap <b>Accept</b>, then <b>Install</b>, then <b>Open</b>.</li><li>Sign in with your username and password.</li></ol></div>
+  <div class="card dev" id="windows"><h2 style="margin-top:0">Windows laptop or PC</h2><ol class="steps"><li><a id="win" href="../windows">Download the Aurora installer</a> and open it.</li><li>If Windows says <b>Windows protected your PC</b>, choose <b>More info</b>, then <b>Run anyway</b>.</li><li>Aurora opens by itself. Sign in with your username and password.</li></ol><p class="hint">Aurora updates itself. Press F11 to go full screen.</p></div>
   <div class="card dev" id="lite"><h2 style="margin-top:0">Aurora Lite (older devices)</h2><p>For Android 7 devices and the Fire TV Stick 4K (1st generation).</p><ol class="steps"><li>In the Downloader app, type <b>aurora-streaming.org/lite</b> and press Go.</li><li>Choose <b>Install</b>, then <b>Open</b>.</li><li>Sign in with your username and password.</li></ol></div>
-  <div class="card dev" id="web"><h2 style="margin-top:0">Watch in a web browser</h2><ol class="steps"><li>Open <a href="../">aurora-streaming.org</a> and choose the web app.</li><li>Sign in with your username and password.</li></ol></div>
+  <div class="card dev" id="web"><h2 style="margin-top:0">Watch in a web browser</h2><ol class="steps"><li>Open <a id="webapp" href="../app/">Aurora on the web</a> in Chrome, Edge or Safari.</li><li>In Chrome or Edge you can install it as an app: Settings inside Aurora, then Install.</li><li>Sign in with your username and password.</li></ol></div>
   <h2>Need help?</h2><p class="lead">Message the person who gave you your login. You can also manage your plan, renew and change your password on <a href="../account/">your account page</a>.</p>
 
 </div>
@@ -60,6 +61,8 @@ h2 { margin:22px 0 8px; font-size:1.25rem; } a { color:#9fe8e5; }
   if (C.downloaderCode) [].forEach.call(document.querySelectorAll('[data-dl]'), function (e) { e.textContent = C.downloaderCode; });
   if (C.apkUrl) document.getElementById('apk').href = C.apkUrl;
   if (C.testflightUrl) document.getElementById('tf').href = C.testflightUrl;
+  if (C.winUrl) document.getElementById('win').href = C.winUrl;
+  if (C.webAppUrl) document.getElementById('webapp').href = C.webAppUrl;
   function sel() { var h = (location.hash || '#firetv').slice(1), ok = document.getElementById(h); if (!ok || !ok.classList.contains('dev')) h = 'firetv'; [].forEach.call(document.querySelectorAll('.dev'), function (e) { e.style.display = e.id === h ? 'block' : 'none'; }); [].forEach.call(document.querySelectorAll('.tabs a'), function (a) { a.classList.toggle('on', a.getAttribute('href') === '#' + h); }); }
   window.addEventListener('hashchange', sel); sel();
 })();

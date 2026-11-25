@@ -9,6 +9,25 @@
   status = 302
   force = true
 
+# Aurora for Windows: the newest installer. The link never changes.
+[[redirects]]
+  from = "/windows"
+  to = "https://github.com/johnny4091-allstar/johnny4091-allstar/releases/download/aurora-windows/Aurora-Setup.exe"
+  status = 302
+  force = true
+
+# The web app (a copy of the aurora folder, made by tools/sync-web-app.js). Its service worker must never be served stale.
+[[headers]]
+  for = "/app/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+    Service-Worker-Allowed = "/app/"
+
+[[headers]]
+  for = "/app/manifest.webmanifest"
+  [headers.values]
+    Cache-Control = "no-cache"
+
 [[headers]]
   for = "/*"
   [headers.values]

@@ -88,7 +88,7 @@
   // Playback problems for Admin → Playback problems: a video that wouldn't play, one that kept stopping to buffer,
   // a live channel that failed. Kept in the viewer's own Emby display preferences ("aurora-playlog"), so the admin
   // page can read every account's. Written a few seconds after the event, together with any others.
-  const deviceLabel = () => nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser');
+  const deviceLabel = () => nativeApp?.getDeviceName?.() || (window.AuroraDesktop ? 'Windows app' : /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser');
   const playLog = {
     PREFS: 'aurora-playlog', KEEP: 60, DAYS: 14, queue: [], timer: null,
     add(e) {
@@ -695,7 +695,7 @@
 
   function authHeader() {
     // The Android app reports its real model and version so they show in the admin dashboard and Emby's.
-    const device = nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser');
+    const device = nativeApp?.getDeviceName?.() || (window.AuroraDesktop ? 'Windows app' : /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser');
     const version = nativeApp?.getVersionName?.() || CLIENT.version;
     return `Emby UserId="${state.userId || ''}", Client="${CLIENT.name}", Device="${hdr(device)}", DeviceId="${state.deviceId}", Version="${hdr(version)}"`;
   }
@@ -5733,8 +5733,15 @@
         ${tourConfig() && tourSteps().length ? settingRow('Guided tour', 'A quick walk through the main screens of Aurora.', '<button class="btn btn-gray" data-replay-tour>Replay tour</button>') : ''}
         ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
         ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
+        ${window.AuroraDesktop ? settingRow('Updates', 'The Windows app updates itself. It checks when it opens, and installs the update when you close it.', '<div class="update-check"><span class="setting-value" data-desk-status></span><button class="btn btn-gray" data-desk-check>Check for updates</button></div>') : ''}
+        ${!nativeApp && !window.AuroraDesktop && (window.AuroraInstall?.available || window.AuroraInstall?.installed) ? settingRow('Install Aurora', window.AuroraInstall.installed ? 'Aurora is installed on this device.' : 'Add Aurora to this computer or phone as an app, with its own icon and window.', window.AuroraInstall.installed ? '<span class="setting-value">Installed</span>' : '<button class="btn btn-gray" data-install-app>Install</button>') : ''}
         ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
       </section>`;
+    $('[data-install-app]', page)?.addEventListener('click', async () => { const ip = window.AuroraInstall?.prompt; if (!ip) return; ip.prompt(); try { await ip.userChoice; } catch { /* ignore */ } });
+    $('[data-desk-check]', page)?.addEventListener('click', async () => {
+      const st = $('[data-desk-status]', page); st.textContent = 'Checking…';
+      try { st.textContent = await window.AuroraDesktop.checkForUpdates(); } catch { st.textContent = 'Could not check. Try again later.'; }
+    });
     applySubtitleStyle();
     showServiceStatus($('[data-service-status]', page), isCurrent);
     showAccountInfo($('[data-account]', page), isCurrent);
@@ -8967,6 +8974,8 @@
       firetv: ['Fire TV Stick or Android TV', ['On the TV, open the app store and install the free "Downloader" app.', 'Open Downloader and type this code: 3643447, then press Go.', 'Choose Install, then Open.', 'Sign in with your username and password.', 'Older Fire Stick 4K (1st generation)? Use Aurora Lite instead: in Downloader type aurora-streaming.org/lite']],
       android: ['Android phone or tablet', ['Open this link on the phone: https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk', 'Open the downloaded file and allow "install from this source" if asked.', 'Open Aurora and sign in with your username and password.']],
       iphone: ['iPhone or iPad', ['Install the free TestFlight app from the App Store.', 'Open this link on the iPhone: https://testflight.apple.com/join/appxqJyp', 'Tap Accept, then Install, then Open.', 'Sign in with your username and password.']],
+      windows: ['Windows laptop or PC', ['Download the Aurora installer: https://aurora-streaming.org/windows', 'Open it. If Windows says "Windows protected your PC", choose More info, then Run anyway.', 'Aurora opens by itself. Sign in with your username and password.', 'Aurora updates itself. Press F11 for full screen.']],
+      web: ['Web browser', ['Open https://aurora-streaming.org/app/ in Chrome, Edge or Safari.', 'Sign in with your username and password.', 'In Chrome or Edge, open Settings in Aurora and press Install to add it as an app.']],
       lite: ['Aurora Lite (older devices)', ['For older Android 7 devices and the Fire TV Stick 4K (1st generation).', 'In the Downloader app, type: aurora-streaming.org/lite', 'Choose Install, then Open.', 'Sign in with your username and password.']]
     };
     let gdKey = 'firetv';

@@ -1,0 +1,12882 @@
+/* Aurora — a Netflix-style web client for Emby. Plain JS, no build step. */
+(() => {
+  'use strict';
+
+  const DEFAULT_SERVER = 'https://emby4836.duckdns.org:8920';
+  // Requests (Jellyseerr) are switched on and pointed at a server from aurora-config.json in the GitHub repo
+  // (see loadRemoteConfig), so both can change without a new APK. Until then the tab says "Coming soon".
+  const REMOTE_CONFIG_URLS = ['main']
+    .map((branch) => `https://raw.githubusercontent.com/johnny4091-allstar/johnny4091-allstar/${branch}/aurora-config.json`);
+  // Letters and numbers for type-to-search. Older engines (Android 7 WebView) can't read \p{L} in a regex literal, so it is built here.
+  const KEY_TEXT_RE = (() => { try { return new RegExp("[\\p{L}\\p{N} '&:.-]", 'u'); } catch { return /[A-Za-z0-9 '&:.-]/; } })();
+  const TICKS_PER_SECOND = 10000000;
+  const ITEM_FIELDS = 'Overview,Genres,ProductionYear,OfficialRating,CommunityRating,RunTimeTicks,PrimaryImageAspectRatio,DateCreated';
+  const IMAGE_PARAMS = { EnableImageTypes: 'Primary,Backdrop,Thumb,Logo', ImageTypeLimit: 1 };
+
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  // A request deadline. AbortSignal.timeout() is missing from older Android System WebViews (a function that doesn't exist
+  // made every update check and guard call fail on exactly the devices that most need them).
+  function timeoutSignal(ms) {
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) return AbortSignal.timeout(ms);
+    const c = new AbortController();
+    setTimeout(() => c.abort(), ms);
+    return c.signal;
+  }
+
+  // ---------- Storage ----------
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } },
+    del(k) { try { localStorage.removeItem(k); } catch { /* ignore */ } },
+  };
+
+  // apiKey holds the signed-in user's access token from /Users/AuthenticateByName.
+  const state = { server: DEFAULT_SERVER, requestsServer: '', requestsEnabled: false, apiKey: '', userId: '', user: null, deviceId: '', views: [] };
+  const CLIENT = { name: 'Aurora', version: '2.0.0' };
+  // Set by the Android wrapper (android/); undefined in a normal browser.
+  const nativeApp = window.EmbyFlixAndroid || null;
+
+  // Customers only ever see "Aurora": where the media server's own name (or its web address) would appear in a
+  // message, a log line or a release note, it says Aurora (or "the server") instead. Admin screens, which only
+  // administrators can open, keep the real names because their instructions refer to the server's dashboard.
+  const brand = (t) => String(t ?? '')
+    .replace(/https?:\/\/[^\s"')<>]*emby[^\s"')<>]*/gi, 'the server')
+    .replace(/\bEmby(?:Flix)?\b/gi, 'Aurora');
+
+  // Errors and warnings go to the admins by themselves (Admin → Feedback → Automatic reports): a few seconds
+  // after the first one, in one report with what led up to it. The same problem is reported at most once an
+  // hour, reports are at least two minutes apart, and a device sends no more than 20 a day.
+  const problems = {
+    queue: [], timer: null, sentAt: 0, sending: false,
+    WAIT: 20000, GAP: 120000, DAILY: 20, KEEP: 30,
+    key: (msg) => String(msg).replace(/\d+/g, '#').slice(0, 120),
+    note(e) {
+      if (this.sending) return; // problems while sending a report (say, no connection) aren't reported again
+      let seen = {};
+      try { seen = JSON.parse(localStorage.getItem('ef.problemsSeen') || '{}'); } catch { /* start afresh */ }
+      const k = this.key(e.msg);
+      if (seen[k] && e.t - seen[k] < 3600000) return;
+      if (this.queue.some((q) => this.key(q.msg) === k) || this.queue.length >= 25) return;
+      this.queue.push(e);
+      this.schedule(this.WAIT);
+    },
+    schedule(ms) {
+      if (this.timer) return;
+      this.timer = setTimeout(() => { this.timer = null; this.flush(); }, Math.max(ms, this.sentAt + this.GAP - Date.now()));
+    },
+  };
+
+  // A small log of errors and notable events on this device, shown in the admin dashboard.
+  const appLog = {
+    KEY: 'ef.appLog', MAX: 300,
+    read() {
+      try { return JSON.parse(localStorage.getItem(this.KEY) || '[]').map((e) => ({ ...e, msg: brand(e.msg) })); } catch { return []; }
+    },
+    add(level, msg) {
+      try {
+        const list = this.read();
+        const entry = { t: Date.now(), level, msg: brand(msg).slice(0, 600) };
+        list.push(entry);
+        localStorage.setItem(this.KEY, JSON.stringify(list.slice(-this.MAX)));
+        if (level === 'error' || level === 'warn') problems.note(entry);
+      } catch { /* storage full or blocked */ }
+    },
+    clear() { try { localStorage.removeItem(this.KEY); } catch { /* ignore */ } },
+  };
+  // Playback problems for Admin → Playback problems: a video that wouldn't play, one that kept stopping to buffer,
+  // a live channel that failed. Kept in the viewer's own Emby display preferences ("aurora-playlog"), so the admin
+  // page can read every account's. Written a few seconds after the event, together with any others.
+  const deviceLabel = () => nativeApp?.getDeviceName?.() || (window.AuroraDesktop ? 'Windows app' : /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser');
+  const playLog = {
+    PREFS: 'aurora-playlog', KEEP: 60, DAYS: 14, queue: [], timer: null,
+    add(e) {
+      try {
+        this.queue.push({ t: Date.now(), device: deviceLabel(), version: nativeApp?.getVersionName?.() || 'web', ...e });
+        if (this.queue.length > 20) this.queue.splice(0, this.queue.length - 20);
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.flush(), 5000);
+      } catch { /* never get in the way of playback */ }
+    },
+    async flush() {
+      this.timer = null;
+      if (!this.queue.length) return;
+      if (!state.userId || !state.apiKey) { this.timer = setTimeout(() => this.flush(), 60000); return; }
+      const items = this.queue.splice(0);
+      try {
+        // A failed read must not count as "nothing saved yet": writing then would wipe the earlier entries.
+        const data = await readAuroraPref(this.PREFS);
+        const cutoff = Date.now() - this.DAYS * 86400000;
+        const kept = [...items].reverse().concat(data?.items || []).filter((x) => (x.t || 0) > cutoff).slice(0, this.KEEP);
+        await writeAuroraPref(this.PREFS, state.userId, { items: kept });
+      } catch {
+        this.queue = [...items, ...this.queue].slice(-20);
+        this.timer = setTimeout(() => this.flush(), 5 * 60000);
+      }
+    },
+  };
+  const itemTitle = (it) => (it?.Type === 'Episode' ? `${it.SeriesName || ''} ${episodeLabel(it)}`.trim() : it?.Name || '');
+
+  {
+    const describe = (args) => args.map((a) => (a instanceof Error ? a.message : typeof a === 'object' ? (() => { try { return JSON.stringify(a); } catch { return String(a); } })() : String(a))).join(' ');
+    const origError = console.error.bind(console), origWarn = console.warn.bind(console);
+    console.error = (...args) => { appLog.add('error', describe(args)); origError(...args); };
+    console.warn = (...args) => { appLog.add('warn', describe(args)); origWarn(...args); };
+    window.addEventListener('error', (e) => appLog.add('error', `${e.message} (${(e.filename || '').split('/').pop()}:${e.lineno})`));
+    window.addEventListener('unhandledrejection', (e) => appLog.add('error', 'Unhandled: ' + (e.reason?.message || e.reason)));
+  }
+
+  function loadConfig() {
+    // Older versions could store an admin API key and a custom server; drop those.
+    if (store.get('ef.authMode') === 'key') ['ef.apiKey', 'ef.userId'].forEach(store.del);
+    ['ef.authMode', 'ef.server'].forEach(store.del);
+    state.apiKey = store.get('ef.apiKey') || '';
+    if (store.get('ef.requestsServer') && !/^https:\/\//i.test(store.get('ef.requestsServer'))) store.del('ef.requestsServer'); // an older plain-http address
+    state.requestsServer = /^https:\/\//i.test(store.get('ef.requestsServer') || '') ? store.get('ef.requestsServer') : '';
+    state.requestsEnabled = !!state.requestsServer && store.get('ef.requestsEnabled') === '1';
+    state.userId = store.get('ef.userId') || '';
+    let deviceId = store.get('ef.deviceId');
+    if (!deviceId) {
+      deviceId = 'embyflix-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      store.set('ef.deviceId', deviceId);
+    }
+    state.deviceId = deviceId;
+  }
+
+  // ---------- Helpers ----------
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  function formatRuntime(ticks) {
+    if (!ticks) return '';
+    const mins = Math.round(ticks / TICKS_PER_SECOND / 60);
+    const h = Math.floor(mins / 60), m = mins % 60;
+    return h ? `${h}h ${m}m` : `${m}m`;
+  }
+
+  function episodeLabel(item) {
+    const s = item.ParentIndexNumber, e = item.IndexNumber;
+    if (s == null && e == null) return item.Name || '';
+    return `S${s ?? '?'}:E${e ?? '?'} ${item.Name || ''}`.trim();
+  }
+
+  let toastTimer;
+  function toast(msg, ms = 3500) {
+    const el = $('#toast');
+    el.textContent = brand(msg);
+    el.classList.remove('hidden');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+  }
+
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  // ---------- Emby API ----------
+  function apiUrl(path, params = {}) {
+    const url = new URL(state.server + '/emby' + path);
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
+    }
+    if (state.apiKey) url.searchParams.set('api_key', state.apiKey);
+    return url.toString();
+  }
+
+  // keepalive lets a request finish even if the app is being closed or sent to the background.
+  const API_TIMEOUT_MS = 30000;
+  const MOD_PREFS = /^\/DisplayPreferences\/(aurora-feedback|aurora-problems|aurora-playlog)$/;
+  async function api(path, { params, method = 'GET', body, keepalive = false } = {}) {
+    if (state.isMod && !isAdmin()) {
+      const other = params && params.userId && params.userId !== state.userId;
+      const viaGuard = (method === 'GET' && (path === '/Users' || path === '/System/ActivityLog/Entries'))
+        || (MOD_PREFS.test(path) && other && (method === 'GET' || (method === 'POST' && !path.endsWith('playlog'))));
+      if (viaGuard) {
+        const q = { path };
+        if (other) q.target = params.userId;
+        if (params && params.StartIndex != null) q.StartIndex = params.StartIndex;
+        if (params && params.Limit != null) q.Limit = params.Limit;
+        return guard('/mod/emby', { method: method === 'POST' ? 'POST' : 'GET', params: q, body });
+      }
+    }
+    // Kids mode needs each title's rating to filter on, whatever fields the caller asked for.
+    if (method === 'GET' && kidsOn() && !/^\/(Sessions|System|Auth|DisplayPreferences)/.test(path)) params = { ...(params || {}), Fields: ((params && params.Fields) ? params.Fields + ',' : '') + 'OfficialRating' };
+    const opts = { method, keepalive, headers: { Accept: 'application/json', 'X-Emby-Authorization': authHeader() } };
+    if (body !== undefined) {
+      opts.headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(body);
+    }
+    // A server that accepts the connection but never answers must not leave a spinner up for ever.
+    const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), API_TIMEOUT_MS);
+    opts.signal = ctrl.signal;
+    let res;
+    try { res = await fetch(apiUrl(path, params), opts); }
+    catch (e) { throw e.name === 'AbortError' ? Object.assign(new Error('The server took too long to answer. Check the connection and try again.'), { path, timeout: true }) : e; }
+    finally { clearTimeout(timer); }
+    if (!res.ok) {
+      const err = new Error(`Aurora returned ${res.status} ${res.statusText}`);
+      err.status = res.status;
+      err.path = path;
+      // This device's sign-in was revoked (an admin signed it out, or the account was disabled).
+      if (res.status === 401 && state.userId && !path.startsWith('/Users/AuthenticateByName')) signedOutElsewhere();
+      throw err;
+    }
+    const text = await res.text();
+    return kidsFilter(text ? JSON.parse(text) : null, method, path);
+  }
+
+  // ---------- Kids mode ----------
+  // Per device. Only titles whose rating is on the allowed list are shown (a title with no rating counts as not allowed);
+  // Live TV, Requests, Admin and Settings are closed, and leaving needs the PIN. It keeps young children to their own shelf:
+  // it is not a security lock.
+  const KIDS_LEVELS = {
+    little: ['Little kids (G, TV-Y, TV-G)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G']],
+    kids: ['Kids (up to PG)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G', 'PG', 'TV-PG']],
+    teens: ['Teens (up to PG-13)', ['G', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-G', 'PG', 'TV-PG', 'PG-13', 'TV-14']],
+  };
+  const kidsOn = () => store.get('ef.kids.on') === '1' && !!store.get('ef.kids.pin');
+  // Kids mode keeps Live TV, but only the children's categories (by name: Kids, Cartoon, Disney, Nick, Junior, Baby, Family ...). Adult ones never show.
+  const KIDS_LIVE_NAME = /\b(kids?|children|child|cartoons?|toons?|disney|nick(elodeon)?|junior|jr|baby|boomerang|sprout|animation|family)\b/i;
+  const kidsLevel = () => (KIDS_LEVELS[store.get('ef.kids.level')] ? store.get('ef.kids.level') : 'kids');
+  const kidsPinHash = (pin) => { let h = 2166136261; for (const c of 'aurora-kids:' + pin + ':' + pin.length) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
+  const kidsPinOk = (pin) => kidsPinHash(pin) === store.get('ef.kids.pin');
+  const ratingOf = (it) => String(it.OfficialRating || '').toUpperCase().replace(/^(US|CA|GB|UK)[-:]/, '').trim();
+  function kidsAllows(it) {
+    if (!it || typeof it !== 'object' || !it.Type) return true;
+    const r = ratingOf(it), list = KIDS_LEVELS[kidsLevel()][1];
+    if (['Movie', 'Series', 'BoxSet', 'Trailer', 'Video', 'MusicVideo'].includes(it.Type)) return list.includes(r);
+    if (['Episode', 'Season'].includes(it.Type) && r) return list.includes(r); // episodes usually carry no rating of their own
+    return true;
+  }
+  function kidsFilter(data, method, path) {
+    if (!data || method !== 'GET' || !kidsOn()) return data;
+    if (Array.isArray(data.Items)) { const items = data.Items.filter(kidsAllows); return { ...data, Items: items, TotalRecordCount: Math.max(items.length, (data.TotalRecordCount || 0) - (data.Items.length - items.length)) }; }
+    if (Array.isArray(data)) return data[0]?.Type ? data.filter(kidsAllows) : data;
+    if (/\/Items\/[\w-]+$/.test(path) && data.Id && !kidsAllows(data)) throw Object.assign(new Error('Not available in Kids mode'), { status: 403, path });
+    return data;
+  }
+  const resellerOnly = () => !!state.isReseller && !isAdmin();
+  function applyKidsUi() {
+    const on = kidsOn();
+    document.documentElement.classList.toggle('kids', on);
+    rowCache.clear(); // rows kept from before were not filtered
+    resetIptvCaches(); $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+    const st = $('#profile-dropdown [data-action="settings"]');
+    if (st) st.textContent = on ? 'Leave Kids mode' : 'Settings';
+    $('#profile-dropdown [data-action="admin"]')?.classList.toggle('hidden', on || !isStaff());
+    $('#profile-dropdown [data-action="reseller"]')?.classList.toggle('hidden', on || !state.isReseller);
+    document.documentElement.classList.toggle('reseller-only', resellerOnly());
+    $('#profile-dropdown [data-action="settings"]')?.classList.toggle('hidden', resellerOnly());
+    paintBell(); paintBanners();
+  }
+  // A number pad (works with a remote). Resolves with the digits, or null when cancelled.
+  function pinPad(title, text, length = 4) {
+    return new Promise((resolve) => {
+      const modal = $('#modal'), content = $('#modal-content');
+      if (confirmResolve) confirmResolve(false);
+      confirmResolve = (v) => resolve(v === false ? null : v); // closing the box any other way counts as cancel
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      let pin = '';
+      content.innerHTML = `<div class="m-body notice-body pinpad"><h2>${esc(title)}</h2><p class="overview">${esc(text || '')}</p>
+        <div class="pin-dots" aria-live="polite">${'<span></span>'.repeat(length)}</div>
+        <div class="pin-keys">${[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `<button class="btn btn-gray" data-k="${n}">${n}</button>`).join('')}
+          <button class="btn btn-gray" data-back aria-label="Delete">&#9003;</button><button class="btn btn-gray" data-k="0">0</button><button class="btn btn-gray" data-cancel>Cancel</button></div></div>`;
+      modal.classList.remove('hidden');
+      const done = (v) => { const r = confirmResolve; confirmResolve = null; closeModal(); r?.(v); };
+      const paint = () => $$('.pin-dots span', content).forEach((d, i) => d.classList.toggle('on', i < pin.length));
+      $$('button', content).forEach((b) => b.addEventListener('click', () => {
+        if (b.dataset.k != null) { if (pin.length < length) pin += b.dataset.k; paint(); if (pin.length === length) setTimeout(() => done(pin), 120); }
+        else if (b.hasAttribute('data-back')) { pin = pin.slice(0, -1); paint(); }
+        else done(null);
+      }));
+      autoFocus($('[data-k="5"]', content));
+    });
+  }
+  async function kidsAskNewPin() {
+    const a = await pinPad('Choose a PIN', 'You will need it to leave Kids mode. Pick 4 digits.');
+    if (!a) return null;
+    const b = await pinPad('Type it again', 'Enter the same 4 digits to confirm.');
+    if (!b) return null;
+    if (a !== b) { toast("The two PINs didn't match. Try again.", 3000); return null; }
+    return a;
+  }
+  async function kidsLeave() {
+    const pin = await pinPad('Leave Kids mode', 'Enter the PIN.');
+    if (pin == null) return false;
+    if (!kidsPinOk(pin)) { toast('Wrong PIN', 2500); return false; }
+    store.set('ef.kids.on', '0');
+    applyKidsUi();
+    toast('Kids mode is off', 2000);
+    return true;
+  }
+  function renderKidsGate(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad"><section class="settings-section kids-gate"><h2>Kids mode is on</h2>
+      <p class="muted">Only titles rated up to ${esc(KIDS_LEVELS[kidsLevel()][0])} are shown, and Live TV has only the kids channels. Requests and Settings are closed. Ask a grown-up to leave Kids mode.</p>
+      <div class="m-actions"><button class="btn btn-red" data-kids-leave>Enter PIN to leave</button><a class="btn btn-gray" href="#/home">Back to Home</a></div></section></div>`;
+    $('[data-kids-leave]', page).addEventListener('click', async () => { if (await kidsLeave() && isCurrent()) route(); });
+    autoFocus($('[data-kids-leave]', page));
+  }
+
+  // ---------- Profile and first-time setup ----------
+  // A short set-up on a new customer's first sign-in: an avatar, a name, what they like, language and subtitles, Live TV
+  // categories and a look at their plan, then the app tour. Everything is skippable. What they choose is kept on their Emby
+  // account ("aurora-profile"), so it follows them to every device; the tour still runs once on each new device.
+  const PROFILE_PREFS = 'aurora-profile';
+  const AVATAR_BGS = ['#7a5cff', '#2ad4d0', '#ff7a45', '#ff4d8d', '#f5c451', '#46d369'];
+  const AVATAR_KINDS = ['bear', 'panda', 'cat', 'fox', 'robot', 'alien', 'ghost', 'person'];
+  let profile = null;
+  let firstRun = null; // the setup that is on screen, if any
+  const profileKey = () => 'ef.profile.' + state.userId;
+  function loadProfileLocal() { try { profile = JSON.parse(store.get(profileKey()) || 'null'); } catch { profile = null; } }
+
+  // Avatars are drawn in code from a tiny recipe {k: character, bg: colour}: no image files, sharp at any size.
+  function avatarSvg(av, size = 40) {
+    const k = AVATAR_KINDS.includes(av?.k) ? av.k : 'bear', bg = /^#[0-9a-f]{6}$/i.test(av?.bg || '') ? av.bg : AVATAR_BGS[0], ink = '#1b1230'; // the saved value is account-writable: only a plain colour is drawn
+    const fur = { bear: '#c98b5a', panda: '#f4f4f8', cat: '#f2a65a', fox: '#f08a3c', robot: '#9fb4d6', alien: '#7fd48a', ghost: '#eef0ff', person: '#e7b48a' }[k];
+    let g = `<circle cx="50" cy="50" r="50" fill="${bg}"/>`;
+    const eyes = `<circle cx="40" cy="52" r="3.4" fill="${ink}"/><circle cx="60" cy="52" r="3.4" fill="${ink}"/>`;
+    const smile = `<path d="M42 66 q8 7 16 0" stroke="${ink}" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+    if (k === 'bear') g += `<circle cx="26" cy="30" r="11" fill="${fur}"/><circle cx="74" cy="30" r="11" fill="${fur}"/><circle cx="26" cy="30" r="5" fill="rgba(0,0,0,.18)"/><circle cx="74" cy="30" r="5" fill="rgba(0,0,0,.18)"/><circle cx="50" cy="56" r="31" fill="${fur}"/><ellipse cx="50" cy="66" rx="13" ry="10" fill="rgba(255,255,255,.35)"/><ellipse cx="50" cy="61" rx="4.5" ry="3" fill="${ink}"/>${eyes}<path d="M46 66 q4 4 8 0" stroke="${ink}" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'panda') g += `<circle cx="26" cy="30" r="11" fill="#2b2b3a"/><circle cx="74" cy="30" r="11" fill="#2b2b3a"/><circle cx="50" cy="56" r="31" fill="${fur}"/><ellipse cx="38" cy="52" rx="8" ry="10" fill="#2b2b3a" transform="rotate(-20 38 52)"/><ellipse cx="62" cy="52" rx="8" ry="10" fill="#2b2b3a" transform="rotate(20 62 52)"/><circle cx="38" cy="52" r="2.6" fill="#fff"/><circle cx="62" cy="52" r="2.6" fill="#fff"/><ellipse cx="50" cy="63" rx="4.5" ry="3" fill="#2b2b3a"/><path d="M45 69 q5 4 10 0" stroke="#2b2b3a" stroke-width="2" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'cat') g += `<polygon points="22,18 40,30 20,46" fill="${fur}"/><polygon points="78,18 60,30 80,46" fill="${fur}"/><ellipse cx="50" cy="56" rx="31" ry="28" fill="${fur}"/>${eyes}<polygon points="49,60 53,60 51,63" fill="${ink}"/>${smile}<path d="M34 62 L20 60 M34 66 L20 68 M66 62 L80 60 M66 66 L80 68" stroke="rgba(255,255,255,.6)" stroke-width="1.3"/>`;
+    else if (k === 'fox') g += `<polygon points="20,16 42,32 20,50" fill="${fur}"/><polygon points="80,16 58,32 80,50" fill="${fur}"/><path d="M20 48 Q50 24 80 48 Q74 80 50 84 Q26 80 20 48z" fill="${fur}"/><path d="M34 70 Q50 92 66 70 Q50 62 34 70z" fill="#fff"/>${eyes}<circle cx="50" cy="71" r="3.2" fill="${ink}"/>`;
+    else if (k === 'robot') g += `<line x1="50" y1="14" x2="50" y2="26" stroke="${fur}" stroke-width="3"/><circle cx="50" cy="13" r="4" fill="#ff5d6c"/><rect x="22" y="26" width="56" height="52" rx="14" fill="${fur}"/><rect x="28" y="40" width="44" height="16" rx="8" fill="#0b1020"/><circle cx="40" cy="48" r="4" fill="#2ad4d0"/><circle cx="60" cy="48" r="4" fill="#2ad4d0"/><rect x="38" y="64" width="24" height="5" rx="2.5" fill="#0b1020"/>`;
+    else if (k === 'alien') g += `<ellipse cx="50" cy="52" rx="28" ry="34" fill="${fur}"/><ellipse cx="38" cy="50" rx="9" ry="13" fill="#0b1020" transform="rotate(-15 38 50)"/><ellipse cx="62" cy="50" rx="9" ry="13" fill="#0b1020" transform="rotate(15 62 50)"/><path d="M44 76 q6 4 12 0" stroke="#0b1020" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+    else if (k === 'ghost') g += `<path d="M24 80 V44 a26 26 0 0 1 52 0 V80 l-9 -7 -9 7 -8 -7 -8 7 -9 -7 z" fill="${fur}"/>${eyes}${smile}`;
+    else g += `<path d="M22 44 a28 28 0 0 1 56 0 V50 H22z" fill="#2b1d3a"/><circle cx="50" cy="56" r="26" fill="${fur}"/><path d="M24 48 a26 22 0 0 1 52 0 q-14 -10 -26 -6 q-14 -4 -26 6z" fill="#2b1d3a"/>${eyes}${smile}`;
+    return `<svg viewBox="0 0 100 100" width="${size}" height="${size}" style="display:block;border-radius:50%" aria-hidden="true">${g}</svg>`;
+  }
+  const greeting = () => { const h = new Date().getHours(); return h < 5 ? 'Good evening' : h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'; };
+  const firstName = () => (profile?.name || '').trim();
+
+  // The top-bar picture: the avatar they made (or their Emby photo, or their initial).
+  function applyProfileUi() {
+    const btn = $('#profile-btn');
+    if (!btn || !state.user) return;
+    if (profile?.avatar) {
+      btn.style.backgroundImage = ''; btn.style.backgroundColor = 'transparent';
+      btn.innerHTML = avatarSvg(profile.avatar, 40);
+      btn.classList.add('has-avatar');
+    } else btn.classList.remove('has-avatar');
+    if (profile?.name) btn.title = profile.name;
+  }
+  // Returns true when the account's profile was read (even if it is empty), false when the server couldn't be asked.
+  async function refreshProfile() {
+    let ok = true;
+    try {
+      const p = await readAuroraPref(PROFILE_PREFS);
+      if (p || !profile) { profile = p || null; store.set(profileKey(), JSON.stringify(profile)); }
+      // The Kids PIN and allowed ratings are kept on the account, so they are set once and work on every device.
+      if (profile?.kidsPin && store.get('ef.kids.pin') !== profile.kidsPin) store.set('ef.kids.pin', profile.kidsPin);
+      if (profile?.kidsLevel && KIDS_LEVELS[profile.kidsLevel] && store.get('ef.kids.level') !== profile.kidsLevel) store.set('ef.kids.level', profile.kidsLevel);
+    } catch { ok = false; /* keep what this device has */ }
+    applyProfileUi();
+    return ok;
+  }
+  async function saveProfile(patch) {
+    profile = { ...(profile || {}), ...patch, v: 1 };
+    store.set(profileKey(), JSON.stringify(profile));
+    applyProfileUi();
+    try { await writeAuroraPref(PROFILE_PREFS, state.userId, profile); } catch (e) { appLog.add('warn', 'Profile not saved to the server: ' + e.message); }
+  }
+  const sortByProfileCats = (list) => {
+    const pref = new Set(profile?.cats || []);
+    return pref.size ? [...list.filter((c) => pref.has(c.name)), ...list.filter((c) => !pref.has(c.name))] : list;
+  };
+  // New customers get the setup (once per account); people who already did the tour before this existed, and admins, don't (Settings has "Set up again").
+  const needsSetup = () => !!state.userId && !kidsOn() && !isAdmin() && !(profile && profile.done) && !tourSeen();
+
+  function maybeStartSetup() {
+    if (firstRun) return;
+    const t0 = Date.now();
+    const check = () => {
+      if (firstRun || !needsSetup() || Date.now() - t0 > 120000) return;
+      const ready = splashDone && state.userId && !$('#main').classList.contains('hidden') && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && !updateRequiredOpen() && !trailerOpen()
+        && $('.hero-content, .hero.empty, .row-track .card, #page .empty-msg');
+      if (ready) showFirstRun(); else setTimeout(check, 400);
+    };
+    setTimeout(check, 600);
+  }
+
+  async function doSaveAccountConfig(changes) {
+    try {
+      const fresh = await api(`/Users/${state.userId}`);
+      const config = { ...(fresh.Configuration || {}), ...changes };
+      await api(`/Users/${state.userId}/Configuration`, { method: 'POST', body: config });
+      state.user = { ...fresh, Configuration: config };
+    } catch (e) { appLog.add('warn', 'Setup: could not save language settings: ' + e.message); }
+  }
+
+  async function showFirstRun({ redo = false, only = null } = {}) {
+    const modal = $('#modal'), content = $('#modal-content');
+    if (firstRun) return;
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    const cfg = state.user?.Configuration || {};
+    const hasLive = iptvOn() && !kidsOn();
+    const U = firstRun = {
+      i: 0, closing: false, redo,
+      avatar: { ...(profile?.avatar || { k: 'bear', bg: AVATAR_BGS[0] }) },
+      name: profile?.name || '',
+      genres: new Set(profile?.genres || []), favs: new Set(), cats: new Set(profile?.cats || []),
+      audio: cfg.AudioLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default', subSize: getPref('subSize'),
+      genreList: null, posters: null, catList: null, account: undefined,
+      leagues: new Set(profile?.leagues || []), teams: new Map((profile?.teams || []).map((t) => [t.lg + ':' + t.id, t])), teamLists: null, sportsOk: undefined, dir: 1, only: only || null,
+    };
+    const sportsOn = hasLive && guardEnabled;
+    const steps = only || ['welcome', 'avatar', 'name', 'genres', 'favorites', 'language', ...(hasLive ? ['live'] : []), ...(sportsOn ? ['sportsLeagues', 'sportsTeams'] : []), 'plan'];
+    U.steps = steps;
+    modal.classList.remove('hidden');
+    $('#modal .modal-box')?.classList.add('su-box');
+    document.body.style.overflow = 'hidden';
+    const who = state.user?.Name || 'there';
+
+    const close = (then) => {
+      U.closing = true; firstRun = null;
+      applySubtitleStyle();
+      closeModal();
+      if (then === 'tour') setTimeout(() => tourStart(), 350);
+      else if (!redo) maybeStartTour();
+      if (/^#\/settings/.test(location.hash)) route();
+      else if (profile?.cats?.length && /^#\/livetv/.test(location.hash)) route();
+      else if (/^#\/(home)?$/.test(location.hash || '#/home')) { rowCache.clear(); route(); }
+    };
+    const finish = async (then) => {
+      await saveProfile({ done: true });
+      close(then);
+    };
+    const chip = (label, on, attrs) => `<button class="su-chip${on ? ' on' : ''}" aria-pressed="${on ? 'true' : 'false'}" ${attrs}>${esc(label)}</button>`;
+
+    const views = {
+      welcome: () => ({ title: `Hi ${esc(who)} \u{1F44B}`, bare: true, skip: 'Skip setup', next: 'Start', back: false,
+        html: `<div class="su-center"><div class="su-hello">${avatarSvg(U.avatar, 84)}</div><h2 class="su-h su-big">Hi ${esc(who)} \u{1F44B}</h2><p class="su-p">Let's set up your Aurora. It takes about a minute, and you can skip anything.</p></div>` }),
+      avatar: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Pick your look</h2><div class="su-avatar"><div class="su-prev">${avatarSvg(U.avatar, 120)}</div>
+          <div><div class="su-grid">${AVATAR_KINDS.map((k) => `<button class="su-av${U.avatar.k === k ? ' on' : ''}" data-kind="${k}" aria-label="${k}">${avatarSvg({ k, bg: U.avatar.bg }, 52)}</button>`).join('')}</div>
+          <div class="su-cols">${AVATAR_BGS.map((c) => `<button class="su-col${U.avatar.bg === c ? ' on' : ''}" data-bg="${c}" style="background:${c}" aria-label="colour"></button>`).join('')}</div></div></div>` }),
+      name: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">What should we call you?</h2>
+          ${nav.tv ? `<div class="su-name-row"><button class="btn btn-gray" data-su="typename">${U.name ? esc(U.name) : 'Type a name'}</button></div><input class="su-input su-tv-input" type="text" maxlength="24" value="${esc(U.name)}" tabindex="-1" autocomplete="off">`
+            : `<input class="su-input" type="text" maxlength="24" placeholder="Your name" value="${esc(U.name)}" autocomplete="off">`}
+          <p class="su-p su-s">Optional. It's shown as a greeting on Home. Your sign-in name stays the same.</p>
+          <div class="su-example">${greeting()}, <b data-ex>${esc(U.name || who)}</b></div>` }),
+      genres: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Pick a few genres</h2>${U.genreList == null ? '<div class="spinner"></div>' : `<div class="su-chips">${U.genreList.map((g) => chip(g, U.genres.has(g), `data-genre="${esc(g)}"`)).join('')}</div>`}
+          <p class="su-p su-s" data-count>${U.genres.size ? U.genres.size + ' picked' : 'Choose as many as you like'}</p>` }),
+      favorites: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Tap titles you love</h2>${U.posters == null ? '<div class="spinner"></div>' : U.posters.length ? `<div class="su-posters">${U.posters.map((it) => `<button class="su-po${U.favs.has(it.Id) ? ' on' : ''}" data-fav="${esc(it.Id)}" aria-pressed="${U.favs.has(it.Id)}">${posterImage(it) ? `<img src="${esc(posterImage(it))}" alt="" loading="lazy">` : ''}<span class="su-pt">${esc(it.Name)}</span><span class="su-ck">✓</span></button>`).join('')}</div>` : '<p class="su-p">Nothing to show yet.</p>'}
+          <p class="su-p su-s">${U.favs.size ? U.favs.size + ' picked. ' : ''}They go to your Favorites, and Home gets a "Because you like…" row.</p>` }),
+      language: () => {
+        const langs = LANGUAGES.map(([v, l]) => [v, l]);
+        return { skip: 'Skip', next: 'Next',
+          html: `<h2 class="su-h">Language &amp; subtitles</h2>
+            <div class="su-opt"><span>Audio language</span>${selectHtml('su-audio', langs, U.audio)}</div>
+            <div class="su-opt"><span>Subtitles</span>${selectHtml('su-submode', SUBTITLE_MODES.map(([v, l]) => [v, l]), U.subMode)}</div>
+            <div class="su-opt"><span>Subtitle size</span>${selectHtml('su-subsize', Object.entries(SUB_SIZES).map(([k, v]) => [k, v[0]]), U.subSize)}</div>
+            <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>` };
+      },
+      live: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">What do you watch live?</h2>${U.catList == null ? '<div class="spinner"></div>' : U.catList.length ? `<div class="su-chips">${U.catList.map((c) => chip(c, U.cats.has(c), `data-cat="${esc(c)}"`)).join('')}</div>` : '<p class="su-p">No categories to show.</p>'}
+          <p class="su-p su-s">Those categories show first in Live TV.</p>` }),
+      sportsLeagues: () => ({ skip: 'Skip', next: 'Next',
+        html: `<h2 class="su-h">Which sports do you follow?</h2>${U.sportsOk === undefined ? '<div class="spinner"></div>' : `<div class="su-chips">${SPORT_GROUPS.map((g) => chip(g, U.leagues.has(g), `data-sl="${esc(g)}"`)).join('')}</div>`}
+          <p class="su-p su-s">Those leagues come first in Live TV → Sports.</p>` }),
+      sportsTeams: () => ({ skip: 'Skip', next: U.only ? 'Done' : 'Next',
+        html: `<h2 class="su-h">Pick your teams</h2>${U.teamLists == null ? '<div class="spinner"></div>' : `<div class="su-teamlists">${U.teamLists.map((l) => `<div class="su-tl"><span class="su-lab">${esc(l.name)}</span><div class="su-chips">${l.teams.map((t) => chip(t.short || t.name, U.teams.has(l.key + ':' + t.id), `data-team="${esc(l.key + ':' + t.id)}"`)).join('')}</div></div>`).join('')}</div>`}
+          <p class="su-p su-s" data-tcount>${U.teams.size ? U.teams.size + ' picked. ' : ''}Their games get a star and a "My teams" filter.</p>` }),
+      plan: () => {
+        const a = U.account;
+        let card = '';
+        if (a && !a.admin && a.plan !== undefined) {
+          const n = a.limit;
+          card = `<div class="su-plan">
+            <div><span>Plan</span><b>${esc(a.plan?.name || 'Your plan')}</b></div>
+            <div><span>Devices</span><b>Up to ${n} ${n === 1 ? 'device' : 'devices'}</b></div>
+            <div><span>Access until</span><b>${a.expires ? esc(fmtDay(a.expires)) : 'No end date'}</b></div></div>
+            <p class="su-p su-s">Need more time? You can ask for an extension anytime in Settings.</p>`;
+        } else if (U.account === undefined) card = '<div class="spinner"></div>';
+        return { skip: '', next: 'Take the tour', html: `<h2 class="su-h">You're all set${firstName() || U.name ? ', ' + esc(U.name) : ''}</h2>${card || '<p class="su-p">Everything is saved. Change any of it later in Settings.</p>'}` };
+      },
+    };
+
+    const loadFor = {
+      genres: async () => {
+        if (U.genreList) return;
+        try {
+          const res = await api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: 'Movie,Series', Recursive: true, SortBy: 'SortName' } });
+          U.genreList = (res?.Items || []).map((g) => g.Name).filter(Boolean).slice(0, 24);
+        } catch { U.genreList = []; }
+      },
+      favorites: async () => {
+        if (U.posters) return;
+        try {
+          const params = { IncludeItemTypes: 'Movie,Series', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 8, ImageTypes: 'Primary', Fields: ITEM_FIELDS };
+          if (U.genres.size) params.Genres = [...U.genres].join('|');
+          let items = (await getItems(params))?.Items || [];
+          if (items.length < 4 && U.genres.size) items = (await getItems({ ...params, Genres: undefined }))?.Items || items;
+          U.posters = items.filter((it) => posterImage(it)).slice(0, 8);
+        } catch { U.posters = []; }
+      },
+      live: async () => {
+        if (U.catList) return;
+        try { const src = await iptvSource(); U.catList = [...src.categories].sort((a, b) => (b.count || 0) - (a.count || 0)).slice(0, 18).map((c) => c.name); }
+        catch { U.catList = []; }
+      },
+      sportsLeagues: async () => {
+        if (U.sportsOk !== undefined) return;
+        try { U.sportsOk = !!(await guard('/sports/games', { params: { userId: state.userId }, quick: true })).enabled; } catch { U.sportsOk = false; }
+      },
+      sportsTeams: async () => {
+        if (U.teamLists) return;
+        const keysFor = { NFL: ['nfl'], NBA: ['nba'], MLB: ['mlb'], NHL: ['nhl'], Soccer: ['epl', 'laliga', 'bundesliga', 'seriea', 'ligue1', 'mls'] };
+        const keys = [...U.leagues].flatMap((g) => keysFor[g] || []);
+        const lists = await Promise.all(keys.map((k) => guard('/sports/teams', { params: { userId: state.userId, league: k } }).then((r) => ({ key: k, name: r.name, teams: r.teams || [] })).catch(() => null)));
+        U.teamLists = lists.filter((l) => l && l.teams.length);
+      },
+      plan: async () => {
+        if (U.account !== undefined) return;
+        if (!guardEnabled) { U.account = null; return; }
+        try { U.account = await guard('/account', { params: { userId: state.userId }, quick: true }); } catch { U.account = null; }
+      },
+    };
+
+    const dotsHtml = () => `<div class="su-dots">${steps.map((_, i) => `<i class="${i === U.i ? 'on' : ''}"></i>`).join('')}</div>`;
+    const draw = async (focusSel) => {
+      if (firstRun !== U) return;
+      const id = steps[U.i];
+      const need = loadFor[id];
+      const v0 = views[id]();
+      const paint = (v) => {
+        if (firstRun !== U) return;
+        const last = U.i === steps.length - 1;
+        content.innerHTML = `<div class="su" data-step="${id}">
+          <div class="su-top"><span class="su-logo">AURORA</span>${v.skip && !last ? `<button class="su-skip" data-su="skip">${esc(v.skip)}</button>` : '<span></span>'}</div>
+          <div class="su-body">${v.html}</div>
+          <div class="su-foot">${dotsHtml()}<div class="su-btns">${v.back === false || U.i === 0 ? '' : '<button class="btn btn-gray" data-su="back">Back</button>'}<button class="btn btn-red" data-su="next">${esc(v.next)}</button></div></div></div>`;
+        wire(id);
+        autoFocus($(focusSel || '[data-su="next"]', content));
+      };
+      paint(v0);
+      const pending = id === 'genres' ? U.genreList == null : id === 'favorites' ? U.posters == null : id === 'live' ? U.catList == null : id === 'sportsLeagues' ? U.sportsOk === undefined : id === 'sportsTeams' ? U.teamLists == null : id === 'plan' ? U.account === undefined : false;
+      if (need && pending) {
+        await need();
+        if (firstRun !== U || steps[U.i] !== id) return;
+        // No score feed, or no teams to pick: these steps simply aren't shown.
+        if ((id === 'sportsLeagues' && !U.sportsOk) || (id === 'sportsTeams' && !U.teamLists.length)) {
+          if (U.dir >= 0 && U.i === steps.length - 1) return finish(U.only ? '' : 'tour');
+          U.i = Math.max(0, Math.min(steps.length - 1, U.i + (U.dir >= 0 ? 1 : -1)));
+          return draw();
+        }
+        paint(views[id]());
+      }
+    };
+
+    // Saves what this step asked, then moves on.
+    const commit = async (id) => {
+      if (id === 'avatar') await saveProfile({ avatar: U.avatar });
+      else if (id === 'name') await saveProfile({ name: U.name.trim() });
+      else if (id === 'genres') { await saveProfile({ genres: [...U.genres] }); U.posters = null; } // the posters follow the genres picked
+      else if (id === 'favorites') {
+        for (const itemId of U.favs) { try { await api(userPath(`/FavoriteItems/${itemId}`), { method: 'POST' }); } catch { /* skip */ } }
+        U.favs = new Set();
+      } else if (id === 'language') {
+        setPref('subSize', U.subSize); applySubtitleStyle();
+        await doSaveAccountConfig({ AudioLanguagePreference: U.audio, SubtitleMode: U.subMode });
+      } else if (id === 'live') await saveProfile({ cats: [...U.cats] });
+      else if (id === 'sportsLeagues') { await saveProfile({ leagues: [...U.leagues] }); U.teamLists = null; }
+      else if (id === 'sportsTeams') await saveProfile({ teams: [...U.teams.values()] });
+    };
+    const go = async (delta, { skipping = false } = {}) => {
+      const id = steps[U.i];
+      U.dir = delta;
+      if (delta > 0 && !skipping) await commit(id);
+      if (id === 'language' && (delta < 0 || skipping)) applySubtitleStyle(); // the size shown while choosing is only a preview
+      if (delta > 0 && U.i === steps.length - 1) return finish(U.only ? '' : 'tour');
+      U.i = Math.max(0, Math.min(steps.length - 1, U.i + delta));
+      draw();
+    };
+    U.back = () => { if (U.i === 0) { if (U.only) close(); else saveProfile({ done: true }).then(() => close()); } else go(-1); };
+
+    function wire(id) {
+      const root = $('.su', content);
+      $('[data-su="next"]', root).addEventListener('click', (e) => { e.target.disabled = true; go(1); });
+      $('[data-su="back"]', root)?.addEventListener('click', () => go(-1));
+      $('[data-su="skip"]', root)?.addEventListener('click', async () => {
+        if (id === 'welcome') { await saveProfile({ done: true }); close(); } else go(1, { skipping: true });
+      });
+      if (id === 'avatar') {
+        const repaint = () => {
+          $('.su-prev', root).innerHTML = avatarSvg(U.avatar, 120);
+          $$('.su-av', root).forEach((b) => { b.classList.toggle('on', b.dataset.kind === U.avatar.k); b.innerHTML = avatarSvg({ k: b.dataset.kind, bg: U.avatar.bg }, 52); });
+          $$('.su-col', root).forEach((b) => b.classList.toggle('on', b.dataset.bg === U.avatar.bg));
+        };
+        $$('.su-av', root).forEach((b) => b.addEventListener('click', () => { U.avatar.k = b.dataset.kind; repaint(); }));
+        $$('.su-col', root).forEach((b) => b.addEventListener('click', () => { U.avatar.bg = b.dataset.bg; repaint(); }));
+      } else if (id === 'name') {
+        const input = $('.su-input', root), ex = $('[data-ex]', root);
+        input.addEventListener('input', () => { U.name = input.value; ex.textContent = input.value.trim() || who; });
+        const typeBtn = $('[data-su="typename"]', root);
+        typeBtn?.addEventListener('click', () => { input.tabIndex = 0; focusEl(input); showDeviceKeyboard(); });
+        if (typeBtn) {
+          input.addEventListener('blur', () => { input.tabIndex = -1; typeBtn.textContent = input.value.trim() || 'Type a name'; });
+          input.__onBack = () => focusEl($('[data-su="next"]', root));
+        }
+      } else if (id === 'genres') {
+        $$('[data-genre]', root).forEach((b) => b.addEventListener('click', () => {
+          const g = b.dataset.genre;
+          if (U.genres.has(g)) U.genres.delete(g); else U.genres.add(g);
+          b.classList.toggle('on', U.genres.has(g)); b.setAttribute('aria-pressed', U.genres.has(g));
+          $('[data-count]', root).textContent = U.genres.size ? U.genres.size + ' picked' : 'Choose as many as you like';
+        }));
+      } else if (id === 'favorites') {
+        $$('[data-fav]', root).forEach((b) => b.addEventListener('click', () => {
+          const f = b.dataset.fav;
+          if (U.favs.has(f)) U.favs.delete(f); else U.favs.add(f);
+          b.classList.toggle('on', U.favs.has(f)); b.setAttribute('aria-pressed', U.favs.has(f));
+        }));
+      } else if (id === 'language') {
+        root.addEventListener('change', (e) => {
+          const sel = e.target.closest('[data-setting]');
+          if (!sel) return;
+          if (sel.dataset.setting === 'su-audio') U.audio = sel.value;
+          else if (sel.dataset.setting === 'su-submode') U.subMode = sel.value;
+          else if (sel.dataset.setting === 'su-subsize') { U.subSize = sel.value; document.documentElement.style.setProperty('--cue-size', (SUB_SIZES[U.subSize] || SUB_SIZES.m)[1]); }
+        });
+      } else if (id === 'sportsLeagues') {
+        $$('[data-sl]', root).forEach((b) => b.addEventListener('click', () => {
+          const g = b.dataset.sl;
+          if (U.leagues.has(g)) U.leagues.delete(g); else U.leagues.add(g);
+          b.classList.toggle('on', U.leagues.has(g)); b.setAttribute('aria-pressed', U.leagues.has(g));
+        }));
+      } else if (id === 'sportsTeams') {
+        const all = new Map();
+        for (const l of U.teamLists || []) for (const t of l.teams) all.set(l.key + ':' + t.id, { lg: l.key, id: t.id, name: t.name, short: t.short, abbr: t.abbr });
+        $$('[data-team]', root).forEach((b) => b.addEventListener('click', () => {
+          const k = b.dataset.team;
+          if (U.teams.has(k)) U.teams.delete(k); else if (all.has(k)) U.teams.set(k, all.get(k));
+          b.classList.toggle('on', U.teams.has(k)); b.setAttribute('aria-pressed', U.teams.has(k));
+          $('[data-tcount]', root).textContent = (U.teams.size ? U.teams.size + ' picked. ' : '') + 'Their games get a star and a "My teams" filter.';
+        }));
+      } else if (id === 'live') {
+        $$('[data-cat]', root).forEach((b) => b.addEventListener('click', () => {
+          const c = b.dataset.cat;
+          if (U.cats.has(c)) U.cats.delete(c); else U.cats.add(c);
+          b.classList.toggle('on', U.cats.has(c)); b.setAttribute('aria-pressed', U.cats.has(c));
+        }));
+      }
+    }
+    draw();
+  }
+
+  let signingOut = false;
+  function signedOutElsewhere() {
+    if (signingOut) return;
+    signingOut = true;
+    const name = state.user?.Name || '';
+    appLog.add('warn', 'This device was signed out by the server');
+    if (state.userId) removeAccount(state.userId);
+    state.apiKey = ''; state.userId = ''; state.user = null;
+    store.del('ef.apiKey'); store.del('ef.userId');
+    if (isPlayerOpen()) closePlayer().catch(() => {});
+    showSetup('This device was signed out. Sign in again to continue.');
+    if (name) $('#setup-username').value = name;
+    setTimeout(() => { signingOut = false; }, 3000);
+  }
+
+  // Header values must be plain ASCII without quotes or commas.
+  const hdr = (v) => String(v).replace(/[^\x20-\x7E]|[",\\]/g, ' ').replace(/\s+/g, ' ').trim();
+
+  function authHeader() {
+    // The Android app reports its real model and version so they show in the admin dashboard and Emby's.
+    const device = nativeApp?.getDeviceName?.() || (window.AuroraDesktop ? 'Windows app' : /Mobi|Android/i.test(navigator.userAgent) ? 'Mobile Browser' : 'Web Browser');
+    const version = nativeApp?.getVersionName?.() || CLIENT.version;
+    return `Emby UserId="${state.userId || ''}", Client="${CLIENT.name}", Device="${hdr(device)}", DeviceId="${state.deviceId}", Version="${hdr(version)}"`;
+  }
+
+  const userPath = (p) => `/Users/${state.userId}${p}`;
+
+  function getItems(params) {
+    return api(userPath('/Items'), { params: { Recursive: true, Fields: ITEM_FIELDS, ...IMAGE_PARAMS, ...params } });
+  }
+
+  function getItem(id) {
+    return api(userPath(`/Items/${id}`), { params: { Fields: ITEM_FIELDS + ',People,Studios,Taglines,ChildCount,RemoteTrailers' } });
+  }
+
+  function imageUrl(id, type, { tag, maxWidth, maxHeight, index } = {}) {
+    if (!id) return '';
+    const path = `/Items/${id}/Images/${type}` + (index != null ? `/${index}` : '');
+    // A little lighter than Emby's 90 (a third smaller files, no visible difference), so rows fill faster.
+    return apiUrl(path, { tag, maxWidth, maxHeight, quality: maxWidth && maxWidth <= 600 ? 80 : 85 });
+  }
+  // Big backgrounds no wider than the screen's real pixels (a phone doesn't need a 1920-wide picture).
+  const SCREEN_W = Math.min(1920, Math.max(640, Math.ceil((Math.max(screen.width || 0, screen.height || 0) * (window.devicePixelRatio || 1)) / 320) * 320 || 1920));
+
+  function landscapeImage(item, w = nav.tv ? 360 : 500) { // a TV card is small on screen: smaller pictures decode and draw faster
+    const t = item.ImageTags || {};
+    if (t.Thumb) return imageUrl(item.Id, 'Thumb', { tag: t.Thumb, maxWidth: w });
+    if (item.Type === 'Episode' && t.Primary) return imageUrl(item.Id, 'Primary', { tag: t.Primary, maxWidth: w });
+    if (item.BackdropImageTags?.length) return imageUrl(item.Id, 'Backdrop', { tag: item.BackdropImageTags[0], maxWidth: w, index: 0 });
+    if (item.ParentThumbItemId && item.ParentThumbImageTag) return imageUrl(item.ParentThumbItemId, 'Thumb', { tag: item.ParentThumbImageTag, maxWidth: w });
+    if (item.ParentBackdropItemId && item.ParentBackdropImageTags?.length) return imageUrl(item.ParentBackdropItemId, 'Backdrop', { tag: item.ParentBackdropImageTags[0], maxWidth: w, index: 0 });
+    if (t.Primary) return imageUrl(item.Id, 'Primary', { tag: t.Primary, maxWidth: w });
+    if (item.SeriesId && item.SeriesPrimaryImageTag) return imageUrl(item.SeriesId, 'Primary', { tag: item.SeriesPrimaryImageTag, maxWidth: w });
+    return '';
+  }
+
+  function backdropImage(item, w = SCREEN_W) {
+    if (item.BackdropImageTags?.length) return imageUrl(item.Id, 'Backdrop', { tag: item.BackdropImageTags[0], maxWidth: w, index: 0 });
+    if (item.ParentBackdropItemId && item.ParentBackdropImageTags?.length) return imageUrl(item.ParentBackdropItemId, 'Backdrop', { tag: item.ParentBackdropImageTags[0], maxWidth: w, index: 0 });
+    return landscapeImage(item, w);
+  }
+
+  function logoImage(item, w = 600) {
+    if (item.ImageTags?.Logo) return imageUrl(item.Id, 'Logo', { tag: item.ImageTags.Logo, maxWidth: w });
+    if (item.ParentLogoItemId && item.ParentLogoImageTag) return imageUrl(item.ParentLogoItemId, 'Logo', { tag: item.ParentLogoImageTag, maxWidth: w });
+    return '';
+  }
+
+  function posterImage(item, w = nav.tv ? 260 : 360) {
+    if (item.ImageTags?.Primary) return imageUrl(item.Id, 'Primary', { tag: item.ImageTags.Primary, maxWidth: w });
+    if (item.SeriesId && item.SeriesPrimaryImageTag) return imageUrl(item.SeriesId, 'Primary', { tag: item.SeriesPrimaryImageTag, maxWidth: w });
+    return '';
+  }
+
+  function avatarInfo(user) {
+    const colors = ['#18b6d6', '#4f7bff', '#7a5cff', '#2ad4a0', '#c05cff', '#3a8dde'];
+    const name = user.Name || '?';
+    return {
+      color: colors[[...name].reduce((a, c) => a + c.charCodeAt(0), 0) % colors.length],
+      initial: name[0].toUpperCase(),
+      image: user.PrimaryImageTag ? apiUrl(`/Users/${user.Id}/Images/Primary`, { tag: user.PrimaryImageTag, maxWidth: 300 }) : '',
+    };
+  }
+
+  // ---------- Splash ----------
+  // The opening animation (splash.js) animation plays in the first ~4 seconds, then the finished logo stays while the bar fills; the screen stays up at least 12 seconds, then fades into the first screen.
+  // It never holds anyone for longer than SPLASH_MAX if the app is slow to load.
+  const SPLASH_MIN = 12000, SPLASH_MAX = 15000;
+  let splashDone = false;
+  // Android may stop the app's page to free memory while the native live TV player is in front, and the app
+  // then loads it again. That's no time for the opening screen: go straight back to where the viewer was.
+  const liveReturn = (() => {
+    try {
+      const r = JSON.parse(store.get('ef.liveReturn') || 'null');
+      return r && Date.now() - r.t < 6 * 3600000 ? r : null;
+    } catch { return null; }
+  })();
+  if (liveReturn) {
+    splashDone = true;
+    $('#splash')?.remove();
+  }
+  function hideSplash() {
+    if (splashDone) return;
+    splashDone = true;
+    const el = $('#splash');
+    if (!el) return;
+    setTimeout(() => {
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 600);
+      if (nav.on && (!document.activeElement || document.activeElement === document.body)) focusInitial();
+    }, Math.max(0, SPLASH_MIN - performance.now()));
+  }
+
+  // Home is ready once the hero or a row has something in it (or after a few seconds regardless).
+  // The intro sound, timed to the splash animation. Android lets it play without a tap; a normal browser may not.
+  function playSplashSound() {
+    if (store.get('ef.pref.splashSound') === 'off' || document.hidden) return;
+    // A recording of "Aurora Pulse" plays through a normal audio element, which the TV's WebView lets through. If that is
+    // refused, splash.js makes the same sound itself.
+    try {
+      const audio = new Audio('sounds/aurora-pulse.mp3');
+      audio.volume = 1;
+      const fallback = () => { try { window.AuroraSplash?.sound?.(); } catch { /* quiet */ } };
+      const pr = audio.play();
+      if (pr?.catch) pr.catch(fallback);
+      document.addEventListener('visibilitychange', () => { if (document.hidden) audio.pause(); }, { once: true });
+    } catch { window.AuroraSplash?.sound?.(); }
+  }
+
+  function hideSplashWhenHomeReady() {
+    const t0 = Date.now();
+    const check = () => {
+      if (splashDone) return;
+      if ($('.hero-content, .hero.empty, .row-track .card, #page .grid > *, #page .empty-msg') || Date.now() - t0 > 4000) hideSplash();
+      else setTimeout(check, 100);
+    };
+    check();
+  }
+
+  // ---------- Screens ----------
+  function showScreen(name) {
+    $('#setup').classList.toggle('hidden', name !== 'setup');
+    $('#main').classList.toggle('hidden', name !== 'main');
+  }
+
+  function showSetup(errorMsg) {
+    closeModal();
+    showScreen('setup');
+    hideSplash();
+    $('#setup-password').value = '';
+    const err = $('#setup-error');
+    err.textContent = errorMsg || '';
+    err.classList.toggle('hidden', !errorMsg);
+    renderAccountTiles();
+    if (nav.on) focusInitial($('#setup'));
+  }
+
+  // Accounts that have signed in on this device, so people can switch without retyping passwords.
+  function getAccounts() {
+    try { return JSON.parse(store.get('ef.accounts') || '[]'); } catch { return []; }
+  }
+  function saveAccounts(list) { store.set('ef.accounts', JSON.stringify(list)); }
+  function upsertAccount(user, token) {
+    const old = getAccounts().find((a) => a.userId === user.Id);
+    const list = getAccounts().filter((a) => a.userId !== user.Id);
+    list.push({
+      userId: user.Id, name: user.Name, imageTag: user.PrimaryImageTag || '', token,
+      requestsCookie: old?.requestsCookie || '', loginName: old?.loginName || '', secret: old?.secret || '',
+    });
+    saveAccounts(list);
+  }
+  function removeAccount(userId) { saveAccounts(getAccounts().filter((a) => a.userId !== userId)); }
+
+  function renderAccountTiles() {
+    const wrap = $('#account-tiles'), accounts = getAccounts();
+    wrap.classList.toggle('hidden', !accounts.length);
+    $('#setup-title').textContent = accounts.length ? "Who's watching?" : 'Sign In';
+    $('#setup-form-title').classList.toggle('hidden', !accounts.length);
+    wrap.innerHTML = accounts.map((a, i) => {
+      const av = avatarInfo({ Id: a.userId, Name: a.name, PrimaryImageTag: a.imageTag });
+      const style = av.image ? `background-image:url('${esc(av.image)}')` : `background:${av.color}`;
+      return `<button class="user-tile" data-i="${i}"${i === 0 ? ' data-autofocus' : ''}>
+        <span class="avatar" style="${style}">${av.image ? '' : esc(av.initial)}</span>
+        <span class="user-name">${esc(a.name)}</span>
+      </button>`;
+    }).join('');
+    $$('.user-tile', wrap).forEach((btn) => btn.addEventListener('click', () => switchToAccount(accounts[btn.dataset.i])));
+  }
+
+  async function switchToAccount(account) {
+    state.apiKey = account.token;
+    state.userId = account.userId;
+    try {
+      const user = await api(`/Users/${account.userId}`);
+      store.set('ef.apiKey', state.apiKey);
+      await selectUser(user);
+      upsertAccount(user, account.token);
+    } catch (e) {
+      state.apiKey = ''; state.userId = '';
+      if (e.status === 401 || e.status === 403) {
+        removeAccount(account.userId);
+        showSetup(`Please sign in again as ${account.name}.`);
+        $('#setup-username').value = account.name;
+      } else {
+        showSetup(connectionErrorMessage(e));
+      }
+    }
+  }
+
+  async function signIn(username, password) {
+    state.apiKey = '';
+    state.userId = '';
+    const res = await api('/Users/AuthenticateByName', { method: 'POST', body: { Username: username, Pw: password } });
+    if (!res?.AccessToken || !res.User) throw new Error('Unexpected response from server');
+    state.apiKey = res.AccessToken;
+    store.set('ef.apiKey', state.apiKey);
+    store.set('ef.username', username);
+    upsertAccount(res.User, res.AccessToken);
+    rememberLogin(res.User.Id, username, password);
+    // Connect Requests with the same details in the background.
+    if (hasRequests()) seerrLogin(username, password, res.User.Id).catch(() => {});
+    return res.User;
+  }
+
+  // Leaves this account signed in on the device and goes back to the account picker.
+  function switchUser() {
+    state.apiKey = ''; state.userId = '';
+    store.del('ef.apiKey'); store.del('ef.userId');
+    $('#setup-username').value = '';
+    showSetup();
+  }
+
+  async function signOut() {
+    if (hasRequests() && requestsCookie()) seerr('/auth/logout', { method: 'POST' }).catch(() => {});
+    if (state.apiKey) {
+      await api('/Sessions/Logout', { method: 'POST' }).catch(() => {});
+      state.apiKey = '';
+      store.del('ef.apiKey');
+    }
+    removeAccount(state.userId);
+    state.userId = '';
+    store.del('ef.userId');
+    showSetup();
+  }
+
+  // If the Android app closed unexpectedly last time, it saved the details. Keep them in the app log and send
+  // them to Emby's server logs (Admin → Server logs), where the admin can see them from any device.
+  (() => {
+    let crash = '';
+    try { crash = nativeApp?.getLastCrash?.() || ''; } catch { /* older app */ }
+    if (crash) {
+      appLog.add('error', 'Aurora closed unexpectedly: ' + crash.slice(0, 1500));
+      store.set('ef.pendingCrash', crash);
+    }
+  })();
+  function sendCrashReport() {
+    const crash = store.get('ef.pendingCrash');
+    if (!crash) return;
+    fetch(apiUrl('/ClientLog/Document'), {
+      method: 'POST',
+      headers: { 'X-Emby-Authorization': authHeader(), 'Content-Type': 'text/plain' },
+      body: `Aurora crash report · ${state.user?.Name || ''} · ${nativeApp?.getDeviceName?.() || ''}\n${crash}`,
+    }).then((res) => { if (res.ok) store.del('ef.pendingCrash'); }).catch(() => {});
+  }
+
+  // Device limit and expiry (Admin → Users). Blocked: back to the sign-in screen, where the account's tile
+  // stays so it can try again once another device has signed out.
+  function blockAccount(user, blocked) {
+    appLog.add('info', `Blocked ${user.Name}: ${blocked.message}`);
+    if (isPlayerOpen()) closePlayer().catch(() => {});
+    state.userId = ''; state.user = null;
+    store.del('ef.userId');
+    showSetup(blocked.message);
+  }
+
+  // fresh: the person just typed their password. Only then does the check hold things up (at most 3 s);
+  // reopening the app or switching accounts goes straight to Home and checks in the background, because
+  // the guard on the server enforces the limit either way.
+  async function selectUser(user, { fresh = false } = {}) {
+    state.userId = user.Id;
+    state.user = user;
+    // The account's policy decides whether it is an administrator: read it fresh (in the background) when the sign-in did not bring it.
+    if (!user.Policy) api(`/Users/${user.Id}`).then((u) => { if (state.userId === user.Id && u?.Policy) { const was = isAdmin(); state.user = { ...state.user, ...u }; if (was !== isAdmin()) { applyKidsUi(); route(); } } }).catch(() => {});
+    access.okUntil = 0;
+    if (fresh) {
+      const blocked = await checkAccess(user, 'signin');
+      if (blocked) return blockAccount(user, blocked);
+    } else {
+      checkAccess(user, 'signin').then((blocked) => { if (blocked && state.userId === user.Id) blockAccount(user, blocked); }).catch(() => {});
+    }
+    store.set('ef.userId', user.Id);
+    loadProfileLocal();
+    const a = avatarInfo(user), btn = $('#profile-btn');
+    btn.style.backgroundImage = a.image ? `url("${a.image}")` : '';
+    btn.style.backgroundColor = a.image ? '' : a.color;
+    btn.textContent = a.image ? '' : a.initial;
+    btn.title = user.Name || '';
+    applyProfileUi();
+    // Tell Emby what this device is (it shows in the dashboard like Emby's own apps).
+    api('/Sessions/Capabilities/Full', {
+      method: 'POST',
+      body: { PlayableMediaTypes: ['Video', 'Audio'], SupportedCommands: [], SupportsMediaControl: false, SupportsPersistentIdentifier: true },
+    }).catch(() => {});
+    sendCrashReport();
+    try {
+      const views = await api(userPath('/Views'));
+      state.views = views?.Items || [];
+    } catch { state.views = []; }
+    loadIptvConfigLocal();
+    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+    refreshRequestsConfig();
+    refreshAppConfig();
+    syncFavorites({ force: true });
+    syncPlanCategories();
+    const iptvBefore = JSON.stringify(iptv.config);
+    refreshIptvConfig().then(() => {
+      topUpIptvConfig();
+      // Get the TV guide ready in the background (after Home has settled) so the Guide opens quickly, but only
+      // for people who've used Live TV lately: reading a big guide is real work for a TV box.
+      const usedLive = Date.now() - Number(store.get('ef.iptv.used') || 0) < 14 * 86400000;
+      if (iptvOn() && nativeApp?.loadEpg && usedLive) setTimeout(() => { if (iptvOn() && !isPlayerOpen()) loadIptvGuide().catch(() => {}); }, 20000);
+      // If the Live TV source changed while the Live TV page or Home was showing, redraw it. (Only if it did change: redrawing the
+      // Guide at every start-up threw the viewer back to the top just as they began scrolling down it.)
+      if (JSON.stringify(iptv.config) !== iptvBefore && /^#\/(livetv|home)?/.test(location.hash) && $('#page .iptv-page, #page .live-page') && !isPlayerOpen()) route();
+    });
+    updateRequestsLink();
+    $('#profile-dropdown [data-action="admin"]').classList.toggle('hidden', !isStaff() || kidsOn());
+    // A reseller account only gets the Reseller panel (no content, Live TV or Requests). Known from last time, then checked with the guard;
+    // the first time on this device the page waits a moment for the answer so nothing else flashes up.
+    state.isReseller = store.get('ef.reseller.' + user.Id) === '1';
+    if (guardEnabled && !isAdmin()) {
+      const known = store.get('ef.reseller.' + user.Id) != null;
+      const check = guard('/reseller/me', { params: { userId: user.Id }, quick: true }).then((r) => {
+        const is = !!r.reseller, changed = is !== state.isReseller;
+        store.set('ef.reseller.' + user.Id, is ? '1' : '0'); state.isReseller = is; applyKidsUi();
+        if (changed && state.userId === user.Id) { location.hash = is ? '#/reseller' : '#/home'; route(); }
+      }).catch(() => {});
+      if (!known) await Promise.race([check, new Promise((r) => setTimeout(r, 2500))]);
+    }
+    state.isMod = !isAdmin() && store.get('ef.mod.' + user.Id) === '1';
+    if (guardEnabled && !isAdmin()) {
+      guard('/account', { params: { userId: user.Id }, quick: true }).then((a) => {
+        const is = !!a.mod;
+        store.set('ef.mod.' + user.Id, is ? '1' : '0');
+        if (is !== state.isMod && state.userId === user.Id) { state.isMod = is; applyKidsUi(); if (!is && /^#\/admin/.test(location.hash)) location.hash = '#/home'; }
+      }).catch(() => {});
+    }
+    applyKidsUi();
+    if (!resellerOnly()) syncDownloadLicense();
+    refreshMaintenance();
+    clearInterval(maintTimer); maintTimer = setInterval(() => { if (!document.hidden) refreshMaintenance(); }, 2 * 60000);
+    refreshInbox();
+    clearInterval(inboxTimer); inboxTimer = setInterval(() => { if (!document.hidden) refreshInbox(); }, 5 * 60000);
+    live.channelIds = [];
+    // Measure the connection now, in the background, so the first Play doesn't wait for it.
+    setTimeout(() => { if (!isPlayerOpen()) playbackBitrate().catch(() => {}); }, 15000);
+    showScreen('main');
+    applyKidsUi();
+    if (!location.hash || location.hash === '#' || location.hash === '#/') location.hash = '#/home';
+    else route();
+    // New customers: first-time setup, then the tour. Everyone else: just the tour (if they haven't seen it on this device).
+    // (If the profile couldn't be read, don't run the setup now: finishing it would overwrite a profile saved earlier. Try again next time.)
+    loadSportsPrefsLocal();
+    refreshSportsPrefs();
+    takeLaunchHash();
+    refreshProfile().then((read) => { if (read && needsSetup()) maybeStartSetup(); else maybeStartTour(); });
+  }
+
+  function connectionErrorMessage(e) {
+    if (e.status === 401 || e.status === 403) return 'Incorrect username or password, or the account has been disabled.';
+    if (e.status) return `Server error: ${e.message}`;
+    return 'Could not reach the Aurora server. Check your internet connection and try again.';
+  }
+
+  // ---------- Router ----------
+  let routeToken = 0;
+  // Timers a page starts to keep itself fresh. They stop as soon as the viewer leaves the page (not at their next tick, which
+  // left every page visited in the last minute alive in memory).
+  const routeTimers = [];
+  const routeInterval = (fn, ms) => { const id = setInterval(fn, ms); routeTimers.push(id); return id; };
+
+  let lastRouteAt = Date.now();
+  function route() {
+    if (!state.userId) return;
+    nativeApp?.previewStop?.(); // the Live TV guide's small picture (and its provider connection) never outlives its page
+    lastRouteAt = Date.now();
+    const hash = location.hash.replace(/^#\/?/, '');
+    const [path, query] = hash.split('?');
+    const params = new URLSearchParams(query || '');
+    const name = path || 'home';
+    const token = ++routeToken;
+    routeTimers.splice(0).forEach(clearInterval);
+
+    $$('[data-route]').forEach((a) => a.classList.toggle('active', a.dataset.route === name));
+    paintMaintNav();
+    window.scrollTo(0, 0);
+    const page = $('#page');
+    page.innerHTML = '';
+
+    if (name !== 'search') {
+      $('#search-input').value = '';
+      $('#search-box').classList.remove('open');
+    }
+
+    const isCurrent = () => token === routeToken;
+    if (resellerOnly() && name !== 'reseller') { location.replace('#/reseller'); return; }
+    const mkey = maintKeyOfRoute(name, params);
+    if (mkey && maintOn(mkey)) return renderMaintenance(page, mkey);
+    if (kidsOn()) {
+      if (name === 'livetv' && !iptvOn()) { location.hash = '#/home'; return; }
+      if (['requests', 'admin', 'reseller', 'inbox', 'help', 'refer', 'stats', 'downloads', 'speedtest'].includes(name)) { location.hash = '#/home'; return; }
+      if (name === 'settings') return renderKidsGate(page, isCurrent);
+    }
+    switch (name) {
+      case 'movies': return renderBrowse(page, { type: 'Movie', title: 'Movies', isCurrent });
+      case 'tv': return renderBrowse(page, { type: 'Series', title: 'TV Shows', isCurrent });
+      case 'mylist': case 'favorites': return renderMyList(page, isCurrent);
+      case 'search': return renderSearch(page, params.get('q') || '', isCurrent, params.get('person') || '', params.get('name') || '');
+      case 'livetv': return iptvOn() ? renderIptvLive(page, params.get('tab') || 'channels', isCurrent) : renderLiveTv(page, params.get('tab') || 'guide', isCurrent);
+      case 'settings': return renderSettings(page, isCurrent);
+      case 'status': return renderStatus(page, isCurrent);
+      case 'reseller': return renderReseller(page, isCurrent);
+      case 'inbox': return renderInbox(page, isCurrent);
+      case 'downloads': return renderDownloads(page, isCurrent);
+      case 'speedtest': return renderSpeedTest(page, isCurrent);
+      case 'help': return renderHelp(page, isCurrent);
+      case 'refer': return renderRefer(page, isCurrent);
+      case 'stats': return renderStats(page, isCurrent);
+      case 'requests': return renderRequests(page, isCurrent, params.get('tab') || 'discover');
+      case 'admin': return renderAdmin(page, params.get('tab') || 'overview', isCurrent);
+      default: return renderHome(page, isCurrent);
+    }
+  }
+
+  // ---------- Hero ----------
+  // The featured banner at the top of Home, Movies and TV Shows: a few random titles shown one at a time, with
+  // dots to jump between them. (On a TV it stays on one title: nothing moves by itself, so the remote isn't disturbed.)
+  async function renderHero(container, params) {
+    const hero = document.createElement('section');
+    hero.className = 'hero';
+    container.appendChild(hero);
+    try {
+      const res = await getItems({ SortBy: 'Random', Limit: nav.tv ? 1 : 5, ImageTypes: 'Backdrop', ...params });
+      const items = (res?.Items || []).filter(Boolean);
+      if (!items.length) { hero.className = 'hero empty'; return; }
+      let at = 0, timer = null;
+      const paintFav = (item) => {
+        const btn = $('[data-act="fav"]', hero);
+        if (!btn) return;
+        const on = !!item.UserData?.IsFavorite;
+        btn.innerHTML = on ? '&#10003;' : '+';
+        btn.title = on ? 'Remove from Favorites' : 'Add to Favorites';
+        btn.setAttribute('aria-label', btn.title);
+        btn.classList.toggle('active', on);
+      };
+      const show = (i, first) => {
+        at = (i + items.length) % items.length;
+        const item = items[at];
+        const logo = logoImage(item);
+        const meta = [item.ProductionYear, (item.Genres || []).slice(0, 2).join(' · '),
+          item.CommunityRating ? '★ ' + Number(item.CommunityRating).toFixed(1) : ''].filter(Boolean);
+        hero.innerHTML = `
+          <div class="hero-bg" style="background-image:url('${esc(backdropImage(item))}')"></div>
+          <div class="hero-content">
+            <div class="hero-kicker">FEATURED · ${item.Type === 'Series' ? 'TV SHOW' : 'MOVIE'}</div>
+            ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h1 class="hero-title">${esc(item.Name)}</h1>`}
+            ${meta.length || item.OfficialRating ? `<div class="hero-meta">${meta.map((m) => `<span>${esc(m)}</span>`).join('<i></i>')}${item.OfficialRating ? `<span class="rating">${esc(item.OfficialRating)}</span>` : ''}</div>` : ''}
+            <p class="hero-overview">${esc(item.Overview || '')}</p>
+            <div class="hero-actions">
+              <button class="btn hero-play" data-act="play" data-autofocus>${ICONS.play} Play</button>
+              <button class="hero-circle" data-act="fav" aria-label="Add to Favorites"></button>
+              <button class="hero-circle" data-act="info" aria-label="More info" title="More info">${ICONS.info}</button>
+            </div>
+            ${items.length > 1 ? `<div class="hero-dots">${items.map((_, k) => `<button class="hero-dot${k === at ? ' on' : ''}" data-dot="${k}" tabindex="-1" aria-label="Show title ${k + 1}"></button>`).join('')}</div>` : ''}
+          </div>`;
+        $('[data-act="play"]', hero).addEventListener('click', () => playItem(item));
+        $('[data-act="info"]', hero).addEventListener('click', () => openDetails(item.Id));
+        $('[data-act="fav"]', hero).addEventListener('click', () => toggleItemFav(item, () => paintFav(item)));
+        $$('[data-dot]', hero).forEach((d) => d.addEventListener('click', () => { show(Number(d.dataset.dot)); start(); }));
+        paintFav(item);
+        if (first) {
+          const focused = document.activeElement;
+          if (!focused || focused === document.body || !document.contains(focused)) autoFocus($('[data-act="play"]', hero));
+        }
+      };
+      // Moves on by itself every 9 seconds, but never while someone is using the remote or keyboard, has the
+      // pointer or focus on the banner, has scrolled it away, or the page is hidden.
+      const start = () => {
+        clearInterval(timer);
+        if (items.length < 2 || nav.tv || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return; // nothing moves by itself for people who turned motion off
+        timer = setInterval(() => {
+          if (!hero.isConnected) { clearInterval(timer); return; }
+          if (document.hidden || nav.on || hero.matches(':hover') || hero.contains(document.activeElement) || window.scrollY > hero.offsetHeight * 0.5 || isPlayerOpen()) return;
+          show(at + 1);
+        }, 9000);
+      };
+      show(0, true);
+      start();
+    } catch (e) {
+      hero.className = 'hero empty';
+      console.error(e);
+    }
+  }
+
+  // ---------- Home ----------
+  // A short note at the top of Home about the customer's own plan: it ends soon, or their request was answered.
+  // Aurora Guard decides; no guard (or an old one) means no note. Closing it hides that note for the day.
+  async function homeNotice(rows, isCurrent) {
+    if (!guardEnabled || kidsOn()) return;
+    let a;
+    try { a = await guard('/account', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    if (!isCurrent() || a.admin) return;
+    const r = a.request, recent = r?.decidedAt && Date.now() - r.decidedAt < 3 * 86400000;
+    let id, cls = '', html;
+    if (a.expires && !a.expired && a.daysLeft != null && a.daysLeft <= 7) {
+      id = 'ends:' + a.expires; cls = 'warn';
+      html = `<strong>${a.daysLeft <= 0 ? 'Your plan ends today' : a.daysLeft === 1 ? 'Your plan ends tomorrow' : `Your plan ends in ${a.daysLeft} days`}</strong> <span>${esc(fmtDay(a.expires))}.${a.canRequest ? ' Tap to ask for more time.' : ''}</span>`;
+    } else if (r?.status === 'approved' && recent) {
+      id = 'ok:' + r.id; cls = 'good';
+      html = `<strong>Your extension was approved</strong> <span>${r.newExpires ? `Access now runs until ${esc(fmtDay(r.newExpires))}.` : ''}</span>`;
+    } else if (r?.status === 'denied' && recent) {
+      id = 'no:' + r.id; cls = 'bad';
+      html = `<strong>Your request wasn't approved</strong> <span>${esc(r.message || 'Please contact the admin.')}</span>`;
+    } else return;
+    const key = `ef.notice.${id}`, today = new Date().toDateString();
+    if (store.get(key) === today) return;
+    const box = document.createElement('div');
+    box.className = `notice-banner ${cls}`;
+    box.innerHTML = `<a href="#/settings" class="notice-text">${html}</a><button class="notice-x" aria-label="Dismiss">&times;</button>`;
+    $('.notice-x', box).addEventListener('click', (e) => { e.stopPropagation(); store.set(key, today); box.remove(); });
+    rows.prepend(box);
+  }
+
+  function renderHome(page, isCurrent) {
+    renderHero(page, { IncludeItemTypes: 'Movie,Series' });
+    const rows = document.createElement('div');
+    rows.className = 'rows';
+    page.appendChild(rows);
+    homeNotice(rows, isCurrent);
+    if (profile?.name && !kidsOn()) rows.insertAdjacentHTML('afterbegin', `<div class="home-greet">${esc(greeting())}, <b>${esc(profile.name)}</b></div>`);
+
+    const add = (title, loader, opts) => addRow(rows, title, loader, { isCurrent, ...opts });
+
+    add('Continue Watching', async () =>
+      (await api(userPath('/Items/Resume'), { params: { Limit: 20, MediaTypes: 'Video', Recursive: true, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items,
+      { showProgress: true });
+    if (kidsOn()) { /* no Live TV rows in Kids mode */ } else if (iptvOn()) {
+      const recent = iptvRecent();
+      if (recent.length) {
+        addRow(rows, 'Recently Watched Channels', async () => recent,
+          { isCurrent, createItem: (ch) => createIptvTile(ch, () => playIptv(recent, recent.indexOf(ch), 'Recently watched')) });
+      }
+    } else if (hasLiveTv()) {
+      addRow(rows, 'On Now', async () => (await getChannels({ Limit: 20 }))?.Items?.filter((c) => c.CurrentProgram),
+        { isCurrent, createItem: createChannelCard });
+    }
+    add('Next Up', async () =>
+      (await api('/Shows/NextUp', { params: { UserId: state.userId, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items);
+    // Everything added to the library in the last 7 days, in one row.
+    add('New This Week', () => cachedRow(`${state.userId}:week`, async () => {
+      const res = await getItems({ IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 60 });
+      const since = Date.now() - 7 * 86400000;
+      return (res?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > since).slice(0, 20);
+    }));
+    if (profile?.genres?.length && !kidsOn()) {
+      const gs = profile.genres.slice(0, 6), label = gs.length > 2 ? gs.slice(0, 2).join(' & ') + ' and more' : gs.join(' & ');
+      add(`Because you like ${label}`, () => cachedRow(`${state.userId}:like:${gs.join('|')}`, async () =>
+        (await getItems({ IncludeItemTypes: 'Movie,Series', Genres: gs.join('|'), SortBy: 'Random', IsPlayed: false, Limit: 20 }))?.Items));
+    }
+    add('Favorites', async () =>
+      (await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series', SortBy: 'DateCreated', SortOrder: 'Descending', Limit: 20 }))?.Items);
+
+    const videoViews = state.views.filter((v) => ['movies', 'tvshows', 'homevideos', 'musicvideos', undefined, null, ''].includes(v.CollectionType));
+    for (const view of videoViews) {
+      add(`Recently Added in ${view.Name}`, () => cachedRow(`${state.userId}:latest:${view.Id}`, () =>
+        api(userPath('/Items/Latest'), { params: { ParentId: view.Id, Limit: 20, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } })));
+    }
+
+    add('Top Rated Movies', () => cachedRow(`${state.userId}:top`, async () =>
+      (await getItems({ IncludeItemTypes: 'Movie', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 20 }))?.Items));
+    add('Popular TV Shows', () => cachedRow(`${state.userId}:popular`, async () =>
+      (await getItems({ IncludeItemTypes: 'Series', SortBy: 'CommunityRating', SortOrder: 'Descending', Limit: 20 }))?.Items));
+
+    // A few random genre rows, Netflix-style.
+    (async () => {
+      try {
+        // The same five genres for a few minutes, so Home doesn't reshuffle every time it's opened.
+        const picks = await cachedRow(`${state.userId}:genres`, async () => {
+          const genres = (await api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: 'Movie,Series', Recursive: true, SortBy: 'SortName' } }))?.Items || [];
+          return shuffle(genres).slice(0, 5);
+        });
+        if (!isCurrent()) return;
+        for (const g of picks) {
+          add(g.Name, () => cachedRow(`${state.userId}:genre:${g.Id}`, async () =>
+            (await getItems({ IncludeItemTypes: 'Movie,Series', GenreIds: g.Id, SortBy: 'Random', Limit: 20 }))?.Items));
+        }
+      } catch (e) { console.error(e); }
+    })();
+  }
+
+  // Rows that change rarely (recently added, top rated, genres) are kept for a few minutes, so going back to
+  // Home after a film doesn't fetch them all again. Continue Watching, Next Up and Favorites are always fresh.
+  const rowCache = new Map();
+  const ROW_TTL = 5 * 60000;
+  function cachedRow(key, loader) {
+    const hit = rowCache.get(key);
+    if (hit && Date.now() - hit.t < ROW_TTL) return hit.p;
+    const p = loader();
+    rowCache.set(key, { t: Date.now(), p });
+    p.catch(() => rowCache.delete(key));
+    if (rowCache.size > 60) rowCache.delete(rowCache.keys().next().value);
+    return p;
+  }
+
+  // ---------- Rows & cards ----------
+  function addRow(container, title, loader, { isCurrent, showProgress, createItem } = {}) {
+    const row = document.createElement('section');
+    row.className = 'row';
+    row.dataset.row = String(title).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''); // a stable hook for the guided tour
+    row.innerHTML = `<h2 class="row-title">${esc(title)}</h2>
+      <div class="row-skeleton">${'<div></div>'.repeat(6)}</div>`;
+    container.appendChild(row);
+
+    loader().then((items) => {
+      if (isCurrent && !isCurrent()) return;
+      if (!items || !items.length) { row.remove(); return; }
+      row.innerHTML = `<h2 class="row-title">${esc(title)}</h2>
+        <div class="row-wrap">
+          <button class="row-arrow left" tabindex="-1" aria-label="Scroll left">&#8249;</button>
+          <div class="row-track"></div>
+          <button class="row-arrow right" tabindex="-1" aria-label="Scroll right">&#8250;</button>
+        </div>`;
+      const track = $('.row-track', row);
+      items.forEach((item) => track.appendChild(createItem ? createItem(item) : createCard(item, { showProgress })));
+      $('.row-arrow.left', row).addEventListener('click', () => track.scrollBy({ left: -track.clientWidth * 0.9 }));
+      $('.row-arrow.right', row).addEventListener('click', () => track.scrollBy({ left: track.clientWidth * 0.9 }));
+    }).catch((e) => {
+      console.error(title, e);
+      row.remove();
+    });
+  }
+
+  function createCard(item, { showProgress } = {}) {
+    const card = document.createElement('div');
+    card.className = 'card tile';
+    card.tabIndex = 0;
+    const img = landscapeImage(item);
+    const isEpisode = item.Type === 'Episode';
+    const title = isEpisode ? (item.SeriesName || item.Name) : item.Name;
+    const sub = isEpisode ? episodeLabel(item) : [item.ProductionYear, item.Type === 'Series' ? 'Series' : formatRuntime(item.RunTimeTicks)].filter(Boolean).join(' • ');
+    const pct = item.UserData?.PlayedPercentage;
+    card.innerHTML = `
+      <div class="card-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
+        <div class="card-play" aria-hidden="true">${ICONS.play}</div>
+        ${item.UserData?.Played && !showProgress ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
+        ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}
+      </div>
+      <div class="card-info"><div>${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
+    $('.card-play', card).tabIndex = -1;
+    $('.card-play', card).addEventListener('click', (e) => { e.stopPropagation(); playItem(item); });
+    card.addEventListener('click', () => openItem(item));
+    card.__item = item;
+    $('.card-img', card).insertAdjacentHTML('beforeend', '<div class="badge-fav" title="Favorite">&#9733;</div>');
+    card.classList.toggle('is-fav', !!item.UserData?.IsFavorite);
+    card.addEventListener('contextmenu', (e) => { e.preventDefault(); openItemMenu(item, card); });
+    card.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openItemMenu(item, card); } });
+    return card;
+  }
+
+  function createPoster(item) {
+    const el = document.createElement('div');
+    el.className = 'poster';
+    el.tabIndex = 0;
+    const img = posterImage(item);
+    const isEpisode = item.Type === 'Episode';
+    const title = isEpisode ? (item.SeriesName || item.Name) : item.Name;
+    const sub = isEpisode ? episodeLabel(item) : (item.ProductionYear || '');
+    el.innerHTML = `
+      <div class="poster-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt="">` : `<div class="card-fallback">${esc(title)}</div>`}
+        ${item.UserData?.Played ? '<div class="badge-watched" title="Watched">&#10003;</div>' : ''}
+        <div class="badge-fav" title="Favorite">&#9733;</div>
+      </div>
+      <div class="poster-title">${esc(title)}</div>
+      <div class="poster-sub">${esc(sub)}</div>`;
+    el.addEventListener('click', () => openItem(item));
+    el.__item = item;
+    el.classList.toggle('is-fav', !!item.UserData?.IsFavorite);
+    el.addEventListener('contextmenu', (e) => { e.preventDefault(); openItemMenu(item, el); });
+    el.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openItemMenu(item, el); } });
+    return el;
+  }
+
+  function openItem(item) {
+    const mk = maintKeyOfItem(item);
+    if (mk && maintOn(mk)) return toast(maintText(mk), 8000);
+    if (item.Type === 'TvChannel') return playItem(item);
+    if (item.Type === 'Program') return openProgram(item.Id);
+    // hint: what the card showed, so a title that has since been replaced on the server can be found again by name.
+    const series = { Name: item.SeriesName, Type: 'Series' };
+    if (item.Type === 'Episode' && item.SeriesId) openDetails(item.SeriesId, { focusEpisode: item, hint: series });
+    else if (item.Type === 'Season' && item.SeriesId) openDetails(item.SeriesId, { seasonId: item.Id, hint: series });
+    else openDetails(item.Id, { hint: { Name: item.Name, Type: item.Type, ProductionYear: item.ProductionYear } });
+  }
+
+  // ---------- Browse (Movies / TV) ----------
+  // ---------- The provider's movies and TV shows ----------
+  // For customers the admin switched on (Admin → Users, a plan, or a reseller), the Movies and TV Shows pages show the provider's titles
+  // instead of the Emby library (no labels or buttons). Provider titles come from the same Xtream account as Live TV and play straight from the provider in the Aurora player,
+  // so they cost the server nothing. They don't have Emby's progress or watched marks; Aurora only remembers where each one stopped.
+  const providerFlags = {};
+  const providerKey = () => 'ef.vod.' + state.userId;
+  function setProviderAllowed(on) { providerFlags[state.userId] = !!on; try { store.set(providerKey(), on ? '1' : '0'); } catch { /* ignore */ } }
+  const providerOk = () => !kidsOn() && !!nativeApp?.playVod && iptv.config?.type === 'xtream' && iptvOn()
+    && (state.userId in providerFlags ? providerFlags[state.userId] : store.get(providerKey()) === '1');
+  const pvCache = new Map();
+  async function pvGet(action, params = {}) {
+    const key = action + JSON.stringify(params), hit = pvCache.get(key);
+    if (hit && Date.now() - hit.t < 5 * 60000) return hit.v;
+    const v = await xtJson(iptv.config, { action, ...params });
+    // A whole catalog can be tens of thousands of titles: only the latest one is kept (for searching), plus a few category lists.
+    if (/^get_(vod_streams|series)$/.test(action) && params.category_id == null) for (const k of [...pvCache.keys()]) if (/^get_(vod_streams|series)\{\}$/.test(k)) pvCache.delete(k);
+    pvCache.set(key, { v, t: Date.now() });
+    if (pvCache.size > 8) pvCache.delete(pvCache.keys().next().value);
+    return v;
+  }
+  function pvPlay(url, title, subtitle, key) {
+    if (!nativeApp?.playVod) { toast('Provider titles play in the Aurora app for Android and Android TV.'); return; }
+    offlinePlaying = 'pv:' + key; // remembers where they stopped, like a saved download
+    nativeApp.playVod(JSON.stringify({ url, hls: false, startMs: Number(store.get('ef.dl.pos.pv:' + key)) || 0, title, subtitle, subs: [], softwareDecoders: getPref('ffmpeg') !== 'off' }));
+  }
+  const pvBase = () => `${withScheme(iptv.config.server)}`;
+  const pvUrl = (kind, id, ext) => `${pvBase()}/${kind}/${encodeURIComponent(iptv.config.username)}/${encodeURIComponent(iptv.config.password || '')}/${id}.${String(ext || 'mp4').replace(/[^a-z0-9]/gi, '') || 'mp4'}`;
+  function pvSheet(kind, it) {
+    $('.pv-sheet')?.remove();
+    const el = document.createElement('div');
+    el.className = 'pv-sheet'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.tabIndex = -1;
+    const poster = it.img ? `<img class="pv-poster" src="${esc(it.img)}" alt="" referrerpolicy="no-referrer">` : '';
+    el.innerHTML = `<div class="pv-box"><button class="btn btn-gray pv-x" data-x>Close</button>
+      <div class="pv-head">${poster}<div class="pv-info"><h2>${esc(it.name)}</h2><div class="muted" data-meta>${esc([it.year, it.rating ? '★ ' + it.rating : ''].filter(Boolean).join(' · '))}</div>
+      <p class="pv-plot" data-plot></p><div data-body><div class="spinner"></div></div></div></div></div>`;
+    document.body.appendChild(el);
+    const close = () => { el.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+    document.addEventListener('keydown', onKey, true);
+    el.addEventListener('click', (e) => { if (e.target === el) close(); });
+    $('[data-x]', el).addEventListener('click', close);
+    $('[data-x]', el).focus();
+    const body = $('[data-body]', el), plot = $('[data-plot]', el), meta = $('[data-meta]', el);
+    const fail = (e) => { body.innerHTML = `<p class="muted">${esc(e.message || "Couldn't load this from the provider.")}</p>`; };
+    if (kind === 'movie') {
+      pvGet('get_vod_info', { vod_id: it.id }).then((d) => {
+        if (!el.isConnected) return;
+        const i = d.info || {}, ext = d.movie_data?.container_extension || it.ext || 'mp4';
+        plot.textContent = String(i.plot || i.description || '').slice(0, 600);
+        meta.textContent = [i.releasedate ? String(i.releasedate).slice(0, 4) : it.year, i.duration, i.genre, i.rating ? '★ ' + i.rating : ''].filter(Boolean).join(' · ');
+        body.innerHTML = '<button class="btn btn-red" data-play>&#9654; Play</button>';
+        const b = $('[data-play]', body); b.focus();
+        b.addEventListener('click', () => { close(); pvPlay(pvUrl('movie', it.id, ext), it.name, i.releasedate ? String(i.releasedate).slice(0, 4) : '', 'movie:' + it.id); });
+      }).catch(fail);
+    } else {
+      pvGet('get_series_info', { series_id: it.id }).then((d) => {
+        if (!el.isConnected) return;
+        const i = d.info || {}, eps = d.episodes || {};
+        const seasons = Object.keys(eps).sort((a, b) => Number(a) - Number(b));
+        plot.textContent = String(i.plot || '').slice(0, 600);
+        meta.textContent = [it.year, i.genre, i.rating ? '★ ' + i.rating : ''].filter(Boolean).join(' · ');
+        if (!seasons.length) { body.innerHTML = '<p class="muted">The provider lists no episodes for this show.</p>'; return; }
+        body.innerHTML = `<label class="pv-seas"><span class="muted">Season</span> <select data-seas>${seasons.map((n) => `<option value="${esc(n)}">Season ${esc(n)}</option>`).join('')}</select></label><div class="pv-eps" data-eps></div>`;
+        const list = $('[data-eps]', body), sel = $('[data-seas]', body);
+        const draw = () => {
+          list.innerHTML = (eps[sel.value] || []).map((e, n) => `<button class="pv-ep" data-ep="${n}"><b>${esc(e.episode_num != null ? e.episode_num : n + 1)}</b><span>${esc(e.title || 'Episode ' + (n + 1))}</span><small>${esc(e.info?.duration || '')}</small></button>`).join('');
+          $$('[data-ep]', list).forEach((b) => b.addEventListener('click', () => {
+            const e = eps[sel.value][Number(b.dataset.ep)];
+            close(); pvPlay(pvUrl('series', e.id, e.container_extension), it.name, `Season ${sel.value} · Episode ${e.episode_num != null ? e.episode_num : ''} ${e.title ? '· ' + e.title : ''}`.trim(), 'ep:' + e.id);
+          }));
+          $('[data-ep]', list)?.focus();
+        };
+        sel.addEventListener('change', draw); draw();
+      }).catch(fail);
+    }
+  }
+  // The browse view: a category list, a search box and a poster grid, for movies ('movie') or shows ('series').
+  async function renderProvider(host, kind, isCurrent) {
+    const movie = kind === 'movie';
+    host.innerHTML = `<div class="pv-tools"><select data-pv-cat aria-label="Category"></select><input type="search" data-pv-q placeholder="Search the provider's ${movie ? 'movies' : 'shows'}" autocomplete="off"></div>
+      <div class="grid pv-grid"></div><div class="pv-more"></div>`;
+    const catSel = $('[data-pv-cat]', host), q = $('[data-pv-q]', host), grid = $('.pv-grid', host), more = $('.pv-more', host);
+    const norm = (x) => movie
+      ? { id: x.stream_id, name: x.name || 'Movie', img: x.stream_icon || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || '', ext: x.container_extension }
+      : { id: x.series_id, name: x.name || 'Show', img: x.cover || '', rating: x.rating && Number(x.rating) ? Number(x.rating).toFixed(1) : '', year: x.year || (x.releaseDate ? String(x.releaseDate).slice(0, 4) : '') };
+    let items = [], shown = 0, loadToken = 0, busy = false;
+    const PAGE = 60;
+    // The next batch loads by itself when the end of the grid comes into view (the button stays as a fallback).
+    const watch = 'IntersectionObserver' in window ? new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting) && !busy && shown < items.length && host.isConnected) draw(false); }, { rootMargin: '600px' }) : null;
+    watch?.observe(more);
+    const draw = (reset) => {
+      if (reset) { grid.innerHTML = ''; shown = 0; }
+      for (const it of items.slice(shown, shown + PAGE)) {
+        const el = document.createElement('div');
+        el.className = 'poster'; el.tabIndex = 0;
+        el.innerHTML = `<div class="poster-img">${it.img ? `<img loading="lazy" decoding="async" src="${esc(it.img)}" alt="" referrerpolicy="no-referrer" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'card-fallback',textContent:this.dataset.t}))" data-t="${esc(it.name)}">` : `<div class="card-fallback">${esc(it.name)}</div>`}</div>
+          <div class="poster-title">${esc(it.name)}</div><div class="poster-sub">${esc([it.year, it.rating ? '★ ' + it.rating : ''].filter(Boolean).join(' · '))}</div>`;
+        const open = () => pvSheet(kind, it);
+        el.addEventListener('click', open);
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+        grid.appendChild(el);
+      }
+      shown = Math.min(items.length, shown + PAGE);
+      more.innerHTML = shown < items.length ? '<button class="btn btn-gray" data-more>Show more</button>' : (items.length ? '' : '<p class="muted">Nothing here.</p>');
+      $('[data-more]', more)?.addEventListener('click', () => draw(false));
+    };
+    const load = async (loader) => {
+      const mine = ++loadToken;
+      busy = true; items = []; shown = 0; // nothing of the old list may be drawn while this one loads
+      grid.innerHTML = ''; more.innerHTML = '<div class="spinner"></div>';
+      try {
+        const list = await loader();
+        if (mine !== loadToken || !isCurrent() || !host.isConnected) return; // a newer choice has taken over
+        items = (Array.isArray(list) ? list : []).map(norm); busy = false; draw(true);
+      } catch (e) {
+        if (mine !== loadToken) return;
+        busy = false;
+        if (isCurrent() && host.isConnected) more.innerHTML = `<p class="muted">${esc(e.message || "Couldn't load the provider's list.")}</p>`;
+      }
+    };
+    const act = movie ? ['get_vod_categories', 'get_vod_streams'] : ['get_series_categories', 'get_series'];
+    let cats = [];
+    try { cats = await pvGet(act[0]); } catch (e) { more.innerHTML = `<p class="muted">${esc(e.message || "Couldn't reach the provider.")}</p>`; return; }
+    if (!isCurrent() || !host.isConnected) return;
+    cats = (Array.isArray(cats) ? cats : []).filter((c) => c.category_id != null);
+    if (!cats.length) { more.innerHTML = `<p class="muted">Your provider has no ${movie ? 'movies' : 'shows'} listed on this account.</p>`; return; }
+    catSel.innerHTML = '<option value="">All categories</option>' + cats.map((c) => `<option value="${esc(c.category_id)}">${esc(c.category_name || 'Category')}</option>`).join('');
+    catSel.selectedIndex = 1; // starts on the first category: the whole catalog is big
+    const byCat = () => load(() => (catSel.value ? pvGet(act[1], { category_id: catSel.value }) : pvGet(act[1])));
+    catSel.addEventListener('change', () => { q.value = ''; byCat(); });
+    let timer = 0;
+    q.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        const t = q.value.trim().toLowerCase();
+        if (t.length < 2) { byCat(); return; }
+        load(async () => (await pvGet(act[1])).filter((x) => String(x.name || '').toLowerCase().includes(t)).slice(0, 3000));
+      }, 400);
+    });
+    byCat();
+  }
+
+  async function renderBrowse(page, { type, title, isCurrent }) {
+    // A customer the admin switched the provider's movies and TV on for sees the provider's titles here instead of the Emby library (no labels).
+    if (providerOk() && (type === 'Movie' || type === 'Series')) {
+      const pv = document.createElement('div');
+      pv.className = 'rows';
+      pv.innerHTML = `<div class="page-pad" style="padding-top:6rem"><div class="page-head"><h1>${esc(title)}</h1></div><div class="pv-host"></div></div>`;
+      page.appendChild(pv);
+      return renderProvider($('.pv-host', pv), type === 'Movie' ? 'movie' : 'series', isCurrent);
+    }
+    renderHero(page, { IncludeItemTypes: type });
+    const wrap = document.createElement('div');
+    wrap.className = 'rows';
+    wrap.innerHTML = `
+      <div class="page-pad" style="padding-top:0">
+        <div class="page-head">
+          <h1>${esc(title)}</h1>
+          <select data-genre><option value="">All Genres</option></select>
+          <select data-sort>
+            <option value="DateCreated,Descending">Recently Added</option>
+            <option value="SortName,Ascending">A–Z</option>
+            <option value="PremiereDate,Descending">Release Date</option>
+            <option value="CommunityRating,Descending">Top Rated</option>
+            <option value="Random,Ascending">Surprise Me</option>
+          </select>
+          <select data-filter>
+            <option value="">All</option>
+            <option value="IsUnplayed">Unwatched</option>
+            <option value="IsPlayed">Watched</option>
+            <option value="IsFavorite">Favorites</option>
+          </select>
+        </div>
+        <div class="grid"></div>
+        <div class="sentinel"></div>
+      </div>`;
+    page.appendChild(wrap);
+
+    const grid = $('.grid', wrap), sentinel = $('.sentinel', wrap);
+    const genreSel = $('[data-genre]', wrap), sortSel = $('[data-sort]', wrap), filterSel = $('[data-filter]', wrap);
+
+    api('/Genres', { params: { UserId: state.userId, IncludeItemTypes: type, Recursive: true, SortBy: 'SortName' } })
+      .then((res) => {
+        for (const g of res?.Items || []) {
+          const opt = document.createElement('option');
+          opt.value = g.Id; opt.textContent = g.Name;
+          genreSel.appendChild(opt);
+        }
+      }).catch(() => {});
+
+    const pager = makePager(grid, sentinel, isCurrent, (start, limit) => {
+      const [SortBy, SortOrder] = sortSel.value.split(',');
+      return getItems({ IncludeItemTypes: type, StartIndex: start, Limit: limit, SortBy: SortBy + ',SortName', SortOrder, GenreIds: genreSel.value, Filters: filterSel.value });
+    });
+    [genreSel, sortSel, filterSel].forEach((s) => s.addEventListener('change', pager.reset));
+    pager.reset();
+  }
+
+  function makePager(grid, sentinel, isCurrent, fetchPage) {
+    const LIMIT = 60;
+    let start = 0, total = Infinity, loading = false, gen = 0;
+    const loadMore = async () => {
+      if (loading || start >= total || !isCurrent()) return;
+      loading = true;
+      const myGen = gen;
+      const spinner = document.createElement('div');
+      spinner.className = 'spinner';
+      grid.after(spinner);
+      try {
+        const res = await fetchPage(start, LIMIT);
+        if (myGen !== gen || !isCurrent()) return;
+        total = res?.TotalRecordCount ?? 0;
+        (res?.Items || []).forEach((it) => grid.appendChild(createPoster(it)));
+        // Arriving on a new page with the remote (whatever was focused is gone): start on the first result.
+        const focused = document.activeElement;
+        if (start === 0 && (!focused || focused === document.body || !document.contains(focused))) autoFocus(grid.firstElementChild);
+        start += LIMIT;
+        if (!grid.children.length) grid.innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Nothing here yet.</p>';
+      } catch (e) {
+        console.error(e);
+        toast('Could not load items: ' + e.message);
+        total = 0;
+      } finally {
+        spinner.remove();
+        loading = false;
+        // Keep filling if the sentinel is still on screen.
+        if (myGen === gen && isCurrent() && sentinel.getBoundingClientRect().top < window.innerHeight + 600) loadMore();
+      }
+    };
+    const io = new IntersectionObserver((entries) => {
+      if (!isCurrent()) { io.disconnect(); return; }
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    }, { rootMargin: '600px' });
+    io.observe(sentinel);
+    return {
+      reset() {
+        gen++; start = 0; total = Infinity; loading = false;
+        grid.innerHTML = '';
+        loadMore();
+      },
+    };
+  }
+
+  // ---------- Favorites ----------
+  // Live channels (from the TV provider, or Emby's own Live TV) first, then movies and shows. Route name stays "mylist".
+  function renderMyList(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad"><div class="page-head"><h1>Favorites</h1></div>
+      <section class="fav-section hidden" data-fav-live><h2 class="fav-sub">Live TV</h2><div class="grid iptv-grid" data-fav-grid></div></section>
+      <section class="fav-section" data-fav-vod><h2 class="fav-sub hidden" data-vod-title>Movies &amp; shows</h2><div class="grid" data-vod-grid></div><div class="sentinel"></div></section>
+      <p class="empty-msg hidden" data-fav-empty>Nothing saved yet.<br>Tap the + on a movie or show, or press and hold a Live TV channel (hold OK on a TV remote), to add it here.</p></div>`;
+    const vodGrid = $('[data-vod-grid]', page), liveBox = $('[data-fav-live]', page), liveGrid = $('[data-fav-grid]', page);
+    let channels = 0, vod = 0;
+    const settle = () => {
+      $('[data-vod-title]', page).classList.toggle('hidden', !(channels && vod));
+      $('[data-fav-empty]', page).classList.toggle('hidden', !!(channels || vod));
+    };
+    // Movies and shows (Emby favorites).
+    const pager = makePager(vodGrid, $('.sentinel', page), isCurrent, async (start, limit) => {
+      const res = await getItems({ Filters: 'IsFavorite', IncludeItemTypes: 'Movie,Series,Episode', SortBy: 'SortName', StartIndex: start, Limit: limit });
+      vod = res?.TotalRecordCount || 0;
+      if (!vod) vodGrid.dataset.empty = '1';
+      return res;
+    });
+    // makePager writes its own "Nothing here yet" line when empty; the page-level message replaces it.
+    new MutationObserver(() => { if (vodGrid.querySelector(':scope > .empty-msg')) { vodGrid.innerHTML = ''; vod = 0; settle(); } }).observe(vodGrid, { childList: true });
+    pager.reset();
+    // Live channels: the TV provider's, and Emby Live TV's favorites.
+    (async () => {
+      await syncFavorites().catch(() => {});
+      if (!isCurrent()) return;
+      const list = iptvOn() && !kidsOn() ? iptvFavChannels() : [];
+      list.forEach((ch, idx) => { const t = createIptvTile(ch, () => playIptv(list, idx, 'Favorites')); liveGrid.appendChild(t); watchNow(t, ch); });
+      channels = list.length;
+      if (hasLiveTv() && !iptvOn() && !kidsOn()) {
+        try {
+          const res = await getChannels({ IsFavorite: true, Limit: 200 });
+          (res?.Items || []).forEach((c) => { liveGrid.appendChild(createChannelCard(c)); channels++; });
+        } catch { /* Emby Live TV not available */ }
+      }
+      if (!isCurrent()) return;
+      liveBox.classList.toggle('hidden', !channels);
+      settle();
+    })();
+  }
+
+  // ---------- Search ----------
+  function renderSearch(page, q, isCurrent, personId = '', personName = '') {
+    // On a TV, typing goes through Aurora's own on-screen keyboard (box keyboards are unreliable).
+    if (nav.tv && !personId) return renderTvSearch(page, q, isCurrent);
+    $('#search-box').classList.add('open');
+    const input = $('#search-input');
+    // Don't rewrite the box while someone is typing in it (it would move their cursor).
+    if (document.activeElement !== input && input.value !== q) input.value = q;
+    page.innerHTML = `<div class="page-pad">
+      <div class="page-head"><h1></h1></div>
+      <div data-results></div></div>`;
+    const title = $('h1', page), results = $('[data-results]', page);
+    if (personId) {
+      title.textContent = personName ? `Movies and shows with ${personName}` : 'Movies and shows';
+      results.innerHTML = '<div class="grid"></div><div class="sentinel"></div>';
+      makePager($('.grid', results), $('.sentinel', results), isCurrent, (start, limit) =>
+        getItems({ PersonIds: personId, IncludeItemTypes: 'Movie,Series', SortBy: 'ProductionYear,SortName', SortOrder: 'Descending', StartIndex: start, Limit: limit })).reset();
+      return;
+    }
+    title.textContent = q ? `Results for "${q}"` : 'Search';
+    renderSearchResults(results, q, isCurrent);
+  }
+
+  // Matching people (if any) followed by matching titles.
+  function renderSearchResults(container, q, isCurrent) {
+    container.innerHTML = '<div class="people-row hidden"></div><div class="grid"></div><div class="sentinel"></div>';
+    const grid = $('.grid', container);
+    if (!q) {
+      grid.innerHTML = '<p class="empty-msg" style="grid-column:1/-1">Type the name of a movie, show or actor.</p>';
+      return;
+    }
+    api('/Persons', { params: { UserId: state.userId, SearchTerm: q, Limit: 12, EnableImageTypes: 'Primary', ImageTypeLimit: 1 } })
+      .then((res) => {
+        const people = (res?.Items || []).filter((x) => x.Name);
+        if (!isCurrent() || !people.length || !container.contains(grid)) return;
+        const row = $('.people-row', container);
+        row.innerHTML = '<h2 class="row-title flush">People</h2><div class="people-list"></div>';
+        const list = $('.people-list', row);
+        for (const person of people) {
+          const btn = document.createElement('button');
+          btn.className = 'person';
+          const img = person.ImageTags?.Primary ? imageUrl(person.Id, 'Primary', { tag: person.ImageTags.Primary, maxWidth: 200 }) : '';
+          btn.innerHTML = `<span class="person-img">${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : esc(person.Name[0])}</span><span class="person-name">${esc(person.Name)}</span>`;
+          btn.addEventListener('click', () => {
+            location.hash = `#/search?person=${encodeURIComponent(person.Id)}&name=${encodeURIComponent(person.Name)}`;
+          });
+          list.appendChild(btn);
+        }
+        row.classList.remove('hidden');
+      }).catch(() => { /* titles still show */ });
+    makePager(grid, $('.sentinel', container), isCurrent, (start, limit) =>
+      getItems({ SearchTerm: q, IncludeItemTypes: 'Movie,Series,Episode', StartIndex: start, Limit: limit })).reset();
+  }
+
+  // TV search: an on-screen keyboard driven by the remote, with results beside it. The address is
+  // updated without reloading the page, so the highlighted key stays where it is while you type.
+  const TV_KEYS = 'abcdefghijklmnopqrstuvwxyz1234567890'.split('');
+  function renderTvSearch(page, q, isCurrent) {
+    $('#search-box').classList.remove('open');
+    page.innerHTML = `
+      <div class="page-pad tv-search">
+        <div class="tv-kb">
+          <div class="tv-query"><span data-q></span><i class="tv-caret"></i></div>
+          <div class="tv-keys">
+            ${TV_KEYS.map((k) => `<button class="tv-key" data-key="${k}">${k}</button>`).join('')}
+            <button class="tv-key wide" data-key=" ">Space</button>
+            <button class="tv-key wide" data-key="del" aria-label="Delete">&#9003; Delete</button>
+            <button class="tv-key wide" data-key="clear">Clear</button>
+          </div>
+          ${nativeApp?.showKeyboard ? '<button class="btn btn-gray tv-device-kb" data-act="device-kb">Use device keyboard or voice</button><input class="tv-hidden-input" type="search" data-device-input autocomplete="off">' : ''}
+        </div>
+        <div class="tv-results"><h1 class="tv-results-title"></h1><div data-results></div></div>
+      </div>`;
+    let query = q;
+    const qEl = $('[data-q]', page), title = $('.tv-results-title', page), results = $('[data-results]', page);
+    let timer, shown = null;
+    const show = () => {
+      qEl.textContent = query;
+      qEl.classList.toggle('placeholder', !query);
+      if (!query) qEl.textContent = 'Search movies, shows, actors';
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!isCurrent() || shown === query) return;
+        shown = query;
+        history.replaceState(null, '', query ? '#/search?q=' + encodeURIComponent(query) : '#/search');
+        title.textContent = query ? `Results for "${query}"` : 'Search';
+        renderSearchResults(results, query, isCurrent);
+      }, 400);
+    };
+    const type = (key) => {
+      if (key === 'del') query = query.slice(0, -1);
+      else if (key === 'clear') query = '';
+      else if (query.length < 60) query += key;
+      show();
+    };
+    $('.tv-keys', page).addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-key]');
+      if (btn) type(btn.dataset.key);
+    });
+    // Remotes with a built-in keyboard, or a keyboard plugged into the box, can type directly.
+    const onKey = (e) => {
+      if (!isCurrent() || !page.contains($('.tv-keys', page))) { document.removeEventListener('keydown', onKey, true); return; }
+      if (isTextInput(document.activeElement) || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'Backspace') { type('del'); e.preventDefault(); }
+      else if (e.key.length === 1 && KEY_TEXT_RE.test(e.key)) { type(e.key.toLowerCase()); e.preventDefault(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    // The box's own keyboard (and voice typing) as an alternative.
+    const devInput = $('[data-device-input]', page);
+    $('[data-act="device-kb"]', page)?.addEventListener('click', () => {
+      devInput.value = query;
+      devInput.focus();
+      showDeviceKeyboard();
+    });
+    devInput?.addEventListener('input', () => { query = devInput.value.slice(0, 60); show(); });
+    devInput?.addEventListener('blur', () => { devInput.value = ''; });
+    show();
+    autoFocus($('.tv-key', page));
+  }
+
+  // ---------- Details modal ----------
+  let modalToken = 0;
+
+  const updateRequiredOpen = () => !!$('#modal-content .update-body.required') && !$('#modal').classList.contains('hidden');
+  function closeModal() {
+    // A required update can't be closed; the app stays locked until it's installed.
+    if (updateRequiredOpen() || (firstRun && !firstRun.closing)) return; // the first-time setup closes itself
+    modalToken++;
+    if (confirmResolve) { const r = confirmResolve; confirmResolve = null; r(false); }
+    if ($('#modal').classList.contains('hidden')) return;
+    $('#modal').classList.add('hidden');
+    document.body.style.overflow = '';
+    $('#modal .modal-box')?.classList.remove('upd-box', 'su-box', 'sp-box'); // the narrower, modern look of the update window and the setup
+    restoreFocus('modal');
+  }
+
+  // A card can point at a title Emby no longer has under that id (removed, replaced by a better file, re-identified,
+  // or the list was loaded hours ago). Looks for the same title by name; null if there isn't one.
+  async function findReplacement(hint) {
+    const type = hint?.Type === 'Series' ? 'Series' : hint?.Type === 'Movie' ? 'Movie' : '';
+    if (!hint?.Name || !type) return null;
+    const res = await getItems({ SearchTerm: hint.Name, IncludeItemTypes: type, Limit: 12 });
+    const same = (res?.Items || []).filter((i) => (i.Name || '').toLowerCase() === hint.Name.toLowerCase());
+    const best = same.find((i) => hint.ProductionYear && i.ProductionYear === hint.ProductionYear) || same[0];
+    return best ? getItem(best.Id) : null;
+  }
+
+  async function openDetails(id, { focusEpisode, seasonId, hint } = {}) {
+    const token = ++modalToken;
+    const modal = $('#modal'), content = $('#modal-content');
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = '<div class="spinner" style="margin:6rem auto"></div>';
+    modal.classList.remove('hidden');
+    modal.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+
+    let item;
+    try { item = await getItem(id); } catch (e) {
+      if (e.status === 404) {
+        // Not found. First try the same title under its new id, then say so and refresh the lists.
+        rowCache.clear();
+        try { item = await findReplacement(hint); } catch { /* none */ }
+        appLog.add('warn', item
+          ? `"${hint.Name}" had moved on the server (old id ${id}); found it again`
+          : `Details not found (404) for ${hint?.Type || 'item'} "${hint?.Name || '?'}", id ${id}, after ${state.views.length} libraries loaded`);
+      }
+      if (!item) {
+        if (token !== modalToken) return;
+        const gone = e.status === 404;
+        content.innerHTML = `<div class="m-body notice-body"><h2>${gone ? 'No longer available' : 'Could not load details'}</h2>
+          <p class="overview">${gone ? 'This title is no longer on the server, or has been replaced. Refresh the list to see what is there now.' : esc(e.message)}</p>
+          <div class="m-actions"><button class="btn btn-white" data-act="refresh" data-autofocus>${gone ? 'Refresh the list' : 'Close'}</button></div></div>`;
+        $('[data-act="refresh"]', content).addEventListener('click', () => { closeModal(); if (gone) route(); });
+        autoFocus($('[data-act="refresh"]', content));
+        return;
+      }
+    }
+    if (token !== modalToken) return;
+
+    const isSeries = item.Type === 'Series';
+    const logo = logoImage(item);
+    const people = (item.People || []).filter((p) => p.Type === 'Actor').slice(0, 6).map((p) => p.Name);
+    const directors = (item.People || []).filter((p) => p.Type === 'Director').map((p) => p.Name);
+    const match = item.CommunityRating ? Math.round(item.CommunityRating * 10) : null;
+    const resumeTicks = item.UserData?.PlaybackPositionTicks || 0;
+
+    content.innerHTML = `
+      <div class="m-hero" style="background-image:url('${esc(backdropImage(item, Math.min(1280, SCREEN_W)))}')">
+        <div class="m-hero-content">
+          ${logo ? `<img class="hero-logo" src="${esc(logo)}" alt="${esc(item.Name)}">` : `<h2>${esc(item.Name)}</h2>`}
+          <div class="m-actions">
+            <button class="btn btn-white" data-act="play">${ICONS.play} <span>${resumeTicks ? 'Resume' : 'Play'}</span></button>
+            ${resumeTicks ? `<button class="btn btn-gray" data-act="restart">Start Over</button>` : ''}
+            ${dlSupported() && downloadsAllowed() && !isSeries && !kidsOn() ? '<button class="btn btn-gray" data-act="download">Download</button>' : ''}
+            ${hasTrailer(item) ? `<button class="btn btn-gray" data-act="trailer">${ICONS.film} Trailer</button>` : ''}
+            <button class="circle-btn" data-act="fav" title="Add to Favorites"></button>
+            <button class="circle-btn" data-act="played" title="Mark as watched"></button>
+          </div>
+        </div>
+      </div>
+      <div class="m-body">
+        <div class="m-grid">
+          <div>
+            <div class="meta">
+              ${match ? `<span class="match">${match}% Rating</span>` : ''}
+              ${item.ProductionYear ? `<span>${item.ProductionYear}</span>` : ''}
+              ${item.OfficialRating ? `<span class="rating">${esc(item.OfficialRating)}</span>` : ''}
+              ${isSeries ? (item.ChildCount ? `<span>${item.ChildCount} Season${item.ChildCount > 1 ? 's' : ''}</span>` : '') : `<span>${formatRuntime(item.RunTimeTicks)}</span>`}
+            </div>
+            ${item.Taglines?.[0] ? `<p class="overview" style="font-weight:600;margin-bottom:.6rem">${esc(item.Taglines[0])}</p>` : ''}
+            <p class="overview">${esc(item.Overview || '')}</p>
+          </div>
+          <div class="side-meta">
+            ${people.length ? `<div>Cast: <span>${esc(people.join(', '))}</span></div>` : ''}
+            ${directors.length ? `<div>Director: <span>${esc(directors.join(', '))}</span></div>` : ''}
+            ${item.Genres?.length ? `<div>Genres: <span>${esc(item.Genres.join(', '))}</span></div>` : ''}
+            ${item.Studios?.length ? `<div>Studio: <span>${esc(item.Studios.map((s) => s.Name).join(', '))}</span></div>` : ''}
+          </div>
+        </div>
+        <div data-extra></div>
+      </div>`;
+
+    // Favorite / watched toggles
+    const favBtn = $('[data-act="fav"]', content), playedBtn = $('[data-act="played"]', content);
+    const paintToggles = () => {
+      favBtn.innerHTML = item.UserData?.IsFavorite ? '&#10003;' : '+';
+      favBtn.title = item.UserData?.IsFavorite ? 'Remove from Favorites' : 'Add to Favorites';
+      favBtn.classList.toggle('active', !!item.UserData?.IsFavorite);
+      playedBtn.innerHTML = ICONS.eye;
+      playedBtn.style.color = item.UserData?.Played ? 'var(--green)' : '';
+      playedBtn.title = item.UserData?.Played ? 'Mark as unwatched' : 'Mark as watched';
+    };
+    paintToggles();
+    favBtn.addEventListener('click', async () => {
+      const on = !item.UserData?.IsFavorite;
+      try {
+        item.UserData = await api(userPath(`/FavoriteItems/${item.Id}`), { method: on ? 'POST' : 'DELETE' });
+        paintToggles();
+        rowCache.clear();
+        toast(on ? 'Added to Favorites' : 'Removed from Favorites', 1800);
+      } catch (e) { toast('Could not update Favorites: ' + e.message); }
+    });
+    playedBtn.addEventListener('click', async () => {
+      const on = !item.UserData?.Played;
+      try {
+        item.UserData = await api(userPath(`/PlayedItems/${item.Id}`), { method: on ? 'POST' : 'DELETE' });
+        paintToggles();
+        toast(on ? 'Marked as watched' : 'Marked as unwatched', 1800);
+      } catch (e) { toast('Could not update: ' + e.message); }
+    });
+
+    const extra = $('[data-extra]', content);
+    const playBtn = $('[data-act="play"]', content);
+    autoFocus(playBtn);
+    $('[data-act="download"]', content)?.addEventListener('click', () => startItemDownload(item));
+
+    if (isSeries) {
+      // Play button targets the focused episode, else next up, else the first episode.
+      let target = focusEpisode || null;
+      if (!target) {
+        try {
+          const next = await api('/Shows/NextUp', { params: { SeriesId: item.Id, UserId: state.userId, Limit: 1, Fields: ITEM_FIELDS } });
+          target = next?.Items?.[0] || null;
+        } catch { /* ignore */ }
+      }
+      const setTarget = (ep) => {
+        target = ep;
+        if (ep) $('span', playBtn).textContent = `${ep.UserData?.PlaybackPositionTicks ? 'Resume' : 'Play'} ${episodeLabel(ep).split(' ')[0]}`;
+      };
+      if (token !== modalToken) return;
+      setTarget(target);
+      playBtn.addEventListener('click', async () => {
+        if (target) return playItem(target);
+        playItem(item);
+      });
+      $('[data-act="restart"]', content)?.remove();
+      renderSeasons(extra, item, seasonId || target?.SeasonId, target?.Id, token);
+    } else {
+      playBtn.addEventListener('click', () => playItem(item));
+      $('[data-act="restart"]', content)?.addEventListener('click', () => playItem(item, { startTicks: 0 }));
+      renderSimilar(extra, item, token);
+    }
+    $('[data-act="trailer"]', content)?.addEventListener('click', () => playTrailer(item));
+
+  }
+
+  async function renderSeasons(container, series, selectedSeasonId, currentEpisodeId, token) {
+    let seasons;
+    try {
+      seasons = (await api(`/Shows/${series.Id}/Seasons`, { params: { UserId: state.userId, Fields: 'ItemCounts' } }))?.Items || [];
+    } catch (e) { console.error(e); return; }
+    if (token !== modalToken || !seasons.length) return;
+
+    const selected = seasons.find((s) => s.Id === selectedSeasonId) || seasons.find((s) => s.IndexNumber > 0) || seasons[0];
+    container.innerHTML = `
+      <div class="m-section-head">
+        <h3>Episodes</h3>
+        <button class="btn btn-gray season-watched hidden" data-season-watched></button>
+        ${seasons.length > 1
+          ? `<select>${seasons.map((s) => `<option value="${esc(s.Id)}"${s.Id === selected.Id ? ' selected' : ''}>${esc(s.Name)}</option>`).join('')}</select>`
+          : `<span style="color:var(--muted)">${esc(selected.Name)}</span>`}
+      </div>
+      <div data-episodes></div>`;
+    const list = $('[data-episodes]', container);
+
+    let shownSeason = selected.Id, shownEps = [];
+    const seasonBtn = $('[data-season-watched]', container);
+    const paintSeasonBtn = () => {
+      const all = shownEps.length > 0 && shownEps.every((e) => e.UserData?.Played);
+      seasonBtn.classList.toggle('hidden', !shownEps.length);
+      seasonBtn.textContent = all ? 'Mark season as unwatched' : 'Mark season as watched';
+      seasonBtn.dataset.on = all ? '' : '1';
+    };
+    seasonBtn.addEventListener('click', async () => {
+      const on = !!seasonBtn.dataset.on, todo = shownEps.filter((e) => !!e.UserData?.Played !== on);
+      seasonBtn.disabled = true;
+      let failed = 0;
+      for (let i = 0; i < todo.length; i += 4) {
+        await Promise.all(todo.slice(i, i + 4).map((e) => api(userPath(`/PlayedItems/${e.Id}`), { method: on ? 'POST' : 'DELETE' }).catch(() => { failed++; })));
+      }
+      seasonBtn.disabled = false;
+      rowCache.clear();
+      toast(failed ? `Could not update ${failed} of ${todo.length} episodes. Try again.` : on ? 'Season marked as watched' : 'Season marked as unwatched', 2500);
+      list.__reload();
+    });
+    list.__reload = () => load(shownSeason, true);
+    const load = async (seasonId, quiet) => {
+      shownSeason = seasonId;
+      if (!quiet) list.innerHTML = '<div class="spinner"></div>';
+      try {
+        const eps = (await api(`/Shows/${series.Id}/Episodes`, { params: { SeasonId: seasonId, UserId: state.userId, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } }))?.Items || [];
+        if (token !== modalToken) return;
+        shownEps = eps;
+        paintSeasonBtn();
+        list.innerHTML = '';
+        if (!eps.length) list.innerHTML = '<p class="empty-msg">No episodes.</p>';
+        for (const ep of eps) {
+          const row = document.createElement('div');
+          row.className = 'episode' + (ep.Id === currentEpisodeId ? ' current' : '');
+          row.tabIndex = 0;
+          const img = landscapeImage(ep, 320);
+          const pct = ep.UserData?.PlayedPercentage;
+          row.innerHTML = `
+            <div class="ep-num">${ep.IndexNumber ?? ''}</div>
+            <div class="ep-thumb">
+              ${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : ''}
+              <div class="card-play" style="opacity:1;width:36px;height:36px">${ICONS.play}</div>
+              ${pct ? `<div class="progress"><span style="width:${Math.min(100, pct)}%"></span></div>` : ''}
+              ${ep.UserData?.Played ? '<div class="badge-watched">&#10003;</div>' : ''}
+            </div>
+            <div class="ep-text">
+              <div class="ep-head"><span>${esc(ep.Name)}</span><span class="dur">${formatRuntime(ep.RunTimeTicks)}</span></div>
+              <p>${esc(ep.Overview || '')}</p>
+            </div>`;
+          row.addEventListener('click', () => playItem(ep));
+          list.appendChild(row);
+        }
+        // With a remote, focus is on the Play button; keep it on screen instead of jumping to the episode.
+        if (!nav.on) $('.episode.current', list)?.scrollIntoView({ block: 'nearest' });
+      } catch (e) {
+        list.innerHTML = `<p class="empty-msg">Could not load episodes: ${esc(e.message)}</p>`;
+      }
+    };
+    $('select', container)?.addEventListener('change', (e) => load(e.target.value));
+    load(selected.Id);
+  }
+
+  async function renderSimilar(container, item, token) {
+    try {
+      const res = await api(`/Items/${item.Id}/Similar`, { params: { UserId: state.userId, Limit: 12, Fields: ITEM_FIELDS, ...IMAGE_PARAMS } });
+      const items = res?.Items || [];
+      if (token !== modalToken || !items.length) return;
+      container.innerHTML = `<div class="m-section-head"><h3>More Like This</h3></div><div class="similar"></div>`;
+      const grid = $('.similar', container);
+      for (const s of items) {
+        const card = document.createElement('div');
+        card.className = 'sim-card';
+        card.tabIndex = 0;
+        const img = landscapeImage(s, 400);
+        card.innerHTML = `
+          <div class="sim-img">${img ? `<img loading="lazy" src="${esc(img)}" alt="">` : ''}</div>
+          <div class="sim-body">
+            <strong>${esc(s.Name)}</strong>
+            <div class="meta" style="font-size:.8rem;margin-bottom:.4rem">
+              ${s.OfficialRating ? `<span class="rating">${esc(s.OfficialRating)}</span>` : ''}
+              ${s.ProductionYear ? `<span>${s.ProductionYear}</span>` : ''}
+            </div>
+            <p>${esc(s.Overview || '')}</p>
+          </div>`;
+        card.addEventListener('click', () => openDetails(s.Id));
+        grid.appendChild(card);
+      }
+    } catch (e) { console.error(e); }
+  }
+
+  // ---------- Live TV from an M3U playlist or Xtream Codes account ----------
+  // The admin sets the source in the Admin dashboard. It's saved into every account's Aurora settings on the
+  // Emby server (display preferences), so each customer's app picks it up when they sign in.
+  const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
+  const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null, catNames: new Map() };
+  const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
+  const showLiveLink = () => (kidsOn() ? iptvOn() : hasLiveTv() || iptvOn());
+
+  function iptvLocalKey() { return 'ef.iptv.' + state.userId; }
+  function loadIptvConfigLocal() {
+    try { iptv.config = JSON.parse(store.get(iptvLocalKey()) || 'null'); } catch { iptv.config = null; }
+  }
+  // Reads this account's copy from Emby; quietly keeps the saved copy if the server can't be reached.
+  async function refreshIptvConfig() {
+    try {
+      const prefs = await api(`/DisplayPreferences/${IPTV_PREFS.id}`, { params: { userId: state.userId, client: IPTV_PREFS.client } });
+      const raw = prefs?.CustomPrefs?.config;
+      const cfg = raw ? JSON.parse(raw) : null;
+      if (JSON.stringify(cfg) !== JSON.stringify(iptv.config)) {
+        if ((cfg?.v || 0) !== (iptv.config?.v || 0)) resetIptvCaches();
+        iptv.config = cfg;
+        if (cfg) store.set(iptvLocalKey(), JSON.stringify(cfg)); else store.del(iptvLocalKey());
+      }
+    } catch (e) { console.warn('Live TV settings', e); }
+    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+  }
+
+  function writeIptvConfigFor(userId, cfg) {
+    return api(`/DisplayPreferences/${IPTV_PREFS.id}`, {
+      method: 'POST', params: { userId, client: IPTV_PREFS.client },
+      body: {
+        Id: IPTV_PREFS.id, Client: IPTV_PREFS.client, SortBy: 'SortName', SortOrder: 'Ascending',
+        RememberIndexing: false, RememberSorting: false, ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false,
+        PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: cfg ? JSON.stringify(cfg) : '' },
+      },
+    });
+  }
+
+  // Puts the admin's Live TV settings on every account that doesn't have the current version yet.
+  async function syncIptvConfig(cfg, { force = false } = {}) {
+    const users = await api('/Users');
+    let saved = 0, failed = 0;
+    const queue = (users || []).slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try {
+          if (!force) {
+            const prefs = await api(`/DisplayPreferences/${IPTV_PREFS.id}`, { params: { userId: u.Id, client: IPTV_PREFS.client } });
+            const have = prefs?.CustomPrefs?.config ? JSON.parse(prefs.CustomPrefs.config) : null;
+            if ((have?.v || 0) === (cfg?.v || 0)) { saved++; continue; }
+          }
+          await writeIptvConfigFor(u.Id, cfg);
+          saved++;
+        } catch (e) { failed++; console.warn('Live TV settings for', u.Name, e); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return { saved, failed, total: (users || []).length };
+  }
+
+  // Accounts created after the admin saved still need the settings; the admin's app tops them up now and then.
+  async function topUpIptvConfig() {
+    if (!isAdmin() || !iptv.config) return;
+    const last = Number(store.get('ef.iptv.sync') || 0);
+    if (Date.now() - last < 6 * 3600000) return;
+    store.set('ef.iptv.sync', String(Date.now()));
+    try { await syncIptvConfig(iptv.config); } catch (e) { console.warn('Live TV settings top-up', e); }
+  }
+
+  function resetIptvCaches() {
+    iptv.lists.clear(); iptv.all = null; iptv.epg.clear(); iptv.guide = null; iptv.guideLoad = null;
+  }
+
+  const withScheme = (u) => (/^https?:\/\//i.test(u) ? u : 'http://' + u).replace(/\/+$/, '');
+
+  // Channel lists go through the Android app (IptvFetcher): it follows the provider's redirects, keeps the last
+  // good copy to fall back on when the provider has a hiccup, leaves movies and series out of M3U playlists,
+  // and hands the text over in pieces. A draft being tested in Admin never uses a saved copy.
+  let iptvFetchSeq = 0;
+  const iptvFetchPending = new Map();
+  window.auroraIptvDone = (id, r) => { const done = iptvFetchPending.get(id); if (done) { iptvFetchPending.delete(id); done(r); } };
+  const LIST_MAX_AGE = 30 * 60000;
+  let staleNoticeShown = false;
+
+  async function iptvText(url, cfg = iptv.config, timeoutMs = 60000, opts = {}) {
+    const { maxAge = 0, liveOnly = false, saved = false } = opts;
+    const headers = cfg?.userAgent ? { 'User-Agent': cfg.userAgent } : {};
+    if (saved && nativeApp?.iptvFetch) {
+      const useSaved = cfg === iptv.config;
+      const r = await new Promise((resolve) => {
+        const id = 'f' + (++iptvFetchSeq);
+        iptvFetchPending.set(id, resolve);
+        nativeApp.iptvFetch(id, url, cfg?.userAgent || '', useSaved ? maxAge : 0, useSaved, liveOnly, timeoutMs);
+      });
+      // A provider that answers a burst of requests with a web page often accepts the same request a moment later: wait and ask once more.
+      if (!r?.status && /web page instead/i.test(r?.error || '') && !opts.retried) { await new Promise((ok) => setTimeout(ok, 2500)); return iptvText(url, cfg, timeoutMs, { ...opts, retried: true }); }
+      if (!r?.status) throw new Error(`Couldn't reach the TV provider${r?.error ? ` (${r.error})` : ''}.`);
+      if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
+      if (r.stale && !staleNoticeShown) {
+        staleNoticeShown = true;
+        console.warn('TV provider not answering, using the saved list:', r.error);
+        toast("The TV provider isn't answering right now, so Aurora is showing the last saved channel list.", 5000);
+      }
+      const handle = nativeApp.iptvOpen(url, liveOnly);
+      if (!handle) throw new Error("Couldn't read the channel list.");
+      const parts = [];
+      try {
+        for (;;) { const chunk = nativeApp.iptvRead(handle, 1 << 20); if (!chunk) break; parts.push(chunk); }
+      } finally { nativeApp.iptvClose(handle); }
+      return parts.join('');
+    }
+    if (nativeApp?.httpRequest) {
+      const r = await nativeHttp('GET', url, headers, null, timeoutMs);
+      if (r.status === 0) throw new Error(r.error || "Couldn't reach the TV provider.");
+      if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
+      return r.body || '';
+    }
+    const res = await fetch(url, { signal: timeoutSignal(timeoutMs) });
+    if (!res.ok) throw new Error(`The TV provider answered ${res.status}.`);
+    return res.text();
+  }
+
+  // Xtream Codes player API.
+  function xtUrl(cfg, params = {}) {
+    const q = new URLSearchParams({ username: cfg.username, password: cfg.password || '', ...params });
+    return `${withScheme(cfg.server)}/player_api.php?${q}`;
+  }
+  async function xtJson(cfg, params, opts) {
+    const text = await iptvText(xtUrl(cfg, params), cfg, 60000, opts);
+    try { return JSON.parse(text); } catch { throw new Error("The TV provider's answer wasn't understood. Check the server address."); }
+  }
+  // ----- Your own channels and fixes (guard 1.28.0) -----
+  // Admins and moderators add channels and fix the provider's in Admin -> Channels. The guard keeps them; every app reads them here.
+  let customCh = null; // { v, cats, items, edits, at }
+  async function loadCustomChannels(force = false) {
+    if (!guardEnabled || kidsOn()) return null;
+    if (!force && customCh && Date.now() - customCh.at < 180000) return customCh;
+    try { customCh = { ...(await guard('/channels', { params: { userId: state.userId }, quick: true })), at: Date.now() }; } catch { /* keep what we had, or nothing */ }
+    return customCh;
+  }
+  // A provider channel with the fixes applied (name, logo, number, guide id, stream address, hidden).
+  function editedChannel(ch, key) {
+    ch.editKey = key;
+    const e = customCh && customCh.edits && customCh.edits['k' + key];
+    if (!e) return ch;
+    ch.edited = true;
+    if (Array.isArray(e.backups) && e.backups.length) ch.alts = e.backups.map((b) => b.url).filter(Boolean);
+    if (e.name) { ch.origName = ch.name; ch.name = e.name; }
+    if (e.logo) ch.logo = e.logo;
+    if (e.num) ch.num = e.num;
+    if (e.epgId) ch.epgId = e.epgId;
+    if (e.url) { ch.origUrl = ch.url; ch.url = e.url; }
+    if (e.hidden) ch.hidden = true;
+    return ch;
+  }
+  // Adds the admin's own categories and channels to a loaded source.
+  function mergeCustom(src, cfg) {
+    if (cfg !== iptv.config || !customCh) return src;
+    const unlocked = adultUnlocked();
+    for (const cat of customCh.cats || []) {
+      if (cat.adult && !unlocked) continue;
+      const id = 'c_' + cat.id;
+      const chans = (customCh.items || []).filter((i) => i.cat === cat.id).map((i) => ({ id: 'c' + i.id, custom: true, name: i.name, logo: i.logo || '', num: i.num || '', group: id, epgId: i.epgId || '', url: i.url, editKey: '', alts: (i.backups || []).map((b) => b.url).filter(Boolean) }));
+      if (!chans.length) continue;
+      if (!src.categories.some((c) => c.id === id)) src.categories.push({ id, name: cat.name, count: chans.length, custom: true });
+      src.groups.set(id, chans);
+      if (src.all) src.all.push(...chans); else (src.customAll = src.customAll || []).push(...chans);
+    }
+    return src;
+  }
+  function xtChannel(cfg, st) {
+    const ch = xtChannelRaw(cfg, st);
+    return cfg === iptv.config ? editedChannel(ch, 'x' + st.stream_id) : ch;
+  }
+  function xtChannelRaw(cfg, st) {
+    const ext = cfg.format === 'hls' || window.AuroraIOS ? 'm3u8' : 'ts'; // an iPhone plays HLS, not raw MPEG-TS
+    return {
+      id: 'x' + st.stream_id, streamId: st.stream_id, name: st.name || 'Channel', logo: st.stream_icon || '',
+      num: st.num != null ? String(st.num) : '', group: st.category_id, epgId: st.epg_channel_id || '',
+      url: `${withScheme(cfg.server)}/live/${encodeURIComponent(cfg.username)}/${encodeURIComponent(cfg.password || '')}/${st.stream_id}.${ext}`,
+    };
+  }
+
+  // M3U playlist: #EXTINF lines with tvg-* attributes and group-title, each followed by the stream address.
+  function parseM3u(text) {
+    const groups = new Map(), all = [];
+    let info = null, extGroup = '', guideUrl = '';
+    for (const raw of text.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('#EXTM3U')) {
+        // The playlist may name its guide: url-tvg="…" or x-tvg-url="…" (sometimes several, comma-separated).
+        const m = line.match(/(?:url-tvg|x-tvg-url)="([^"]+)"/i);
+        if (m) guideUrl = m[1].split(',')[0].trim();
+      } else if (line.startsWith('#EXTINF')) {
+        const attrs = {};
+        line.replace(/([\w-]+)="([^"]*)"/g, (_, k, v) => { attrs[k.toLowerCase()] = v; return ''; });
+        // The name follows the first comma that isn't inside quotes.
+        let quoted = false, cut = -1;
+        for (let i = 0; i < line.length; i++) {
+          if (line[i] === '"') quoted = !quoted;
+          else if (line[i] === ',' && !quoted) { cut = i; break; }
+        }
+        info = { attrs, name: (cut >= 0 ? line.slice(cut + 1) : '').trim() };
+      } else if (line.startsWith('#EXTGRP:')) {
+        extGroup = line.slice(8).trim();
+      } else if (!line.startsWith('#') && info) {
+        const group = info.attrs['group-title'] || extGroup || 'Channels';
+        const ch = {
+          id: 'm' + all.length, name: info.name || info.attrs['tvg-name'] || 'Channel', logo: info.attrs['tvg-logo'] || '',
+          num: info.attrs['tvg-chno'] || '', group, url: line, epgId: info.attrs['tvg-id'] || '',
+        };
+        all.push(ch);
+        if (!groups.has(group)) groups.set(group, []);
+        groups.get(group).push(ch);
+        info = null; extGroup = '';
+      }
+    }
+    return { all, groups, guideUrl };
+  }
+
+  // One loaded copy of the source per session (M3U playlists can be large).
+  // Which categories customers see, as chosen in Admin → Live TV: catsShown lists the ones to show (new ones from
+  // the provider stay hidden), catsHidden lists the ones to hide (new ones show). Neither: everything shows.
+  function catFilter(cfg) {
+    let base = null;
+    if (Array.isArray(cfg?.catsShown)) { const set = new Set(cfg.catsShown.map(String)); base = (id) => set.has(String(id)); }
+    else if (Array.isArray(cfg?.catsHidden) && cfg.catsHidden.length) { const set = new Set(cfg.catsHidden.map(String)); base = (id) => !set.has(String(id)); }
+    // On top of that, a customer's plan may include only some categories (Admin -> Plans). Applies to the account's own app
+    // view; admins always see everything. (It limits what the app lists; the provider's own address still works for anyone
+    // who has it.)
+    const mine = planCategories();
+    if (cfg !== iptv.config) return base;
+    // Adult categories (Admin -> Live TV tags them) are shown only to an account that has the switch on and has entered its PIN.
+    // They are shown even when the plan or the admin's choice leaves them out: the switch is what decides.
+    const isAdult = adultTest(cfg), allowAdult = adultUnlocked();
+    if (kidsOn()) return (id) => !isAdult(id) && KIDS_LIVE_NAME.test(String(iptv.catNames.get(String(id)) ?? '')) && (!mine || mine.has(String(id))) && (!base || base(id));
+    return (id) => {
+      if (isAdult(id)) return allowAdult;
+      if (mine && !mine.has(String(id))) return false;
+      return !base || base(id);
+    };
+  }
+  // ----- Adult categories (guard 1.23.0) -----
+  // Which categories are adult: the ones the admin ticked in Admin -> Live TV (cfg.adultCats), or, until then, any named like Adult, XXX or 18+.
+  const ADULT_NAME = /(adult(?!\s*swim)|xxx|18\s*\+|\+\s*18|porn|erotic|nsfw|hentai|playboy|\bsex\b|\bsexy\b)/i;
+  const adultKey = () => 'ef.adult.' + state.userId;
+  const adultSwitchOn = () => !window.AuroraIOS && store.get(adultKey()) === '1'; // never in the Apple apps
+  let adultUnlockedAt = 0;
+  const adultUnlocked = () => isAdmin() || (adultSwitchOn() && Date.now() - adultUnlockedAt < 30 * 60000);
+  const adultIdsKey = () => 'ef.adultIds.' + state.userId;
+  function adultTest(cfg) {
+    const explicit = Array.isArray(cfg?.adultCats) ? new Set(cfg.adultCats.map(String)) : null;
+    let known = new Set();
+    try { known = new Set(JSON.parse(store.get(adultIdsKey()) || '[]')); } catch { /* none */ }
+    const cache = new Map();
+    return (id) => {
+      const k = String(id);
+      if (cache.has(k)) return cache.get(k);
+      const hit = explicit ? explicit.has(k) : (known.has(k) || ADULT_NAME.test(iptv.catNames.get(k) ?? k));
+      cache.set(k, hit);
+      return hit;
+    };
+  }
+  // Remembers which category ids are adult (names are only known once the list is loaded; channels and favorites carry just the id).
+  function rememberAdult(cfg, cats) {
+    if (cfg !== iptv.config) return;
+    const explicit = Array.isArray(cfg.adultCats) ? new Set(cfg.adultCats.map(String)) : null;
+    const ids = cats.filter((c) => (explicit ? explicit.has(String(c.id)) : ADULT_NAME.test(c.name || ''))).map((c) => String(c.id));
+    store.set(adultIdsKey(), JSON.stringify(ids));
+  }
+  // What the guard says about this account's switch. A change clears the PIN (they choose a new one) and refreshes Live TV.
+  function applyAdultFlag(a) {
+    if (!a || a.admin) return;
+    const next = a.adult ? '1' : '0';
+    const resetKey = 'ef.adult.reset.' + state.userId;
+    let changed = store.get(adultKey()) !== next;
+    if ((a.adultReset || 0) > Number(store.get(resetKey) || 0)) {
+      store.set(resetKey, String(a.adultReset));
+      store.set('ef.adult.pin.' + state.userId, '');
+      if (profile?.adultPin) saveProfile({ adultPin: '' });
+      adultUnlockedAt = 0;
+      changed = true;
+    }
+    if (!changed) return;
+    store.set(adultKey(), next);
+    adultUnlockedAt = 0;
+    resetIptvCaches();
+    if (/^#\/(livetv|mylist|home)/.test(location.hash)) route();
+  }
+  const adultPinHash = (pin) => { let h = 2166136261; for (const c of 'aurora-adult:' + state.userId + ':' + pin) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619) >>> 0; } return h.toString(16); };
+  const adultPinStored = () => profile?.adultPin || store.get('ef.adult.pin.' + state.userId) || '';
+  // The locked "Adult" row in Live TV: opens (PIN) or locks again.
+  async function adultToggle() {
+    if (adultUnlocked() && !isAdmin()) { adultUnlockedAt = 0; resetIptvCaches(); toast('Adult channels are locked', 2000); route(); return; }
+    let hash = adultPinStored();
+    if (!hash) {
+      const a = await pinPad('Choose a PIN', 'You will need it to open adult channels. Pick 4 digits.');
+      if (!a) return;
+      const b = await pinPad('Type it again', 'Enter the same 4 digits to confirm.');
+      if (!b) return;
+      if (a !== b) { toast("The two PINs didn't match. Try again.", 3000); return; }
+      hash = adultPinHash(a);
+      store.set('ef.adult.pin.' + state.userId, hash);
+      saveProfile({ adultPin: hash });
+    } else {
+      const pin = await pinPad('Adult channels', 'Enter your PIN.');
+      if (pin == null) return;
+      if (adultPinHash(pin) !== hash) { toast('Wrong PIN', 2500); return; }
+    }
+    adultUnlockedAt = Date.now();
+    resetIptvCaches();
+    route();
+  }
+  const adultRow = () => (adultSwitchOn() && !isAdmin() && !kidsOn() ? [{ id: '__adult', name: adultUnlocked() ? '\u{1F513} Adult (tap to lock)' : '\u{1F512} Adult', adultRow: true }] : []);
+  const planCatsKey = () => 'ef.planCats.' + state.userId;
+  function planCategories() {
+    try { const v = JSON.parse(store.get(planCatsKey()) || 'null'); return Array.isArray(v) ? new Set(v.map(String)) : null; } catch { return null; }
+  }
+  // Called with what the guard says about this account (null: every category).
+  function applyPlanCategories(list) {
+    const next = Array.isArray(list) ? JSON.stringify(list) : 'null';
+    if (store.get(planCatsKey()) === next) return;
+    store.set(planCatsKey(), next);
+    resetIptvCaches();
+    if (/^#\/(livetv|mylist)/.test(location.hash)) route();
+  }
+  async function syncPlanCategories() {
+    if (!guardEnabled || !state.userId || !state.apiKey) return;
+    try {
+      const a = await guard('/account', { params: { userId: state.userId }, quick: true });
+      applyPlanCategories(a.admin ? null : a.categories); applyAdultFlag(a);
+      setProviderAllowed(!a.admin && !!a.vod);
+    } catch { /* keep what is known */ }
+  }
+
+  async function iptvSource(cfg = iptv.config) {
+    if (cfg === iptv.config) await loadCustomChannels();
+    const key = `src:${cfg.type}:${cfg.v || 0}:${cfg === iptv.config && customCh ? customCh.v : 0}:${adultUnlocked() ? 1 : 0}`;
+    if (iptv.lists.has(key)) return iptv.lists.get(key);
+    const p = (async () => {
+      if (cfg.type === 'm3u') {
+        const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 120000, { saved: true, liveOnly: true, maxAge: LIST_MAX_AGE });
+        if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) throw new Error("That address didn't return an M3U playlist.");
+        const parsed = parseM3u(text);
+        rememberAdult(cfg, [...parsed.groups.keys()].map((n) => ({ id: n, name: n })));
+        const ok = catFilter(cfg);
+        if (cfg === iptv.config && customCh) for (const ch of parsed.all) editedChannel(ch, 'n:' + ch.name);
+        const rawAll = ok ? parsed.all.filter((ch) => ok(ch.group)) : parsed.all;
+        const groups = ok ? new Map([...parsed.groups].filter(([name]) => ok(name))) : parsed.groups;
+        for (const [name, list] of groups) groups.set(name, list.filter((ch) => !ch.hidden));
+        const all = rawAll.filter((ch) => !ch.hidden);
+        return mergeCustom({ categories: [...groups.keys()].map((name) => ({ id: name, name, count: groups.get(name).length })), groups, all, rawAll, guideUrl: parsed.guideUrl }, cfg);
+      }
+      const cats = await xtJson(cfg, { action: 'get_live_categories' }, { saved: true, maxAge: LIST_MAX_AGE });
+      if (!Array.isArray(cats)) throw new Error('The Xtream account was not accepted. Check the username and password.');
+      if (cfg === iptv.config) { iptv.catNames = new Map(cats.map((c) => [String(c.category_id), c.category_name || ''])); rememberAdult(cfg, cats.map((c) => ({ id: c.category_id, name: c.category_name }))); }
+      const ok = catFilter(cfg);
+      return mergeCustom({
+        categories: cats.map((c) => ({ id: String(c.category_id), name: c.category_name || 'Channels' })).filter((c) => !ok || ok(c.id)),
+        groups: new Map(), all: null,
+      }, cfg);
+    })();
+    iptv.lists.set(key, p);
+    p.catch(() => iptv.lists.delete(key));
+    return p;
+  }
+
+  async function iptvChannels(catId, cfg = iptv.config) {
+    const src = await iptvSource(cfg);
+    if (catId === '__all') return iptvAllChannels(cfg);
+    if (src.groups.has(catId)) return src.groups.get(catId);
+    if (cfg.type === 'xtream') {
+      const ok = catFilter(cfg);
+      if (ok && !ok(catId)) return [];
+      const list = await xtJson(cfg, { action: 'get_live_streams', category_id: catId }, { saved: true, maxAge: LIST_MAX_AGE });
+      const chans = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st)).filter((c) => !c.hidden);
+      src.groups.set(catId, chans);
+      return chans;
+    }
+    return [];
+  }
+
+  async function iptvAllChannels(cfg = iptv.config) {
+    const src = await iptvSource(cfg);
+    if (!src.all) {
+      const list = await xtJson(cfg, { action: 'get_live_streams' }, { saved: true, maxAge: LIST_MAX_AGE });
+      const ok = catFilter(cfg);
+      src.all = (Array.isArray(list) ? list : []).filter((st) => !ok || ok(st.category_id)).map((st) => xtChannel(cfg, st)).filter((c) => !c.hidden);
+      if (src.customAll) src.all.push(...src.customAll);
+    }
+    return src.all;
+  }
+
+  // What's on now (Xtream only), fetched for the channels on screen and kept for 10 minutes.
+  const b64 = (s) => { try { return new TextDecoder().decode(Uint8Array.from(atob(s || ''), (c) => c.charCodeAt(0))); } catch { return s || ''; } };
+  async function iptvNow(ch) {
+    if (iptv.config?.type !== 'xtream' || !ch.streamId) return null;
+    const hit = iptv.epg.get(ch.streamId);
+    if (hit && Date.now() - hit.t < 600000) return hit.v;
+    const v = await xtJson(iptv.config, { action: 'get_short_epg', stream_id: ch.streamId, limit: 2 }).then((r) => {
+      const now = Date.now() / 1000;
+      const list = (r?.epg_listings || []).map((e) => ({ title: b64(e.title), start: Number(e.start_timestamp), end: Number(e.stop_timestamp) }));
+      const cur = list.find((e) => e.start <= now && e.end > now) || list[0];
+      return cur ? { title: cur.title, start: cur.start * 1000, end: cur.end * 1000 } : null;
+    }).catch(() => null);
+    iptv.epg.set(ch.streamId, { t: Date.now(), v });
+    return v;
+  }
+  const iptvNowCached = (ch) => guideNow(ch)?.title || iptv.epg.get(ch.streamId)?.v?.title || '';
+  // What's on and what's next for a channel, from the guide if it's loaded (or the provider's short listing): {title, start, end, next}.
+  function nowNext(ch, at = Date.now()) {
+    const progs = guideFor(ch)?.progs || [];
+    const i = progs.findIndex((p) => p.start <= at && p.end > at);
+    if (i >= 0) return { title: progs[i].title, start: progs[i].start, end: progs[i].end, next: progs[i + 1]?.title || '' };
+    const v = iptv.epg.get(ch.streamId)?.v;
+    return v?.title ? { title: v.title, start: v.start || 0, end: v.end || 0, next: '' } : null;
+  }
+
+  // The next few programmes for one Xtream channel, used by the Guide while the full guide is still loading.
+  // A few at a time, kept for 10 minutes.
+  const shortGuide = new Map(), shortQueue = [];
+  let shortActive = 0;
+  function iptvShortGuide(ch) {
+    if (iptv.config?.type !== 'xtream' || !ch.streamId) return Promise.resolve(null);
+    const hit = shortGuide.get(ch.streamId);
+    if (hit && Date.now() - hit.t < 600000) return hit.p;
+    const p = new Promise((resolve) => shortQueue.push({ ch, resolve }));
+    shortGuide.set(ch.streamId, { t: Date.now(), p });
+    pumpShortGuide();
+    return p;
+  }
+  function pumpShortGuide() {
+    while (shortActive < 4 && shortQueue.length) {
+      const { ch, resolve } = shortQueue.shift();
+      shortActive++;
+      xtJson(iptv.config, { action: 'get_short_epg', stream_id: ch.streamId, limit: 10 })
+        .then((r) => (r?.epg_listings || []).map((e) => ({
+          title: b64(e.title), desc: b64(e.description || ''), start: Number(e.start_timestamp) * 1000, end: Number(e.stop_timestamp) * 1000,
+        })).filter((e) => e.end > e.start).sort((a, b) => a.start - b.start))
+        .catch(() => null)
+        .then((list) => { shortActive--; resolve(list); pumpShortGuide(); });
+    }
+  }
+
+  // ----- TV guide (XMLTV) -----
+  // Xtream accounts publish one at xmltv.php; M3U playlists may name one in their header; the admin can set any.
+  async function iptvGuideUrl(cfg = iptv.config) {
+    if (cfg.epgUrl) return withScheme(cfg.epgUrl);
+    if (cfg.type === 'xtream') {
+      const q = new URLSearchParams({ username: cfg.username, password: cfg.password || '' });
+      return `${withScheme(cfg.server)}/xmltv.php?${q}`;
+    }
+    return (await iptvSource(cfg)).guideUrl || '';
+  }
+
+  const normalName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  let epgSeq = 0;
+  const epgPending = new Map();
+  window.auroraEpgDone = (id, data) => { const done = epgPending.get(id); if (done) { epgPending.delete(id); done(data); } };
+
+  // Gets the guide ready once per session. The Android app downloads and reads it and keeps it (the page
+  // only ever asks it for the channels on screen: see guideFor), so this resolves to a small handle.
+  const GUIDE_REFRESH = 3 * 3600000;
+  function loadIptvGuide(cfg = iptv.config) {
+    // The listings run about 10 hours ahead, so a guide kept for a long session (a TV left on Aurora) is
+    // fetched again after a few hours rather than running out of listings.
+    if (cfg === iptv.config && iptv.guide && Date.now() - (iptv.guide.at || 0) > GUIDE_REFRESH) { iptv.guide = null; iptv.guideLoad = null; }
+    if (cfg === iptv.config && iptv.guideLoad) return iptv.guideLoad;
+    const p = (async () => {
+      if (!nativeApp?.loadEpg || !nativeApp.epgLookup) return null;
+      const url = await iptvGuideUrl(cfg);
+      if (!url) return null;
+      const data = await new Promise((resolve) => {
+        const id = 'e' + (++epgSeq);
+        epgPending.set(id, resolve);
+        nativeApp.loadEpg(id, url, cfg.userAgent || '');
+      });
+      if (data?.error) throw new Error(data.error);
+      if (!data?.channels) throw new Error("The guide link didn't return a TV guide (XMLTV).");
+      return { url, channels: data.channels, programmes: data.programmes, cache: new Map(), at: Date.now() };
+    })();
+    if (cfg === iptv.config) {
+      iptv.guideLoad = p;
+      // A failed guide isn't asked for again for 5 minutes: every screen asking at once flooded the log, and hammering
+      // a provider that's refusing this connection doesn't help.
+      p.then((g) => { iptv.guide = g; }, (e) => {
+        console.warn('TV guide', e);
+        setTimeout(() => { if (iptv.guideLoad === p) iptv.guideLoad = null; }, 5 * 60000);
+      });
+    }
+    return p;
+  }
+
+  // Looks up many channels in one go (a long channel list one at a time would be slow on a TV box).
+  function guidePrefetch(chans, g = iptv.guide) {
+    if (!g || !chans?.length) return;
+    const todo = chans.filter((ch) => ch && !g.cache.has(ch.id || ch.name));
+    for (let i = 0; i < todo.length; i += 500) {
+      const part = todo.slice(i, i + 500);
+      let res = null;
+      try { res = JSON.parse(nativeApp.epgLookup(g.url, JSON.stringify(part.map((ch) => ({ id: ch.epgId || '', name: ch.name || '' }))))); } catch { /* none */ }
+      part.forEach((ch, k) => {
+        const e = res?.[k];
+        g.cache.set(ch.id || ch.name, e ? { name: e.n, icon: e.i, progs: e.p.map(([start, end, title, desc]) => ({ start, end, title, desc })) } : null);
+      });
+    }
+  }
+
+  // A channel's guide entry {name, icon, progs: [{start, end, title, desc}]}, asked of the Android app and kept.
+  function guideFor(ch, g = iptv.guide) {
+    if (!g || !ch) return null;
+    const key = ch.id || ch.name;
+    if (g.cache.has(key)) return g.cache.get(key);
+    let entry = null;
+    try {
+      const [e] = JSON.parse(nativeApp.epgLookup(g.url, JSON.stringify([{ id: ch.epgId || '', name: ch.name || '' }]))) || [];
+      if (e) entry = { name: e.n, icon: e.i, progs: e.p.map(([start, end, title, desc]) => ({ start, end, title, desc })) };
+    } catch { /* no entry */ }
+    g.cache.set(key, entry);
+    return entry;
+  }
+  function guideNow(ch, at = Date.now()) {
+    return guideFor(ch)?.progs.find((p) => p.start <= at && p.end > at) || null;
+  }
+  const channelLogo = (ch) => ch.logo || guideFor(ch)?.icon || '';
+
+  // Some logo hosts refuse the web view; the Android app can fetch those itself.
+  const imgCache = new Map(), imgPending = new Map();
+  let imgSeq = 0, imgActive = 0;
+  const imgQueue = [];
+  window.auroraImageDone = (id, dataUrl) => { const done = imgPending.get(id); if (done) { imgPending.delete(id); done(dataUrl); } };
+  function nativeImage(url) {
+    if (imgCache.has(url)) return imgCache.get(url);
+    // Logos are kept as data, so don't let the list grow without end in a long session.
+    if (imgCache.size > 400) [...imgCache.keys()].slice(0, 100).forEach((k) => imgCache.delete(k));
+    const p = new Promise((resolve) => imgQueue.push({ url, resolve }));
+    imgCache.set(url, p);
+    pumpImages();
+    return p;
+  }
+  function pumpImages() {
+    while (imgActive < 4 && imgQueue.length) {
+      const { url, resolve } = imgQueue.shift();
+      imgActive++;
+      const id = 'i' + (++imgSeq);
+      imgPending.set(id, (d) => { imgActive--; resolve(d || ''); pumpImages(); });
+      nativeApp.fetchImage(id, url, iptv.config?.userAgent || '');
+    }
+  }
+  function setLogo(img, url, onDone) {
+    if (!url) return;
+    img.addEventListener('load', () => onDone(true), { once: true });
+    img.addEventListener('error', () => {
+      if (!nativeApp?.fetchImage || img.dataset.native) return onDone(false);
+      img.dataset.native = '1';
+      nativeImage(url).then((d) => { if (d) img.src = d; else onDone(false); });
+    }, { once: false });
+    img.src = url;
+  }
+
+  // Recently watched channels, newest first, for the Live TV page and Home.
+  const RECENT_MAX = 30;
+  // The list belongs to the TV source it was made from (not to the settings version: the admin changing a category or
+  // a limit must not wipe everyone's recent channels). Older saves, which only knew the version, are still honoured.
+  const recentSource = () => { const c = iptv.config || {}; return [c.type || '', c.type === 'm3u' ? c.m3uUrl || '' : c.server || '', c.username || ''].join('|'); };
+  function iptvRecent() {
+    try {
+      const r = JSON.parse(store.get('ef.iptv.recent.' + state.userId) || '{}');
+      const same = r.s ? r.s === recentSource() : r.v === (iptv.config?.v || 0);
+      if (!same) return [];
+      // A channel from a category this account can't see (adult, or left out of the plan) is not listed either.
+      const ok = iptv.config ? catFilter(iptv.config) : null;
+      return (r.list || []).filter((c) => !ok || c.group === undefined || c.group === '' || ok(c.group));
+    } catch { return []; }
+  }
+  // Channels are told apart by their stream number or address, not by their position in the list (which changes).
+  const recentId = (c) => c.streamId ? 'x' + c.streamId : c.url || c.id;
+  function rememberChannel(ch) {
+    const list = [ch, ...iptvRecent().filter((c) => recentId(c) !== recentId(ch))].slice(0, RECENT_MAX)
+      .map(({ id, streamId, name, logo, num, url, group }) => ({ id, streamId, name, logo, num, url, group }));
+    store.set('ef.iptv.recent.' + state.userId, JSON.stringify({ s: recentSource(), v: iptv.config?.v || 0, list }));
+  }
+  // Puts the Home row of recently watched channels right (added, moved to the front, or refreshed) after watching.
+  function updateRecentRow() {
+    if (!iptvOn() || !/^#?\/?(home)?$/.test(location.hash)) return;
+    const rows = $('#page .rows');
+    if (!rows) return;
+    const recent = iptvRecent();
+    const old = $('[data-row="recently-watched-channels"]', rows);
+    if (!recent.length) { old?.remove(); return; }
+    const tmp = document.createElement('div');
+    addRow(tmp, 'Recently Watched Channels', async () => recent,
+      { isCurrent: () => true, createItem: (c) => createIptvTile(c, () => playIptv(recent, recent.indexOf(c), 'Recently watched')) });
+    const fresh = tmp.firstElementChild;
+    if (old) old.replaceWith(fresh);
+    else { const first = rows.firstElementChild; if (first) first.after(fresh); else rows.appendChild(fresh); }
+  }
+
+  // A loading error with a Try again button (the provider may just have had a hiccup).
+  function liveError(el, text, retry) {
+    el.innerHTML = `<div class="live-error"><p class="empty-msg">${text}</p><button class="btn btn-gray" data-retry>Try again</button></div>`;
+    $('[data-retry]', el).addEventListener('click', retry);
+    if (nav.on && (!document.activeElement || document.activeElement === document.body || !document.contains(document.activeElement))) focusEl($('[data-retry]', el));
+  }
+
+  // The channel list didn't load. Says what the provider answered (when it sent a page), what that usually means and what to try, and offers
+  // Try again, the Status check and a message to support with the details attached.
+  let lastLiveError = '', lastLiveErrorAt = 0, statusAutoAt = 0, helpPrefill = '', helpPrefillAt = 0; // the last three only count for a few seconds, so they can't fire later in the wrong place
+  function liveFailure(message) {
+    const m = String(message || ''), said = (/\("([^"]{1,120})"\)/.exec(m) || [])[1] || '';
+    const page = /web page instead/i.test(m), hay = said.toLowerCase(); // only the provider's own words: the rest of the sentence is ours and always mentions "busy or expired"
+    const full = /too many (connections|streams|devices|users|sessions)|max(imum)?( number of)? connections|connection limit|connections? (is |are )?(full|in use|exceeded|reached)|limit (of connections )?reached/.test(hay);
+    const ended = /(account|subscription|service|line).{0,30}(expired|suspended|disabled|inactive|ended|terminated)|(expired|suspended|terminated) (account|subscription|line)|^(account )?expired$/.test(hay);
+    if (page && full) return { said, title: "The TV provider's connections are all in use right now", why: 'Everyone is sharing a limited number of streams and they are all busy. Nothing is wrong with your TV or your internet.', steps: ['Wait a minute and press Try again.'] };
+    if (page && ended) return { said, title: 'The Live TV account has ended', why: 'The provider says the Live TV account has ended. Your Aurora account is fine.', steps: ['Send a message to support below so we can sort it out.'] };
+    if (page) return { said, title: 'The TV provider is refusing this connection', why: 'The provider answered, but not with the channel list. That usually means it blocks this internet connection (some internet companies, VPNs and shared addresses), or its connections are busy.', steps: ['Turn off any VPN or Private DNS on this device, then try again.', 'Try a phone hotspot. If channels load there, your home network is the one being blocked.', 'Send us the details below so we can ask the provider.'] };
+    return { said: '', title: "We couldn't load the channels", why: m.replace(/^Couldn't load the channels:\s*/i, ''), steps: ['Press Try again.', 'Press Why can\'t I watch? to find out whether it is your connection, the server or the TV provider.'] };
+  }
+  function liveListError(el, e, retry) {
+    const f = liveFailure(e?.message);
+    lastLiveError = `Live TV list: ${f.said ? `provider said "${f.said}" · ` : ''}${String(e?.message || '').slice(0, 160)}`; lastLiveErrorAt = Date.now();
+    el.innerHTML = `<div class="live-error live-fail"><h2>${esc(f.title)}</h2>
+      ${f.said ? `<p class="live-said">The provider said: <b>${esc(f.said)}</b></p>` : ''}
+      <p class="empty-msg">${esc(f.why)}</p>
+      <ol class="live-steps">${f.steps.map((t) => `<li>${esc(t)}</li>`).join('')}</ol>
+      <div class="live-fail-btns"><button class="btn btn-white" data-retry>Try again</button><button class="btn btn-gray" data-why>Why can't I watch?</button><button class="btn btn-gray" data-tell>Send to support</button></div></div>`;
+    $('[data-retry]', el).addEventListener('click', (ev) => {
+      const b = ev.currentTarget; b.disabled = true; b.textContent = 'Trying again…';
+      setTimeout(retry, 1500);
+    });
+    $('[data-why]', el).addEventListener('click', () => { statusAutoAt = Date.now(); location.hash = '#/status'; });
+    $('[data-tell]', el).addEventListener('click', () => { helpPrefill = `Live TV won't load${f.said ? ` (the provider said "${f.said}")` : ''}.`; helpPrefillAt = Date.now(); location.hash = '#/help'; });
+    if (nav.on && (!document.activeElement || document.activeElement === document.body || !document.contains(document.activeElement))) focusEl($('[data-retry]', el));
+  }
+
+  // Opens the native player with the list the channel came from, so up/down flips through it.
+  let iptvPlaying = null;
+  let lastLive = null; // the channel last started, for Help & support
+  function playIptv(list, index, groupName) {
+    if (!list[index]) return;
+    if (maintOn('livetv')) { toast(maintText('livetv'), 8000); return; }
+    whenAllowed(() => startIptv(list, index, groupName));
+  }
+  const nowNextFields = (c) => { const n = nowNext(c); return n ? { nowStart: n.start || 0, nowEnd: n.end || 0, next: n.next || '' } : {}; };
+  function startIptv(list, index, groupName) {
+    const ch = list[index];
+    if (!ch) return;
+    rememberChannel(ch);
+    if (!nativeApp?.playLive) { toast('Live TV channels play in the Aurora app for Android and Android TV.'); return; }
+    // Keep the hand-over a sensible size for very long lists.
+    let from = 0, to = list.length;
+    if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
+    const slice = list.slice(from, to);
+    // What's on is looked up for the channels around this one only: looking up thousands held up the start
+    // of playback for seconds on a TV box.
+    const near = (i) => Math.abs(i - (index - from)) <= 150;
+    guidePrefetch(slice.filter((c, i) => near(i)));
+    iptvPlaying = { list: slice, offset: from, group: groupName };
+    lastLive = { name: ch.name, t: Date.now() };
+    store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
+    nativeApp.playLive(JSON.stringify(slice.map((c, i) => (near(i)
+      ? { name: c.name, url: c.url, alts: c.alts || [], logo: channelLogo(c), num: c.num, now: iptvNowCached(c), ...nowNextFields(c), fav: isIptvFav(c) }
+      : { name: c.name, url: c.url, alts: c.alts || [], logo: c.logo || '', num: c.num, now: '', fav: isIptvFav(c) }))),
+      index - from, groupName || '', iptv.config?.userAgent || '',
+      // So the player can tell the Emby server what's on (Admin shows it; the provider's streams bypass Emby).
+      JSON.stringify({ base: state.server + '/emby', apiKey: state.apiKey, userId: state.userId, deviceId: state.deviceId,
+        device: nativeApp.getDeviceName?.() || 'Android', auth: authHeader(), guardUrl: guardEnabled ? guardUrl : undefined, buffer: getPref('liveBuffer'), ffmpeg: getPref('ffmpeg'), stallSeconds: stallSeconds() || undefined }));
+  }
+  // The Aurora loading screen of the video player: a glowing ring around the name, with words under it.
+  function auroraLoaderHtml(words, hint = '') {
+    return `<div class="al${hint ? ' slow' : ''}" role="status" aria-live="polite"><div class="al-logo" aria-hidden="true"><i class="al-halo"></i><i class="al-ring"></i><span>AURORA</span></div><div class="al-msg">${esc(words)}</div>${hint ? `<div class="al-sub">${esc(hint)}</div>` : ''}</div>`;
+  }
+  // ----- Favorites -----
+  // Movies and shows use Emby's own favorites (the + button). Live channels from the TV provider (M3U / Xtream) aren't in
+  // Emby, so they're kept per account in the viewer's display preferences ("aurora-favorites"): the same list on every
+  // device. A channel is told apart by its provider stream number (Xtream) or its address (M3U), which stay the same
+  // when the list is reloaded, unlike the position-based ids.
+  const FAV_PREFS = 'aurora-favorites', FAV_MAX = 300;
+  let iptvFavs = null, favSynced = 0;
+  const favLocalKey = () => 'ef.iptv.fav.' + state.userId;
+  const favId = (ch) => (ch?.streamId ? 'x' + ch.streamId : ch?.url || '');
+  function iptvFavList() {
+    if (!iptvFavs) { try { iptvFavs = JSON.parse(store.get(favLocalKey()) || '[]'); } catch { iptvFavs = []; } }
+    return iptvFavs;
+  }
+  const isIptvFav = (ch) => { const k = favId(ch); return !!k && iptvFavList().some((f) => f.k === k); };
+  const saveFavLocal = (list) => { iptvFavs = list; store.set(favLocalKey(), JSON.stringify(list)); };
+  // Playable channel objects for this source (Xtream channels are rebuilt, so a changed password still works).
+  function iptvFavChannels() {
+    const cfg = iptv.config;
+    if (!cfg) return [];
+    const ok = catFilter(cfg);
+    return iptvFavList().filter((f) => !ok || f.group === undefined || f.group === '' || ok(f.group)).map((f, i) => {
+      if (cfg.type === 'xtream') return f.streamId ? xtChannel(cfg, { stream_id: f.streamId, name: f.name, stream_icon: f.logo, num: f.num || undefined, category_id: f.group, epg_channel_id: f.epgId }) : null;
+      return f.url && !f.streamId ? { id: 'f' + i, name: f.name, logo: f.logo, num: f.num, group: f.group, url: f.url, epgId: f.epgId } : null;
+    }).filter(Boolean);
+  }
+  const favCount = () => iptvFavChannels().length;
+  function repaintFavMarks() {
+    $$('#page .iptv-tile').forEach((t) => {
+      const on = isIptvFav(t.__ch);
+      t.classList.toggle('is-fav', on);
+      const b = $('.fav-btn', t);
+      if (b) { b.textContent = on ? '\u2605' : '\u2606'; b.title = on ? 'Remove from Favorites' : 'Add to Favorites'; }
+    });
+    $$('#page .guide-row').forEach((r) => r.classList.toggle('is-fav', !!r.__guide && isIptvFav(r.__guide.ch)));
+  }
+  // Another device may have changed the list: read it now and then. If a save failed earlier, send ours instead.
+  async function syncFavorites({ force = false } = {}) {
+    if (!state.userId || !state.apiKey || (!force && Date.now() - favSynced < 600000)) return;
+    favSynced = Date.now();
+    try {
+      if (store.get(favLocalKey() + '.dirty')) {
+        await writeAuroraPref(FAV_PREFS, state.userId, { channels: iptvFavList() });
+        store.del(favLocalKey() + '.dirty');
+        return;
+      }
+      const d = await readAuroraPref(FAV_PREFS);
+      if (Array.isArray(d?.channels)) { saveFavLocal(d.channels); repaintFavMarks(); }
+    } catch { favSynced = 0; }
+  }
+  // One change at a time, applied to the saved list (not overwriting it with ours), so two devices don't undo each other.
+  let favWrite = Promise.resolve();
+  function pushFavChange(entry, on) {
+    favWrite = favWrite.then(async () => {
+      try {
+        const d = await readAuroraPref(FAV_PREFS);
+        let list = (Array.isArray(d?.channels) ? d.channels : []).filter((f) => f.k !== entry.k);
+        if (on) list.unshift(entry);
+        await writeAuroraPref(FAV_PREFS, state.userId, { channels: list.slice(0, FAV_MAX) });
+        store.del(favLocalKey() + '.dirty');
+      } catch (e) {
+        store.set(favLocalKey() + '.dirty', '1'); // sent again at the next sync
+        appLog.add('info', 'Favorites not saved yet: ' + e.message);
+      }
+    });
+  }
+  function toggleIptvFav(ch, { silent = false, set } = {}) {
+    const k = favId(ch);
+    if (!k) return false;
+    const on = set === undefined ? !isIptvFav(ch) : !!set;
+    if (on === isIptvFav(ch)) return on;
+    const entry = { k, name: ch.name, logo: ch.logo || '', num: ch.num || '', group: ch.group ?? '', epgId: ch.epgId || '', streamId: ch.streamId || undefined, url: ch.streamId ? undefined : ch.url };
+    saveFavLocal(on ? [entry, ...iptvFavList().filter((f) => f.k !== k)].slice(0, FAV_MAX) : iptvFavList().filter((f) => f.k !== k));
+    pushFavChange(entry, on);
+    repaintFavMarks();
+    if (!silent) toast(on ? `${ch.name} added to Favorites` : `${ch.name} removed from Favorites`, 2000);
+    return on;
+  }
+  async function toggleItemFav(item, onDone) {
+    const on = !item.UserData?.IsFavorite;
+    try {
+      item.UserData = await api(userPath(`/FavoriteItems/${item.Id}`), { method: on ? 'POST' : 'DELETE' });
+      rowCache.clear();
+      toast(on ? 'Added to Favorites' : 'Removed from Favorites', 2000);
+      onDone?.(on);
+    } catch (e) { toast('Could not update Favorites: ' + e.message); }
+  }
+  // What the options menu (long-press, Menu key, or holding OK on a TV remote) does for each kind of thing on screen.
+  function openChoiceMenu(title, choices) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `<div class="m-body notice-body"><h2>${esc(title)}</h2>
+      <div class="report-reasons">${choices.map((c, i) => `<button class="btn ${i === 0 ? 'btn-white' : 'btn-gray'}" data-choice="${i}"${i === 0 ? ' data-autofocus' : ''}>${esc(c.label)}</button>`).join('')}</div>
+      <div class="m-actions"><button class="btn btn-gray" data-act="cancel">Cancel</button></div></div>`;
+    modal.classList.remove('hidden');
+    $('[data-act="cancel"]', content).addEventListener('click', closeModal);
+    $$('[data-choice]', content).forEach((b) => b.addEventListener('click', () => { closeModal(); choices[Number(b.dataset.choice)].run(); }));
+    autoFocus($('[data-choice]', content));
+  }
+  function openChannelMenu(ch) {
+    openChoiceMenu(ch.name, [
+      { label: isIptvFav(ch) ? '\u2605  Remove from Favorites' : '\u2606  Add to Favorites', run: () => toggleIptvFav(ch) },
+      ...(guardEnabled ? [{ label: 'Report a problem with this channel', run: () => openReportDialog(ch) }] : []),
+    ]);
+  }
+  function openEmbyChannelMenu(ch, card) {
+    const fav = !!ch.UserData?.IsFavorite;
+    openChoiceMenu(ch.Name, [{ label: fav ? '\u2605  Remove from Favorites' : '\u2606  Add to Favorites', run: () => toggleItemFav(ch, (on) => card?.classList.toggle('is-fav', on)) }]);
+  }
+  function openItemMenu(item, el) {
+    const fav = !!item.UserData?.IsFavorite;
+    openChoiceMenu(item.Type === 'Episode' ? (item.SeriesName || item.Name) : item.Name, [
+      { label: fav ? '\u2605  Remove from Favorites' : '\u2606  Add to Favorites', run: () => toggleItemFav(item, (on) => { el?.classList.toggle('is-fav', on); if (!on && /^#\/mylist/.test(location.hash)) route(); }) },
+      { label: 'Open', run: () => openItem(item) },
+    ]);
+  }
+  // What the TV remote's held OK button (or Menu key) is on.
+  function holdTarget(el) {
+    if (!el || !el.closest) return null;
+    const t = el.closest('.iptv-tile');
+    if (t?.__ch) return () => openChannelMenu(t.__ch);
+    const row = el.closest('.guide-row');
+    if (row?.__guide?.ch) return () => openChannelMenu(row.__guide.ch);
+    const c = el.closest('.channel-card');
+    if (c?.__embyCh) return () => openEmbyChannelMenu(c.__embyCh, c);
+    const p = el.closest('.poster, .card');
+    if (p?.__item) return () => openItemMenu(p.__item, p);
+    return null;
+  }
+
+  // ----- Reporting a channel -----
+  // Reports go to Aurora Guard, which keeps them for Admin → Channel reports and, if the admin set it up, passes them
+  // to the TV provider with the provider's API key (kept only on the guard's PC; the app never sees it).
+  async function reportChannel(ch, reason, { note = '', auto = false, group = '' } = {}) {
+    if (!guardEnabled || !ch || !state.userId) return false;
+    try {
+      await guard('/report', { method: 'POST', quick: true, body: {
+        userId: state.userId, channel: ch.name, channelId: String(ch.id || ''), reason, note, auto, group: group || ch.group || '',
+        device: nativeApp?.getDeviceName?.() || 'Browser' } });
+      return true;
+    } catch (e) { appLog.add('info', `Channel report not sent: ${e.message}`); return false; }
+  }
+  const REPORT_REASONS = ['Buffering', 'No picture', 'No sound', 'Wrong channel', 'Channel is down', 'Other'];
+  function openReportDialog(ch) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `<div class="m-body notice-body"><h2>Report ${esc(ch.name)}</h2>
+      <p class="overview">What is wrong with this channel?</p>
+      <div class="report-reasons">${REPORT_REASONS.map((r, i) => `<button class="btn btn-gray" data-reason="${esc(r)}"${i === 0 ? ' data-autofocus' : ''}>${esc(r)}</button>`).join('')}</div>
+      <div class="m-actions"><button class="btn btn-gray" data-act="cancel">Cancel</button></div></div>`;
+    modal.classList.remove('hidden');
+    $('[data-act="cancel"]', content).addEventListener('click', closeModal);
+    $$('[data-reason]', content).forEach((b) => b.addEventListener('click', async () => {
+      closeModal();
+      const ok = await reportChannel(ch, b.dataset.reason);
+      toast(ok ? 'Thanks, the channel was reported.' : "Couldn't send the report right now. Try again later.", 3000);
+    }));
+    autoFocus($('[data-reason]', content));
+  }
+
+  // The native player closed: remember the channel it ended on and put the focus back on it.
+  window.auroraLiveClosed = (index, stats) => {
+    store.del('ef.liveReturn');
+    const p = iptvPlaying;
+    // Opened from the Guide: the page has lost its focus meanwhile, so the next Down would start again from the top bar. Put it back.
+    const backToGuide = () => { const g = $('#page .tm-guide'); if (g?.__restore) g.__restore(p?.list?.[index]); };
+    setTimeout(backToGuide, 0);
+    setTimeout(() => { if (!document.activeElement || document.activeElement === document.body) backToGuide(); }, 400);
+    iptvPlaying = null;
+    if (!p || index < 0) return;
+    // Channels the viewer starred (or un-starred) from inside the player.
+    for (const f of stats?.favs || []) { const c = p.list[f.index]; if (c) toggleIptvFav(c, { silent: true, set: f.fav }); }
+    // Every channel the viewer settled on while flipping through the list, oldest first, then the one they ended on.
+    for (const i of stats?.visited || []) { const c = p.list[i]; if (c) rememberChannel(c); }
+    const ch = p.list[index];
+    // Kept stopping to buffer: note it (it reaches the admins with the automatic reports) and suggest a bigger buffer.
+    if (stats?.stalls >= 3) {
+      appLog.add('warn', `Live TV kept buffering: ${stats.stalls} times in ${stats.minutes} min (last channel ${ch?.name || '?'}, buffer ${stats.buffer})`);
+      if (stats.buffer !== 'large' && !store.get('ef.liveBufferTip')) {
+        store.set('ef.liveBufferTip', '1');
+        toast('Live TV kept stopping to buffer. A bigger buffer can help: Settings → Playback → Live TV buffer → Large.', 9000);
+      }
+    }
+    // How quickly channels started this time: kept in the app log (it reaches the admins with the automatic reports and Help).
+    if (stats?.starts > 0) {
+      const sec = (ms) => (ms / 1000).toFixed(1);
+      const line = `Live TV: ${stats.starts} channel ${stats.starts === 1 ? 'start' : 'starts'}, average ${sec(stats.startAvg)} s, slowest ${sec(stats.startMax)} s${stats.startKbps ? `, stream ${(stats.startKbps / 1000).toFixed(1)} Mbit/s` : ''}, buffer ${stats.buffer}`;
+      appLog.add(stats.startAvg > 8000 ? 'warn' : 'info', line);
+      if (stats.startSlow >= 2 || stats.startAvg > 8000) playLog.add({ kind: 'live-slow-start', title: ch?.name || '', seconds: Math.round(stats.startAvg / 1000), buffer: stats.buffer, count: stats.startSlow });
+    }
+    if (ch && stats?.stalls >= 3) reportChannel(ch, 'Buffering', { auto: true, group: p.group });
+    if (stats?.stalls >= 3) playLog.add({ kind: 'live-stalling', title: ch?.name || '', stalls: stats.stalls, watchedMin: stats.minutes, buffer: stats.buffer });
+    if (stats?.failed > 0) {
+      playLog.add({ kind: 'live-failed', title: stats.failedName || ch?.name || '', error: stats.failedCode ? `provider answered ${stats.failedCode}` : 'no picture', count: stats.failed });
+      appLog.add('warn', `Live TV: ${stats.failed} ${stats.failed === 1 ? 'channel' : 'channels'} stopped working (last ${stats.failedName || '?'}${stats.failedCode ? ', provider answered ' + stats.failedCode : ''})`);
+    }
+    if (stats && (stats.minutes > 0 || stats.starts > 0)) {
+      reportQuality({ kind: 'live', watchMin: stats.minutes, stalls: stats.stalls, starts: stats.starts, startAvgMs: stats.startAvg, startMaxMs: stats.startMax, slow: stats.startSlow, failed: stats.failed, kbps: stats.startKbps, buffer: stats.buffer });
+    }
+    if (!ch) return;
+    rememberChannel(ch);
+    updateRecentRow();
+    // The row (if it was just redrawn) is in place on the next turn; put the focus back on the channel's tile.
+    setTimeout(() => { const tile = $(`#page .iptv-tile[data-id="${CSS.escape(ch.id)}"]`); if (tile) focusEl(tile); }, 0);
+  };
+
+  function createIptvTile(ch, onPlay) {
+    const tile = document.createElement('div');
+    tile.className = 'card iptv-tile';
+    tile.tabIndex = 0;
+    tile.dataset.id = ch.id;
+    tile.__ch = ch;
+    tile.innerHTML = `
+      <div class="iptv-logo"><span class="iptv-fallback">${esc(ch.name)}</span></div>
+      <button class="fav-btn" tabindex="-1" aria-label="Favorite"></button>
+      <div class="card-info"><div>${esc(ch.name)}</div><div class="sub" data-now></div><div class="iptv-prog" data-prog hidden><span></span></div><div class="sub iptv-next" data-next hidden></div></div>`;
+    paintTile(tile);
+    const on = isIptvFav(ch), star = $('.fav-btn', tile);
+    tile.classList.toggle('is-fav', on);
+    star.textContent = on ? '\u2605' : '\u2606';
+    star.title = on ? 'Remove from Favorites' : 'Add to Favorites';
+    star.addEventListener('click', (e) => { e.stopPropagation(); toggleIptvFav(ch); });
+    tile.addEventListener('click', onPlay);
+    // Long-press on a phone, the Menu button, or holding OK on a TV remote: favorite it, or report a problem.
+    tile.addEventListener('contextmenu', (e) => { e.preventDefault(); openChannelMenu(ch); });
+    tile.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openChannelMenu(ch); } });
+    return tile;
+  }
+
+  // Fills in the logo and what's on; called again once the guide arrives.
+  function paintTile(tile) {
+    const ch = tile.__ch;
+    const now = iptvNowCached(ch);
+    $('[data-now]', tile).textContent = [ch.num, now].filter(Boolean).join(' · ');
+    paintProgress(tile, ch);
+    const logo = channelLogo(ch);
+    if (logo && !$('img', tile)) {
+      const img = document.createElement('img');
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer';
+      $('.iptv-logo', tile).prepend(img);
+      setLogo(img, logo, (ok) => { if (ok) tile.classList.add('has-logo'); else img.remove(); });
+    }
+  }
+  // The thin "how far through the programme" bar and the next programme's title under a channel tile.
+  function paintProgress(tile, ch, now = nowNext(ch)) {
+    const bar = $('[data-prog]', tile), next = $('[data-next]', tile);
+    if (!bar) return;
+    const ok = !!(now && now.end > now.start && Date.now() >= now.start && Date.now() < now.end);
+    bar.hidden = !ok;
+    if (ok) { tile.dataset.start = now.start; tile.dataset.end = now.end; $('span', bar).style.width = Math.round(100 * (Date.now() - now.start) / (now.end - now.start)) + '%'; }
+    else { delete tile.dataset.start; delete tile.dataset.end; }
+    next.hidden = !(ok && now.next);
+    next.textContent = now?.next ? 'Next: ' + now.next : '';
+  }
+  // Move the bars along once a minute while Live TV tiles are on screen.
+  setInterval(() => {
+    if (document.hidden) return;
+    let refreshed = 0;
+    $$('#page .iptv-tile[data-end]').forEach((t) => {
+      const s = Number(t.dataset.start), e = Number(t.dataset.end), now = Date.now();
+      // The programme ended: ask for what's on now (a few tiles a minute, so a screenful ending at :00 doesn't hit the provider at once), then redraw.
+      if (now >= e) { if (refreshed < 6) { refreshed++; Promise.resolve(iptvNow(t.__ch)).then(() => paintTile(t)); } return; }
+      const bar = $('[data-prog] span', t);
+      if (bar) bar.style.width = Math.round(100 * (now - s) / (e - s)) + '%';
+    });
+  }, 60000);
+  function repaintTiles() {
+    const tiles = $$('#page .iptv-tile');
+    guidePrefetch(tiles.map((t) => t.__ch).filter(Boolean));
+    tiles.forEach(paintTile);
+  }
+
+  // Fetches what's on for tiles as they scroll into view.
+  let epgObserver = null;
+  function watchNow(tile, ch) {
+    if (iptv.config?.type !== 'xtream' || guideNow(ch)) return;
+    if (!epgObserver) {
+      epgObserver = new IntersectionObserver((entries) => entries.forEach((en) => {
+        if (!en.isIntersecting) return;
+        epgObserver.unobserve(en.target);
+        const c = en.target.__ch;
+        iptvNow(c).then((now) => {
+          if (now?.title) { $('[data-now]', en.target).textContent = [c.num, now.title].filter(Boolean).join(' · '); paintProgress(en.target, c, nowNext(c)); }
+        });
+      }), { rootMargin: '200px' });
+    }
+    tile.__ch = ch;
+    epgObserver.observe(tile);
+  }
+
+  // TV guide in the style of TiviMate: details of the selected show along the top, a compact grid of channels
+  // and the next six hours below, and the channel groups in a panel that slides out on the left
+  // (Left from the channel column, or the group button).
+  async function renderIptvGuide(body, isCurrent) {
+    body.innerHTML = '<div class="spinner"></div>';
+    let src;
+    try { src = await iptvSource(); lastLiveError = ''; } catch (e) {
+      if (isCurrent()) liveListError(body, e, () => route());
+      return;
+    }
+    if (!isCurrent()) return;
+    // The grid shows straight away; listings fill in when the full guide is ready (Xtream channels on screen
+    // get theirs from the provider one by one in the meantime).
+    if (iptv.guide && Date.now() - (iptv.guide.at || 0) > GUIDE_REFRESH) { iptv.guide = null; iptv.guideLoad = null; }
+    let guidePending = !iptv.guide;
+    const recent = iptvRecent();
+    await syncFavorites();
+    const cats = [
+      ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
+      ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
+      ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
+      ...sortByProfileCats(src.categories),
+      ...adultRow(),
+    ];
+    if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
+    let current = store.get('ef.iptv.group');
+    if (current === '__adult' || !cats.some((c) => c.id === current)) current = cats[0].id;
+    // A small live picture beside the details (Android app only): the channel you pick keeps playing while you browse the guide.
+    const previewOn = !!nativeApp?.previewStart && getPref('guidePreview') !== 'off';
+    const CH_W = nav.tv ? 380 : (window.innerWidth < 600 ? 160 : 320);
+    const start = new Date();
+    start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
+    const end = new Date(start.getTime() + GUIDE_HOURS * 3600000);
+    const width = GUIDE_HOURS * 60 * GUIDE_PX_PER_MIN;
+    const xOf = (t) => ((t - start) / 60000) * GUIDE_PX_PER_MIN;
+    const slots = [];
+    for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
+    const dayLabel = (d) => (new Date().toDateString() === d.toDateString() ? 'Today' : d.toLocaleDateString([], { weekday: 'short' }));
+    body.innerHTML = `
+      <div class="tm-guide${previewOn ? ' has-preview' : ''}" style="--tm-ch:${CH_W}px">
+        <section class="tm-info">
+          ${previewOn ? '<div class="tm-preview" aria-label="Live preview"><span class="tm-pv-hint">Press OK on a channel to watch it here</span><span class="tm-pv-name"></span></div>' : ''}
+          <div class="tm-info-logo"></div>
+          <div class="tm-info-text">
+            <div class="tm-info-ch"></div>
+            <h2 class="tm-info-title"></h2>
+            <div class="tm-info-time"><span></span><div class="tm-info-bar"><i></i></div></div>
+            <p class="tm-info-desc"></p>
+          </div>
+          <div class="tm-clock"><strong></strong><span></span></div>
+        </section>
+        <p class="guide-status hidden"></p>
+        <div class="guide tm-grid" tabindex="-1">
+          <div class="guide-head">
+            <button class="guide-corner tm-group-btn" title="Channel groups"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 6h18v2H3V6Zm0 5h18v2H3v-2Zm0 5h18v2H3v-2Z"/></svg><span></span></button>
+            <div class="guide-times" style="width:${width}px">
+              ${slots.map((t) => `<span style="left:${xOf(t)}px">${t.getMinutes() === 0 && t.getHours() === 0 ? esc(dayLabel(t)) + ' ' : ''}${esc(clock(t))}</span>`).join('')}
+            </div>
+          </div>
+          <div class="tm-body"><div class="guide-rows"></div><div class="tm-now-line"></div></div>
+          <div class="sentinel"></div>
+        </div>
+        <aside class="tm-groups" data-nav-zone aria-label="Channel groups">
+          <h3>Groups</h3>
+          <div class="tm-groups-list">${cats.map((c) => `<button class="tm-group${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}"><span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</button>`).join('')}</div>
+        </aside>
+      </div>`;
+    const root = $('.tm-guide', body);
+    const rows = $('.guide-rows', body), sentinel = $('.sentinel', body), guideEl = $('.guide', body), status = $('.guide-status', body);
+    const nowLine = $('.tm-now-line', body), groupsEl = $('.tm-groups', body), groupBtn = $('.tm-group-btn', body);
+    const setStatus = (html) => { status.innerHTML = html; status.classList.toggle('hidden', !html); requestAnimationFrame(() => fit()); };
+    let list = [], drawn = 0, groupName = '', token = 0;
+    let previewCh = null, resumeCh = null; // the channel in the small picture, and the one to bring back when the app returns
+    const PAGE = 30;
+    const GUIDE_LAST = 'ef.guide.last';
+    const readLast = () => { try { const v = JSON.parse(store.get(GUIDE_LAST) || 'null'); return v && Date.now() - v.t < 15 * 60000 ? v : null; } catch { return null; } };
+    const endPending = () => { const v = readLast(); if (v) store.set(GUIDE_LAST, JSON.stringify({ ...v, pending: false })); };
+    // Puts the remote back on a channel's row (drawing rows down to it first if it is further than the page that is showing).
+    const focusChannel = (id) => {
+      const at = list.findIndex((c) => c.id === id);
+      if (at < 0) return false;
+      while (drawn <= at && drawn < list.length) drawMore();
+      const el = $$('.guide-row', rows).find((r) => r.__guide.ch.id === id);
+      if (!el) return false;
+      focusEl($('.guide-prog.now', el) || $('.guide-prog, .guide-empty', el) || $('.guide-ch', el));
+      return true;
+    };
+    root.__restore = (ended) => { const last = readLast(); const ok = focusChannel(ended?.id || last?.id); endPending(); const back = ended || (last && list.find((c) => c.id === last.id)); if (previewOn && back) setTimeout(() => startPreview(back), 150); return ok; };
+
+    // ----- The small live picture -----
+    const pvBox = previewOn ? $('.tm-preview', root) : null;
+    // The box in the page's own pixels, and the page's width in them: the Android app works out the scale from the real screen.
+    const pvRect = () => { const r = pvBox.getBoundingClientRect(); return [r.left, r.top, r.width, r.height, document.documentElement.clientWidth || window.innerWidth]; };
+    const markPreviewing = () => $$('.guide-row', rows).forEach((r) => r.classList.toggle('previewing', !!previewCh && r.__guide.ch.id === previewCh.id));
+    let pvStartedAt = 0, pvWatchedTimer = 0;
+    const startPreview = (ch) => {
+      if (!previewOn || !ch?.url || !root.isConnected) return;
+      if (previewCh?.id === ch.id && Date.now() - pvStartedAt < 2000) return; // already starting it
+      pvStartedAt = Date.now(); pvShown = true;
+      // A channel that stays in the picture for a few seconds counts as watched (Recently Watched Channels), like one opened full screen.
+      clearTimeout(pvWatchedTimer);
+      pvWatchedTimer = setTimeout(() => { if (previewCh?.id === ch.id) { rememberChannel(ch); updateRecentRow(); } }, 10000);
+      const r = pvRect();
+      if (r[2] < 20) return;
+      previewCh = ch;
+      pvBox.classList.add('on'); pvBox.classList.remove('failed');
+      $('.tm-pv-name', pvBox).textContent = ch.name;
+      markPreviewing();
+      nativeApp.previewStart(ch.url, iptv.config?.userAgent || '', r[0], r[1], r[2], r[3], r[4], getPref('ffmpeg') !== 'off');
+    };
+    const stopPreview = () => { clearTimeout(pvWatchedTimer); previewCh = null; resumeCh = null; if (pvBox) pvBox.classList.remove('on', 'failed'); nativeApp?.previewStop?.(); markPreviewing(); };
+    let pvFrame = 0, pvShown = true;
+    // The video is drawn by Android on top of the page, so page content can't cover it: hide it whenever something should be over it
+    // (a menu or sheet, the groups list) or the box has scrolled partly off the screen.
+    const pvShouldShow = () => {
+      if (!previewCh || !root.isConnected) return true;
+      if (groupsEl.classList.contains('open') || !$('#modal')?.classList.contains('hidden') || $('.ctx-menu, .item-menu, .menu-pop, [role="menu"]')) return false;
+      const r = pvBox.getBoundingClientRect();
+      return r.top >= 0 && r.left >= 0 && r.bottom <= window.innerHeight && r.right <= window.innerWidth;
+    };
+    const syncPreview = () => {
+      if (!root.isConnected) { window.removeEventListener('resize', syncPreview); window.removeEventListener('scroll', syncPreview, true); pvWatch?.disconnect(); return; }
+      cancelAnimationFrame(pvFrame);
+      pvFrame = requestAnimationFrame(() => {
+        if (!previewCh || !root.isConnected) return;
+        nativeApp.previewMove(...pvRect());
+        const show = pvShouldShow();
+        if (show !== pvShown) { pvShown = show; nativeApp.previewVisible(show); }
+      });
+    };
+    // Menus and sheets open without scrolling or resizing: watch for them.
+    const pvWatch = previewOn && 'MutationObserver' in window ? new MutationObserver(syncPreview) : null;
+    pvWatch?.observe(document.body, { childList: true, attributes: true, attributeFilter: ['class', 'style'], subtree: false });
+    const modalEl = $('#modal');
+    if (pvWatch && modalEl) pvWatch.observe(modalEl, { attributes: true, attributeFilter: ['class'] });
+    if (previewOn) {
+      window.addEventListener('resize', syncPreview);
+      window.addEventListener('scroll', syncPreview, true);
+      // The app went to the background or a full-screen player opened (the picture is freed then); it comes back with the app.
+      window.auroraPreviewEvent = (kind) => {
+        if (!root.isConnected) return;
+        if (kind === 'released') { if (previewCh) { resumeCh = previewCh; previewCh = null; pvBox.classList.remove('on'); markPreviewing(); } }
+        else if (kind === 'resumed') { if (resumeCh) { const c = resumeCh; resumeCh = null; startPreview(c); } }
+        else if (kind === 'failed') { pvBox.classList.add('failed'); $('.tm-pv-name', pvBox).textContent = (previewCh?.name || '') + ' could not be previewed. Press OK to open it.'; }
+      };
+    }
+
+    // ----- Details panel -----
+    const info = {
+      logo: $('.tm-info-logo', root), ch: $('.tm-info-ch', root), title: $('.tm-info-title', root),
+      time: $('.tm-info-time span', root), bar: $('.tm-info-bar', root), fill: $('.tm-info-bar i', root), desc: $('.tm-info-desc', root),
+    };
+    let shownInfo = null;
+    const showInfo = (ch, p) => {
+      if (!ch) return;
+      shownInfo = { ch, p };
+      const logo = channelLogo(ch);
+      if (info.logo.dataset.src !== logo) {
+        info.logo.dataset.src = logo;
+        info.logo.innerHTML = logo ? '<img alt="">' : `<span>${esc(ch.name)}</span>`;
+        const img = $('img', info.logo);
+        if (img) setLogo(img, logo, (ok) => { if (!ok) info.logo.innerHTML = `<span>${esc(ch.name)}</span>`; });
+      }
+      info.ch.textContent = [ch.num, ch.name].filter(Boolean).join('  ');
+      info.title.textContent = p?.title || ch.name;
+      const now = Date.now();
+      if (p) {
+        const airing = p.start <= now && p.end > now;
+        const left = Math.max(0, Math.round((p.end - now) / 60000));
+        const day = new Date(p.start).toDateString() === new Date().toDateString() ? '' : new Date(p.start).toLocaleDateString([], { weekday: 'long' }) + ' · ';
+        info.time.textContent = `${day}${clock(new Date(p.start))} – ${clock(new Date(p.end))}` + (airing ? ` · ${left} min left` : '');
+        info.bar.classList.toggle('hidden', !airing);
+        info.fill.style.width = airing ? `${Math.min(100, ((now - p.start) / (p.end - p.start)) * 100)}%` : '0';
+      } else {
+        info.time.textContent = guidePending ? 'Loading the TV guide…' : 'No listings for this channel';
+        info.bar.classList.add('hidden');
+      }
+      info.desc.textContent = p?.desc || '';
+    };
+    const progsOf = (el) => el.__guide.progs || [];
+    const nowOf = (el) => progsOf(el).find((p) => p.start <= Date.now() && p.end > Date.now()) || null;
+    root.addEventListener('focusin', (e) => {
+      const el = e.target.closest('.guide-row');
+      if (!el) return;
+      // Close to the last drawn row: draw the next page now, so holding Down never runs out of rows to land on.
+      if (el.__guide.idx >= drawn - 6 && drawn < list.length) drawMore();
+      showInfo(el.__guide.ch, e.target.__prog || nowOf(el));
+      markSelection(el, e.target.__prog);
+    });
+    // Show where the remote is: the whole row, and the stretch of the time bar the programme covers.
+    let selRow = null;
+    const markSelection = (row, prog) => {
+      if (selRow && selRow !== row) selRow.classList.remove('sel');
+      row.classList.add('sel');
+      selRow = row;
+      let band = $('.tm-sel-band', root);
+      const times = $('.guide-times', root);
+      if (!band && times) { band = document.createElement('i'); band.className = 'tm-sel-band'; times.appendChild(band); }
+      if (!band) return;
+      if (!prog) { band.style.display = 'none'; return; }
+      const l = Math.max(0, xOf(Math.max(prog.start, start.getTime()))), r = Math.min(width, xOf(prog.end));
+      band.style.display = r > l ? '' : 'none';
+      band.style.left = `${l}px`;
+      band.style.width = `${Math.max(0, r - l)}px`;
+    };
+    // Long-press / Menu key on a channel: favorite it or report a problem.
+    root.addEventListener('contextmenu', (e) => {
+      const el = e.target.closest('.guide-row');
+      if (!el?.__guide?.ch) return;
+      e.preventDefault();
+      openChannelMenu(el.__guide.ch);
+    });
+    // Mouse and touch: hovering a show previews it too.
+    root.addEventListener('mouseover', (e) => {
+      if (nav.on) return;
+      const t = e.target.closest('.guide-prog, .guide-ch, .guide-empty'), el = t?.closest('.guide-row');
+      if (el) showInfo(el.__guide.ch, t.__prog || nowOf(el));
+    });
+
+    // ----- Clock and the "now" line -----
+    const clockEl = $('.tm-clock', root);
+    const tick = () => {
+      if (!root.isConnected) { clearInterval(timer); return; }
+      const d = new Date();
+      $('strong', clockEl).textContent = clock(d);
+      $('span', clockEl).textContent = d.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+      const x = xOf(Date.now());
+      nowLine.style.left = `${CH_W + x}px`;
+      nowLine.classList.toggle('hidden', x < 0 || x > width);
+      $$('.guide-prog.now', rows).forEach((b) => {
+        const p = b.__prog;
+        if (p.end <= Date.now()) b.classList.remove('now');
+        else b.style.setProperty('--done', `${Math.min(100, ((Date.now() - Math.max(p.start, start.getTime())) / (p.end - Math.max(p.start, start.getTime()))) * 100)}%`);
+      });
+      if (shownInfo) showInfo(shownInfo.ch, shownInfo.p);
+    };
+    const timer = routeInterval(tick, 30000);
+
+    // ----- Rows -----
+    // Fills (or refills) one channel's line of programmes.
+    const fillLane = (el) => {
+      const { ch, play } = el.__guide;
+      const lane = $('.guide-progs', el), now = Date.now();
+      const logoSlot = $('.tm-ch-logo', el), logo = channelLogo(ch);
+      if (logo && !$('img', logoSlot) && !el.__logoTried) {
+        el.__logoTried = true;
+        const img = document.createElement('img');
+        img.alt = '';
+        logoSlot.appendChild(img);
+        setLogo(img, logo, (ok) => { if (!ok) img.remove(); });
+      }
+      const all = guideFor(ch)?.progs || el.__shortList || [];
+      el.__guide.progs = all;
+      const progs = all.filter((p) => p.end > start.getTime() && p.start < end.getTime());
+      // Redrawing removes the show the remote is on; put it back on the one at the same spot afterwards.
+      const had = lane.contains(document.activeElement) ? document.activeElement.getBoundingClientRect().left : null;
+      const refocus = () => {
+        if (had == null) return;
+        const pick = [...$$('.guide-prog, .guide-empty', lane)].find((b) => b.getBoundingClientRect().right > had + 4) || $('.guide-ch', el);
+        pick?.focus({ preventScroll: true });
+      };
+      lane.innerHTML = '';
+      if (!progs.length) {
+        const waiting = guidePending; // the full guide may still have this channel
+        lane.innerHTML = `<button class="guide-empty${waiting ? ' waiting' : ''}">${waiting ? 'Loading…' : 'No information'}</button>`;
+        $('.guide-empty', lane).addEventListener('click', play);
+        if (waiting && !el.__short) {
+          el.__short = true;
+          iptvShortGuide(ch).then((list) => { el.__shortList = list?.length ? list : null; if (el.isConnected) fillLane(el); });
+        }
+        refocus();
+        return;
+      }
+      for (const p of progs) {
+        const left = Math.max(0, xOf(p.start)), right = Math.min(width, xOf(p.end));
+        if (right - left < 4) continue;
+        const btn = document.createElement('button');
+        const airing = p.start <= now && p.end > now;
+        btn.className = 'guide-prog' + (airing ? ' now' : '');
+        btn.__prog = p;
+        btn.style.left = left + 'px';
+        btn.style.width = (right - left - 2) + 'px';
+        if (airing) btn.style.setProperty('--done', `${Math.min(100, ((now - Math.max(p.start, start.getTime())) / (p.end - Math.max(p.start, start.getTime()))) * 100)}%`);
+        btn.innerHTML = `<strong>${esc(p.title)}</strong><span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span>`;
+        btn.addEventListener('click', () => (airing ? play() : showIptvProgram(p, ch, play)));
+        lane.appendChild(btn);
+      }
+      refocus();
+      // Keep the details panel current if it's showing this channel.
+      if (shownInfo?.ch === ch) showInfo(ch, (el.contains(document.activeElement) && document.activeElement.__prog) || nowOf(el));
+    };
+    const row = (ch, idx) => {
+      const el = document.createElement('div');
+      el.className = 'guide-row';
+      const logo = channelLogo(ch);
+      el.innerHTML = `
+        <button class="guide-ch" title="Watch ${esc(ch.name)}">
+          <span class="guide-ch-num">${esc(ch.num || '')}</span>
+          <span class="tm-ch-logo"></span>
+          <span class="guide-ch-name">${esc(ch.name)}</span>
+        </button>
+        <div class="guide-progs" style="width:${width}px"></div>`;
+      // Remember the place, so coming back from the player (or the app being reloaded meanwhile) lands on this channel again.
+      const full = () => { resumeCh = null; store.set(GUIDE_LAST, JSON.stringify({ group: current, id: ch.id, name: ch.name, t: Date.now(), pending: true })); playIptv(list, idx, groupName); };
+      // With the small picture: OK plays the channel in it; OK on the channel that is already there opens it full screen.
+      const play = () => (previewOn && previewCh?.id !== ch.id ? startPreview(ch) : full());
+      el.__guide = { ch, play, idx };
+      if (previewCh?.id === ch.id) el.classList.add('previewing');
+      el.classList.toggle('is-fav', isIptvFav(ch));
+      const chBtn = $('.guide-ch', el);
+      chBtn.addEventListener('click', play);
+      chBtn.__onLeftEdge = openGroups; // Left from the channel column opens the groups, as in TiviMate
+      fillLane(el);
+      return el;
+    };
+    const drawMore = () => {
+      const stop = Math.min(list.length, drawn + PAGE);
+      guidePrefetch(list.slice(drawn, stop));
+      for (let i = drawn; i < stop; i++) rows.appendChild(row(list[i], i));
+      drawn = stop;
+    };
+    new IntersectionObserver((en) => { if (en[0].isIntersecting && drawn < list.length) drawMore(); }, { root: guideEl, rootMargin: '400px' }).observe(sentinel);
+
+    // ----- Groups -----
+    function openGroups() {
+      groupsEl.classList.add('open');
+      syncPreview();
+      root.classList.add('groups-open');
+      // Once it's visible (it can't take the focus before that).
+      if (nav.on) requestAnimationFrame(() => focusEl($('.tm-group.active', groupsEl) || $('.tm-group', groupsEl)));
+    }
+    function closeGroups(refocus = true) {
+      if (!groupsEl.classList.contains('open')) return false;
+      groupsEl.classList.remove('open');
+      root.classList.remove('groups-open');
+      syncPreview();
+      if (refocus && nav.on) focusEl($('.guide-ch', rows) || groupBtn);
+      return true;
+    }
+    root.__closeGroups = closeGroups;
+    // The grid runs to the bottom of the screen, like a full-screen guide.
+    function fit() {
+      if (!root.isConnected) { window.removeEventListener('resize', fit); return; }
+      const top = guideEl.getBoundingClientRect().top + window.scrollY;
+      guideEl.style.height = `${Math.max(260, window.innerHeight - top - (nav.tv ? 24 : (window.innerWidth <= 560 ? 76 : 16)))}px`;
+    }
+    window.addEventListener('resize', fit);
+    requestAnimationFrame(fit);
+    groupBtn.addEventListener('click', () => (groupsEl.classList.contains('open') ? closeGroups() : openGroups()));
+    // Right from the groups goes back to the channels.
+    $$('.tm-group', groupsEl).forEach((b) => { b.__onRightEdge = () => closeGroups(); });
+    root.addEventListener('click', (e) => { if (groupsEl.classList.contains('open') && !e.target.closest('.tm-groups, .tm-group-btn')) closeGroups(false); });
+
+    const openCat = async (id, focus) => {
+      if (id === '__adult') { adultToggle(); return; }
+      const t = ++token;
+      current = id;
+      store.set('ef.iptv.group', id);
+      $$('.tm-group', groupsEl).forEach((b) => b.classList.toggle('active', b.dataset.cat === id));
+      const cat = cats.find((c) => c.id === id);
+      $('span', groupBtn).textContent = cat?.name || '';
+      rows.innerHTML = '<div class="spinner"></div>';
+      try {
+        const chans = id === '__fav' ? iptvFavChannels() : id === '__recent' ? iptvRecent() : await iptvChannels(id);
+        if (t !== token || !isCurrent()) return;
+        list = chans; drawn = 0; groupName = cat?.name || '';
+        rows.innerHTML = list.length ? '' : '<p class="empty-msg">No channels here.</p>';
+        guideEl.scrollTop = 0;
+        guideEl.scrollLeft = 0;
+        drawMore();
+        const first = $('.guide-row', rows);
+        if (first) showInfo(first.__guide.ch, nowOf(first));
+        if (focus) focusEl($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows));
+      } catch (e) { if (t === token) liveError(rows, `Couldn't load these channels: ${esc(e.message)}`, () => openCat(id, nav.on)); }
+    };
+    $$('.tm-group', groupsEl).forEach((b) => b.addEventListener('click', () => { closeGroups(false); openCat(b.dataset.cat, nav.on); }));
+
+    if (guidePending) {
+      setStatus('<span class="spinner"></span> Getting the full TV guide… The first time can take a few minutes.');
+      loadIptvGuide().then((g) => {
+        if (!isCurrent()) return;
+        guidePending = false;
+        guidePrefetch($$('.guide-row', rows).map((el) => el.__guide.ch));
+        setStatus(g ? '' : nativeApp?.loadEpg
+          ? 'No TV guide has been set up for these channels yet.' + (isAdmin() ? ' Add a guide (XMLTV) link in Admin → Live TV.' : '')
+          : 'The TV guide is available in the Aurora app for Android and Android TV.');
+        $$('.guide-row', rows).forEach((el) => fillLane(el));
+      }).catch((e) => {
+        if (!isCurrent()) return;
+        guidePending = false;
+        setStatus(`Couldn't load the full TV guide: ${esc(e.message)} <button class="btn btn-gray btn-small" data-guide-retry>Try again</button>`);
+        $('[data-guide-retry]', status)?.addEventListener('click', () => route());
+        $$('.guide-row', rows).forEach((el) => fillLane(el));
+      });
+    }
+    await openCat(current);
+    tick();
+    const lastSeen = readLast();
+    if (lastSeen?.pending && lastSeen.group === current && focusChannel(lastSeen.id)) endPending();
+    else if (!body.contains(document.activeElement)) autoFocus($('.guide-prog.now, .guide-empty', rows) || $('.guide-ch', rows) || groupBtn);
+  }
+
+  function showIptvProgram(p, ch, play) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    const day = new Date(p.start).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+    content.innerHTML = `
+      <div class="m-body program-body">
+        <h2>${esc(p.title)}</h2>
+        <div class="meta"><span>${esc([ch.num, ch.name].filter(Boolean).join('  '))}</span><span>${esc(day)}</span>
+          <span>${esc(clock(new Date(p.start)))} – ${esc(clock(new Date(p.end)))}</span></div>
+        ${p.desc ? `<p class="overview">${esc(p.desc)}</p>` : ''}
+        <div class="m-actions"><button class="btn btn-white" data-act="watch">${ICONS.play} Watch ${esc(ch.name)}</button></div>
+      </div>`;
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    $('[data-act="watch"]', content).addEventListener('click', () => { closeModal(); play(); });
+    autoFocus($('[data-act="watch"]', content));
+  }
+
+  function renderIptvLive(page, tab, isCurrent) {
+    store.set('ef.iptv.used', String(Date.now()));
+    const tabs = [['channels', 'Channels'], ['guide', 'Guide'], ['sports', 'Sports']];
+    if (!tabs.some(([id]) => id === tab)) tab = 'channels';
+    page.innerHTML = `
+      <div class="page-pad live-page iptv-page${tab === 'guide' ? ' guide-tab' : ''}">
+        <div class="page-head">
+          <h1>Live TV</h1>
+          ${tabs.length > 1 ? `<div class="tab-bar">${tabs.map(([id, label]) => `<a href="#/livetv?tab=${id}" class="tab${id === tab ? ' active' : ''}">${label}</a>`).join('')}</div>` : ''}
+          ${tab === 'channels' ? '<div class="iptv-search"><input type="search" placeholder="Search channels" autocomplete="off"></div>' : ''}
+        </div>
+        <div data-live-body><div class="spinner"></div></div>
+      </div>`;
+    const body = $('[data-live-body]', page);
+    if (tab === 'guide') { renderIptvGuide(body, isCurrent); return; }
+    if (tab === 'sports') { renderIptvSports(body, isCurrent); return; }
+    renderIptvChannels(page, body, isCurrent);
+    // Logos and what's on fill in when the guide arrives.
+    loadIptvGuide().then(() => { if (isCurrent()) repaintTiles(); }).catch(() => {});
+  }
+
+  // ----- Sports (Live TV → Sports) -----
+  // What's on now and what starts soon. Two sources are merged:
+  //  - the channel guide (version 1): games found in the listings of sport-named categories, with the channels carrying them;
+  //  - the scores feed in Aurora Guard (version 2): live scores and the day's schedule for the big leagues, matched to channels by team
+  //    name (after the admin's name aliases) and, failing that, by the TV network named in the feed.
+  // Customers can pick favourite teams and leagues (first-time setup or Settings), hide scores (spoiler-free), and ask for a
+  // reminder before a game (a notification from the Android app; a toast while Aurora is open).
+  const SPORT_CATS = /sport|nfl|nba|mlb|nhl|nascar|soccer|football|futbol|ufc|mma|fight|wwe|boxing|golf|tennis|racing|f1\b|formula|espn|dazn|bein|premier|liga|olympic|ppv|rugby|cricket|hockey|baseball|basketball/i;
+  const SPORT_LEAGUES = [
+    ['NFL', /\bnfl\b|redzone|sunday night football|monday night football|thursday night football/i],
+    ['NBA', /\bnba\b|\bwnba\b/i],
+    ['MLB', /\bmlb\b|baseball/i],
+    ['NHL', /\bnhl\b|hockey/i],
+    ['Soccer', /soccer|premier league|la ?liga|serie a|bundesliga|ligue 1|\bmls\b|champions league|europa league|fifa|uefa|copa |futbol|liga mx/i],
+    ['College', /ncaa|college|\bcfb\b|march madness|big ten|big 12|\bsec\b|\bacc\b/i],
+    ['UFC & Fights', /ufc|\bmma\b|boxing|wwe|bellator|fight night|\bpfl\b/i],
+    ['Racing', /formula|\bf1\b|nascar|indycar|grand prix|motogp|racing/i],
+    ['Golf', /golf|\bpga\b|masters|lpga/i],
+    ['Tennis', /tennis|\batp\b|\bwta\b|wimbledon|roland garros|us open/i],
+  ];
+  const SPORT_GROUPS = ['NFL', 'NBA', 'MLB', 'NHL', 'Soccer', 'College', 'UFC & Fights', 'Racing'];
+  // Games with only team names in the title ("Warriors vs Lakers"): the common nicknames of the big US leagues.
+  const SPORT_TEAMS = [
+    ['NFL', /\b(eagles|commanders|cowboys|giants|jets|patriots|bills|dolphins|ravens|steelers|browns|bengals|texans|colts|jaguars|titans|chiefs|raiders|chargers|broncos|packers|bears|lions|vikings|falcons|panthers|saints|buccaneers|cardinals|rams|49ers|seahawks)\b/i],
+    ['NBA', /\b(lakers|warriors|celtics|knicks|nets|bulls|heat|bucks|suns|mavericks|spurs|rockets|clippers|nuggets|thunder|76ers|sixers|raptors|hawks|hornets|cavaliers|cavs|pistons|pacers|magic|wizards|jazz|kings|grizzlies|pelicans|timberwolves|trail blazers|blazers)\b/i],
+    ['MLB', /\b(yankees|red sox|dodgers|cubs|mets|braves|astros|phillies|padres|blue jays|orioles|rays|guardians|tigers|royals|twins|white sox|angels|athletics|mariners|rangers|diamondbacks|rockies|brewers|reds|pirates|marlins|nationals)\b/i],
+    ['NHL', /\b(bruins|canadiens|maple leafs|penguins|capitals|flyers|blackhawks|red wings|lightning|oilers|flames|canucks|avalanche|golden knights|kraken|predators|islanders|devils|sabres|senators|hurricanes|blue jackets|wild|blues|ducks|sharks|coyotes)\b/i],
+  ];
+  const sportLeague = (title, cat) => (SPORT_LEAGUES.find(([, re]) => re.test(title)) || SPORT_LEAGUES.find(([, re]) => re.test(cat))
+    || SPORT_TEAMS.find(([, re]) => re.test(title)) || ['Other'])[0];
+  const SPORT_NOT_GAME = /\b(replay|rerun|re-air|classic|highlights?|recap|encore|best of|top \d+|talk|analysis|preview|postgame|pre-?game|countdown|sportscenter|first take|pardon the|around the horn|show)\b/i;
+  const SPORT_GAME = /(\bvs\.?\s|\bv\.?\s|\bat\s|@|\bversus\b)|\b(live|game|match|fight|grand prix|final|playoffs?|semi-?final|quarter-?final|round of|week \d+|race|open|cup|bowl|series|tournament|derby)\b/i;
+  const looksLikeGame = (title) => !!title && (/\blive\b/i.test(title) || (!SPORT_NOT_GAME.test(title) && SPORT_GAME.test(title)));
+  const sportTeams = (title) => {
+    const t = title.replace(/^[^:]{2,28}:\s*/, '').replace(/\s*\(.*?\)\s*$/, ''), m = t.split(/\s+(?:vs\.?|v\.?|at|@|versus)\s+/i);
+    return m.length === 2 && m[0].length < 40 && m[1].length < 40 ? m : null;
+  };
+  const SPORT_HOURS = { NFL: 3.5, NBA: 2.6, MLB: 3.2, NHL: 2.7, Soccer: 2, College: 3.4, 'UFC & Fights': 5, Racing: 3 };
+  const clockTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const untilText = (ms) => { const m = Math.max(0, Math.round((ms - Date.now()) / 60000)); return m < 1 ? 'starting now' : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + ' min' : ''}`; };
+  // Words are compared without accents, punctuation or case; the admin's aliases ("Man City" = "Manchester City") are applied first.
+  const sportNorm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const sportAlias = (txt, aliases) => {
+    let t = ' ' + sportNorm(txt) + ' ';
+    for (const a of aliases) { const f = sportNorm(a.from), to = sportNorm(a.to); if (f && f !== to) t = t.split(' ' + f + ' ').join(' ' + to + ' '); }
+    return t.trim();
+  };
+  const sports = { loading: null, at: 0 };
+
+  // ---- Customer's sports settings: spoiler-free and reminders (kept on the account as "aurora-sports") ----
+  const SPORTS_PREFS = 'aurora-sports', REMIND_LEAD = 10 * 60000;
+  let sportsPrefs = { spoilerFree: false, reminders: [] };
+  const sportsPrefsKey = () => 'ef.sportsprefs.' + state.userId;
+  function loadSportsPrefsLocal() { try { sportsPrefs = { spoilerFree: false, reminders: [], ...(JSON.parse(store.get(sportsPrefsKey()) || 'null') || {}) }; } catch { sportsPrefs = { spoilerFree: false, reminders: [] }; } }
+  function saveSportsPrefs() {
+    store.set(sportsPrefsKey(), JSON.stringify(sportsPrefs));
+    writeAuroraPref(SPORTS_PREFS, state.userId, sportsPrefs).catch((e) => appLog.add('warn', 'Sports settings not saved to the server: ' + e.message));
+  }
+  async function refreshSportsPrefs() {
+    try {
+      const p = await readAuroraPref(SPORTS_PREFS);
+      if (p) { sportsPrefs = { spoilerFree: false, reminders: [], ...p }; store.set(sportsPrefsKey(), JSON.stringify(sportsPrefs)); }
+    } catch { /* keep this device's copy */ }
+    syncReminderAlarms();
+    startSportsAlerts();
+  }
+  // Hands the Android app every reminder still to come (it schedules a notification for each; asking again is harmless).
+  function syncReminderAlarms() {
+    const now = Date.now();
+    sportsPrefs.reminders = (sportsPrefs.reminders || []).filter((r) => r.start > now - 3600000);
+    if (!nativeApp?.scheduleReminder) return;
+    for (const r of sportsPrefs.reminders) if (r.start - REMIND_LEAD > now) { try { nativeApp.scheduleReminder(r.id, r.title, reminderText(r), r.start - REMIND_LEAD); } catch { /* not the Android app */ } }
+  }
+  const reminderText = (r) => `${clockTime(r.start)}${r.chan ? ' · ' + r.chan : ''}. Tap to open Aurora.`;
+  const hasReminder = (id) => (sportsPrefs.reminders || []).some((r) => r.id === id);
+  function toggleReminder(card) {
+    const id = card.key;
+    if (hasReminder(id)) {
+      sportsPrefs.reminders = sportsPrefs.reminders.filter((r) => r.id !== id);
+      try { nativeApp?.cancelReminder?.(id); } catch { /* ignore */ }
+      saveSportsPrefs();
+      toast('Reminder removed', 1800);
+      return false;
+    }
+    const r = { id, title: card.title, start: card.start, chan: card.chans[0]?.name || '', league: card.league };
+    sportsPrefs.reminders = [...(sportsPrefs.reminders || []), r].slice(-40);
+    saveSportsPrefs();
+    if (nativeApp?.scheduleReminder) {
+      let allowed = true;
+      try { allowed = nativeApp.canNotify ? nativeApp.canNotify() : true; } catch { /* assume yes */ }
+      if (!allowed) { try { nativeApp.requestNotifyPermission?.(); } catch { /* ignore */ } toast('Allow notifications so Aurora can remind you', 4000); }
+      else toast(`We'll remind you 10 minutes before ${card.title}`, 3000);
+      syncReminderAlarms();
+    } else toast("Reminder saved. You'll see it here while Aurora is open. Notifications need the Aurora app.", 4500);
+    return true;
+  }
+  // Score and final-score alerts for games the customer follows (set in the game sheet). They show while Aurora is open.
+  let sportsAlertTimer = null;
+  const sportsSnap = new Map();
+  const followedNow = () => Object.entries(sportsPrefs.follow || {}).filter(([, f]) => (f.score || f.final) && f.start > Date.now() - 8 * 3600000);
+  function startSportsAlerts() {
+    if (!followedNow().length) { if (sportsAlertTimer) { clearInterval(sportsAlertTimer); sportsAlertTimer = null; } return; }
+    if (sportsAlertTimer) return;
+    const check = async () => {
+      if (!state.userId || !guardEnabled) return;
+      if (!followedNow().length) { startSportsAlerts(); return; }
+      if (document.hidden || isPlayerOpen()) return;
+      const feed = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null);
+      if (!feed?.enabled) return;
+      for (const g of feed.games || []) {
+        const f = (sportsPrefs.follow || {})[g.id]; if (!f || !g.home || !g.away) continue;
+        const cur = { a: Number(g.away.score) || 0, h: Number(g.home.score) || 0, state: g.state }, prev = sportsSnap.get(g.id);
+        sportsSnap.set(g.id, cur);
+        if (!prev) continue;
+        const an = g.away.abbr || g.away.short || g.away.name, hn = g.home.abbr || g.home.short || g.home.name;
+        if (f.final && prev.state !== 'post' && cur.state === 'post') toast(sportsPrefs.spoilerFree ? `${an} at ${hn} has finished` : `Final: ${an} ${cur.a}, ${hn} ${cur.h}`, 8000);
+        else if (f.score && !sportsPrefs.spoilerFree && cur.state === 'in' && (cur.a !== prev.a || cur.h !== prev.h)) toast(`${cur.a !== prev.a ? an : hn} scores. ${an} ${cur.a}, ${hn} ${cur.h}`, 7000);
+      }
+    };
+    sportsAlertTimer = setInterval(check, 60000);
+    check();
+  }
+  // While Aurora is open: a toast when a reminded game is about to start (the Android notification covers the closed app).
+  const firedReminders = new Set();
+  setInterval(() => {
+    if (document.hidden || !state.userId) return;
+    const now = Date.now();
+    for (const r of sportsPrefs.reminders || []) {
+      if (firedReminders.has(r.id) || now < r.start - REMIND_LEAD || now > r.start + 20 * 60000) continue;
+      firedReminders.add(r.id);
+      toast(`${r.title} starts ${untilText(r.start)}${r.chan ? ' on ' + r.chan : ''}. Live TV → Sports.`, 8000);
+    }
+  }, 30000);
+  // The Android app opens Aurora from a reminder notification at a given page.
+  window.auroraOpenHash = (h) => { if (typeof h === 'string' && /^#\/[\w?=&/%-]*$/.test(h) && state.userId) location.hash = h; };
+  window.auroraTakeLaunch = () => takeLaunchHash();
+  function takeLaunchHash() { try { const h = nativeApp?.takeLaunchHash?.(); if (h) window.auroraOpenHash(h); } catch { /* not the Android app */ } }
+
+  // ---- Finding the games ----
+  // Sports channels, their guide listings, the score feed and the aliases, all loaded once and kept for ten minutes.
+  async function sportsLoad() {
+    const src = await iptvSource();
+    const cats = src.categories.filter((c) => SPORT_CATS.test(c.name)).slice(0, 24);
+    const seen = new Set(), channels = [];
+    const queue = cats.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const c = queue.shift();
+        let list = [];
+        try { list = await iptvChannels(c.id); } catch { continue; }
+        for (const ch of list) { const k = ch.id || ch.name; if (!seen.has(k) && channels.length < 800) { seen.add(k); channels.push({ ch, cat: c.name }); } }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    const [guide, feed, al] = await Promise.all([
+      loadIptvGuide().catch(() => null),
+      guardEnabled ? guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null) : null,
+      guardEnabled ? guard('/sports/aliases', { params: { userId: state.userId }, quick: true }).catch(() => null) : null,
+    ]);
+    const events = []; // {ch, cat, title, start, end}
+    if (guide) {
+      guidePrefetch(channels.map((x) => x.ch), guide);
+      const to = Date.now() + 14 * 3600000;
+      for (const { ch, cat } of channels) {
+        for (const pr of guideFor(ch, guide)?.progs || []) {
+          if (pr.end > Date.now() - 3 * 3600000 && pr.start < to) events.push({ ch, cat, title: pr.title || '', start: pr.start, end: pr.end });
+        }
+      }
+    } else if (iptv.config?.type === 'xtream') {
+      // No full guide (a browser, or the provider has none): the provider's short listing says what's on now, for the first few channels.
+      const queue2 = channels.slice(0, 150);
+      const w2 = async () => { while (queue2.length) { const { ch, cat } = queue2.shift(); const n = await iptvNow(ch).catch(() => null); if (n?.title) events.push({ ch, cat, title: n.title, start: n.start || Date.now() - 600000, end: n.end || Date.now() + 1800000 }); } };
+      await Promise.all([0, 1, 2, 3, 4, 5].map(w2));
+    }
+    return { channels: channels.map((x) => x.ch), events, feed: feed && feed.enabled ? feed : null, aliases: al?.aliases || [], cats: cats.length, guide: !!guide };
+  }
+
+  // Turns the guide events and the feed's games into cards (each a game, with its channels).
+  function sportsCards(S) {
+    const aliases = S.aliases, now = Date.now(), cards = [];
+    const hd = (ch) => (/\b(hd|fhd|4k|uhd)\b/i.test(ch.name) ? 0 : 1);
+    const used = new Set();
+    const evNorm = S.events.map((e) => ' ' + sportAlias(e.title, aliases) + ' ');
+    const tokens = (t) => {
+      const out = new Set();
+      for (const v of [t.name, t.short]) { const n = sportAlias(v, aliases); if (n.length >= 3) out.add(n); }
+      const last = sportAlias(t.name, aliases).split(' ').pop();
+      if (last && last.length >= 4) out.add(last);
+      return [...out];
+    };
+    const has = (txt, toks) => toks.some((k) => txt.includes(' ' + k + ' '));
+    // Best channel first: the one the customer picked before, a favourite, the broadcaster the league names, then HD over SD.
+    let picks = {}; try { picks = JSON.parse(store.get('ef.sports.picks') || '{}') || {}; } catch { /* ignore */ }
+    const netsOf = (g) => (g?.broadcasts || []).map((n) => sportNorm(sportAlias(n, aliases)).replace(/ /g, '')).filter((n) => n.length >= 3);
+    const rank = (ch, group, g) => (picks[group] === (ch.id || '') + '|' + ch.name ? -100 : 0) + (isIptvFav(ch) ? -20 : 0) + (netsOf(g).some((n) => sportNorm(ch.name).replace(/ /g, '').includes(n)) ? -30 : 0) + hd(ch) * 10;
+    const chans = (list, group, g) => { const seen = new Set(); return list.filter((c) => { const k = (c.id || '') + '|' + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).sort((a, b) => rank(a, group, g) - rank(b, group, g)); };
+    // 1) the feed's games
+    for (const g of S.feed?.games || []) {
+      if (g.state === 'post' && g.start < now - 6 * 3600000) continue;
+      let found = [];
+      if (g.home && g.away) {
+        const ht = tokens(g.home), at = tokens(g.away);
+        S.events.forEach((e, i) => { if (Math.abs(e.start - g.start) < 3 * 3600000 && has(evNorm[i], ht) && has(evNorm[i], at)) { found.push(e.ch); used.add(i); } });
+      } else {
+        // An event with no two sides (a fight card, a race): the guide title and the event's name contain one another.
+        const nm = sportAlias(g.name, aliases);
+        if (nm.length >= 6) S.events.forEach((e, i) => { const et = evNorm[i].trim(); if (Math.abs(e.start - g.start) < 4 * 3600000 && (et.includes(nm) || nm.includes(et))) { found.push(e.ch); used.add(i); } });
+      }
+      let likely = false;
+      if (!found.length && g.broadcasts?.length && g.state !== 'post') {
+        for (const net of g.broadcasts) {
+          const n = sportNorm(sportAlias(net, aliases)).replace(/ /g, '');
+          if (n.length < 3) continue;
+          for (const ch of S.channels) if (sportNorm(ch.name).replace(/ /g, '').includes(n) && found.length < 6) found.push(ch);
+          if (found.length) { likely = true; break; }
+        }
+      }
+      const hours = SPORT_HOURS[g.group] || 3;
+      cards.push({ key: g.id, feed: g, kind: 'feed', league: g.group, leagueName: g.leagueName, title: g.home && g.away ? `${g.away.short || g.away.name} at ${g.home.short || g.home.name}` : g.name,
+        start: g.start, end: g.state === 'in' ? Math.max(now + 600000, g.start + hours * 3600000) : g.start + hours * 3600000,
+        state: g.state, chans: chans(found, g.group, g), likely, teams: [g.home, g.away].filter(Boolean).map((t) => ({ lg: g.league, id: t.id, name: t.name })) });
+    }
+    // 2) guide events the feed didn't explain (other leagues, events, or no feed): grouped across channels
+    const groups = new Map();
+    S.events.forEach((e, i) => {
+      if (used.has(i) || !looksLikeGame(e.title)) return;
+      const key = e.title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() + '|' + Math.round(e.start / 900000);
+      const g = groups.get(key) || { key: 'g:' + key, kind: 'guide', title: e.title, league: sportLeague(e.title, e.cat), leagueName: sportLeague(e.title, e.cat), start: e.start, end: e.end, state: e.start <= now ? (e.end > now ? 'in' : 'post') : 'pre', chans: [], teams: [] };
+      g.chans.push(e.ch);
+      groups.set(key, g);
+    });
+    for (const g of groups.values()) { if (g.end <= now) continue; g.chans = chans(g.chans, g.league, null); cards.push(g); }
+    return cards.sort((a, b) => a.start - b.start);
+  }
+
+  // ----- Sports: sports, icons and team logos -----
+  const SPORT_ORDER = ['basketball', 'football', 'baseball', 'hockey', 'soccer', 'mma', 'racing'];
+  const SPORT_NAME = { basketball: 'BASKETBALL', football: 'FOOTBALL', baseball: 'BASEBALL', hockey: 'HOCKEY', soccer: 'SOCCER', mma: 'FIGHTING', racing: 'RACING', other: 'SPORT' };
+  const SPORT_ICON = { basketball: '\u{1F3C0}', football: '\u{1F3C8}', baseball: '⚾', hockey: '\u{1F3D2}', soccer: '⚽', mma: '\u{1F94A}', racing: '\u{1F3CE}️', other: '\u{1F3C5}' };
+  // Games found only in the channel guide have a group name instead of a sport.
+  const SPORT_OF_GROUP = { NFL: 'football', NBA: 'basketball', MLB: 'baseball', NHL: 'hockey', Soccer: 'soccer', UFC: 'mma', 'UFC & Fights': 'mma', Racing: 'racing' };
+  // A team's picture (from ESPN, through the guard), or its coloured badge with the letters when there is none or it does not load.
+  function sportsLogo(t, cls = '') {
+    const abbr = (t.abbr || t.short || t.name || '?').slice(0, 3), col = /^#[0-9a-f]{6}$/i.test(t.color || '') ? t.color : '#2b3566';
+    if (!/^https:\/\/[\w.-]*espncdn\.com\//i.test(t.logo || '')) return `<span class="sp-crest ${cls}" style="background:${col}">${esc(abbr)}</span>`;
+    return `<span class="sp-logo-wrap ${cls}"><img class="sp-logo" src="${esc(t.logo)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" data-fb="${esc(abbr)}" data-col="${col}"></span>`;
+  }
+  let sportsLogoWatch = false;
+  function watchSportsLogos() {
+    if (sportsLogoWatch) return;
+    sportsLogoWatch = true;
+    // A picture that does not load becomes the badge; a league picture that does not load just goes.
+    document.addEventListener('error', (e) => {
+      const el = e.target;
+      if (!el || !el.classList) return;
+      if (el.classList.contains('sp-logo')) { const w = el.parentElement; if (w && w.closest('.sp2-ghost')) { w.closest('.sp2-ghost').remove(); return; } if (w) { w.className = w.className.replace('sp-logo-wrap', 'sp-crest'); w.style.background = el.dataset.col || '#2b3566'; w.textContent = el.dataset.fb || ''; } }
+      else if (el.classList.contains('sp2-lgimg')) el.remove();
+    }, true);
+  }
+  async function renderIptvSports(body, isCurrent) {
+    watchSportsLogos();
+    body.innerHTML = '<div class="spinner"></div>';
+    let S;
+    try {
+      if (!sports.loading || Date.now() - sports.at > 5 * 60000) { sports.at = Date.now(); sports.loading = sportsLoad(); sports.loading.catch(() => { sports.loading = null; }); }
+      S = await sports.loading;
+    } catch (e) { if (isCurrent()) liveError(body, `Couldn't load the sports schedule: ${esc(e.message)}`, () => { sports.loading = null; route(); }); return; }
+    if (!isCurrent()) return;
+    if (!S.cats && !(S.feed?.games || []).length) { body.innerHTML = '<p class="empty-msg">No sports channels found. Aurora looks for categories named like Sports, NFL, NBA, Soccer or UFC.</p>'; return; }
+    const myTeams = profile?.teams || [], myLeagues = profile?.leagues || [];
+    const isMine = (c) => c.teams.some((t) => myTeams.some((m) => m.lg === t.lg && String(m.id) === String(t.id)));
+    let league = store.get('ef.sports.league') || 'All';
+    let sport = store.get('ef.sports.sport') || 'all';
+    let pickedKey = null, heroCard = null, heroRender = null, weekStarts = null; // the game shown big; what draws it; the week's start times
+    let cards = sportsCards(S);
+    let dayOff = 0;                      // 0 = today (guide + feed), 1..6 = a later day (feed only)
+    const dayCache = new Map();          // 'YYYYMMDD' -> games from Aurora Guard
+    let sheet = null;                    // the open game sheet: { key, tab, sel, data, std, loading }
+    const dayAt = (off) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + off); return d; };
+    const dayKey = (off) => { const d = dayAt(off); return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`; };
+    const heroBg = (a, h) => `--h1:${/^#[0-9a-f]{6}$/i.test(a) ? a : '#3a4a8a'};--h2:${/^#[0-9a-f]{6}$/i.test(h) ? h : '#1d2a66'}`;
+    const draw = () => {
+      if (!body.isConnected || !isCurrent()) return false;
+      const now = Date.now(), spoil = !!sportsPrefs.spoilerFree;
+      const dayGames = dayOff ? dayCache.get(dayKey(dayOff)) : null;
+      cards = dayOff ? sportsCards({ ...S, events: [], feed: { games: dayGames || [] } }) : sportsCards(S);
+      const target = dayAt(dayOff).toDateString();
+      const visible = dayOff ? cards.filter((c) => new Date(c.start).toDateString() === target) : cards.filter((c) => c.state === 'post' ? c.start > now - 5 * 3600000 : c.end > now);
+      const sportOf = (c) => (c.feed && c.feed.sport) || SPORT_OF_GROUP[c.league] || 'other';
+      const lgNameOf = (c) => (c.feed ? c.feed.leagueName : c.league);
+      const isFavCh = (c) => c.chans.some((ch) => isIptvFav(ch));
+      const spCount = new Map();
+      for (const c of visible) spCount.set(sportOf(c), (spCount.get(sportOf(c)) || 0) + 1);
+      const sportKeys = [...SPORT_ORDER.filter((k) => spCount.has(k)), ...[...spCount.keys()].filter((k) => !SPORT_ORDER.includes(k))];
+      if (sport !== 'all' && !spCount.has(sport)) sport = 'all';
+      const inSport = visible.filter((c) => sport === 'all' || sportOf(c) === sport);
+      const lgCount = new Map(), lgLogoOf = new Map();
+      for (const c of inSport) { const n = lgNameOf(c); lgCount.set(n, (lgCount.get(n) || 0) + 1); if (c.feed && c.feed.lgLogo && !lgLogoOf.has(n)) lgLogoOf.set(n, c.feed.lgLogo); }
+      const mineN = inSport.filter(isMine).length, favN = inSport.filter(isFavCh).length;
+      let names = [...lgCount.keys()];
+      names = [...names.filter((n) => myLeagues.includes(n)), ...names.filter((n) => !myLeagues.includes(n))];
+      if (league !== 'All' && league !== '__mine' && league !== '__fav' && !lgCount.has(league)) league = 'All';
+      if (league === '__mine' && !mineN) league = 'All';
+      if (league === '__fav' && !favN) league = 'All';
+      const shown = inSport.filter((c) => league === 'All' || (league === '__mine' ? isMine(c) : league === '__fav' ? isFavCh(c) : lgNameOf(c) === league));
+      // One row of games: live first, then the ones still to come (today: the next 14 hours), then the finished ones.
+      const ord = (c) => (c.state === 'in' ? 0 : c.state === 'pre' ? 1 : 2);
+      const fixtures = shown.filter((c) => dayOff || c.state !== 'pre' || c.start < now + 14 * 3600000).sort((a, b) => ord(a) - ord(b) || a.start - b.start);
+      // The big game at the top: the one you moved to, else a live one of your teams, any live one, then your next, then the next to start.
+      const scored = (c) => !!(c.feed && c.feed.home && c.feed.away);
+      const auto = fixtures.find((c) => c.state === 'in' && scored(c) && isMine(c)) || fixtures.find((c) => c.state === 'in' && scored(c)) || fixtures.find((c) => c.state === 'pre' && scored(c) && isMine(c)) || fixtures.find((c) => c.state === 'pre' && scored(c)) || fixtures.find(scored) || fixtures[0] || null;
+      heroCard = (pickedKey && fixtures.find((c) => c.key === pickedKey)) || auto;
+      const spoilTxt = (c) => (c.state !== 'pre' && spoil);
+      const heroInner = (c) => {
+        if (!c) return '';
+        const g = c.feed, ci = cards.indexOf(c), main = c.chans[0], two = !!(g && g.home && g.away);
+        const pill = c.state === 'in' ? '<span class="sp2-pill live">● LIVE NOW</span>' : c.state === 'post' ? '<span class="sp2-pill">FINAL</span>' : '<span class="sp2-pill soon">UP NEXT</span>';
+        const lgl = lgLogoOf.get(lgNameOf(c)) || (g && g.lgLogo) || '';
+        const title = two ? `${g.away.name} vs ${g.home.name}` : (g ? g.name : c.title);
+        const sub = [new Date(c.start).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }), clockTime(c.start), g && g.venue].filter(Boolean).join(' · ');
+        const mid = !two ? '' : c.state === 'pre' ? `<strong>${esc(clockTime(c.start))}</strong>` : spoilTxt(c) ? '<strong class="dim">Hidden</strong>' : `<strong>${esc(g.away.score || '0')} – ${esc(g.home.score || '0')}</strong>`;
+        const scoreCard = two ? `<div class="sp2-score"><div class="sp2-sr">${sportsLogo(g.away, 'big')}${mid}${sportsLogo(g.home, 'big')}</div><div class="sp2-sn"><span>${esc(g.away.name)}</span><span>${esc(g.home.name)}</span></div>${c.state === 'in' && !spoilTxt(c) && g.detail ? `<div class="sp2-sd">${esc(g.detail)}</div>` : ''}</div>` : '';
+        const ghost = two && g.home.logo ? `<span class="sp2-ghost" aria-hidden="true">${sportsLogo(g.home, 'huge')}</span>` : '';
+        const watchBtns = main ? `<button class="sp2-watch" data-watch="${ci}">▶ Watch on ${esc(main.name)}</button>${c.chans.length > 1 ? `<button class="sp2-btn" data-sheet="${ci}" data-tab="channels">${c.chans.length - 1} more</button>` : ''}` : '<span class="sp-none">Not on your channels</span>';
+        const bell = c.state === 'pre' ? `<button class="sp2-btn${hasReminder(c.key) ? ' on' : ''}" data-bell="${ci}" aria-pressed="${hasReminder(c.key)}">${hasReminder(c.key) ? '\u{1F514} Reminding' : '\u{1F514} Remind me'}</button>` : '';
+        return `${ghost}<div class="sp2-hl"><div class="sp2-crumb">${esc(SPORT_NAME[sportOf(c)] || 'SPORT')} · ${esc(lgNameOf(c))}</div>
+          <div class="sp2-pills">${pill}<span class="sp2-pill lg">${lgl ? `<img class="sp2-lgimg" src="${esc(lgl)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}${esc(lgNameOf(c))}</span>${isMine(c) ? '<span class="sp2-pill star">★ your team</span>' : ''}</div>
+          <h2 class="sp2-title">${esc(title)}</h2><div class="sp2-sub">${esc(sub)}</div>
+          <div class="sp2-hw">${watchBtns}${bell}</div></div>${scoreCard}
+          <button class="sp2-mc" data-sheet="${ci}" data-tab="stats">▾ MATCH CENTER<small>Stats · Plays · Standings</small></button>`;
+      };
+      heroRender = heroInner;
+      const fxCard = (c) => {
+        const ci = cards.indexOf(c), g = c.feed, two = !!(g && g.home && g.away), main = c.chans[0];
+        const st = c.state === 'in' ? `<span class="sp2-st live">${spoil || !g || !g.detail ? 'LIVE' : 'LIVE · ' + esc(g.detail)}</span>` : c.state === 'post' ? '<span class="sp2-st">FINAL</span>' : `<span class="sp2-st">${esc(clockTime(c.start))}</span>`;
+        const mid = two ? `${sportsLogo(g.away)}<strong>${c.state === 'pre' ? 'vs' : spoilTxt(c) ? '–' : `${esc(g.away.score || '0')} – ${esc(g.home.score || '0')}`}</strong>${sportsLogo(g.home)}` : `<div class="sp2-ft">${esc(g ? g.name : c.title)}</div>`;
+        const nm = two ? `${esc(g.away.short || g.away.name)} <i>vs</i> ${esc(g.home.short || g.home.name)}` : '';
+        return `<div class="sp2-fx ${c.state}${heroCard === c ? ' sel' : ''}" role="button" tabindex="0" data-game="${ci}">
+          <div class="sp2-ftop">${st}${isMine(c) ? '<b class="sp-star">★</b>' : ''}${c.state === 'pre' && hasReminder(c.key) ? '<span class="sp2-bell">\u{1F514}</span>' : ''}</div>
+          <div class="sp2-fmid">${mid}</div><div class="sp2-fnm">${nm}</div>
+          <div class="sp2-fch">${main ? `▶ ${main.num ? esc(main.num) + ' ' : ''}${esc(main.name)}` : '<i>Not on your channels</i>'}</div></div>`;
+      };
+      const lgBtn = (id, label, logo) => `<button class="sp2-lg${league === id ? ' on' : ''}" data-league="${esc(id)}">${logo ? `<img class="sp2-lgimg" src="${esc(logo)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ''}${esc(label)}</button>`;
+      const teamRow = (m) => {
+        const mine = visible.filter((c) => c.teams.some((t) => t.lg === m.lg && String(t.id) === String(m.id)));
+        const g = mine.find((c) => c.state === 'in') || mine.find((c) => c.state === 'pre');
+        const txt = !g ? 'No game soon' : g.state === 'in' ? (spoil || !g.feed ? 'Playing now' : `Playing now · ${g.feed.away?.abbr || ''} ${g.feed.away?.score || 0}, ${g.feed.home?.abbr || ''} ${g.feed.home?.score || 0}`) : `${new Date(g.start).toLocaleDateString([], { weekday: 'short' })} ${clockTime(g.start)}`;
+        return `<span class="sp-tm"><span class="sp-crest" style="background:#2b3566">${esc((m.abbr || m.name).slice(0, 3))}</span>${esc(m.short || m.name)} · ${esc(txt)}</span>`;
+      };
+      const anyLive = cards.some((c) => c.state === 'in');
+      // How many games each day has (from the guard's week schedule, once it has arrived), for the sport shown.
+      const countFor = (i) => {
+        if (!weekStarts) return null;
+        const a = dayAt(i); a.setHours(0, 0, 0, 0);
+        const from = a.getTime(), to = from + 86400000;
+        return weekStarts.filter((s) => s[0] >= from && s[0] < to && (sport === 'all' || s[1] === sport)).length;
+      };
+      const days = Array.from({ length: 7 }, (_, i) => {
+        const d = dayAt(i), n = countFor(i);
+        return `<button class="sp2-day${i === dayOff ? ' on' : ''}" data-day="${i}"><b>${i ? esc(d.toLocaleDateString([], { weekday: 'short' }).toUpperCase()) : 'TODAY'}${n != null ? ` <em>${n}</em>` : ''}${i === 0 && anyLive ? '<i class="sp2-dot"></i>' : ''}</b><span>${d.getDate()} ${esc(d.toLocaleDateString([], { month: 'short' }))}</span></button>`;
+      }).join('');
+      const loadingDay = dayOff && !dayGames;
+      const rail = sportKeys.length > 1 || sport !== 'all'
+        ? `<nav class="sp2-rail" aria-label="Sport">${['all', ...sportKeys].map((k) => `<button class="sp2-ri${sport === k ? ' on' : ''}" data-sport="${esc(k)}" title="${esc(k === 'all' ? 'All sports' : SPORT_NAME[k] || k)}" aria-label="${esc(k === 'all' ? 'All sports' : SPORT_NAME[k] || k)}" aria-pressed="${sport === k}">${k === 'all' ? '★' : SPORT_ICON[k] || '\u{1F3C5}'}</button>`).join('')}</nav>` : '';
+      body.innerHTML = `<div class="sp sp2${rail ? ' has-rail' : ''}">
+        ${rail}
+        <div class="sp2-main">
+          ${heroCard ? `<section class="sp2-hero" data-hero>${heroInner(heroCard)}</section>` : ''}
+          <div class="sp2-sec">LEAGUES</div>
+          <div class="sp2-lgs">${lgBtn('All', 'All')}${mineN ? lgBtn('__mine', `★ My teams · ${mineN}`) : ''}${favN ? lgBtn('__fav', `★ My channels · ${favN}`) : ''}${names.map((n) => lgBtn(n, `${n}${lgCount.get(n) > 1 ? ' · ' + lgCount.get(n) : ''}`, lgLogoOf.get(n))).join('')}</div>
+          ${S.feed ? `<div class="sp2-sec">SCHEDULE</div><div class="sp2-bar"><div class="sp2-days" role="group" aria-label="Day">${days}</div>
+            <button class="sp-spoil" role="switch" aria-checked="${spoil}" data-spoiler><span>Spoiler-free</span><i class="sp-sw${spoil ? ' on' : ''}"><b></b></i></button></div>` : ''}
+          ${league === 'All' && !dayOff && myTeams.length ? `<div class="sp-teams"><span class="sp-lab">Your teams</span>${myTeams.slice(0, 8).map(teamRow).join('')}</div>` : ''}
+          <div class="sp2-sec">FIXTURES${dayOff ? ` · ${esc(dayAt(dayOff).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }))}` : ''}</div>
+          ${loadingDay ? '<div class="spinner"></div>' : ''}
+          ${fixtures.length ? `<div class="sp2-fxs">${fixtures.map(fxCard).join('')}</div>` : ''}
+          ${!loadingDay && !fixtures.length ? `<p class="empty-msg">${dayOff ? 'No games found for this day.' : S.guide || S.feed || iptv.config?.type === 'xtream' ? 'No games found right now. Check back later, or look in the Guide.' : 'Aurora needs a TV guide to find games. Open the Guide tab, or ask your provider for a guide link.'}</p>` : ''}
+          <p class="muted sp-note">${S.feed ? 'Scores come from Aurora; channels are found in your TV guide, so names and times are only as good as the guide.' : S.guide ? 'Found in your channel guide, so names and times are only as good as the guide.' : "Showing what's on now. The full schedule needs the Aurora app and a TV guide."}</p>
+        </div>
+      </div>`;
+      const first = $('.sp2-fx.sel', body) || $('.sp2-fx', body);
+      if (nav.on && first && !body.contains(document.activeElement)) focusEl(first);
+      return true;
+    };
+    // ---- Watching: the chosen channel is remembered for that kind of game ----
+    const chKey = (ch) => (ch.id || '') + '|' + ch.name;
+    const rememberPick = (c, ch) => { try { const m = JSON.parse(store.get('ef.sports.picks') || '{}'); m[c.league] = chKey(ch); store.set('ef.sports.picks', JSON.stringify(m)); } catch { /* ignore */ } };
+    const watch = (ci, altIdx = 0) => {
+      const c = typeof ci === 'object' ? ci : cards[ci];
+      const ch = c?.chans[altIdx] || c?.chans[0];
+      if (!ch) { if (c) toast('This game is not on your channels. Try the Guide tab.', 3500); return; }
+      if (altIdx) rememberPick(c, ch);
+      const list = S.channels, at = list.findIndex((x) => x.id === ch.id && x.name === ch.name);
+      playIptv(list, at < 0 ? 0 : at, 'Sports');
+    };
+    // ---- The game sheet: Stats, Plays, Standings, Channels ----
+    const sheetCard = () => sheet && cards.find((c) => c.key === sheet.key);
+    const sheetOpen = () => !!sheet && sheet.tok === modalToken && !$('#modal').classList.contains('hidden');
+    const chanWhy = (ch, c) => {
+      const why = [], g = c.feed;
+      if (/\b(hd|fhd|4k|uhd)\b/i.test(ch.name)) why.push('HD');
+      const nets = (g?.broadcasts || []).map((n) => sportNorm(n).replace(/ /g, '')).filter((n) => n.length >= 3);
+      if (nets.some((n) => sportNorm(ch.name).replace(/ /g, '').includes(n))) why.push("matches the league's broadcaster");
+      if (isIptvFav(ch)) why.push('your favourite ★');
+      try { if (JSON.parse(store.get('ef.sports.picks') || '{}')[c.league] === chKey(ch)) why.push('you picked this before'); } catch { /* ignore */ }
+      return why.join(' · ');
+    };
+    const followOf = (c) => (sportsPrefs.follow || {})[c.key] || { score: false, final: false };
+    const setFollow = (c, patch) => {
+      sportsPrefs.follow = { ...(sportsPrefs.follow || {}) };
+      sportsPrefs.follow[c.key] = { ...followOf(c), ...patch, start: c.start };
+      for (const k of Object.keys(sportsPrefs.follow)) if ((sportsPrefs.follow[k].start || 0) < Date.now() - 86400000) delete sportsPrefs.follow[k]; // old games
+      saveSportsPrefs(); startSportsAlerts();
+    };
+    const statBar = (a, b) => { const x = parseFloat(String(a).replace(/[^0-9.-]/g, '')), y = parseFloat(String(b).replace(/[^0-9.-]/g, '')); if (!isFinite(x) || !isFinite(y) || x < 0 || y < 0 || x + y === 0) return ''; return `<div class="sp-sbar"><i style="width:${Math.round(100 * x / (x + y))}%"></i></div>`; };
+    const paintSheet = () => {
+      const c = sheetCard(); if (!c || !sheetOpen()) return;
+      const content = $('#modal-content'), g = c.feed, spoil = !!sportsPrefs.spoilerFree;
+      const selIdx = Math.max(0, sheet.pick ? c.chans.findIndex((x) => chKey(x) === sheet.pick) : 0);
+      const main = c.chans[selIdx];
+      const scoreMid = !g || !g.home ? `<div class="sp-hsc dim" style="font-size:1.1rem">${esc(c.title)}</div>`
+        : c.state === 'pre' ? `<div class="sp-hsc">${esc(clockTime(c.start))}</div><div class="sp-hclock">${esc(new Date(c.start).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }))}</div>`
+        : spoil ? '<div class="sp-hsc dim">Hidden</div><div class="sp-hclock">Spoiler-free is on</div>'
+        : `<div class="sp-hsc">${esc(g.away.score || '0')}<span>–</span>${esc(g.home.score || '0')}</div><div class="sp-hclock">${c.state === 'post' ? 'Final' : esc(g.detail || '')}</div>`;
+      const tm = (t) => `<div class="sp-htm">${crest2(t)}<b>${esc(t.short || t.name)}</b><small>${esc(t.record || '')}</small></div>`;
+      const crest2 = (t) => sportsLogo(t, 'big');
+      const d = sheet.data;
+      let pane = '';
+      if (sheet.tab === 'stats') {
+        if (c.state === 'pre') pane = `<p class="sp-empty">Stats appear once the game starts.</p>${d?.venue ? `<p class="sp-venue">📍 ${esc(d.venue)}${d.city ? ', ' + esc(d.city) : ''}</p>` : ''}`;
+        else if (spoil) pane = '<p class="sp-empty">Stats are hidden while Spoiler-free is on.</p>';
+        else if (sheet.loading && !d) pane = '<div class="spinner"></div>';
+        else if (!d || !d.stats.length) pane = '<p class="sp-empty">No stats for this game yet.</p>';
+        else pane = d.stats.map((s) => `<div class="sp-stat"><div><b>${esc(s.away)}</b><span>${esc(s.label)}</span><b>${esc(s.home)}</b></div>${statBar(s.away, s.home)}</div>`).join('') + (d.venue ? `<p class="sp-venue">📍 ${esc(d.venue)}${d.city ? ', ' + esc(d.city) : ''}</p>` : '');
+      } else if (sheet.tab === 'plays') {
+        if (c.state === 'pre') pane = '<p class="sp-empty">Plays show up once the game starts.</p>';
+        else if (spoil) pane = '<p class="sp-empty">Plays are hidden while Spoiler-free is on.</p>';
+        else if (sheet.loading && !d) pane = '<div class="spinner"></div>';
+        else if (!d || !d.plays.length) pane = '<p class="sp-empty">No play-by-play for this game.</p>';
+        else pane = d.plays.map((p) => `<div class="sp-play${p.scoring ? ' sc' : ''}"><time>${esc(p.time)}</time><span>${esc(p.text)}</span></div>`).join('');
+      } else if (sheet.tab === 'standings') {
+        const st = sheet.std;
+        if (!st) pane = '<div class="spinner"></div>';
+        else if (st.error || !st.groups.length) pane = `<p class="sp-empty">${esc(st.error || 'Standings are not available for this league.')}</p>`;
+        else {
+          const ids = new Set([g?.home?.id, g?.away?.id].filter(Boolean).map(String));
+          const grp = st.groups.find((x) => x.rows.some((r) => ids.has(String(r.id)))) || st.groups[0];
+          const cols = [['w', 'W'], ['l', 'L'], ['d', 'D'], ['pct', 'PCT'], ['pts', 'PTS']].filter(([k]) => grp.rows.some((r) => r[k]));
+          pane = `<table class="sp-std"><tr><th>${esc(grp.name)}</th>${cols.map(([, h]) => `<th>${h}</th>`).join('')}</tr>${grp.rows.map((r) => {
+            const me = ids.has(String(r.id)) || myTeams.some((m) => String(m.id) === String(r.id));
+            return `<tr class="${me ? 'me' : ''}"><td>${esc(r.name)}${myTeams.some((m) => String(m.id) === String(r.id)) ? ' ★' : ''}</td>${cols.map(([k]) => `<td>${esc(r[k])}</td>`).join('')}</tr>`; }).join('')}</table>`;
+        }
+      } else {
+        const fo = followOf(c);
+        pane = (c.chans.length ? `<div class="sp-pick">${c.chans.slice(0, 6).map((ch, i) => `<button class="sp-opt${i === selIdx ? ' sel' : ''}" data-opt="${i}"><i class="sp-net">${esc(((g?.broadcasts || []).find((n) => sportNorm(ch.name).replace(/ /g, '').includes(sportNorm(n).replace(/ /g, ''))) || ch.name).slice(0, 6))}</i><span class="sp-optt">${esc(ch.name)}<small>${ch.num ? 'Channel ' + esc(ch.num) : ''}${chanWhy(ch, c) ? (ch.num ? ' · ' : '') + esc(chanWhy(ch, c)) : ''}</small></span>${i === 0 ? '<span class="sp-best">Best</span>' : ''}</button>`).join('')}</div><p class="sp-hint">Aurora remembers the channel you pick for next time.</p>`
+            : '<p class="sp-empty">This game is not on your channels. Try the Guide tab, or ask your provider.</p>')
+          + (c.state !== 'post' && g ? `<h3 class="sp-sub">Alerts for this game</h3><div class="sp-alerts">
+              <button class="sp-al" role="switch" aria-checked="${!!fo.score}" data-follow="score"><span>Scoring plays${spoil ? ' <small>(hidden while Spoiler-free is on)</small>' : ''}</span><i class="sp-sw${fo.score ? ' on' : ''}"><b></b></i></button>
+              <button class="sp-al" role="switch" aria-checked="${!!fo.final}" data-follow="final"><span>Final score</span><i class="sp-sw${fo.final ? ' on' : ''}"><b></b></i></button></div>
+              <p class="sp-hint">You'll see these in Aurora while it is open. Reminders before the game start also work when Aurora is closed.</p>` : '');
+      }
+      const tabs = [['stats', 'Stats'], ['plays', 'Plays'], ['standings', 'Standings'], ['channels', 'Channels']];
+      content.innerHTML = `<div class="m-body sp-sheet">
+        <div class="upd-grab" aria-hidden="true"></div>
+        <div class="sp-sh-hero" style="${g?.home ? heroBg(g.away.color, g.home.color) : ''}">
+          <div class="sp-hl">${c.state === 'in' ? '<span class="sp-livepill">Live</span>' : `<span class="sp-when">${c.state === 'post' ? 'Final' : 'Up next'}</span>`}<span>${esc(g ? g.leagueName : c.league)}${sheet.data?.venue ? ' · ' + esc(sheet.data.venue) : ''}</span></div>
+          ${g?.home ? `<div class="sp-hb">${tm(g.away)}<div>${scoreMid}</div>${tm(g.home)}</div>` : `<div class="sp-hb one">${scoreMid}</div>`}
+          <div class="sp-hw"><button class="sp-hbtn" data-sheet-watch${main ? '' : ' disabled'}>${main ? `▶ Watch on ${esc(main.name)}` : 'Not on your channels'}</button>${c.state === 'pre' ? `<button class="sp-hmore${hasReminder(c.key) ? ' on' : ''}" data-sheet-bell aria-label="Remind me">\u{1F514}${hasReminder(c.key) ? ' On' : ''}</button>` : ''}</div>
+        </div>
+        ${g ? `<div class="sp-tabs" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${sheet.tab === k}" class="${sheet.tab === k ? 'on' : ''}" data-stab="${k}">${l}</button>`).join('')}</div>` : ''}
+        <div class="sp-pane">${g ? pane : (c.chans.length ? pane : '')}</div>
+      </div>`;
+    };
+    const loadSheetData = async (c) => {
+      const g = c.feed; if (!g || !guardEnabled) return;
+      const key = sheet.key, id = String(g.id).split(':')[1];
+      if (c.state !== 'pre' && !sheet.loading) {
+        sheet.loading = true;
+        guard('/sports/game', { params: { userId: state.userId, league: g.league, id }, quick: true }).then((r) => { if (sheet?.key === key) sheet.data = r; }).catch(() => { if (sheet?.key === key) sheet.data = { stats: [], plays: [] }; }).finally(() => { if (sheet?.key === key) { sheet.loading = false; paintSheet(); } });
+      }
+    };
+    const loadStandings = (c) => {
+      const g = c.feed; if (!g || sheet.std || sheet.stdLoading || !guardEnabled) return;
+      sheet.stdLoading = true; const key = sheet.key;
+      guard('/sports/standings', { params: { userId: state.userId, league: g.league }, quick: true }).then((r) => { if (sheet?.key === key) sheet.std = r; }).catch((e) => { if (sheet?.key === key) sheet.std = { groups: [], error: "Couldn't load the standings: " + e.message }; }).finally(() => { if (sheet?.key === key) paintSheet(); });
+    };
+    const openSheet = (ci, tab) => {
+      const c = cards[ci]; if (!c) return;
+      if (!c.feed) { watch(ci); return; } // a game only found in the guide: nothing more to show, just watch it
+      const modal = $('#modal'), content = $('#modal-content');
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      modal.classList.remove('update-required');
+      $('#modal .modal-box')?.classList.add('upd-box', 'sp-box');
+      sheet = { tok: modalToken, key: c.key, tab: tab || (c.state === 'pre' ? 'channels' : 'stats'), pick: null, data: null, std: null, loading: false };
+      modal.classList.remove('hidden'); document.body.style.overflow = 'hidden';
+      paintSheet(); loadSheetData(c); if (sheet.tab === 'standings') loadStandings(c);
+      content.onclick = (e) => {
+        const cc = sheetCard(); if (!cc || !sheet) return;
+        const t = e.target.closest('[data-stab]');
+        if (t) { sheet.tab = t.dataset.stab; paintSheet(); if (sheet.tab === 'standings') loadStandings(cc); const b = $(`[data-stab="${sheet.tab}"]`, content); if (nav.on && b) focusEl(b); return; }
+        const o = e.target.closest('[data-opt]');
+        if (o) { const i = Number(o.dataset.opt); sheet.pick = chKey(cc.chans[i]); rememberPick(cc, cc.chans[i]); paintSheet(); const b = $(`[data-opt="${i}"]`, content); if (nav.on && b) focusEl(b); return; }
+        if (e.target.closest('[data-sheet-watch]')) { const i = Math.max(0, sheet.pick ? cc.chans.findIndex((x) => chKey(x) === sheet.pick) : 0); closeModal(); watch(cc, i); return; }
+        if (e.target.closest('[data-sheet-bell]')) { toggleReminder(cc); paintSheet(); const b = $('[data-sheet-bell]', content); if (nav.on && b) focusEl(b); return; }
+        const f = e.target.closest('[data-follow]');
+        if (f) { setFollow(cc, { [f.dataset.follow]: !followOf(cc)[f.dataset.follow] }); paintSheet(); const b = $(`[data-follow="${f.dataset.follow}"]`, content); if (nav.on && b) focusEl(b); }
+      };
+      const b = $('[data-sheet-watch]', content); if (nav.on && b) focusEl(b);
+    };
+    body.addEventListener('click', async (e) => {
+      const spt = e.target.closest('[data-sport]');
+      if (spt) { sport = spt.dataset.sport; league = 'All'; pickedKey = null; store.set('ef.sports.sport', sport); store.set('ef.sports.league', league); draw(); const b = $(`[data-sport="${CSS.escape(sport)}"]`, body); if (nav.on && b) focusEl(b); return; }
+      const lg = e.target.closest('[data-league]');
+      if (lg) { league = lg.dataset.league; store.set('ef.sports.league', league); draw(); const b = $(`[data-league="${CSS.escape(league)}"]`, body); if (nav.on && b) focusEl(b); return; }
+      if (e.target.closest('[data-spoiler]')) { sportsPrefs.spoilerFree = !sportsPrefs.spoilerFree; saveSportsPrefs(); draw(); const b = $('[data-spoiler]', body); if (nav.on && b) focusEl(b); return; }
+      const dy = e.target.closest('[data-day]');
+      if (dy) {
+        dayOff = Number(dy.dataset.day); draw();
+        let b = $(`[data-day="${dayOff}"]`, body); if (nav.on && b) focusEl(b);
+        const k = dayKey(dayOff);
+        if (dayOff && !dayCache.has(k) && guardEnabled) {
+          const at = dayOff;
+          try { const r = await guard('/sports/day', { params: { userId: state.userId, date: k }, quick: true }); dayCache.set(k, r.games || []); } catch { dayCache.set(k, []); }
+          if (dayOff === at && draw()) { b = $(`[data-day="${dayOff}"]`, body); if (nav.on && b) focusEl(b); }
+        }
+        return;
+      }
+      const bell = e.target.closest('[data-bell]');
+      if (bell) { const ci = Number(bell.dataset.bell); toggleReminder(cards[ci]); draw(); const b = $(`[data-bell="${ci}"]`, body); if (nav.on && b) focusEl(b); return; }
+      const w = e.target.closest('[data-watch]');
+      if (w) { watch(Number(w.dataset.watch)); return; }
+      const sh = e.target.closest('[data-sheet]');
+      if (sh) { openSheet(Number(sh.dataset.sheet), sh.dataset.tab); return; }
+      const card = e.target.closest('[data-game]');
+      if (card) openSheet(Number(card.dataset.game));
+    });
+    draw();
+    // The big game at the top follows the game the remote (or the mouse) is on, without redrawing the page.
+    const pointHero = (e) => {
+      const fx = e.target.closest && e.target.closest('.sp2-fx');
+      const c = fx && cards[Number(fx.dataset.game)];
+      const box = $('[data-hero]', body);
+      if (!c || !box || c === heroCard || !heroRender) return;
+      heroCard = c; pickedKey = c.key;
+      box.innerHTML = heroRender(c);
+      $$('.sp2-fx', body).forEach((el) => el.classList.toggle('sel', cards[Number(el.dataset.game)] === c));
+    };
+    body.addEventListener('focusin', pointHero);
+    body.addEventListener('mouseover', pointHero);
+    // How many games each day has, for the day chips (one call for the whole week).
+    if (S.feed && guardEnabled) {
+      guard('/sports/starts', { params: { userId: state.userId, from: dayKey(0), days: 7 }, quick: true })
+        .then((r) => { if (Array.isArray(r.starts)) { weekStarts = r.starts; draw(); } }).catch(() => { /* the chips just show no number */ });
+    }
+    // Keep "live now / starting soon", scores and progress true while the page is open.
+    let tick = 0;
+    const timer = routeInterval(async () => {
+      if (!body.isConnected || !isCurrent()) { clearInterval(timer); if (sheet && !sheetOpen()) sheet = null; return; }
+      if (document.hidden || isPlayerOpen()) return;
+      if (++tick % 2 === 0 && guardEnabled && S.feed) { const f = await guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null); if (f?.enabled) S.feed = f; }
+      const focused = document.activeElement?.closest?.('[data-game]')?.dataset.game;
+      if (!draw()) { clearInterval(timer); return; }
+      if (focused != null && nav.on && !sheetOpen()) { const el = $(`.sp2-fx[data-game="${focused}"]`, body); if (el) focusEl(el); }
+      if (sheetOpen()) { const c = sheetCard(); if (c && c.state !== 'pre' && tick % 2 === 0 && !sheet.loading) { sheet.loading = false; const g = c.feed; if (g) guard('/sports/game', { params: { userId: state.userId, league: g.league, id: String(g.id).split(':')[1] }, quick: true }).then((r) => { if (sheet) { sheet.data = r; paintSheet(); } }).catch(() => {}); } else paintSheet(); }
+      else if (sheet) sheet = null;
+    }, 30000);
+  }
+
+  async function renderIptvChannels(page, body, isCurrent) {
+    let src;
+    try { src = await iptvSource(); lastLiveError = ''; } catch (e) {
+      if (isCurrent()) liveListError(body, e, () => route());
+      return;
+    }
+    if (!isCurrent()) return;
+    const recent = iptvRecent();
+    await syncFavorites();
+    const cats = [
+      ...(favCount() ? [{ id: '__fav', name: '\u2605 Favorites', count: favCount() }] : []),
+      ...(recent.length ? [{ id: '__recent', name: 'Recently watched', count: recent.length }] : []),
+      ...(iptv.config.type === 'xtream' || src.all?.length ? [{ id: '__all', name: 'All channels', count: src.all?.length }] : []),
+      ...sortByProfileCats(src.categories),
+      ...adultRow(),
+    ];
+    if (!cats.length) { body.innerHTML = '<p class="empty-msg">This source has no channels.</p>'; return; }
+    let current = store.get('ef.iptv.group');
+    if (current === '__adult' || !cats.some((c) => c.id === current)) current = cats[0].id;
+    body.innerHTML = `
+      <div class="iptv-layout">
+        <nav class="iptv-cats" data-nav-zone>${cats.map((c) => `<button class="iptv-cat${c.id === current ? ' active' : ''}" data-cat="${esc(c.id)}">
+          <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</button>`).join('')}</nav>
+        <section class="iptv-main"><h2 class="iptv-title"></h2><div class="grid iptv-grid"></div><div class="sentinel"></div></section>
+      </div>`;
+    const grid = $('.iptv-grid', body), title = $('.iptv-title', body), sentinel = $('.sentinel', body);
+    let shown = [], drawn = 0, groupName = '', token = 0;
+    const PAGE = 90;
+    const drawMore = () => {
+      const end = Math.min(shown.length, drawn + PAGE);
+      guidePrefetch(shown.slice(drawn, end));
+      for (let i = drawn; i < end; i++) {
+        const ch = shown[i], list = shown, idx = i, g = groupName;
+        const tile = createIptvTile(ch, () => playIptv(list, idx, g));
+        grid.appendChild(tile);
+        watchNow(tile, ch);
+      }
+      drawn = end;
+    };
+    new IntersectionObserver((en) => { if (en[0].isIntersecting && drawn < shown.length) drawMore(); }, { rootMargin: '600px' }).observe(sentinel);
+    const show = (list, name) => {
+      shown = list; drawn = 0; groupName = name;
+      grid.innerHTML = '';
+      title.textContent = name;
+      if (!list.length) { grid.innerHTML = '<p class="empty-msg">No channels here.</p>'; return; }
+      drawMore();
+    };
+    const openCat = async (id, { focus = false } = {}) => {
+      if (id === '__adult') { adultToggle(); return; }
+      const t = ++token;
+      current = id;
+      store.set('ef.iptv.group', id);
+      $$('.iptv-cat', body).forEach((b) => b.classList.toggle('active', b.dataset.cat === id));
+      const cat = cats.find((c) => c.id === id);
+      grid.innerHTML = '<div class="spinner"></div>';
+      try {
+        const list = id === '__fav' ? iptvFavChannels() : id === '__recent' ? iptvRecent() : await iptvChannels(id);
+        if (t !== token || !isCurrent()) return;
+        show(list, cat?.name || '');
+        if (focus) focusEl($('.iptv-tile', grid));
+      } catch (e) {
+        if (t === token) liveError(grid, `Couldn't load these channels: ${esc(e.message)}`, () => openCat(id, { focus: nav.on }));
+      }
+    };
+    $$('.iptv-cat', body).forEach((b) => b.addEventListener('click', () => openCat(b.dataset.cat, { focus: nav.on })));
+    // Search across every channel.
+    const input = $('.iptv-search input', page);
+    let timer;
+    input?.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = input.value.trim().toLowerCase();
+        if (!q) return openCat(current);
+        const t = ++token;
+        grid.innerHTML = '<div class="spinner"></div>';
+        try {
+          const all = await iptvAllChannels();
+          if (t !== token || !isCurrent()) return;
+          show(all.filter((c) => c.name.toLowerCase().includes(q) || c.num === q), `Results for "${input.value.trim()}"`);
+        } catch (e) { if (t === token) grid.innerHTML = `<p class="empty-msg">Search failed: ${esc(e.message)}</p>`; }
+      }, 300);
+    });
+    await openCat(current);
+    // Only if the remote hasn't already moved somewhere on this page while the channels loaded.
+    if (!body.contains(document.activeElement)) autoFocus($('.iptv-cat.active', body));
+  }
+
+  // ---------- Live TV ----------
+  const GUIDE_HOURS = 6;
+  const GUIDE_PX_PER_MIN = 6;
+  const live = { channelIds: [], tunedId: null }; // tunedId: the channel being watched or switched to
+
+  const hasLiveTv = () => state.views.some((v) => v.CollectionType === 'livetv');
+  // Emby dates can carry 7 fractional digits; trim to milliseconds for Date.parse.
+  const parseDate = (s) => (s ? new Date(String(s).replace(/(\.\d{3})\d+/, '$1')) : null);
+  const clock = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const timeRange = (p) => `${clock(parseDate(p.StartDate))} – ${clock(parseDate(p.EndDate))}`;
+  const channelLabel = (ch) => [ch.ChannelNumber || ch.Number, ch.Name].filter(Boolean).join('  ');
+
+  function programProgress(p) {
+    const start = parseDate(p?.StartDate), end = parseDate(p?.EndDate);
+    if (!start || !end || end <= start) return 0;
+    return Math.min(100, Math.max(0, ((Date.now() - start) / (end - start)) * 100));
+  }
+
+  function getChannels(params = {}) {
+    return api('/LiveTv/Channels', {
+      params: {
+        UserId: state.userId, EnableImageTypes: 'Primary', ImageTypeLimit: 1, EnableUserData: true,
+        AddCurrentProgram: true, EnableFavoriteSorting: true, Fields: 'ChannelInfo', ...params,
+      },
+    });
+  }
+
+  // Ordered channel ids for channel up/down in the player.
+  async function ensureChannelList() {
+    if (live.channelIds.length) return live.channelIds;
+    try {
+      const res = await api('/LiveTv/Channels', { params: { UserId: state.userId, EnableImages: false, Limit: 2000 } });
+      live.channelIds = (res?.Items || []).map((c) => c.Id);
+    } catch { /* channel up/down just won't work */ }
+    return live.channelIds;
+  }
+
+  function createChannelCard(ch) {
+    const card = document.createElement('div');
+    card.className = 'card channel-card tile';
+    card.tabIndex = 0;
+    const logo = ch.ImageTags?.Primary ? imageUrl(ch.Id, 'Primary', { tag: ch.ImageTags.Primary, maxWidth: 300 }) : '';
+    const prog = ch.CurrentProgram;
+    card.innerHTML = `
+      <div class="card-img">
+        <div class="channel-logo">${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : `<span>${esc(ch.Name)}</span>`}</div>
+        <div class="badge-fav" title="Favorite">&#9733;</div>
+        <span class="live-tag">LIVE</span>
+        ${prog ? `<div class="progress"><span style="width:${programProgress(prog)}%"></span></div>` : ''}
+      </div>
+      <div class="card-info">
+        <div>${esc(prog?.Name || ch.Name)}</div>
+        <div class="sub">${esc(channelLabel(ch))}${prog ? ' · ' + esc(timeRange(prog)) : ''}</div>
+      </div>`;
+    card.addEventListener('click', () => playItem(ch));
+    card.__embyCh = ch;
+    card.classList.toggle('is-fav', !!ch.UserData?.IsFavorite);
+    card.addEventListener('contextmenu', (e) => { e.preventDefault(); openEmbyChannelMenu(ch, card); });
+    card.addEventListener('keydown', (e) => { if (e.key === 'ContextMenu') { e.preventDefault(); openEmbyChannelMenu(ch, card); } });
+    return card;
+  }
+
+  function renderLiveTv(page, tab, isCurrent) {
+    const tabs = [['guide', 'Guide'], ['channels', 'Channels']];
+    if (!tabs.some(([id]) => id === tab)) tab = 'guide';
+    page.innerHTML = `
+      <div class="page-pad live-page">
+        <div class="page-head">
+          <h1>Live TV</h1>
+          <div class="tab-bar">
+            ${tabs.map(([id, label]) => `<a href="#/livetv?tab=${id}" class="tab${id === tab ? ' active' : ''}"${id === tab ? ' data-autofocus' : ''}>${label}</a>`).join('')}
+          </div>
+        </div>
+        <div data-live-body></div>
+      </div>`;
+    const body = $('[data-live-body]', page);
+    if (tab === 'channels') renderChannels(body, isCurrent);
+    else renderGuide(body, isCurrent);
+    autoFocus($('.tab.active', page));
+  }
+
+  function renderChannels(body, isCurrent) {
+    body.innerHTML = `
+      <div class="page-head sub-head">
+        <select data-filter>
+          <option value="">All channels</option>
+          <option value="fav">Favorites</option>
+        </select>
+      </div>
+      <div class="grid channel-grid"></div>
+      <div class="sentinel"></div>`;
+    const grid = $('.grid', body), filter = $('[data-filter]', body);
+    const load = async () => {
+      grid.innerHTML = '<div class="spinner" style="grid-column:1/-1"></div>';
+      try {
+        const res = await getChannels({ IsFavorite: filter.value === 'fav' ? true : undefined, Limit: 500 });
+        if (!isCurrent()) return;
+        const items = res?.Items || [];
+        grid.innerHTML = items.length ? '' : '<p class="empty-msg" style="grid-column:1/-1">No channels found.</p>';
+        items.forEach((ch) => grid.appendChild(createChannelCard(ch)));
+        if (!filter.value) live.channelIds = items.map((c) => c.Id);
+      } catch (e) {
+        grid.innerHTML = `<p class="empty-msg" style="grid-column:1/-1">Could not load channels: ${esc(e.message)}</p>`;
+      }
+    };
+    filter.addEventListener('change', load);
+    load();
+  }
+
+  async function renderGuide(body, isCurrent) {
+    const start = new Date();
+    start.setMinutes(start.getMinutes() < 30 ? 0 : 30, 0, 0);
+    const end = new Date(start.getTime() + GUIDE_HOURS * 3600000);
+    const width = GUIDE_HOURS * 60 * GUIDE_PX_PER_MIN;
+    const xOf = (d) => ((d - start) / 60000) * GUIDE_PX_PER_MIN;
+
+    const slots = [];
+    for (let t = start.getTime(); t < end.getTime(); t += 1800000) slots.push(new Date(t));
+    body.innerHTML = `
+      <div class="guide" tabindex="-1">
+        <div class="guide-head">
+          <div class="guide-corner"></div>
+          <div class="guide-times" style="width:${width}px">
+            ${slots.map((t) => `<span style="left:${xOf(t)}px">${esc(clock(t))}</span>`).join('')}
+            <div class="guide-now" style="left:${xOf(new Date())}px"></div>
+          </div>
+        </div>
+        <div class="guide-rows"></div>
+        <div class="sentinel"></div>
+      </div>`;
+    const guide = $('.guide', body), rows = $('.guide-rows', body), sentinel = $('.sentinel', body);
+
+    const PAGE = 40;
+    let index = 0, total = Infinity, loading = false;
+    const loadMore = async () => {
+      if (loading || index >= total || !isCurrent()) return;
+      loading = true;
+      const spinner = document.createElement('div');
+      spinner.className = 'spinner';
+      rows.after(spinner);
+      try {
+        const chRes = await getChannels({ StartIndex: index, Limit: PAGE, AddCurrentProgram: false });
+        const channels = chRes?.Items || [];
+        total = chRes?.TotalRecordCount ?? 0;
+        index += PAGE;
+        live.channelIds.push(...channels.map((c) => c.Id).filter((id) => !live.channelIds.includes(id)));
+        let programs = [];
+        if (channels.length) {
+          const pRes = await api('/LiveTv/Programs', {
+            params: {
+              UserId: state.userId, ChannelIds: channels.map((c) => c.Id).join(','),
+              MinEndDate: start.toISOString(), MaxStartDate: end.toISOString(),
+              SortBy: 'StartDate', EnableImages: false, Fields: 'Overview',
+            },
+          });
+          programs = pRes?.Items || [];
+        }
+        if (!isCurrent()) return;
+        if (!channels.length && !rows.children.length) rows.innerHTML = '<p class="empty-msg">No channels found.</p>';
+        for (const ch of channels) rows.appendChild(guideRow(ch, programs.filter((p) => p.ChannelId === ch.Id)));
+      } catch (e) {
+        console.error(e);
+        total = 0;
+        if (!rows.children.length) rows.innerHTML = `<p class="empty-msg">Could not load the guide: ${esc(e.message)}</p>`;
+      } finally {
+        spinner.remove();
+        loading = false;
+      }
+    };
+
+    function guideRow(ch, programs) {
+      const row = document.createElement('div');
+      row.className = 'guide-row';
+      const logo = ch.ImageTags?.Primary ? imageUrl(ch.Id, 'Primary', { tag: ch.ImageTags.Primary, maxWidth: 160 }) : '';
+      row.innerHTML = `
+        <button class="guide-ch" title="Watch ${esc(ch.Name)}">
+          ${logo ? `<img loading="lazy" src="${esc(logo)}" alt="">` : ''}
+          <span class="guide-ch-num">${esc(ch.ChannelNumber || ch.Number || '')}</span>
+          ${logo ? '' : `<span class="guide-ch-name">${esc(ch.Name)}</span>`}
+        </button>
+        <div class="guide-progs" style="width:${width}px"></div>`;
+      $('.guide-ch', row).addEventListener('click', () => playItem(ch));
+      const lane = $('.guide-progs', row);
+      if (!programs.length) lane.innerHTML = `<div class="guide-empty">${esc(ch.Name)}</div>`;
+      const now = Date.now();
+      for (const p of programs) {
+        const ps = parseDate(p.StartDate), pe = parseDate(p.EndDate);
+        const left = Math.max(0, xOf(ps)), right = Math.min(width, xOf(pe));
+        if (right - left < 4) continue;
+        const btn = document.createElement('button');
+        const airing = ps <= now && pe > now;
+        btn.className = 'guide-prog' + (airing ? ' now' : '');
+        btn.style.left = left + 'px';
+        btn.style.width = (right - left - 3) + 'px';
+        btn.innerHTML = `<strong>${esc(p.Name)}</strong><span>${esc(timeRange(p))}</span>`;
+        btn.addEventListener('click', () => openProgram(p.Id, ch));
+        lane.appendChild(btn);
+      }
+      return row;
+    }
+
+    new IntersectionObserver((entries, io) => {
+      if (!isCurrent()) { io.disconnect(); return; }
+      if (entries.some((e) => e.isIntersecting)) loadMore();
+    }, { root: guide, rootMargin: '400px' }).observe(sentinel);
+    await loadMore();
+    // Start the timeline a little before "now".
+    guide.scrollLeft = Math.max(0, xOf(new Date()) - 60);
+  }
+
+  async function openProgram(programId, channel) {
+    const token = ++modalToken;
+    const modal = $('#modal'), content = $('#modal-content');
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = '<div class="spinner" style="margin:6rem auto"></div>';
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    let p;
+    try { p = await api(`/LiveTv/Programs/${programId}`, { params: { UserId: state.userId } }); } catch (e) {
+      if (token === modalToken) content.innerHTML = `<p class="empty-msg">Could not load program: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (token !== modalToken) return;
+    const start = parseDate(p.StartDate), end = parseDate(p.EndDate), now = Date.now();
+    const airing = start <= now && end > now;
+    const img = p.ImageTags?.Primary ? imageUrl(p.Id, 'Primary', { tag: p.ImageTags.Primary, maxWidth: 900 })
+      : p.ImageTags?.Thumb ? imageUrl(p.Id, 'Thumb', { tag: p.ImageTags.Thumb, maxWidth: 900 }) : '';
+    const day = start.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' });
+    content.innerHTML = `
+      <div class="m-body program-body">
+        ${img ? `<div class="program-img" style="background-image:url('${esc(img)}')"></div>` : ''}
+        <h2>${esc(p.Name)}</h2>
+        ${p.EpisodeTitle ? `<p class="overview" style="font-weight:600">${esc(p.EpisodeTitle)}</p>` : ''}
+        <div class="meta">
+          ${airing ? '<span class="live-badge">LIVE</span>' : ''}
+          <span>${esc(channelLabel(channel || { Name: p.ChannelName }))}</span>
+          <span>${esc(day)}, ${esc(timeRange(p))}</span>
+          ${p.OfficialRating ? `<span class="rating">${esc(p.OfficialRating)}</span>` : ''}
+        </div>
+        <p class="overview">${esc(p.Overview || '')}</p>
+        <div class="m-actions program-actions">
+          ${airing ? `<button class="btn btn-white" data-act="watch">${ICONS.play} Watch Live</button>` : ''}
+        </div>
+      </div>`;
+    $('[data-act="watch"]', content)?.addEventListener('click', () => playItem(channel || { Id: p.ChannelId, Type: 'TvChannel' }));
+    autoFocus($('.program-actions button', content));
+  }
+
+  async function changeChannel(delta) {
+    const ids = await ensureChannelList();
+    if (!ids.length || !live.tunedId) return;
+    const i = ids.indexOf(live.tunedId);
+    const next = ids[(Math.max(i, 0) + delta + ids.length) % ids.length];
+    // Remember it right away so fast repeated presses keep counting from here.
+    live.tunedId = next;
+    playItem({ Id: next, Type: 'TvChannel' });
+  }
+
+  // ---------- Requests (Jellyseerr) ----------
+  // Jellyseerr doesn't allow cross-site calls from a web page, so the Android app makes them natively
+  // (EmbyFlixAndroid.httpRequest). Each person signs in to Jellyseerr with their Emby details, so requests
+  // are made as them and Jellyseerr's own permissions and limits apply.
+  const TMDB_IMG = 'https://image.tmdb.org/t/p/';
+  const hasRequests = () => state.requestsEnabled && !!state.requestsServer && !!nativeApp?.httpRequest;
+  const MEDIA_STATUS = { 2: 'Requested', 3: 'Requested', 4: 'Partly available', 5: 'Available' };
+  const REQUEST_STATUS = { 1: 'Waiting for approval', 2: 'Approved', 3: 'Declined' };
+
+  let httpSeq = 0;
+  const httpPending = new Map();
+  window.auroraHttpDone = (id, res) => {
+    const done = httpPending.get(id);
+    if (done) { httpPending.delete(id); done(res); }
+  };
+  function nativeHttp(method, url, headers, body, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const id = 'h' + (++httpSeq);
+      const timer = setTimeout(() => { httpPending.delete(id); reject(new Error('The server took too long to answer.')); }, timeoutMs);
+      httpPending.set(id, (res) => { clearTimeout(timer); resolve(res); });
+      nativeApp.httpRequest(id, method, url, JSON.stringify(headers || {}), body == null ? '' : body);
+    });
+  }
+
+  const requestsCookie = (userId = state.userId) => getAccounts().find((a) => a.userId === userId)?.requestsCookie || '';
+  function setRequestsCookie(cookie, userId = state.userId) {
+    const list = getAccounts(), acc = list.find((a) => a.userId === userId);
+    if (!acc) return;
+    acc.requestsCookie = cookie;
+    saveAccounts(list);
+  }
+
+  async function seerr(path, opts = {}) {
+    try {
+      return await seerrOnce(path, opts);
+    } catch (e) {
+      // The Jellyseerr session ran out while browsing: sign in again quietly and retry once.
+      if ((e.status === 401 || e.status === 403) && !path.startsWith('/auth/') && !opts.userId && !opts.retried
+          && (await silentSeerrLogin())) {
+        return seerrOnce(path, { ...opts, retried: true });
+      }
+      throw e;
+    }
+  }
+
+  async function seerrOnce(path, { method = 'GET', body, userId } = {}) {
+    const headers = { Accept: 'application/json' };
+    const cookie = requestsCookie(userId);
+    if (cookie) headers.Cookie = cookie;
+    if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const res = await nativeHttp(method, state.requestsServer + '/api/v1' + path, headers, body === undefined ? null : JSON.stringify(body));
+    if (!res || !res.status) throw new Error('Could not reach the request server.');
+    let data = null;
+    try { data = res.body ? JSON.parse(res.body) : null; } catch { /* not JSON */ }
+    if (res.status >= 400) {
+      const err = new Error(data?.message || data?.error || `Request server error (${res.status})`);
+      err.status = res.status;
+      throw err;
+    }
+    return { data, setCookie: res.setCookie || '' };
+  }
+
+  // Signs in to Jellyseerr with the same Emby username and password.
+  async function seerrLogin(username, password, userId = state.userId) {
+    setRequestsCookie('', userId);
+    const { setCookie } = await seerr('/auth/jellyfin', { method: 'POST', body: { username, password }, userId });
+    if (!setCookie) throw new Error('The request server did not start a session.');
+    setRequestsCookie(setCookie, userId);
+  }
+
+  // The Emby password is kept on the device, encrypted with a key held by Android's secure key store
+  // (the web version keeps nothing), so Requests can sign people in to Jellyseerr without asking.
+  function rememberLogin(userId, username, password) {
+    if (!nativeApp?.encrypt) return;
+    let secret = '';
+    try { secret = nativeApp.encrypt(password) || ''; } catch { return; }
+    if (!secret) return;
+    const list = getAccounts(), acc = list.find((a) => a.userId === userId);
+    if (!acc) return;
+    acc.loginName = username;
+    acc.secret = secret;
+    saveAccounts(list);
+  }
+
+  // Signs in to Jellyseerr in the background with the saved details. Returns false if there are none.
+  async function silentSeerrLogin() {
+    const acc = getAccounts().find((a) => a.userId === state.userId);
+    if (!acc?.secret || !nativeApp?.decrypt) return false;
+    let password = null;
+    try { password = nativeApp.decrypt(acc.secret); } catch { /* treated as no saved password */ }
+    if (password == null) return false; // Android reset its key store; nothing to sign in with
+    try {
+      await seerrLogin(acc.loginName || acc.name, password);
+      return true;
+    } catch (e) {
+      // A changed password: forget the saved one so it isn't retried forever.
+      if (e.status === 401 || e.status === 403) {
+        const list = getAccounts(), a = list.find((x) => x.userId === state.userId);
+        if (a) { a.secret = ''; saveAccounts(list); }
+      }
+      // The server can't be reached at all: say so, rather than asking the viewer to sign in.
+      if (!e.status) throw e;
+      return false;
+    }
+  }
+
+  async function seerrMe() {
+    const fetchMe = async () => {
+      if (!requestsCookie()) return null;
+      try {
+        return (await seerr('/auth/me')).data;
+      } catch (e) {
+        if (e.status === 401 || e.status === 403) { setRequestsCookie(''); return null; }
+        throw e;
+      }
+    };
+    // No session yet, or it expired: sign in again quietly before falling back to asking.
+    return (await fetchMe()) || ((await silentSeerrLogin()) ? fetchMe() : null);
+  }
+
+  const tmdbImage = (path, size) => (path ? TMDB_IMG + size + path : '');
+  const seerrTitle = (m) => m.title || m.name || '';
+  const seerrYear = (m) => (m.releaseDate || m.firstAirDate || '').slice(0, 4);
+
+  function seerrStatus(m) {
+    const req = m.request; // set for cards in the Requested and Available lists
+    if (req?.status === 3) return 'Declined';
+    if ((m.mediaInfo?.status || 0) >= 4) return MEDIA_STATUS[m.mediaInfo.status];
+    if (req) return REQUEST_STATUS[req.status] || 'Requested';
+    return MEDIA_STATUS[m.mediaInfo?.status] || '';
+  }
+
+  function createSeerrCard(m) {
+    const card = document.createElement('div');
+    card.className = 'card seerr-card tile poster-tile';
+    card.tabIndex = 0;
+    card.dataset.seerr = `${m.mediaType}:${m.id}`;
+    const img = tmdbImage(m.posterPath, 'w342') || tmdbImage(m.backdropPath, 'w500');
+    const status = seerrStatus(m);
+    const isTv = m.mediaType === 'tv';
+    const req = m.request;
+    const who = req ? (req.requestedBy?.id === seerrMeId ? 'you' : req.requestedBy?.displayName || req.requestedBy?.username || '') : '';
+    const sub = req ? [who && `Requested by ${who}`, timeAgo(req.createdAt)].filter(Boolean).join(' · ') : seerrYear(m);
+    card.innerHTML = `
+      <div class="card-img">
+        ${img ? `<img loading="lazy" decoding="async" src="${esc(img)}" alt=""${m.posterPath ? '' : ' class="contain"'}>` : `<div class="card-fallback">${esc(seerrTitle(m))}</div>`}
+        <span class="seerr-type ${isTv ? 'tv' : 'movie'}">${isTv ? 'SERIES' : 'MOVIE'}</span>
+        ${status ? `<span class="seerr-badge s-${esc(status.split(' ')[0].toLowerCase())}">${esc(status)}</span>` : ''}
+      </div>
+      <div class="card-info"><div>${esc(seerrTitle(m))}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ''}</div>`;
+    card.addEventListener('click', () => openSeerrItem(m.mediaType, m.id));
+    return card;
+  }
+
+  const onlyMedia = (results) => (results || []).filter((m) => m.mediaType === 'movie' || m.mediaType === 'tv');
+
+  // Requests only carry the TMDB id, so titles and pictures are looked up (and remembered for the session).
+  const seerrDetails = new Map();
+  let seerrMeId = null;
+  function seerrDetail(type, tmdbId) {
+    const key = `${type}:${tmdbId}`;
+    if (!seerrDetails.has(key)) {
+      seerrDetails.set(key, seerr(`/${type}/${tmdbId}`).then(({ data }) => data).catch((e) => { seerrDetails.delete(key); throw e; }));
+    }
+    return seerrDetails.get(key);
+  }
+
+  // Everyone's requests that this account may see (Jellyseerr shows people without request-management rights only
+  // their own), one entry per title, newest first, split into still-requested and ready-to-watch.
+  async function loadRequestLists() {
+    const { data } = await seerr('/request?take=100&skip=0&sort=added&filter=all');
+    const byMedia = new Map();
+    (data?.results || []).forEach((r) => {
+      const type = r.media?.mediaType || r.type;
+      const key = `${type}:${r.media?.tmdbId}`;
+      if (!r.media?.tmdbId || byMedia.has(key)) return; // the newest request for a title stands for it
+      byMedia.set(key, { r, type });
+    });
+    const requested = [], available = [];
+    [...byMedia.values()].forEach((e) => ((e.r.media?.status || 0) >= 4 ? available : requested).push(e));
+    // Declined requests go to the end of the requested list.
+    requested.sort((a, b) => (a.r.status === 3) - (b.r.status === 3));
+    return { requested, available };
+  }
+
+  // Fills a grid with request cards, loading a few titles at a time.
+  async function fillRequestGrid(grid, entries, isCurrent) {
+    let next = 0;
+    const slots = entries.map(() => {
+      const ph = document.createElement('div');
+      ph.className = 'card seerr-card placeholder poster-tile';
+      grid.appendChild(ph);
+      return ph;
+    });
+    const worker = async () => {
+      while (next < entries.length && isCurrent()) {
+        const i = next++, { r, type } = entries[i];
+        try {
+          const m = await seerrDetail(type, r.media.tmdbId);
+          if (!isCurrent()) return;
+          const card = createSeerrCard({ ...m, mediaType: type, request: r, mediaInfo: { ...(m.mediaInfo || {}), status: r.media.status } });
+          const hadFocus = slots[i] === document.activeElement;
+          slots[i].replaceWith(card);
+          if (hadFocus) focusEl(card);
+        } catch { slots[i].remove(); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3, 4, 5].map(worker));
+  }
+
+  const REQUEST_TABS = [['discover', 'Discover'], ['requested', 'Requested'], ['available', 'Available']];
+
+  async function renderRequests(page, isCurrent, tab = 'discover') {
+    if (!REQUEST_TABS.some(([id]) => id === tab)) tab = 'discover';
+    if (!hasRequests()) {
+      page.innerHTML = `
+        <div class="page-pad requests-page">
+          <div class="coming-soon">
+            <div class="coming-soon-icon">${ICONS.play}</div>
+            <span class="coming-soon-tag">Coming soon</span>
+            <h1>Request movies and shows</h1>
+            <p>Soon you'll be able to ask for any movie or TV show right here in Aurora, and follow your requests until they're ready to watch.</p>
+            <a href="#/home" class="btn btn-white" data-autofocus>Back to Home</a>
+          </div>
+        </div>`;
+      autoFocus($('.coming-soon .btn', page));
+      return;
+    }
+    page.innerHTML = `
+      <div class="page-pad requests-page">
+        <div class="page-head">
+          <h1>Requests</h1>
+          <div class="tab-bar req-tabs hidden">
+            ${REQUEST_TABS.map(([id, label]) => `<a href="#/requests?tab=${id}" class="tab${id === tab ? ' active' : ''}" data-tab="${id}">${label}<span class="tab-count"></span></a>`).join('')}
+          </div>
+          <div class="req-search hidden"><input type="search" placeholder="Search Movies &amp; Series" autocomplete="off"></div>
+        </div>
+        <div data-req-body><div class="spinner"></div></div>
+      </div>`;
+    const body = $('[data-req-body]', page);
+    let me;
+    try { me = await seerrMe(); } catch (e) {
+      if (!isCurrent()) return;
+      const unreachable = !e.status;
+      body.innerHTML = `<div class="req-down">
+        <h2>${unreachable ? "Requests can't be reached right now" : 'Requests ran into a problem'}</h2>
+        <p class="muted">${unreachable
+          ? `Aurora couldn't connect to the request server${isAdmin() ? ` at <strong>${esc(state.requestsServer)}</strong>` : ''}. ${isAdmin()
+            ? "If Jellyseerr is running, its address has probably changed (a Cloudflare quick tunnel gets a new address each time it restarts). Put the new one in Admin → Requests."
+            : 'Please try again later.'}`
+          : esc(e.message)}</p>
+        <div class="m-actions"><button class="btn btn-white" data-retry>Try again</button>${isAdmin() ? '<a class="btn btn-gray" href="#/admin?tab=requests">Admin → Requests</a>' : ''}</div>
+      </div>`;
+      $('[data-retry]', body).addEventListener('click', () => route());
+      autoFocus($('[data-retry]', body));
+      return;
+    }
+    if (!isCurrent()) return;
+    if (!me) return renderRequestsConnect(page, body, isCurrent);
+    seerrMeId = me.id;
+
+    const tabs = $('.req-tabs', page);
+    tabs.classList.remove('hidden');
+    const lists = loadRequestLists();
+    lists.then(({ requested, available }) => {
+      if (!isCurrent()) return;
+      $('[data-tab="requested"] .tab-count', tabs).textContent = requested.length ? ` ${requested.length}` : '';
+      $('[data-tab="available"] .tab-count', tabs).textContent = available.length ? ` ${available.length}` : '';
+    }).catch(() => {});
+
+    if (tab !== 'discover') {
+      autoFocus($('.tab.active', page));
+      let data;
+      try { data = await lists; } catch (e) {
+        if (isCurrent()) body.innerHTML = `<p class="empty-msg">Couldn't load requests: ${esc(e.message)}</p>`;
+        return;
+      }
+      if (!isCurrent()) return;
+      const entries = data[tab];
+      if (!entries.length) {
+        body.innerHTML = `<p class="empty-msg">${tab === 'requested'
+          ? 'Nothing is waiting. Find something in Discover and request it.'
+          : "Nothing requested is ready yet. Titles show up here once they're in the library."}</p>`;
+        return;
+      }
+      body.innerHTML = `<p class="req-list-note">${tab === 'requested'
+        ? 'Requested titles stay here until they arrive in the library.'
+        : 'Requested titles that are now in the library. Open one to watch it in Aurora.'}</p><div class="grid seerr-grid"></div>`;
+      fillRequestGrid($('.grid', body), entries, isCurrent);
+      return;
+    }
+
+    const searchBox = $('.req-search', page), input = $('input', searchBox);
+    searchBox.classList.remove('hidden');
+    // Anything already requested or in the library lives in its own tab, not in Discover.
+    const fresh = (results) => onlyMedia(results).filter((m) => (m.mediaInfo?.status || 1) < 2);
+    const showBrowse = () => {
+      body.innerHTML = '';
+      const rows = document.createElement('div');
+      rows.className = 'rows flush-rows';
+      body.appendChild(rows);
+      const add = (title, loader) => addRow(rows, title, loader, { isCurrent, createItem: createSeerrCard });
+      add('Trending', async () => fresh((await seerr('/discover/trending?page=1')).data?.results));
+      add('Popular Movies', async () => fresh((await seerr('/discover/movies?page=1')).data?.results));
+      add('Popular TV Shows', async () => fresh((await seerr('/discover/tv?page=1')).data?.results));
+      add('Coming Soon', async () => fresh((await seerr('/discover/movies/upcoming?page=1')).data?.results));
+    };
+    let timer, searchToken = 0;
+    input.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const q = input.value.trim(), token = ++searchToken;
+        if (!q) return showBrowse();
+        body.innerHTML = '<div class="spinner"></div>';
+        try {
+          const { data } = await seerr(`/search?query=${encodeURIComponent(q)}&page=1`);
+          if (token !== searchToken || !isCurrent()) return;
+          const results = onlyMedia(data?.results);
+          body.innerHTML = results.length ? '<div class="grid seerr-grid"></div>' : `<p class="empty-msg">Nothing found for "${esc(q)}".</p>`;
+          results.forEach((m) => $('.grid', body)?.appendChild(createSeerrCard(m)));
+        } catch (e) {
+          if (token === searchToken) body.innerHTML = `<p class="empty-msg">Search failed: ${esc(e.message)}</p>`;
+        }
+      }, 450);
+    });
+    showBrowse();
+    autoFocus(input);
+  }
+
+  // People who signed in before Requests existed (or whose Jellyseerr session expired) enter their password once.
+  function renderRequestsConnect(page, body, isCurrent) {
+    body.innerHTML = `
+      <form class="req-connect">
+        <h2>Request movies and shows</h2>
+        <p>Enter your password once to connect your account to requests. Use the same password you sign in with.</p>
+        <label>Username<input type="text" value="${esc(state.user?.Name || '')}" readonly></label>
+        <label>Password<input type="password" data-pw autocomplete="current-password"></label>
+        <p class="error hidden" data-err></p>
+        <button class="btn btn-red" type="submit" data-autofocus>Connect</button>
+      </form>`;
+    const form = $('form', body), err = $('[data-err]', body);
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('button', form);
+      btn.disabled = true; btn.textContent = 'Connecting…';
+      try {
+        const password = $('[data-pw]', form).value;
+        await seerrLogin(state.user?.Name || '', password);
+        rememberLogin(state.userId, state.user?.Name || '', password);
+        if (isCurrent()) route();
+      } catch (ex) {
+        err.textContent = ex.status === 401 || ex.status === 403 ? 'That password was not accepted.' : ex.message;
+        err.classList.remove('hidden');
+        btn.disabled = false; btn.textContent = 'Connect';
+      }
+    });
+    autoFocus($('[data-pw]', form));
+  }
+
+  async function openSeerrItem(type, tmdbId) {
+    const token = ++modalToken;
+    const modal = $('#modal'), content = $('#modal-content');
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = '<div class="spinner" style="margin:6rem auto"></div>';
+    modal.classList.remove('hidden');
+    modal.scrollTop = 0;
+    document.body.style.overflow = 'hidden';
+    let m;
+    try { m = (await seerr(`/${type}/${tmdbId}`)).data; } catch (e) {
+      if (token === modalToken) content.innerHTML = `<p class="empty-msg">Could not load details: ${esc(e.message)}</p>`;
+      return;
+    }
+    if (token !== modalToken) return;
+    const isTv = type === 'tv';
+    const status = m.mediaInfo?.status || 1;
+    const seasons = isTv ? (m.seasons || []).filter((s) => s.seasonNumber > 0) : [];
+    // Seasons already available or requested can't be requested again.
+    const taken = new Map();
+    (m.mediaInfo?.seasons || []).forEach((s) => { if (s.status > 1) taken.set(s.seasonNumber, MEDIA_STATUS[s.status] || 'Requested'); });
+    (m.mediaInfo?.requests || []).forEach((r) => {
+      if (r.status !== 3) (r.seasons || []).forEach((s) => { if (!taken.has(s.seasonNumber)) taken.set(s.seasonNumber, REQUEST_STATUS[r.status] || 'Requested'); });
+    });
+    const year = seerrYear(m);
+    const runtimeText = isTv ? `${seasons.length} Season${seasons.length === 1 ? '' : 's'}` : (m.runtime ? `${m.runtime} minutes` : '');
+    const genresText = (m.genres || []).slice(0, 4).map((g) => g.name).join(', ');
+    const backdrop = tmdbImage(m.backdropPath, 'w1280');
+    const poster = tmdbImage(m.posterPath, 'w500');
+    const video = (m.relatedVideos || []).find((v) => v.site === 'YouTube' && v.type === 'Trailer')
+      || (m.relatedVideos || []).find((v) => v.site === 'YouTube');
+    const trailerUrl = video?.url || (video?.key ? `https://www.youtube.com/watch?v=${video.key}` : '');
+    // The people behind it: the director and writers first, then producers, as Jellyseerr lists them.
+    const CREW_ORDER = ['Director', 'Screenplay', 'Writer', 'Story', 'Novel', 'Creator', 'Executive Producer', 'Producer'];
+    const seen = new Set();
+    const crew = (m.credits?.crew || []).filter((c) => CREW_ORDER.includes(c.job)).sort((x, y) => CREW_ORDER.indexOf(x.job) - CREW_ORDER.indexOf(y.job))
+      .filter((c) => { const k = c.job + c.name; if (seen.has(k)) return false; seen.add(k); return true; }).slice(0, 6);
+    const created = (m.createdBy || []).slice(0, 2).map((c) => ({ job: 'Creator', name: c.name }));
+    const crewList = isTv && created.length ? [...created, ...crew.filter((c) => c.job !== 'Creator')].slice(0, 6) : crew;
+    const keywords = (m.keywords || []).slice(0, 14);
+    const cast = (m.credits?.cast || []).slice(0, 24);
+    const day = (d) => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString([], { year: 'numeric', month: 'long', day: 'numeric' }) : '');
+    let language = '';
+    try { language = m.originalLanguage ? new Intl.DisplayNames(['en'], { type: 'language' }).of(m.originalLanguage) : ''; } catch { language = m.originalLanguage || ''; }
+    const original = m.originalTitle || m.originalName || '';
+    const facts = [
+      ['Original Title', original && original !== seerrTitle(m) ? original : ''],
+      ['Status', m.status || ''],
+      [isTv ? 'First Air Date' : 'Release Date', day(m.releaseDate || m.firstAirDate)],
+      [isTv ? 'Last Air Date' : '', isTv ? day(m.lastAirDate) : ''],
+      ['Original Language', language],
+      ['Production Country', (m.productionCountries || []).map((c) => c.name || c.iso_3166_1).filter(Boolean).join(', ')],
+      [isTv ? 'Network' : 'Studio', ((isTv ? m.networks : m.productionCompanies) || []).slice(0, 3).map((c) => c.name).filter(Boolean).join(', ')],
+    ].filter(([k, v]) => k && v);
+    const score = m.voteAverage ? Math.round(m.voteAverage * 10) : 0;
+    const initials = (n) => String(n || '?').split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+    content.innerHTML = `
+      <div class="sd">
+        <div class="sd-bg"${backdrop ? ` style="background-image:url('${esc(backdrop)}')"` : ''}></div>
+        <div class="sd-top">
+          ${poster ? `<img class="sd-poster" src="${esc(poster)}" alt="">` : ''}
+          <div class="sd-head">
+            ${MEDIA_STATUS[status] ? `<span class="seerr-badge inline s-${MEDIA_STATUS[status].split(' ')[0].toLowerCase()}">${esc(MEDIA_STATUS[status])}</span>` : ''}
+            <h2 class="sd-title">${esc(seerrTitle(m))}${year ? ` <span>(${esc(year)})</span>` : ''}</h2>
+            <div class="sd-meta">${[runtimeText, genresText].filter(Boolean).map((t) => `<span>${esc(t)}</span>`).join('<i></i>')}</div>
+            <div class="sd-actions seerr-actions"></div>
+          </div>
+        </div>
+        <div class="sd-body">
+          ${m.tagline ? `<p class="sd-tagline">${esc(m.tagline)}</p>` : ''}
+          <h3>Overview</h3>
+          <p class="sd-overview">${esc(m.overview || 'No overview available.')}</p>
+          ${isTv && seasons.length ? `<h3>Seasons</h3><div class="season-picks">${seasons.map((s) => {
+            const t = taken.get(s.seasonNumber);
+            return `<button class="season-pick${t ? ' taken' : ' on'}" data-season="${s.seasonNumber}"${t ? ' disabled' : ''}>
+              <strong>Season ${s.seasonNumber}</strong><span>${t ? esc(t) : `${s.episodeCount || '?'} episodes`}</span></button>`;
+          }).join('')}</div>` : ''}
+          <p class="error hidden" data-err></p>
+          ${crewList.length ? `<div class="sd-crew">${crewList.map((c) => `<div><b>${esc(c.job)}</b><span>${esc(c.name)}</span></div>`).join('')}</div>` : ''}
+          ${keywords.length ? `<div class="sd-tags">${keywords.map((k) => `<span class="sd-tag"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 12.5V4h8.5L21 13.5 13.5 21 3 12.5Z"/><circle cx="7.5" cy="8.5" r="1.4" fill="currentColor"/></svg>${esc(k.name)}</span>`).join('')}</div>` : ''}
+          ${m.collection ? `<div class="sd-collection"${m.collection.backdropPath ? ` style="background-image:url('${esc(tmdbImage(m.collection.backdropPath, 'w780'))}')"` : ''}><span>${esc(m.collection.name)}</span><button class="btn sd-outline" data-collection>View</button></div><div data-collection-rows></div>` : ''}
+          <div class="sd-facts">
+            ${score ? `<div class="sd-score"><span class="sd-tmdb">TMDB</span> <b>${score}%</b></div>` : ''}
+            ${facts.map(([k, v]) => `<div class="sd-fact"><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join('')}
+          </div>
+          ${cast.length ? `<h3>Cast</h3><div class="cast-track">${cast.map((c) => {
+            const pic = tmdbImage(c.profilePath, 'w185');
+            return `<div class="cast-card"><div class="cast-pic">${pic ? `<img loading="lazy" src="${esc(pic)}" alt="">` : `<span>${esc(initials(c.name))}</span>`}</div><b>${esc(c.name)}</b>${c.character ? `<span>${esc(c.character)}</span>` : ''}</div>`;
+          }).join('')}</div>` : ''}
+          <div data-more></div>
+        </div>
+      </div>`;
+    const actions = $('.seerr-actions', content), err = $('[data-err]', content);
+    const picks = () => $$('.season-pick.on', content).map((b) => Number(b.dataset.season));
+    $$('.season-pick:not(.taken)', content).forEach((b) => b.addEventListener('click', () => { b.classList.toggle('on'); paint(); }));
+
+    function paint() {
+      const canRequest = isTv ? seasons.some((s) => !taken.has(s.seasonNumber)) : status < 2;
+      const n = picks().length;
+      actions.innerHTML = '';
+      if (status >= 4) actions.insertAdjacentHTML('beforeend', `<button class="btn sd-primary" data-act="watch">${ICONS.play} Watch in Aurora</button>`);
+      if (trailerUrl) actions.insertAdjacentHTML('beforeend', `<button class="btn sd-outline" data-act="trailer">${ICONS.film} Watch Trailer</button>`);
+      if (canRequest) {
+        actions.insertAdjacentHTML('beforeend', isTv
+          ? `<button class="btn sd-primary" data-act="request"${n ? '' : ' disabled'}>${ICONS.download || ''} Request ${n} season${n === 1 ? '' : 's'}</button>`
+          : `<button class="btn sd-primary" data-act="request">${ICONS.download || ''} Request</button>`);
+      } else if (status < 4) {
+        actions.insertAdjacentHTML('beforeend', `<span class="seerr-done">${esc(MEDIA_STATUS[status] || 'Requested')}</span>`);
+      }
+      $('[data-act="watch"]', actions)?.addEventListener('click', () => watchInAurora(m, isTv));
+      $('[data-act="trailer"]', actions)?.addEventListener('click', () => openYouTube(trailerUrl, seerrTitle(m)));
+      $('[data-act="request"]', actions)?.addEventListener('click', submit);
+    }
+
+    async function submit(e) {
+      e.target.disabled = true;
+      err.classList.add('hidden');
+      try {
+        const body = { mediaType: type, mediaId: Number(tmdbId) };
+        if (isTv) body.seasons = picks();
+        await seerr('/request', { method: 'POST', body });
+        toast(`Requested ${seerrTitle(m)}. It's now in the Requested list.`);
+        // It now belongs in the Requested list, so take it out of Discover.
+        if (!isTv) $$(`#page .seerr-card[data-seerr="${type}:${tmdbId}"]`).forEach((c) => c.remove());
+        const count = $('#page .req-tabs [data-tab="requested"] .tab-count');
+        if (count && !isTv) count.textContent = ` ${(Number(count.textContent) || 0) + 1}`;
+        if (token === modalToken) openSeerrItem(type, tmdbId);
+      } catch (ex) {
+        err.textContent = ex.status === 403 ? (ex.message && !/permission/i.test(ex.message) ? ex.message : "Your account isn't allowed to make this request.") : ex.message;
+        err.classList.remove('hidden');
+        e.target.disabled = false;
+      }
+    }
+
+    paint();
+    autoFocus($('.seerr-actions button', content) || $('.season-pick:not(.taken)', content));
+
+    // Recommendations, similar titles and the rest of the collection arrive a moment later.
+    const stillHere = () => token === modalToken;
+    const more = $('[data-more]', content);
+    Promise.allSettled([['Recommendations', 'recommendations'], ['Similar Titles', 'similar']].map(([title, path]) =>
+      seerr(`/${type}/${tmdbId}/${path}?page=1`).then(({ data }) => [title, (data?.results || []).map((r) => ({ ...r, mediaType: r.mediaType || type })).filter((r) => r.mediaType === 'movie' || r.mediaType === 'tv')])))
+      .then((all) => {
+        if (!stillHere()) return;
+        for (const r of all) {
+          if (r.status !== 'fulfilled' || !r.value[1].length) continue;
+          addRow(more, r.value[0], async () => r.value[1], { isCurrent: stillHere, createItem: createSeerrCard });
+        }
+      });
+    const colBtn = $('[data-collection]', content);
+    colBtn?.addEventListener('click', async () => {
+      const holder = $('[data-collection-rows]', content);
+      if (holder.childElementCount) { holder.innerHTML = ''; colBtn.textContent = 'View'; return; }
+      colBtn.disabled = true;
+      try {
+        const { data } = await seerr(`/collection/${m.collection.id}`);
+        const parts = (data?.parts || []).map((p) => ({ ...p, mediaType: 'movie' }));
+        if (stillHere()) { addRow(holder, m.collection.name, async () => parts, { isCurrent: stillHere, createItem: createSeerrCard }); colBtn.textContent = 'Hide'; }
+      } catch (e) { toast("Couldn't load the collection: " + e.message); }
+      colBtn.disabled = false;
+    });
+  }
+
+  // Finds the requested title in the Emby library and opens it.
+  async function watchInAurora(m, isTv) {
+    try {
+      const res = await getItems({ SearchTerm: seerrTitle(m), IncludeItemTypes: isTv ? 'Series' : 'Movie', Limit: 10 });
+      const items = res?.Items || [];
+      const year = Number(seerrYear(m));
+      const match = items.find((i) => !year || !i.ProductionYear || Math.abs(i.ProductionYear - year) <= 1) || items[0];
+      if (match) openDetails(match.Id);
+      else toast("It's not in the library yet. Try again a little later.");
+    } catch (e) { toast('Could not search the library: ' + e.message); }
+  }
+
+  function updateRequestsLink() {
+    // While Requests isn't switched on the tab still shows, with a "Coming soon" page.
+    const comingSoon = !state.requestsEnabled || !state.requestsServer;
+    $$('[data-route="requests"]').forEach((a) => a.classList.toggle('hidden', !comingSoon && !hasRequests()));
+  }
+
+  // The admin can set the Requests address in the app (Admin → Requests). It's kept on the Emby server for
+  // every account, like the Live TV settings, and wins over aurora-config.json.
+  const REQ_PREFS = { id: 'aurora-requests', client: 'aurora' };
+  let requestsOverride = null; // {server, on, t} from Emby, or null to use aurora-config.json
+
+  async function readAuroraPref(prefsId, userId = state.userId) {
+    const prefs = await api(`/DisplayPreferences/${prefsId}`, { params: { userId, client: 'aurora' } });
+    const raw = prefs?.CustomPrefs?.config;
+    return raw ? JSON.parse(raw) : null;
+  }
+  function writeAuroraPref(prefsId, userId, value) {
+    return api(`/DisplayPreferences/${prefsId}`, {
+      method: 'POST', params: { userId, client: 'aurora' },
+      body: {
+        Id: prefsId, Client: 'aurora', SortBy: 'SortName', SortOrder: 'Ascending',
+        RememberIndexing: false, RememberSorting: false, ScrollDirection: 'Horizontal', ShowBackdrop: false, ShowSidebar: false,
+        PrimaryImageHeight: 0, PrimaryImageWidth: 0, CustomPrefs: { config: value ? JSON.stringify(value) : '' },
+      },
+    });
+  }
+  // Puts a setting on every account. Returns {saved, failed, total}.
+  async function writeAuroraPrefForAll(prefsId, value) {
+    const users = await api('/Users');
+    let saved = 0, failed = 0;
+    const queue = (users || []).slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try { await writeAuroraPref(prefsId, u.Id, value); saved++; } catch (e) { failed++; console.warn('Setting for', u.Name, e); }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return { saved, failed, total: (users || []).length };
+  }
+
+  // Customers' sign-in details are sent to the Requests server, so only a secure (https) address is used. An http one, or a
+  // typo in the settings file, is ignored instead of sending passwords in the clear.
+  const secureAddress = (u) => /^https:\/\/[^\s/]+/i.test(String(u || ''));
+  function applyRequestsServer(value, enabled) {
+    if (value && !secureAddress(value)) {
+      appLog.add('warn', 'Ignored a Requests address that does not start with https://');
+      value = ''; enabled = false;
+    }
+    if (value === state.requestsServer && enabled === state.requestsEnabled) return;
+    state.requestsServer = value;
+    state.requestsEnabled = enabled;
+    store.set('ef.requestsServer', value);
+    store.set('ef.requestsEnabled', enabled ? '1' : '0');
+    updateRequestsLink();
+    if (/^#\/requests/.test(location.hash)) route();
+  }
+
+  // After sign-in: the address the admin set in the app, if any.
+  // The update lock set in Admin → Updates (kept in every account's "aurora-app" display preferences) wins over
+  // forceUpdateAfter in aurora-config.json. Read at sign-in and before each update check, so a locked device
+  // picks up a change by itself.
+  const APP_PREFS = 'aurora-app';
+  // The Android app asks for the phone's lock when it opens; it needs to know this before the page loads.
+  const syncAppLock = () => { try { nativeApp?.setAllowScreenshots?.(getPref('allowShots') === 'on'); nativeApp?.setAppLock?.(getPref('appLock') === 'on'); } catch { /* not the Android app */ } };
+  async function refreshAppConfig() {
+    if (!state.userId || !state.apiKey) return;
+    try {
+      const cfg = await readAuroraPref(APP_PREFS);
+      if (cfg && Number.isFinite(Number(cfg.forceUpdateAfter))) {
+        forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
+        store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
+        store.set('ef.forceUpdateFromAdmin', '1');
+      } else if (store.get('ef.forceUpdateFromAdmin')) {
+        store.del('ef.forceUpdateFromAdmin');
+        loadRemoteConfig();
+      }
+      applyRequiredUpdate();
+    } catch { /* keep what's known */ }
+    try {
+      const pb = await readAuroraPref(PLAYBACK_PREFS);
+      playbackCfg = pb && typeof pb === 'object' ? pb : {};
+      store.set('ef.playbackCfg', JSON.stringify(playbackCfg));
+    } catch { /* keep what's known */ }
+    syncAppLock();
+  }
+
+  // ----- Account limits: devices per account and an expiry date -----
+  // Limits and expiration dates live in Aurora Guard (server/aurora-guard.js), a small service on the Emby
+  // server PC that only Emby administrators can read or change, and that enforces them every minute with
+  // its own API key: it disables expired accounts and signs out devices over the limit, for every Emby app.
+  // Older versions kept them in each account's display preferences, which any account can write; those
+  // copies ("aurora-limits") are only read once more, to move them into the guard (see adminUsers).
+  const OLD_LIMITS_PREFS = 'aurora-limits';
+  const DEFAULT_GUARD_URL = 'https://emby4836.duckdns.org:8922';
+  // The guard receives people's sign-in tokens (an administrator's too), so its address is only trusted when it is
+  // https and on the same host as the Emby server (the guard runs on that PC). An address from aurora-config.json,
+  // or one saved by an earlier version, that fails this is ignored.
+  const trustedGuardUrl = (u) => {
+    try { const x = new URL(u); return x.protocol === 'https:' && x.hostname === new URL(DEFAULT_SERVER).hostname && !x.username && !x.password; } catch { return false; }
+  };
+  let guardUrl = trustedGuardUrl(store.get('ef.guardUrl') || '') ? store.get('ef.guardUrl') : DEFAULT_GUARD_URL;
+  // SWITCHED OFF by default: with it off, Aurora never contacts the guard (no checks at sign-in or play start,
+  // no delays, nothing in the app log). Turn it on with "guardEnabled": true in aurora-config.json, once the
+  // guard service is set up, reachable and tested.
+  let guardEnabled = store.get('ef.guardEnabled') === '1';
+  // The guard can be slow or unreachable (the PC is off, a customer's network blocks the port). Anything the
+  // viewer is waiting on uses a short timeout (quick: true), and after a failure the guard isn't tried again
+  // for a few minutes, so a down guard never holds up opening the app or starting a video.
+  let guardDownUntil = 0;
+  async function guard(path, { method = 'GET', body, params, quick = false } = {}) {
+    // Sports answers come from ESPN and can be slow: they get longer to answer and a slow one never marks the guard as down.
+    const soft = quick && path.startsWith('/sports/');
+    if (!guardEnabled) throw new Error('Aurora Guard is switched off');
+    if (quick && Date.now() < guardDownUntil) throw new Error('Aurora Guard is not answering');
+    const url = new URL(guardUrl.replace(/\/+$/, '') + path);
+    // Who is making a change, for the guard's audit log. A query value, not a header: an older guard's CORS check would refuse an unknown header and break every guard call.
+    if (state.isMod && !isAdmin()) params = { ...(params || {}), modUser: state.userId }; // a moderator proves who it is
+    if (method !== 'GET') params = { ...(params || {}), by: String(state.user?.Name || '').replace(/[^\x20-\x7E]/g, '').slice(0, 40) };
+    for (const [k, v] of Object.entries(params || {})) if (v != null) url.searchParams.set(k, v);
+    let res;
+    try {
+      res = await fetch(url, {
+        method, cache: 'no-store', signal: timeoutSignal(soft ? 10000 : quick ? 3000 : 15000),
+        headers: { 'X-Emby-Token': state.apiKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (e) {
+      if (quick && !soft) guardDownUntil = Date.now() + 5 * 60000;
+      // The browser's own words ("signal timed out", "Failed to fetch") mean nothing to anyone: say what happened and what to check.
+      if (e?.name === 'TimeoutError' || e?.name === 'AbortError') {
+        const t = new Error("Aurora Guard didn't answer in time, so nothing was saved. Check that the PC running it is on and online (and that the Aurora Guard task is running), then try again.");
+        t.timeout = true;
+        throw t;
+      }
+      throw e;
+    }
+    guardDownUntil = 0;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error(data.error || `Aurora Guard answered ${res.status}`); e.status = res.status; throw e; }
+    return data;
+  }
+  // Things done straight in Emby (switching an account off, deleting it...) never pass through the guard, so the app writes them into its audit log.
+  const auditNote = (text) => { if (guardEnabled) guard('/audit', { method: 'POST', body: { text } }).catch(() => {}); };
+  const DEFAULT_DEVICE_LIMIT = 2;
+  const ACTIVE_WINDOW = 5 * 60000; // a device counts as in use if it talked to Emby this recently
+  const expiryEnd = (d) => new Date(`${d}T23:59:59`).getTime(); // the account works until the end of that day
+  const isExpired = (lim) => !!lim?.expires && Date.now() > expiryEnd(lim.expires);
+  const fmtDay = (d) => new Date(`${d}T12:00:00`).toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  // ----- Renewal reminders (guard 1.26.0) -----
+  // "10, 5 2" -> [10, 5, 2] (1 to 5 days, each 1 to 60), or null when it isn't a usable list.
+  function parseRemindDays(text) {
+    const list = [...new Set(String(text || '').split(/[^0-9]+/).filter(Boolean).map(Number))].filter((n) => n >= 1 && n <= 60).sort((a, b) => b - a);
+    return list.length && list.length <= 5 ? list : null;
+  }
+  // A ready-made message to send to a customer from Messenger, Text or WhatsApp (nothing is sent from here).
+  function renewalMessage(name, expires) {
+    const first = String(name || '').trim().split(/\s+/)[0] || 'there';
+    if (!expires) return `Hi ${first}, a quick note about your Aurora plan. Reply here if you need anything.`;
+    const left = Math.ceil((new Date(`${expires}T23:59:59`).getTime() - Date.now()) / 86400000);
+    const d = new Date(`${expires}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric' });
+    if (left < 0) return `Hi ${first}, your Aurora plan ended on ${d}. Reply here to renew and get back to watching.`;
+    if (left === 0) return `Hi ${first}, your Aurora plan ends today (${d}). Reply here to renew.`;
+    return `Hi ${first}, your Aurora plan ends on ${d} (${left === 1 ? 'tomorrow' : 'in ' + left + ' days'}). Reply here to renew.`;
+  }
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall back below */ }
+    try {
+      const t = document.createElement('textarea');
+      t.value = text; t.style.position = 'fixed'; t.style.opacity = '0'; document.body.appendChild(t); t.select();
+      const ok = document.execCommand('copy'); t.remove(); return !!ok;
+    } catch { return false; }
+  }
+  const exemptFromLimits = (user) => user?.Policy?.IsAdministrator === true || ADMIN_NAMES.includes((user?.Name || '').toLowerCase());
+
+  // The devices (unique DeviceIds) signed in to an account that talked to Emby in the last few minutes,
+  // newest first. Uses Emby's session list.
+  async function activeDevices(userId, { within = ACTIVE_WINDOW } = {}) {
+    const sessions = await api('/Sessions', { params: { ActiveWithinSeconds: Math.round(within / 1000) } });
+    const byDevice = new Map();
+    for (const s of Array.isArray(sessions) ? sessions : []) {
+      if (s.UserId !== userId || !s.DeviceId) continue;
+      const at = Date.parse(s.LastActivityDate || 0) || 0;
+      if (Date.now() - at > within) continue;
+      const have = byDevice.get(s.DeviceId);
+      if (!have || at > have.at || (s.NowPlayingItem && !have.playing)) {
+        byDevice.set(s.DeviceId, {
+          deviceId: s.DeviceId, sessionId: s.Id, name: s.DeviceName || 'Device', client: s.Client || '', version: s.ApplicationVersion || '',
+          at: Math.max(at, have?.at || 0), playing: !!s.NowPlayingItem || !!have?.playing, title: s.NowPlayingItem?.Name || have?.title || '',
+        });
+      }
+    }
+    return [...byDevice.values()].sort((a, b) => b.at - a.at);
+  }
+
+  // null when this account may carry on, or {message} when it's blocked.
+  // NOT A SECURITY BOUNDARY: this is only so people see a clear message up front instead of being signed out
+  // a minute later. Anyone can skip it (another Emby app, an old Aurora). The real enforcement is Aurora
+  // Guard's job on the server, which signs out devices over the limit and disables expired accounts.
+  // phase "signin": every device in use counts; phase "play": the other devices playing right now.
+  const access = { okUntil: 0 };
+  async function checkAccess(user = state.user, phase = 'signin') {
+    if (!guardEnabled || !user || exemptFromLimits(user)) return null;
+    if (phase === 'play' && Date.now() < access.okUntil) return null;
+    let r;
+    try {
+      r = await guard('/check', { quick: true, params: { userId: user.Id, deviceId: state.deviceId, phase } });
+    } catch (e) {
+      // The guard is down or unreachable: don't lock people out over a message. It still enforces when it's back.
+      // Not a fault worth reporting: the check is a courtesy message, and the server enforces the limit anyway.
+      if (Date.now() - (access.lastNote || 0) > 10 * 60000) {
+        access.lastNote = Date.now();
+        appLog.add('info', `Device limit check skipped: ${e.status === 401 ? 'the guard did not recognise this sign-in' : e.message}`);
+      }
+      access.okUntil = Date.now() + 120000;
+      return null;
+    }
+    if (r.allowed === false) {
+      return { message: r.reason === 'expired' && /\d{4}-\d{2}-\d{2}/.test(r.message)
+        ? r.message.replace(/\d{4}-\d{2}-\d{2}/, (d) => fmtDay(d)) : r.message };
+    }
+    // Channel surfing doesn't ask every time. Being allowed to sign in also means being allowed to play (playing
+    // is only a part of what counts for signing in), so the first video after opening the app doesn't wait.
+    access.okUntil = Date.now() + (phase === 'play' ? 120000 : 30000);
+    return null;
+  }
+
+  // Before anything plays: checks the limits, then runs start() if allowed.
+  async function whenAllowed(start) {
+    if (!guardEnabled) return start();
+    // The message is a courtesy (the guard on the server enforces the limit), so it never holds a video up for
+    // more than a moment: no answer in 1.5 s means "go ahead".
+    const blocked = await Promise.race([checkAccess(state.user, 'play'), new Promise((r) => setTimeout(() => r(null), 1500))]).catch(() => null);
+    if (!blocked) return start();
+    appLog.add('info', 'Playback blocked: ' + blocked.message);
+    showNotice('Can\'t play right now', blocked.message);
+  }
+
+  // A plain message with an OK button.
+  function showNotice(title, text) {
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    content.innerHTML = `<div class="m-body notice-body"><h2>${esc(title)}</h2><p class="overview">${esc(text)}</p>
+      <div class="m-actions"><button class="btn btn-white" data-act="ok" data-autofocus>OK</button></div></div>`;
+    modal.classList.remove('hidden');
+    $('[data-act="ok"]', content).addEventListener('click', closeModal);
+    autoFocus($('[data-act="ok"]', content));
+  }
+
+  // Asks before something that can't be undone. Resolves true for the confirm button, false otherwise.
+  let confirmResolve = null;
+  function confirmAction(title, text, okLabel = 'Confirm') {
+    return new Promise((resolve) => {
+      const modal = $('#modal'), content = $('#modal-content');
+      if (confirmResolve) confirmResolve(false);
+      confirmResolve = resolve;
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      content.innerHTML = `<div class="m-body notice-body"><h2>${esc(title)}</h2><p class="overview">${esc(text)}</p>
+        <div class="m-actions"><button class="btn btn-red" data-act="yes">${esc(okLabel)}</button>
+        <button class="btn btn-gray" data-act="no" data-autofocus>Cancel</button></div></div>`;
+      modal.classList.remove('hidden');
+      const done = (v) => { const r = confirmResolve; confirmResolve = null; closeModal(); r?.(v); };
+      $('[data-act="yes"]', content).addEventListener('click', () => done(true));
+      $('[data-act="no"]', content).addEventListener('click', () => done(false));
+      autoFocus($('[data-act="no"]', content));
+    });
+  }
+
+  // The Admin PIN (guard 1.34.0, now also in front of Users): a PIN pad in place of a tab, and a check that shows it when the PIN is in the way.
+  function showPinPad(body, isCurrent, what, retry) {
+    body.innerHTML = `<section class="admin-card pin-card"><h2>Admin PIN</h2><p class="muted">Enter the 4-digit PIN to open ${esc(what)}.</p>
+      <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
+      <div class="m-actions"><button class="btn btn-white" data-pin-go>Unlock</button></div><div class="live-result" data-pin-result></div></section>`;
+    const input = $('[data-pin]', body), out = $('[data-pin-result]', body);
+    const go = async () => {
+      if (!/^\d{4}$/.test(input.value)) { out.className = 'live-result bad'; out.textContent = 'Type the 4 digits.'; return; }
+      try { await guard('/reseller-pin/unlock', { method: 'POST', body: { pin: input.value } }); if (isCurrent()) retry(); }
+      catch (e) { input.value = ''; out.className = 'live-result bad'; out.textContent = e.message; autoFocus(input); }
+    };
+    input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); if (input.value.length === 4) go(); });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    $('[data-pin-go]', body).addEventListener('click', go);
+    autoFocus(input);
+  }
+  // { locked, st }: locked when the PIN is set and not typed yet (the pad is then already on screen). An older guard has no PIN: not locked.
+  async function pinGate(body, isCurrent, what, retry) {
+    let st = null;
+    try { st = await guard('/reseller-pin'); } catch { return { locked: false, st: null }; }
+    if (!isCurrent()) return { locked: true, st };
+    if (st.set && !st.unlocked) { showPinPad(body, isCurrent, what, retry); return { locked: true, st }; }
+    return { locked: false, st };
+  }
+  // The PIN: asks for the 4 digits; resolves with them, or null when cancelled.
+  function askPin(text = 'Type the 4-digit Admin PIN to continue.') {
+    return new Promise((resolve) => {
+      const modal = $('#modal'), content = $('#modal-content');
+      if (confirmResolve) confirmResolve(false);
+      confirmResolve = () => resolve(null);
+      modalToken++;
+      if (modal.classList.contains('hidden')) rememberFocus('modal');
+      content.innerHTML = `<div class="m-body notice-body"><h2>Admin PIN</h2><p class="overview">${esc(text)}</p>
+        <input type="password" class="st-note-input pin-input" data-pin inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off" aria-label="4-digit PIN" placeholder="••••">
+        <div class="m-actions"><button class="btn btn-red" data-act="yes">Continue</button><button class="btn btn-gray" data-act="no">Cancel</button></div></div>`;
+      modal.classList.remove('hidden');
+      const input = $('[data-pin]', content);
+      const done = (v) => { confirmResolve = null; closeModal(); resolve(v); };
+      input.addEventListener('input', () => { input.value = input.value.replace(/\D/g, '').slice(0, 4); });
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && /^\d{4}$/.test(input.value)) done(input.value); });
+      $('[data-act="yes"]', content).addEventListener('click', () => { if (/^\d{4}$/.test(input.value)) done(input.value); else input.focus(); });
+      $('[data-act="no"]', content).addEventListener('click', () => done(null));
+      autoFocus(input);
+    });
+  }
+  // A Guard call that, when the Reseller PIN is in the way (423), asks for it, unlocks, and tries once more.
+  async function guardWithPin(path, opts) {
+    try { return await guard(path, opts); } catch (e) {
+      if (e.status !== 423) throw e;
+      let text;
+      for (let tries = 0; tries < 3; tries++) {
+        const pin = await askPin(text);
+        if (!pin) throw new Error('Cancelled.');
+        try { await guard('/reseller-pin/unlock', { method: 'POST', body: { pin } }); return await guard(path, opts); } catch (e2) { if (e2.status !== 403) throw e2; text = 'That PIN is not right. Try again.'; }
+      }
+      throw new Error('That PIN is not right.');
+    }
+  }
+
+  async function refreshRequestsConfig() {
+    try {
+      const cfg = await readAuroraPref(REQ_PREFS.id);
+      requestsOverride = cfg?.server ? cfg : null;
+      if (requestsOverride) applyRequestsServer(requestsOverride.server, requestsOverride.on !== false);
+      else loadRemoteConfig();
+    } catch (e) { console.warn('Requests settings', e); }
+  }
+
+  // Reads the current Requests address from aurora-config.json in the repo, so a changed address
+  // (a restarted Cloudflare quick tunnel, say) reaches every installed app without an update.
+  async function loadRemoteConfig() {
+    const hasOverride = !!requestsOverride; // the Requests address set in Admin wins over the file
+    for (const url of REMOTE_CONFIG_URLS) {
+      try {
+        const res = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const cfg = await res.json();
+        if (typeof cfg.guardEnabled === 'boolean') { guardEnabled = cfg.guardEnabled; store.set('ef.guardEnabled', guardEnabled ? '1' : '0'); }
+        if (typeof cfg.guardUrl === 'string' && trustedGuardUrl(cfg.guardUrl.trim())) { guardUrl = cfg.guardUrl.trim(); store.set('ef.guardUrl', guardUrl); }
+        else if (typeof cfg.guardUrl === 'string' && cfg.guardUrl.trim()) appLog.add('warn', 'Ignored a guard address from the settings file: it must be https and on the same host as the server.');
+        if (hasOverride) return;
+        if (!store.get('ef.forceUpdateFromAdmin') && cfg.forceUpdateAfter !== undefined && Number.isFinite(Number(cfg.forceUpdateAfter))) {
+          forceUpdateAfter = Math.max(0, Number(cfg.forceUpdateAfter));
+          store.set('ef.forceUpdateAfter', String(forceUpdateAfter));
+          applyRequiredUpdate();
+        }
+        const value = typeof cfg.requestsServer === 'string' ? cfg.requestsServer.trim().replace(/\/+$/, '') : '';
+        if (value && !secureAddress(value)) return;
+        if (requestsOverride) return;
+        applyRequestsServer(value, cfg.requestsEnabled === true && !!value);
+        return;
+      } catch { /* try the next location */ }
+    }
+  }
+
+  // ---------- Trailers ----------
+  // Emby has two kinds: trailer files in the library (played in Aurora's player) and online trailers
+  // (YouTube links, opened in the YouTube app, which handles a TV remote properly).
+  const youTubeTrailers = (item) => (item.RemoteTrailers || []).map((t) => t.Url).filter((u) => youTubeId(u));
+  const hasTrailer = (item) => (item.LocalTrailerCount || 0) > 0 || youTubeTrailers(item).length > 0;
+
+  function youTubeId(url) {
+    const m = String(url || '').match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|shorts\/)|youtu\.be\/)([\w-]{11})/);
+    return m ? m[1] : '';
+  }
+
+  async function playTrailer(item) {
+    if ((item.LocalTrailerCount || 0) > 0) {
+      try {
+        const local = await api(userPath(`/Items/${item.Id}/LocalTrailers`));
+        if (local?.length) return playItem(local[0], { startTicks: 0 });
+      } catch { /* fall back to an online trailer */ }
+    }
+    const url = youTubeTrailers(item)[0];
+    if (url) openYouTube(url, item.Name);
+    else toast('No trailer available.');
+  }
+
+  function openYouTube(url, title) {
+    const id = youTubeId(url);
+    if (!id) return toast('No trailer available.');
+    // The Android app hands it to the YouTube app. Without one it says so: a YouTube page inside the app's own window
+    // could reach the app's private functions (any page loaded in the window can), so that's only done in a browser.
+    if (nativeApp?.openYouTube) {
+      if (!nativeApp.openYouTube(id)) toast('Trailers open in the YouTube app. Install it to watch this one.', 5000);
+      return;
+    }
+    showTrailerWindow(id, title);
+  }
+
+  function showTrailerWindow(id, title) {
+    rememberFocus('trailer');
+    const box = $('#trailer');
+    box.innerHTML = `
+      <div class="trailer-frame">
+        <div class="trailer-head">
+          <strong>${title ? `${esc(title)} · Trailer` : 'Trailer'}</strong>
+          <button class="btn btn-gray" data-act="close-trailer" data-autofocus>Close</button>
+        </div>
+        <iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(id)}?autoplay=1&rel=0&playsinline=1"
+          allow="autoplay; encrypted-media; fullscreen; picture-in-picture" allowfullscreen title="Trailer"></iframe>
+      </div>`;
+    box.classList.remove('hidden');
+    $('[data-act="close-trailer"]', box).addEventListener('click', closeTrailerWindow);
+    box.addEventListener('click', (e) => { if (e.target === box) closeTrailerWindow(); }, { once: true });
+    if (nav.on) focusEl($('[data-act="close-trailer"]', box));
+  }
+
+  const trailerOpen = () => !$('#trailer').classList.contains('hidden');
+  function closeTrailerWindow() {
+    const box = $('#trailer');
+    if (box.classList.contains('hidden')) return;
+    box.classList.add('hidden');
+    box.innerHTML = ''; // stops the video
+    restoreFocus('trailer');
+  }
+
+  // ---------- Settings ----------
+  // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
+  const PREF_DEFAULTS = { guidePreview: 'on', splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', subColor: 'white', subEdge: 'shadow', allowShots: 'off', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
+  // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
+  const PLAYBACK_PREFS = 'aurora-playback';
+  let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
+  // Playback settings apply on phones, TVs and in a browser. (The app lock is phones only: see the Android app.)
+  const lockedPref = (key) => (key === 'liveBuffer' || key === 'player' || key === 'appLock') && playbackCfg[key] ? playbackCfg[key] : '';
+  const stallSeconds = () => Number(playbackCfg.stallSeconds) || 0; // 0 = the player's own default
+  const getPref = (key) => lockedPref(key) || store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
+  const setPref = (key, value) => store.set('ef.pref.' + key, value);
+
+  const SUB_SIZES = { s: ['Small', '1.2rem'], m: ['Medium', '1.6rem'], l: ['Large', '2.2rem'], xl: ['Extra large', '2.8rem'] };
+  const SUB_COLORS = { white: ['White', '#fff'], yellow: ['Yellow', '#ffe066'], cyan: ['Cyan', '#7ee8ff'], green: ['Green', '#9dff9a'] };
+  const SUB_EDGES = { shadow: ['Soft shadow', '0 0 4px #000, 0 0 2px #000'], outline: ['Outline', '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000'], none: ['None', 'none'] };
+  const SUB_BACKGROUNDS = { none: ['None', 'transparent'], semi: ['See-through', 'rgba(0,0,0,.6)'], solid: ['Solid', '#000'] };
+  const SUBTITLE_MODES = [
+    ['Smart', 'Only when the audio is in another language'], ['Always', 'Always on'],
+    ['OnlyForced', 'Only forced subtitles (signs and foreign dialogue)'], ['None', 'Off'], ['Default', "Use the file's default"],
+  ];
+  const LANGUAGES = [
+    ['', 'Default'], ['eng', 'English'], ['spa', 'Spanish'], ['fre', 'French'], ['ger', 'German'], ['ita', 'Italian'],
+    ['por', 'Portuguese'], ['dut', 'Dutch'], ['swe', 'Swedish'], ['nor', 'Norwegian'], ['dan', 'Danish'], ['fin', 'Finnish'],
+    ['pol', 'Polish'], ['rus', 'Russian'], ['ukr', 'Ukrainian'], ['tur', 'Turkish'], ['gre', 'Greek'], ['ara', 'Arabic'],
+    ['heb', 'Hebrew'], ['hin', 'Hindi'], ['jpn', 'Japanese'], ['kor', 'Korean'], ['chi', 'Chinese'], ['tha', 'Thai'], ['vie', 'Vietnamese'],
+  ];
+
+  function applySubtitleStyle() {
+    const root = document.documentElement.style;
+    root.setProperty('--cue-size', (SUB_SIZES[getPref('subSize')] || SUB_SIZES.m)[1]);
+    root.setProperty('--cue-bg', (SUB_BACKGROUNDS[getPref('subBg')] || SUB_BACKGROUNDS.semi)[1]);
+    root.setProperty('--cue-color', (SUB_COLORS[getPref('subColor')] || SUB_COLORS.white)[1]);
+    root.setProperty('--cue-edge', (SUB_EDGES[getPref('subEdge')] || SUB_EDGES.shadow)[1]);
+  }
+
+  const selectHtml = (name, options, value, disabled = false) =>
+    `<select data-setting="${name}"${disabled ? ' disabled' : ''}>${options.map(([v, label]) => `<option value="${esc(v)}"${String(v) === String(value) ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+  const settingRow = (label, help, control) =>
+    `<div class="setting-row"><div class="setting-label"><strong>${esc(label)}</strong>${help ? `<span>${esc(help)}</span>` : ''}</div>${control}</div>`;
+
+  // "Aurora: Online / Offline" for customers (Settings). Aurora Guard's public /status page says whether the server
+  // answers; if the guard can't be reached (it's off, or an older one the app can't read), ask the server itself.
+  async function serviceOnline() {
+    if (guardEnabled) {
+      try {
+        const res = await fetch(guardUrl.replace(/\/+$/, '') + '/status', { cache: 'no-store', signal: timeoutSignal(6000) });
+        const m = res.ok ? (await res.text()).match(/Aurora:\s*(online|offline)/i) : null;
+        if (m) return m[1].toLowerCase() === 'online';
+      } catch { /* ask the server instead */ }
+    }
+    try {
+      const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: timeoutSignal(8000) });
+      return res.ok;
+    } catch { return false; }
+  }
+  function showServiceStatus(el, isCurrent) {
+    const update = async () => {
+      const online = await serviceOnline();
+      if (!isCurrent() || !el.isConnected) return;
+      el.className = 'service-status ' + (online ? 'online' : 'offline');
+      el.lastElementChild.textContent = online ? 'Aurora: Online' : 'Aurora: Offline';
+    };
+    update();
+    const timer = routeInterval(() => { if (!isCurrent() || !el.isConnected) clearInterval(timer); else update(); }, 60000);
+  }
+
+  // "My account": the plan (how many devices at once, how many in use), the date access ends, and a way to ask for more
+  // time. Comes from Aurora Guard (GET /account, about this account only); the admin approves in Admin -> Users.
+  async function showAccountInfo(section, isCurrent) {
+    const box = $('[data-account-body]', section);
+    if (!guardEnabled) { section.remove(); return; }
+    const draw = async () => {
+      let a;
+      try { a = await guard('/account', { params: { userId: state.userId } }); }
+      catch (e) {
+        if (!isCurrent() || !section.isConnected) return;
+        box.innerHTML = '<p class="setting-desc">Your plan details can\'t be shown right now. Try again in a moment.</p>';
+        return;
+      }
+      if (!isCurrent() || !section.isConnected) return;
+      applyPlanCategories(a.admin ? null : a.categories); applyAdultFlag(a);
+      setProviderAllowed(!a.admin && !!a.vod);
+      if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
+      const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
+      const soon = a.daysLeft != null && a.daysLeft <= 7;
+      const endText = a.expires ? `${fmtDay(a.expires)}${a.expired ? '' : ` · ${a.daysLeft <= 0 ? 'ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left'}`}` : 'No end date';
+      const r = a.request;
+      let reqHtml = '';
+      if (r?.status === 'pending') reqHtml = `<p class="account-note">Extension requested ${esc(timeAgo(r.at))}${r.wantedPlan ? ` (${esc(r.wantedPlan)})` : ''}. ${r.to === 'reseller' ? 'Your reseller' : 'The admin'} will review it.</p>`;
+      else if (r?.status === 'approved' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note good">Your extension was approved${r.newExpires ? `: access now runs until ${esc(fmtDay(r.newExpires))}` : ''}.${r.message ? ' ' + esc(r.message) : ''}</p>`;
+      else if (r?.status === 'denied' && Date.now() - (r.decidedAt || 0) < 14 * 86400000) reqHtml = `<p class="account-note bad">Your last request wasn't approved.${r.message ? ' ' + esc(r.message) : ' Please contact the admin.'}</p>`;
+      let offered = [];
+      if (a.canRequest) { try { offered = (await guard('/plans/public', { params: { userId: state.userId }, quick: true })).plans || []; } catch { /* an older guard: no plan choice */ } }
+      if (!isCurrent() || !section.isConnected) return;
+      box.innerHTML = `
+        ${settingRow(a.plan ? 'Plan' : 'Plan', a.plan ? `${a.plan.name}. How many devices can be signed in and in use at the same time.` : 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
+        ${settingRow('In use right now', null, `<span class="setting-value">${a.activeDevices} of ${n}</span>`)}
+        ${settingRow('Access until', soon && !a.expired ? 'Your access ends soon. You can ask for more time below.' : null, `<span class="setting-value${soon ? ' account-soon' : ''}">${esc(endText)}</span>`)}
+        ${reqHtml}
+        ${a.canRequest ? `<div class="account-request">
+          ${offered.length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}</select></label>` : ''}
+          ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-coupon maxlength="20" placeholder="Coupon code (optional)" autocomplete="off" autocapitalize="characters">'}
+          ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-note maxlength="200" placeholder="Add a note for the admin (optional)" autocomplete="off">'}
+          <button class="btn btn-white" data-ext-send>Request an extension</button></div>` : ''}`;
+      // While a request waits, look again every 30 s so the answer appears without leaving the page.
+      if (r?.status === 'pending') setTimeout(() => { if (isCurrent() && section.isConnected) draw(); }, 30000);
+      $('[data-ext-send]', box)?.addEventListener('click', async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = 'Sending…';
+        try {
+          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: $('[data-ext-plan]', box)?.value || undefined, coupon: $('[data-ext-coupon]', box)?.value.trim() || undefined } });
+          toast('Request sent to the admin', 3000);
+        } catch (err) { toast(err.message || "Couldn't send the request. Try again in a moment.", 5000); }
+        draw();
+      });
+    };
+    draw();
+  }
+
+  // ---------- Status page and "Is it just me?" ----------
+  // Settings → Status. Checks, from this device: the internet, the Aurora server and the Live TV provider; then asks Aurora
+  // Guard what everyone else is seeing (outages, channel reports, the sports feed). The answer says whether it is just
+  // this device or everybody. Nothing here changes any setting.
+  const SLOW_MS = 1500;
+  let lastStatusVerdict = '';
+  async function stTime(fn) {
+    const t0 = performance.now();
+    try { const extra = await fn(); return { ok: true, ms: Math.round(performance.now() - t0), ...(extra || {}) }; }
+    catch (e) { return { ok: false, ms: Math.round(performance.now() - t0), error: e?.message || 'failed' }; }
+  }
+  const stInternet = () => stTime(async () => {
+    if (navigator.onLine === false) throw new Error('offline');
+    await fetch('https://www.gstatic.com/generate_204', { mode: 'no-cors', cache: 'no-store', signal: timeoutSignal(7000) });
+  });
+  const stServer = () => stTime(async () => {
+    const res = await fetch(state.server + '/emby/System/Info/Public', { cache: 'no-store', signal: timeoutSignal(8000) });
+    if (!res.ok) throw new Error(`answered ${res.status}`);
+  });
+  // An Xtream provider can be asked about the account without opening a stream; a playlist link can't be tested without downloading it.
+  const stProvider = () => (iptv.config?.type === 'xtream'
+    ? stTime(async () => { await iptvText(xtUrl(iptv.config, {}), iptv.config, 8000); })
+    : Promise.resolve({ ok: true, ms: 0, skipped: true }));
+
+  async function statusGather(ui) {
+    const live = iptvOn();
+    const names = ['Your device', 'Aurora server', ...(live ? ['Live TV provider'] : []), 'Other viewers'];
+    ui?.start(names);
+    let i = 0;
+    const step = async (fn) => { ui?.begin(i); const v = await fn(); ui?.end(i, v.text, v.level); i++; return v; };
+    const r = { live };
+    // Everything is asked at once (a dead server can take its full 8 seconds), then the steps are shown one by one.
+    const pNet = stInternet(), pServer = stServer(), pProv = live ? stProvider() : null;
+    const gp = guardEnabled ? guard('/service-status', { params: { userId: state.userId } }).catch(() => null) : Promise.resolve(null);
+    r.net = await step(async () => {
+      const t = await pNet;
+      return { ...t, level: !t.ok ? 'bad' : t.ms > SLOW_MS ? 'warn' : 'ok', text: !t.ok ? 'No internet connection' : `Online, ${t.ms} ms${t.ms > SLOW_MS ? ' (slow)' : ''}` };
+    });
+    r.server = await step(async () => {
+      const t = await pServer;
+      return { ...t, level: !t.ok ? (r.net.ok ? 'bad' : 'warn') : t.ms > SLOW_MS ? 'warn' : 'ok', text: !t.ok ? (r.net.ok ? "Didn't answer" : 'Skipped') : `Reachable, ${t.ms} ms${t.ms > SLOW_MS ? ' (slow)' : ''}` };
+    });
+    // The guard sits next to the server, so it can answer even when the server can't be reached from here.
+    if (live) {
+      r.provider = await step(async () => {
+        const t = await pProv;
+        return { ...t, level: !t.ok ? 'bad' : 'ok', text: !t.ok ? "No answer (didn't respond)" : t.skipped ? 'Not tested directly (playlist link)' : 'Responding' };
+      });
+    }
+    r.g = await gp;
+    r.others = await step(async () => {
+      const g = r.g;
+      if (!g) return { level: 'na', text: guardEnabled ? 'Not available right now' : 'Not available' };
+      if (g.server && !g.server.online) return { level: 'bad', text: "Aurora's own check says the server is offline" };
+      if (live && g.live?.state === 'bad') return { level: 'bad', text: `${g.live.reporters} others reported Live TV problems` };
+      if (live && g.live?.channels?.length) { const c = g.live.channels[0]; return { level: 'warn', text: `${c.reports} others reported ${c.name}` }; }
+      return { level: 'ok', text: 'No problems reported' };
+    });
+    r.verdict = statusVerdict(r);
+    lastStatusVerdict = r.verdict.title;
+    return r;
+  }
+
+  function statusVerdict(r) {
+    const g = r.g, live = g?.live;
+    if (!r.net.ok) return { level: 'warn', title: 'It looks like just you', text: "This device has no internet connection. Check Wi-Fi or mobile data, then check again.", actions: ['again'] };
+    if (!r.server.ok) {
+      if (g?.server?.online) return { level: 'warn', title: 'It looks like just you', text: "Aurora is running, but this device can't reach it. Try switching between Wi-Fi and mobile data.", actions: ['again'] };
+      return { level: 'bad', title: 'Not just you: Aurora is offline', text: 'Nothing is wrong with your internet or your device. The server is not answering.', actions: ['notify', 'again'] };
+    }
+    if (g && g.server && !g.server.online) return { level: 'bad', title: 'Not just you: Aurora is offline', text: 'The server stopped answering a moment ago. It should be back soon.', actions: ['notify', 'again'] };
+    if (r.provider && !r.provider.ok) {
+      if (live && live.state !== 'ok') return { level: 'bad', title: 'Not just you: Live TV is down for everyone', text: `Movies and shows still work.${live.reporters ? ` ${live.reporters} other ${live.reporters === 1 ? 'viewer has' : 'viewers have'} reported it.` : ''}`, actions: ['watch', 'notify', 'again'], others: live.reporters };
+      return { level: 'bad', title: "Live TV isn't answering", text: "Movies and shows still work. No one else has reported it yet, so it may be your connection to the provider. Try again in a minute.", actions: ['watch', 'notify', 'again'] };
+    }
+    if (live && live.state === 'bad') return { level: 'warn', title: 'Not just you: Live TV is having problems', text: 'Several channels are failing for other viewers too. Movies and shows still work.', actions: ['watch', 'notify', 'again'], others: live.reporters };
+    if (live && live.channels.length) { const c = live.channels[0]; return { level: 'warn', title: `Not just you: ${c.name} has problems`, text: 'Other channels work. Try another channel, or the same game on a different one.', actions: ['notify', 'again'], others: c.reports }; }
+    if (r.net.level === 'warn' || r.server.level === 'warn') return { level: 'warn', title: 'It looks like just you', text: 'Aurora is healthy, but this connection is slow right now. Move closer to the router, or run a speed test to see which video quality to use.', actions: ['speed', 'again'] };
+    return { level: 'ok', title: 'Everything looks fine from here', text: "If something still won't play, try a different title or restart Aurora.", actions: ['again'] };
+  }
+
+  let statusWatchTimer = null;
+  function startStatusWatch() {
+    clearInterval(statusWatchTimer);
+    let left = 60;
+    statusWatchTimer = setInterval(async () => {
+      if (--left < 0) { clearInterval(statusWatchTimer); return; }
+      if (document.hidden) return;
+      try {
+        const r = await statusGather();
+        if (r.verdict.level === 'ok') { clearInterval(statusWatchTimer); toast("Aurora is working again.", 6000); }
+      } catch { /* try again next minute */ }
+    }, 60000);
+    toast("OK. If Aurora is still open, a message will appear when it's working again.", 5000);
+  }
+
+  async function renderStatus(page, isCurrent) {
+    const autoRun = Date.now() - statusAutoAt < 15000; statusAutoAt = 0;
+    page.innerHTML = `<div class="page-pad status-page">
+      <div class="page-head"><h1>Status</h1></div>
+      <div class="st-banner" data-st-banner role="status"><span class="st-dot"></span><div><b data-st-title>Checking…</b><small data-st-sub></small></div></div>
+      <div class="st-note hidden" data-st-note></div>
+      <div class="st-grid">
+        <div>
+          <section class="settings-section"><h2>Services</h2><div data-st-svcs><div class="spinner"></div></div><div data-st-hours></div></section>
+          <section class="settings-section hidden" data-st-recent-sec><h2>Recent</h2><div data-st-recent></div></section>
+        </div>
+        <div>
+          <section class="settings-section"><h2>Is it just me?</h2>
+            <p class="setting-desc">Something not loading or buffering? Aurora checks this device, the server, the Live TV provider and what other viewers are seeing.</p>
+            <button class="btn btn-white" data-st-run>Check now</button>
+            <div class="st-steps" data-st-steps></div><div data-st-verdict></div>
+          </section>
+        </div>
+      </div></div>`;
+    const q = (sel) => $(sel, page);
+    const pill = (level, text) => `<span class="st-pill ${level}">${esc(text)}</span>`;
+    const paint = (r) => {
+      const v = r.verdict, g = r.g;
+      const b = q('[data-st-banner]');
+      b.className = 'st-banner ' + v.level;
+      q('[data-st-title]').textContent = v.level === 'ok' ? 'Everything is running' : v.title;
+      q('[data-st-sub]').textContent = `Checked ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      const note = q('[data-st-note]');
+      if (g?.note?.text) { note.textContent = g.note.text; note.classList.remove('hidden'); } else note.classList.add('hidden');
+      const rows = [
+        ['📡', 'Your connection', r.net.ok ? `${r.net.ms} ms` : 'No internet', r.net.level, r.net.level === 'ok' ? 'Good' : r.net.level === 'warn' ? 'Slow' : 'Offline'],
+        ['🎬', 'Aurora server', r.server.ok ? `Movies and shows · ${r.server.ms} ms` : "Didn't answer", r.server.level === 'bad' && g?.server?.online ? 'warn' : r.server.level, r.server.ok ? (r.server.level === 'warn' ? 'Slow' : 'Online') : (g?.server?.online ? 'Unreachable' : 'Down')],
+      ];
+      if (r.live) {
+        const ls = r.provider.ok ? (g?.live?.state === 'bad' ? 'bad' : g?.live?.state === 'warn' ? 'warn' : 'ok') : 'bad';
+        rows.push(['📺', 'Live TV provider', !r.provider.ok ? "Didn't answer" : g?.live?.state === 'bad' ? 'Several channels failing' : g?.live?.channels?.length ? `${g.live.channels[0].name} has problems` : r.provider.skipped ? 'Playlist link' : 'Responding', ls, ls === 'ok' ? 'Online' : ls === 'warn' ? 'Partial' : 'Down']);
+      }
+      if (g?.scores?.enabled && g.scores.state !== 'na') rows.push(['🏈', 'Sports scores', g.scores.ageSeconds != null ? `Updated ${g.scores.ageSeconds < 60 ? g.scores.ageSeconds + ' s' : Math.round(g.scores.ageSeconds / 60) + ' min'} ago` : '', g.scores.state === 'ok' ? 'ok' : 'warn', g.scores.state === 'ok' ? 'Online' : 'Unavailable']);
+      q('[data-st-svcs]').innerHTML = rows.map(([ic, nm, sub, lv, label]) => `<div class="st-svc"><span class="st-ic">${ic}</span><div class="st-nm"><b>${esc(nm)}</b><small>${esc(sub)}</small></div>${pill(lv, label)}</div>`).join('');
+      q('[data-st-hours]').innerHTML = g?.hours ? `<div class="st-hours-label">Aurora server, last 24 hours</div><div class="st-bars">${g.hours.map((h) => `<i class="${h || 'none'}"></i>`).join('')}</div><div class="st-legend"><span>24 h ago</span><span>now</span></div>` : '';
+      const inc = g?.incidents || [];
+      q('[data-st-recent-sec]').classList.toggle('hidden', !inc.length);
+      q('[data-st-recent]').innerHTML = inc.map((x) => `<div class="st-inc"><b>${esc(x.title)}</b><small>${x.end ? `Resolved ${esc(timeAgo(x.end))}` : 'Ongoing'} · started ${esc(timeAgo(x.start))}</small></div>`).join('');
+    };
+    const paintVerdict = (r) => {
+      const v = r.verdict;
+      const labels = { again: 'Check again', notify: "Tell me when it's back", watch: 'Watch a movie instead', speed: 'Run a speed test' };
+      q('[data-st-verdict]').innerHTML = `<div class="st-verdict ${v.level}"><h3>${esc(v.title)}</h3><p>${esc(v.text)}</p>
+        ${v.others ? `<p class="st-others">${v.others} other ${v.others === 1 ? 'viewer' : 'viewers'} reported this</p>` : ''}
+        <div class="st-actions">${v.actions.map((a) => `<button class="btn btn-gray" data-st-act="${a}">${labels[a]}</button>`).join('')}</div></div>`;
+    };
+    // First look when the page opens: no step-by-step, just the picture.
+    const first = await statusGather();
+    if (!isCurrent()) return;
+    paint(first);
+    const runBtn = q('[data-st-run]');
+    const check = async () => {
+      runBtn.disabled = true; runBtn.textContent = 'Checking…';
+      q('[data-st-verdict]').innerHTML = '';
+      const steps = q('[data-st-steps]');
+      const ui = {
+        start: (names) => { steps.innerHTML = names.map((n, i) => `<div class="st-step" data-i="${i}"><span class="st-mark"></span><div><b>${esc(n)}</b><div class="st-stext"></div></div></div>`).join(''); },
+        begin: (i) => { const el = $(`[data-i="${i}"]`, steps); if (el) el.classList.add('run'); },
+        end: (i, text, level) => { const el = $(`[data-i="${i}"]`, steps); if (!el) return; el.classList.remove('run'); el.classList.add('done', level); $('.st-mark', el).textContent = level === 'ok' ? '✓' : level === 'warn' ? '!' : level === 'bad' ? '✕' : '–'; $('.st-stext', el).textContent = text; },
+      };
+      let r;
+      try { r = await statusGather(ui); } catch (e) { runBtn.disabled = false; runBtn.textContent = 'Check now'; toast("Couldn't run the check. Try again.", 4000); return; }
+      if (!isCurrent()) return;
+      paint(r); paintVerdict(r);
+      runBtn.disabled = false; runBtn.textContent = 'Check again';
+      if (nav.tv) autoFocus(runBtn);
+    };
+    runBtn.addEventListener('click', check);
+    if (autoRun) check();
+    page.addEventListener('click', (e) => {
+      const a = e.target.closest('[data-st-act]')?.dataset.stAct;
+      if (a === 'again') check();
+      else if (a === 'notify') startStatusWatch();
+      else if (a === 'watch') location.hash = '#/movies';
+      else if (a === 'speed') location.hash = '#/speedtest';
+    });
+    // Look again quietly every minute while the page is open (not while a check is running).
+    const timer = routeInterval(async () => {
+      if (!isCurrent() || !page.isConnected) { clearInterval(timer); return; }
+      if (document.hidden || runBtn.disabled) return;
+      try { const r = await statusGather(); if (isCurrent() && !runBtn.disabled) paint(r); } catch { /* keep what is shown */ }
+    }, 60000);
+  }
+
+  async function renderSettings(page, isCurrent) {
+    page.innerHTML = `<div class="page-pad settings-page"><div class="page-head"><h1>Settings</h1></div><div class="spinner"></div></div>`;
+    let user = state.user;
+    try { user = await api(`/Users/${state.userId}`); state.user = user; } catch { /* fall back to what we have */ }
+    if (!isCurrent()) return;
+    const cfg = user?.Configuration || {};
+    const langs = (value) => (value && !LANGUAGES.some(([v]) => v === value) ? [...LANGUAGES, [value, value]] : LANGUAGES);
+    const version = nativeApp?.getVersionName ? `Aurora V${nativeApp.getVersionName()} for Android` : 'Aurora (web)';
+
+    $('.settings-page', page).innerHTML = `
+      <div class="page-head"><h1>Settings</h1>
+        <div class="service-status" data-service-status role="status"><span class="service-dot"></span><span>Aurora: Checking…</span></div></div>
+      <section class="settings-section account-section" data-account><h2>My account</h2><div data-account-body><p class="setting-desc">Loading…</p></div></section>
+      ${state.isReseller ? `<section class="settings-section"><h2>Reseller</h2>${settingRow('Reseller panel', 'Your credits, your customers, and adding or renewing them.', '<a class="btn btn-gray" href="#/reseller">Open Reseller panel</a>')}</section>` : ''}
+      ${dlSupported() && downloadsAllowed() ? `<section class="settings-section"><h2>Downloads</h2>${settingRow('Watch without internet', 'Movies and shows saved on this phone or tablet.', '<a class="btn btn-gray" href="#/downloads">Open Downloads</a>')}</section>` : ''}
+      ${inboxState.ok ? `<section class="settings-section"><h2>Help &amp; more</h2>
+        ${settingRow('Get help', 'Send a message to your provider with the details they need attached.', '<a class="btn btn-gray" href="#/help">Help &amp; support</a>')}
+        ${settingRow('Refer a friend', 'Share your code. You both get free days.', '<a class="btn btn-gray" href="#/refer">Refer a friend</a>')}
+        ${settingRow('Your Aurora', 'What you watched this week.', '<a class="btn btn-gray" href="#/stats">See my week</a>')}
+      </section>` : ''}
+      <section class="settings-section"><h2>Speed test</h2>
+        ${settingRow('Check my connection', 'See whether your connection is good enough for Aurora, and which video quality to use.', '<a class="btn btn-gray" href="#/speedtest">Start speed test</a>')}
+      </section>
+      <section class="settings-section"><h2>Status</h2>
+        ${settingRow('Is it just me?', 'Something not loading or buffering? See whether Aurora, the Live TV provider or your connection is the problem.', '<a class="btn btn-gray" href="#/status">Open Status</a>')}
+      </section>
+      <section class="settings-section">
+        <h2>Language &amp; subtitles <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
+        ${settingRow('Audio language', 'Pick this language when a title has more than one.', selectHtml('audioLang', langs(cfg.AudioLanguagePreference), cfg.AudioLanguagePreference || ''))}
+        ${settingRow('Subtitles', 'When subtitles turn on by themselves.', selectHtml('subMode', SUBTITLE_MODES.map(([v, l]) => [v, l]), cfg.SubtitleMode || 'Default'))}
+        ${settingRow('Subtitle language', null, selectHtml('subLang', langs(cfg.SubtitleLanguagePreference), cfg.SubtitleLanguagePreference || ''))}
+      </section>
+      <section class="settings-section">
+        <h2>Subtitle appearance <small>This device</small></h2>
+        ${settingRow('Size', null, selectHtml('subSize', Object.entries(SUB_SIZES).map(([k, v]) => [k, v[0]]), getPref('subSize')))}
+        ${settingRow('Color', null, selectHtml('subColor', Object.entries(SUB_COLORS).map(([k, v]) => [k, v[0]]), getPref('subColor')))}
+        ${settingRow('Edge', null, selectHtml('subEdge', Object.entries(SUB_EDGES).map(([k, v]) => [k, v[0]]), getPref('subEdge')))}
+        ${settingRow('Background', null, selectHtml('subBg', Object.entries(SUB_BACKGROUNDS).map(([k, v]) => [k, v[0]]), getPref('subBg')))}
+        <div class="subtitle-preview"><span>This is how subtitles will look.</span></div>
+      </section>
+      <section class="settings-section">
+        <h2>Your profile <small>Saved to ${user?.Name ? esc(user.Name) + "'s" : 'your'} account</small></h2>
+        ${guardEnabled && iptvOn() ? settingRow('Sports teams and leagues', (profile?.leagues?.length || profile?.teams?.length) ? `${(profile.leagues || []).join(', ') || 'No leagues'}${profile.teams?.length ? ' · ' + profile.teams.length + ' ' + (profile.teams.length === 1 ? 'team' : 'teams') : ''}. Shown first in Live TV → Sports.` : 'Pick the leagues and teams you follow. Their games come first in Live TV → Sports.', '<button class="btn btn-gray" data-edit-sports>Change</button>') : ''}
+        ${settingRow('Avatar and name', profile?.avatar || profile?.name ? `${profile?.name ? esc(profile.name) + ' · ' : ''}Shown in the top bar and as a greeting on Home.` : 'Pick an avatar, a name and what you like.', `<span class="su-set">${profile?.avatar ? avatarSvg(profile.avatar, 40) : ''}<button class="btn btn-gray" data-redo-setup>${profile?.done ? 'Set up again' : 'Set up my profile'}</button></span>`)}
+      </section>
+      <section class="settings-section">
+        <h2>Kids mode <small>Turn it on per device</small></h2>
+        ${settingRow('Kids mode', 'Shows only titles rated for children, only the kids channels in Live TV, and closes Requests and Settings. You need a PIN to leave it. The PIN is the same on all your devices.', selectHtml('kidsMode', [['off', 'Off'], ['on', 'On']], kidsOn() ? 'on' : 'off'))}
+        ${settingRow('Allowed ratings', 'Titles with no rating are hidden.', selectHtml('kidsLevel', Object.entries(KIDS_LEVELS).map(([k, v]) => [k, v[0]]), kidsLevel()))}
+        ${settingRow('PIN', store.get('ef.kids.pin') ? 'Needed to leave Kids mode.' : 'Not set yet. You choose one when you turn Kids mode on.', '<button class="btn btn-gray" data-kids-pin>' + (store.get('ef.kids.pin') ? 'Change PIN' : 'Set PIN') + '</button>')}
+      </section>
+      <section class="settings-section">
+        <h2>Playback <small>This device</small></h2>
+        ${settingRow('Sound when Aurora opens', 'Play the Aurora intro sound with the opening animation.', selectHtml('splashSound', [['on', 'On'], ['off', 'Off']], getPref('splashSound')))}
+        ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
+        ${settingRow('"Are you still watching?"', 'Pause after 3 episodes, or 4 hours of Live TV, with no button pressed.', selectHtml('stillWatching', [['on', 'On'], ['off', 'Off']], getPref('stillWatching')))}
+        ${nativeApp?.playVod ? settingRow('Video player', lockedPref('player') ? 'Set by Aurora for everyone.' : 'Aurora player plays most files as they are, with no converting. Switch to Basic only if a video won\'t play.', selectHtml('player', [['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], getPref('player'), !!lockedPref('player'))) : ''}
+        ${nativeApp?.previewStart ? settingRow('Live picture in the guide', 'Keeps a small live picture of your channel at the top of the Live TV guide while you browse. It uses one connection from the TV provider. Turn it off if you only have one.', selectHtml('guidePreview', [['on', 'On'], ['off', 'Off']], getPref('guidePreview'))) : ''}
+        ${nativeApp?.playLive ? settingRow('Live TV buffer', lockedPref('liveBuffer') ? 'Set by Aurora for everyone.' : 'How much of a channel is loaded before it plays. Bigger rides out slow internet better but changes channel more slowly.', selectHtml('liveBuffer', [['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest, for slow internet)']], getPref('liveBuffer'), !!lockedPref('liveBuffer'))) : ''}
+        ${nativeApp?.setAppLock && !nativeApp.isTv?.() ? settingRow('Lock Aurora', !nativeApp.canAppLock?.() ? "Set a screen lock on your phone first (phone Settings → Security), then you can turn this on." : lockedPref('appLock') ? 'Set by Aurora for everyone.' : "Asks for your phone's PIN, pattern or fingerprint when Aurora opens, and when you come back after a minute away.", selectHtml('appLock', [['off', 'Off'], ['on', 'On']], getPref('appLock'), !!lockedPref('appLock') || !nativeApp.canAppLock?.())) : ''}
+        ${nativeApp?.setAllowScreenshots && !nativeApp.isTv?.() ? settingRow('Allow screenshots', 'Lock Aurora hides the app from screenshots and screen recordings. Turn this on to allow them while the lock is on.', selectHtml('allowShots', [['off', 'Off'], ['on', 'On']], getPref('allowShots'))) : ''}
+        ${settingRow('Skip-ahead button', 'For episodes the server has no intro marks for, show a "Skip 90 seconds" button for a few seconds at the start. Episodes with intro marks always get Skip Intro.', selectHtml('skipGuess', [['on', 'On'], ['off', 'Off']], getPref('skipGuess')))}
+        ${nativeApp?.playVod ? settingRow('Software decoders (FFmpeg)', 'For sound and video your device can\'t decode itself (DTS, TrueHD and similar), in movies, shows and Live TV. Used only when the device\'s own decoder can\'t play it. Turn off if a video stutters.', selectHtml('ffmpeg', [['on', 'On (recommended)'], ['off', 'Off']], getPref('ffmpeg'))) : ''}
+        ${nativeApp?.playVod ? settingRow('Play shows as they are', asIsMode() ? 'Set by Aurora for everyone.' : 'Plays each episode exactly as it is stored, with no converting by the server. Turn it off if shows keep buffering on a slow connection, and Aurora will lower the quality for you.', selectHtml('showsAsIs', [['on', 'On (recommended)'], ['off', 'Off']], asIsMode() === 'off' ? 'off' : asIsMode() === 'all' ? 'on' : getPref('showsAsIs'), !!asIsMode())) : ''}
+        ${settingRow('Streaming quality', qualityCap() ? `Auto measures your connection. Aurora limits quality to ${QUALITY_OPTIONS.find((q) => q.bitrate === qualityCap())?.label || (qualityCap() / 1e6) + ' Mbps'} at most.` : 'Auto measures your connection. Lower it if videos keep buffering.', selectHtml('quality', qualityChoices().map((q) => [q.bitrate, q.label]), shownQuality()))}
+      </section>
+      <section class="settings-section feedback-section">
+        <h2>Help &amp; feedback <small>This device</small></h2>
+        <p class="setting-desc">Something not working? Say what happened and send it. The admins get your note with this device's app log, so they can see what went wrong. Errors are also reported to them automatically.</p>
+        <textarea class="feedback-text" data-feedback rows="3" maxlength="1000"${nav.tv ? ' tabindex="-1"' : ''} placeholder="What happened? For example: the film stopped halfway through.${nav.tv ? ' Press Back when you\'re done typing.' : ''}"></textarea>
+        <div class="feedback-actions">
+          ${nav.tv ? '<button class="btn btn-white" data-write-feedback>Write a note</button>' : ''}
+          <button class="btn ${nav.tv ? 'btn-gray' : 'btn-white'}" data-send-feedback>Send to admin</button>
+          <button class="btn btn-gray" data-show-log>Show app log</button>
+          <span class="setting-value" data-feedback-status></span>
+        </div>
+        <div class="feedback-log hidden" data-app-log></div>
+      </section>
+      <section class="settings-section">
+        <h2>About</h2>
+        ${settingRow('Clear cache', 'Removes temporary files (pictures, the TV guide, downloaded channel lists and update files). Your sign-in, settings, favorites and watch history stay.', '<div class="update-check"><span class="setting-value" data-cache-status></span><button class="btn btn-gray" data-clear-cache>Clear cache</button></div>')}
+        ${tourConfig() && tourSteps().length ? settingRow('Guided tour', 'A quick walk through the main screens of Aurora.', '<button class="btn btn-gray" data-replay-tour>Replay tour</button>') : ''}
+        ${settingRow('Version', null, `<span class="setting-value">${esc(version)}</span>`)}
+        ${settingRow('Signed in as', null, `<span class="setting-value">${esc(user?.Name || '')}</span>`)}
+        ${window.AuroraDesktop ? settingRow('Updates', 'The Windows app updates itself. It checks when it opens, and installs the update when you close it.', '<div class="update-check"><span class="setting-value" data-desk-status></span><button class="btn btn-gray" data-desk-check>Check for updates</button></div>') : ''}
+        ${!nativeApp && !window.AuroraDesktop && (window.AuroraInstall?.available || window.AuroraInstall?.installed) ? settingRow('Install Aurora', window.AuroraInstall.installed ? 'Aurora is installed on this device.' : 'Add Aurora to this computer or phone as an app, with its own icon and window.', window.AuroraInstall.installed ? '<span class="setting-value">Installed</span>' : '<button class="btn btn-gray" data-install-app>Install</button>') : ''}
+        ${nativeApp?.getVersionCode ? settingRow('Updates', null, '<div class="update-check"><span class="setting-value" data-update-status></span><button class="btn btn-gray" data-check-update>Check for updates</button></div>') : ''}
+      </section>`;
+    $('[data-install-app]', page)?.addEventListener('click', async () => { const ip = window.AuroraInstall?.prompt; if (!ip) return; ip.prompt(); try { await ip.userChoice; } catch { /* ignore */ } });
+    $('[data-desk-check]', page)?.addEventListener('click', async () => {
+      const st = $('[data-desk-status]', page); st.textContent = 'Checking…';
+      try { st.textContent = await window.AuroraDesktop.checkForUpdates(); } catch { st.textContent = 'Could not check. Try again later.'; }
+    });
+    applySubtitleStyle();
+    showServiceStatus($('[data-service-status]', page), isCurrent);
+    showAccountInfo($('[data-account]', page), isCurrent);
+
+    // Saves run one at a time so quick changes don't overwrite each other.
+    let saving = Promise.resolve();
+    const saveAccount = (changes) => { saving = saving.then(() => doSaveAccount(changes)); };
+    const doSaveAccount = async (changes) => {
+      try {
+        const fresh = await api(`/Users/${state.userId}`);
+        const config = { ...(fresh.Configuration || {}), ...changes };
+        await api(`/Users/${state.userId}/Configuration`, { method: 'POST', body: config });
+        state.user = { ...fresh, Configuration: config };
+        toast('Saved', 1500);
+      } catch (e) {
+        toast(e.status === 403 ? "Your account isn't allowed to change these settings." : 'Could not save: ' + e.message);
+      }
+    };
+    $('.settings-page', page).addEventListener('change', (e) => {
+      const sel = e.target.closest('[data-setting]');
+      if (!sel) return;
+      const v = sel.value;
+      switch (sel.dataset.setting) {
+        case 'audioLang': saveAccount({ AudioLanguagePreference: v }); break;
+        case 'subMode': saveAccount({ SubtitleMode: v }); break;
+        case 'subLang': saveAccount({ SubtitleLanguagePreference: v }); break;
+        case 'quality': store.set('ef.maxBitrate', v); toast('Saved', 1500); break;
+        case 'kidsLevel': store.set('ef.kids.level', v); saveProfile({ kidsLevel: v }); toast('Saved', 1500); break;
+        case 'kidsMode': (async () => {
+          if (v === 'on') {
+            if (!store.get('ef.kids.pin')) { const pin = await kidsAskNewPin(); if (!pin) { sel.value = 'off'; return; } store.set('ef.kids.pin', kidsPinHash(pin)); saveProfile({ kidsPin: kidsPinHash(pin), kidsLevel: kidsLevel() }); }
+            store.set('ef.kids.on', '1'); applyKidsUi(); toast('Kids mode is on', 2500); location.hash = '#/home';
+          } else { sel.value = 'on'; if (await kidsLeave()) sel.value = 'off'; }
+        })(); break;
+        case 'allowShots': setPref('allowShots', v); syncAppLock(); toast('Saved', 1500); break;
+        default: setPref(sel.dataset.setting, v); applySubtitleStyle(); if (sel.dataset.setting === 'appLock') syncAppLock(); toast('Saved', 1500);
+      }
+    });
+    setupFeedback(page);
+    $('[data-edit-sports]', page)?.addEventListener('click', () => showFirstRun({ redo: true, only: ['sportsLeagues', 'sportsTeams'] }));
+    $('[data-redo-setup]', page)?.addEventListener('click', () => { location.hash = '#/home'; setTimeout(() => showFirstRun({ redo: true }), 200); });
+    $('[data-kids-pin]', page)?.addEventListener('click', async () => {
+      if (store.get('ef.kids.pin')) { const old = await pinPad('Current PIN', 'Enter your PIN first.'); if (old == null) return; if (!kidsPinOk(old)) return toast('Wrong PIN', 2500); }
+      const pin = await kidsAskNewPin();
+      if (!pin) return;
+      store.set('ef.kids.pin', kidsPinHash(pin)); saveProfile({ kidsPin: kidsPinHash(pin) });
+      toast('PIN saved', 2000);
+      if (isCurrent()) renderSettings(page, isCurrent);
+    });
+    $('[data-replay-tour]', page)?.addEventListener('click', () => tourStart());
+    $('[data-clear-cache]', page)?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      const freed = await clearAppCache();
+      $('[data-cache-status]', page).textContent = freed > 0 ? `Cleared ${(freed / 1048576).toFixed(freed >= 1e7 ? 0 : 1)} MB` : 'Cleared';
+      e.target.disabled = false;
+    });
+    $('[data-check-update]', page)?.addEventListener('click', async () => {
+      const status = $('[data-update-status]', page);
+      status.textContent = 'Checking…';
+      const result = await checkForUpdate();
+      if (result.status === 'available') { status.textContent = `${result.version} available`; showUpdatePrompt(result); }
+      else status.textContent = result.status === 'current' ? "You're up to date." : "Couldn't check for updates. Try again later.";
+    });
+  }
+
+  // ---------- Admin dashboard ----------
+  // Only the owner's account sees it. Emby itself also refuses these admin calls for anyone who
+  // isn't a server administrator, so the name check only decides who sees the menu item.
+  // An administrator is any account Emby marks as one (so it changes the moment you change it in Emby or with Admin -> Users), plus the
+  // two owner accounts below, which always see the Admin menu (as before).
+  const ADMIN_NAMES = ['johnny4091', 'countryboy89']; // lower case
+  const isAdmin = () => state.user?.Policy?.IsAdministrator === true || ADMIN_NAMES.includes((state.user?.Name || '').toLowerCase());
+  // A moderator (guard 1.27.0): an ordinary account the admin flagged. It gets only these Admin pages, and the guard refuses everything else.
+  const MOD_TABS = ['inbox', 'support', 'feedback', 'announce', 'requests', 'reports', 'channels', 'sports', 'problems', 'activity', 'usage', 'sharing'];
+  const isMod = () => !!state.isMod && !isAdmin();
+  const isStaff = () => isAdmin() || isMod();
+  // ----- Feedback -----
+  // A viewer's note plus this device's app log, kept in their Emby display preferences ("aurora-feedback")
+  // where the admin's Feedback tab reads it, and also sent to the server's client log as a copy.
+  const FEEDBACK_KEEP = 10;
+  const logLineHtml = (e) => `<div class="admin-row" tabindex="-1">
+    <div class="admin-row-main">${e.level === 'error' ? '<span class="pill bad">Error</span> ' : e.level === 'warn' ? '<span class="pill warn">Warning</span> ' : ''}${esc(e.msg)}</div>
+    <div class="admin-row-time">${esc(fmtDateTime(e.t))}</div></div>`;
+
+  function setupFeedback(page) {
+    const box = $('[data-feedback]', page), status = $('[data-feedback-status]', page), logEl = $('[data-app-log]', page);
+    const showBtn = $('[data-show-log]', page), sendBtn = $('[data-send-feedback]', page);
+    // TV: the remote never moves into the text box by itself. On some TVs a text box takes the remote's Up and Down
+    // for the keyboard system, which left the remote stuck there (and the rest of Settings out of reach). "Write a
+    // note" opens it with the keyboard; Back (or Down, where the TV allows it) comes out again.
+    const writeBtn = $('[data-write-feedback]', page);
+    writeBtn?.addEventListener('click', () => {
+      box.tabIndex = 0;
+      focusEl(box);
+      showDeviceKeyboard();
+    });
+    if (writeBtn) {
+      box.addEventListener('blur', () => { box.tabIndex = -1; });
+      box.__onBack = () => { focusEl(box.value.trim() ? sendBtn : writeBtn); };
+    }
+    showBtn.addEventListener('click', () => {
+      const open = logEl.classList.toggle('hidden') === false;
+      showBtn.textContent = open ? 'Hide app log' : 'Show app log';
+      if (open) {
+        const entries = appLog.read().slice(-100).reverse();
+        logEl.innerHTML = `<div class="admin-list">${entries.map(logLineHtml).join('') || '<p class="muted">Nothing recorded yet.</p>'}</div>`;
+      }
+    });
+    sendBtn.addEventListener('click', async () => {
+      const text = box.value.trim();
+      if (!text) { status.textContent = 'Write what happened first.'; focusEl(box); return; }
+      sendBtn.disabled = true;
+      status.textContent = 'Sending…';
+      try {
+        await sendFeedback(text);
+        box.value = '';
+        status.textContent = 'Sent. Thank you!';
+        toast('Feedback sent to the admins', 2500);
+      } catch (e) {
+        status.textContent = "Couldn't send it: " + (e.message || 'no connection') + '. Try again in a moment.';
+      } finally {
+        sendBtn.disabled = false;
+      }
+    });
+  }
+
+  async function sendFeedback(text) {
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t: Date.now(), text,
+      user: state.user?.Name || '', device: nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser'),
+      version: nativeApp?.getVersionName?.() || 'web', screen: location.hash || '#/home',
+      log: appLog.read().slice(-80).map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
+    };
+    const data = await readAuroraPref('aurora-feedback'); // a failed read would otherwise wipe earlier feedback
+    const items = [entry, ...(data?.items || [])].slice(0, FEEDBACK_KEEP);
+    await writeAuroraPref('aurora-feedback', state.userId, { items });
+    // A copy in the server's own logs.
+    fetch(apiUrl('/ClientLog/Document'), {
+      method: 'POST', headers: { 'X-Emby-Authorization': authHeader(), 'Content-Type': 'text/plain' },
+      body: `Aurora feedback · ${entry.user} · ${entry.device} · Aurora ${entry.version}\n${text}\n\n`
+        + entry.log.map((e) => `${new Date(e.t).toISOString()} ${e.level} ${e.msg}`).join('\n'),
+    }).catch(() => {});
+    appLog.add('info', 'Feedback sent: ' + text.slice(0, 120));
+  }
+
+  problems.flush = async function flush() {
+    if (!this.queue.length) return;
+    // Not signed in yet (or the app is still starting): try again shortly.
+    if (!state.userId || !state.apiKey || typeof readAuroraPref !== 'function') { this.schedule(60000); return; }
+    const day = new Date().toDateString();
+    let count = { day, n: 0 };
+    try { const c = JSON.parse(store.get('ef.problemsDay') || 'null'); if (c?.day === day) count = c; } catch { /* new day */ }
+    if (count.n >= this.DAILY) { this.queue = []; return; }
+    const items = this.queue.splice(0);
+    const errors = items.filter((e) => e.level === 'error').length, warnings = items.length - errors;
+    const entry = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), t: Date.now(), auto: true,
+      text: [errors && `${errors} ${errors === 1 ? 'error' : 'errors'}`, warnings && `${warnings} ${warnings === 1 ? 'warning' : 'warnings'}`].filter(Boolean).join(', '),
+      problems: items.map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
+      user: state.user?.Name || '', device: nativeApp?.getDeviceName?.() || (/Mobi|Android/i.test(navigator.userAgent) ? 'Mobile browser' : 'Web browser'),
+      version: nativeApp?.getVersionName?.() || 'web', screen: location.hash || '#/home',
+      log: appLog.read().slice(-40).map((e) => ({ t: e.t, level: e.level, msg: String(e.msg).slice(0, 300) })),
+    };
+    this.sending = true;
+    try {
+      // A failed read must not count as "nothing saved yet": writing then would wipe the earlier reports.
+      const data = await readAuroraPref('aurora-problems');
+      await writeAuroraPref('aurora-problems', state.userId, { items: [entry, ...(data?.items || [])].slice(0, this.KEEP) });
+      this.sentAt = Date.now();
+      store.set('ef.problemsDay', JSON.stringify({ day, n: count.n + 1 }));
+      let seen = {};
+      try { seen = JSON.parse(store.get('ef.problemsSeen') || '{}'); } catch { /* start afresh */ }
+      for (const [k, t] of Object.entries(seen)) if (Date.now() - t > 3600000) delete seen[k];
+      items.forEach((e) => { seen[this.key(e.msg)] = e.t; });
+      store.set('ef.problemsSeen', JSON.stringify(seen));
+    } catch {
+      // No connection or the server is down: keep them for the next try.
+      this.queue = [...items, ...this.queue].slice(0, 25);
+      this.schedule(5 * 60000);
+    } finally {
+      this.sending = false;
+    }
+  };
+
+  async function allFeedback(users, prefsId = 'aurora-feedback') {
+    const out = [];
+    const queue = ((Array.isArray(users) ? users : users?.Items) || []).slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        try {
+          const data = await readAuroraPref(prefsId, u.Id);
+          (data?.items || []).forEach((f) => out.push({ ...f, user: f.user || u.Name, userId: u.Id, prefsId }));
+        } catch { /* no feedback from this user */ }
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    return out.sort((a, b) => (b.t || 0) - (a.t || 0));
+  }
+
+  async function adminFeedback(body, isCurrent) {
+    let notes, reports;
+    try {
+      const users = await api('/Users');
+      [notes, reports] = await Promise.all([allFeedback(users), allFeedback(users, 'aurora-problems')]);
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    const problemHtml = (list) => `<div class="admin-list feedback-problems">${list.map(logLineHtml).join('')}</div>`;
+    const itemHtml = (f) => `<div class="feedback-item" data-id="${esc(f.id)}" data-user="${esc(f.userId)}" data-prefs="${esc(f.prefsId)}">
+      <div class="feedback-head"><strong>${esc(f.user || 'Someone')}</strong> <span class="muted">· ${esc(f.device || '')} · Aurora ${esc(f.version || '')} · ${esc(fmtDateTime(f.t))}</span></div>
+      ${f.auto ? `<p class="feedback-note">${esc(f.text)} <span class="muted">on ${esc((f.screen || '').replace(/^#\//, '') || 'home')}</span></p>${problemHtml(f.problems || [])}` : `<p class="feedback-note">${esc(f.text)}</p>`}
+      <div class="feedback-actions">
+        <button class="btn btn-gray" data-log-toggle>Show app log (${(f.log || []).length})</button>
+        <button class="btn btn-gray" data-done>Done, remove</button>
+      </div>
+      <div class="feedback-log hidden"><div class="admin-list">${(f.log || []).slice().reverse().map(logLineHtml).join('') || '<p class="muted">The log was empty.</p>'}</div></div>
+    </div>`;
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Notes from viewers <small>${notes.length}</small></h2>
+        <p class="muted">Sent from Settings → Help &amp; feedback, with the app log of the device it came from. Up to ${FEEDBACK_KEEP} are kept per person.</p>
+        <div class="admin-list">${notes.map(itemHtml).join('') || '<p class="muted">No notes yet.</p>'}</div>
+      </section>
+      <section class="admin-card">
+        <h2>Automatic problem reports <small>${reports.length}</small></h2>
+        <div class="log-tools"><p class="muted">Sent by the app on its own when something goes wrong: errors and warnings, with what happened just before. The same problem is sent at most once an hour per device.</p>
+          <span class="osd-spacer"></span>${reports.length ? '<button class="btn btn-gray" data-clear-reports>Remove all</button>' : ''}</div>
+        <div class="admin-list">${reports.map(itemHtml).join('') || '<p class="muted">No problems reported.</p>'}</div>
+      </section>`;
+    $$('.feedback-item', body).forEach((el) => {
+      const btn = $('[data-log-toggle]', el), log = $('.feedback-log', el);
+      const count = $$('.admin-row', log).length;
+      btn.addEventListener('click', () => {
+        const open = log.classList.toggle('hidden') === false;
+        btn.textContent = open ? 'Hide app log' : `Show app log (${count})`;
+      });
+      $('[data-done]', el).addEventListener('click', async () => {
+        try {
+          const data = await readAuroraPref(el.dataset.prefs, el.dataset.user);
+          await writeAuroraPref(el.dataset.prefs, el.dataset.user, { items: (data?.items || []).filter((f) => f.id !== el.dataset.id) });
+          const next = el.nextElementSibling || el.previousElementSibling;
+          el.remove();
+          if (next) focusEl($('button', next));
+          toast('Removed', 1500);
+        } catch (e) { toast("Couldn't remove it: " + adminError(e)); }
+      });
+    });
+    $('[data-clear-reports]', body)?.addEventListener('click', async () => {
+      const users = [...new Set(reports.map((r) => r.userId))];
+      try {
+        await Promise.all(users.map((u) => writeAuroraPref('aurora-problems', u, { items: [] })));
+        toast('All automatic reports removed', 2000);
+        adminFeedback(body, isCurrent);
+      } catch (e) { toast("Couldn't remove them: " + adminError(e)); }
+    });
+  }
+
+  const ADMIN_TABS = [['overview', 'Overview'], ['channels', 'Channels'], ['problems', 'Playback problems'], ['feedback', 'Feedback'], ['livetv', 'Live TV'], ['requests', 'Requests'], ['users', 'Users'], ['plans', 'Plans'], ['reports', 'Channel reports'], ['playback', 'Playback'], ['updates', 'Updates'], ['activity', 'Activity'], ['devices', 'Devices & users'], ['logs', 'Server logs'], ['applog', 'App log'], ['usage', 'Usage'], ['sharing', 'Sharing'], ['server', 'Server health'], ['audit', 'Audit log'], ['sports', 'Sports'], ['resellers', 'Resellers'], ['inbox', 'Inbox'], ['announce', 'Announcements'], ['support', 'Support'], ['maintenance', 'Maintenance mode']];
+  const DAY = 86400000;
+
+  function timeAgo(date) {
+    const t = new Date(date).getTime();
+    if (!t) return '';
+    const s = Math.max(0, (Date.now() - t) / 1000);
+    if (s < 60) return 'just now';
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
+    if (s < 86400 * 30) { const d = Math.floor(s / 86400); return d === 1 ? 'yesterday' : `${d} days ago`; }
+    return new Date(t).toLocaleDateString();
+  }
+  const fmtDateTime = (d) => (d ? new Date(d).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+  const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round((b || 0) / 1024))} KB`);
+  const adminError = (e) => (e.status === 401 || e.status === 403
+    ? 'Emby refused this. Make sure this account is an administrator on the Emby server (Emby dashboard → Users → Johnny4091 → "Allow this user to manage the server").'
+    : `Couldn't load this: ${e.message}`);
+
+  // Text responses (log files) rather than JSON.
+  async function apiText(path, params) {
+    const res = await fetch(apiUrl(path, params), { headers: { 'X-Emby-Authorization': authHeader() } });
+    if (!res.ok) { const err = new Error(`Emby returned ${res.status}`); err.status = res.status; throw err; }
+    return res.text();
+  }
+
+  function renderAdmin(page, tab, isCurrent) {
+    if (!isStaff()) { location.replace('#/home'); return; }
+    if (isMod() && !MOD_TABS.includes(tab)) tab = 'inbox';
+    if (!ADMIN_TABS.some(([id]) => id === tab)) tab = 'overview';
+    page.innerHTML = `
+      <div class="page-pad admin-page">
+        <div class="page-head">
+          <h1>Admin</h1>
+          ${adminMenuHtml(tab)}
+          <button class="btn btn-gray admin-refresh" data-admin-refresh>Refresh</button>
+        </div>
+        <div data-admin-body><div class="spinner"></div></div>
+      </div>`;
+    const body = $('[data-admin-body]', page);
+    $('[data-admin-refresh]', page).addEventListener('click', () => route());
+    ({ overview: adminOverview, channels: adminChannels, livetv: adminLiveTv, requests: adminRequests, activity: adminActivity, devices: adminDevices, logs: adminLogs, applog: adminAppLog, feedback: adminFeedback, updates: adminUpdates, users: adminUsers, plans: adminPlans, playback: adminPlayback, reports: adminReports, problems: adminProblems, usage: adminUsage, sharing: adminSharing, server: adminServer, audit: adminAudit, sports: adminSports, resellers: adminResellers, inbox: adminInbox, announce: adminAnnounce, support: adminSupport, maintenance: adminMaintenance })[tab](body, isCurrent);
+    bindAdminMenu(page);
+    autoFocus($('[data-admin-menu]', page));
+  }
+
+  // The admin sections live in one drop-down menu (no sideways scrolling), grouped by what they're about.
+  const ADMIN_GROUPS = [
+    ['Dashboard', ['inbox', 'overview', 'support', 'problems', 'feedback']],
+    ['Customers', ['users', 'plans', 'resellers', 'announce', 'devices', 'usage', 'sharing']],
+    ['Live TV & Requests', ['livetv', 'channels', 'sports', 'requests', 'reports']],
+    ['Server', ['maintenance', 'server', 'playback', 'updates', 'activity', 'logs', 'applog', 'audit']],
+  ];
+  function adminMenuHtml(tab) {
+    const label = (ADMIN_TABS.find(([id]) => id === tab) || ADMIN_TABS[0])[1];
+    const known = new Set(ADMIN_GROUPS.flatMap(([, ids]) => ids));
+    const groups = [...ADMIN_GROUPS, ['More', ADMIN_TABS.map(([id]) => id).filter((id) => !known.has(id))]]
+      .map(([name, ids]) => [name, isMod() ? ids.filter((id) => MOD_TABS.includes(id)) : ids]).filter(([, ids]) => ids.length);
+    const item = (id) => { const t = ADMIN_TABS.find(([x]) => x === id); return t ? `<a href="#/admin?tab=${id}" role="menuitem" class="admin-menu-item${id === tab ? ' active' : ''}">${esc(t[1])}</a>` : ''; };
+    return `<div class="admin-menu">
+      <button class="admin-menu-btn" data-admin-menu aria-haspopup="menu" aria-expanded="false"><span>${esc(label)}</span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m6 9 6 6 6-6"/></svg></button>
+      <div class="admin-menu-list hidden" role="menu">${groups.filter(([, ids]) => ids.length).map(([name, ids]) => `<div class="admin-menu-col"><div class="admin-menu-group">${esc(name)}</div>${ids.map(item).join('')}</div>`).join('')}</div>
+    </div>`;
+  }
+  const adminMenuOpen = () => !!$('.admin-menu-list:not(.hidden)');
+  function setAdminMenu(open) {
+    const list = $('.admin-menu-list'), btn = $('[data-admin-menu]');
+    if (!list || !btn) return;
+    list.classList.toggle('hidden', !open);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) focusEl($('.admin-menu-item.active', list) || $('.admin-menu-item', list));
+  }
+  function bindAdminMenu(page) {
+    const btn = $('[data-admin-menu]', page);
+    btn.addEventListener('click', (e) => { e.stopPropagation(); setAdminMenu(!adminMenuOpen()); });
+    // Tapping anywhere else closes it; choosing a section changes the page, which closes it too.
+    // Only one of these listens at a time: each visit used to leave its own behind, keeping the old page in memory.
+    if (adminMenuClose) document.removeEventListener('click', adminMenuClose);
+    adminMenuClose = function close(e) {
+      if (!btn.isConnected) { document.removeEventListener('click', close); return; }
+      if (adminMenuOpen() && !e.target.closest('.admin-menu')) setAdminMenu(false);
+    };
+    document.addEventListener('click', adminMenuClose);
+  }
+  let adminMenuClose = null;
+
+  const statTile = (label, value, note = '', cls = '') =>
+    `<div class="stat-tile ${cls}"><div class="stat-label">${esc(label)}</div><div class="stat-value">${esc(String(value))}</div>${note ? `<div class="stat-note">${note}</div>` : ''}</div>`;
+
+  async function latestAuroraRelease() {
+    try {
+      const res = await fetch('https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases/latest',
+        { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000) });
+      if (!res.ok) return null;
+      const rel = await res.json();
+      return { name: rel.name || rel.tag_name, code: Number((rel.tag_name || '').match(/(\d+)$/)?.[1] || 0), date: rel.published_at, notes: releaseNotes(rel.body) };
+    } catch { return null; }
+  }
+
+  function watchingHtml(active, liveNow) {
+    if (!active.length && !liveNow.length) return '<p class="muted">Nobody is watching right now.</p>';
+    const details = active.map(streamDetails);
+    const converting = details.filter((d) => d.tone === 'warn').length, out = details.reduce((n, d, i) => n + (active[i].PlayState?.IsPaused ? 0 : d.bps), 0); // a paused stream sends next to nothing
+    const summary = [`${active.length + liveNow.length} watching`, converting ? `${converting} being converted by ffmpeg` : 'no converting',
+      out ? `about ${mbps(out)} going out from the server${liveNow.length ? ' (Live TV comes from your provider, not the server)' : ''}` : ''].filter(Boolean).join(' · ');
+    return `<p class="muted session-summary">${esc(summary)}</p>
+      <div class="admin-list">${liveNow.map(liveRow).join('')}${active.map(sessionRow).join('')}</div>`;
+  }
+  // What the server is busy with: tasks running now, then the latest entries in its activity log.
+  function activityHtml(entries, tasks) {
+    const running = (Array.isArray(tasks) ? tasks : []).filter((t) => t.State === 'Running');
+    const recent = (Array.isArray(entries) ? entries : entries?.Items || []).slice(0, 10);
+    const sev = (e) => (/error|fatal/i.test(e.Severity || '') ? 'bad' : /warn/i.test(e.Severity || '') ? 'warn' : '');
+    return `${running.length ? `<div class="admin-list">${running.map((t) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(t.Name)}</strong> <span class="pill warn">Running</span>
+        ${t.CurrentProgressPercentage != null ? `<div class="session-bar"><span style="width:${Math.min(100, Math.round(t.CurrentProgressPercentage))}%"></span></div>` : ''}</div></div>`).join('')}</div>` : '<p class="muted">No server tasks running.</p>'}
+      ${recent.length ? `<ul class="activity-feed">${recent.map((e) => `<li class="${sev(e)}"><span class="activity-when">${esc(timeAgo(e.Date))}</span> ${esc(e.Name || '')}${e.ShortOverview ? ` <span class="muted">· ${esc(e.ShortOverview)}</span>` : ''}</li>`).join('')}</ul>
+        <a href="#/admin?tab=activity">Open the full activity log</a>` : '<p class="muted">Nothing in the activity log yet.</p>'}`;
+  }
+
+  // Keeps the "Watching now" list current while the Overview is open.
+  function refreshWatching(body, isCurrent, users) {
+    const timer = routeInterval(async () => {
+      const el = $('[data-watching]', body);
+      if (!isCurrent() || !el) { clearInterval(timer); return; }
+      try {
+        const [sessions, live, tasks, entries] = await Promise.all([api('/Sessions'), liveWatching(users), api('/ScheduledTasks').catch(() => null),
+          api('/System/ActivityLog/Entries', { params: { Limit: 10 } }).catch(() => null)]);
+        if (!isCurrent() || !el.isConnected) return;
+        el.innerHTML = watchingHtml((Array.isArray(sessions) ? sessions : []).filter((s) => s.NowPlayingItem), live.now);
+        const act = $('[data-server-activity]', body);
+        if (act && (tasks || entries)) act.innerHTML = activityHtml(entries, tasks);
+      } catch { /* keep what's shown */ }
+    }, 30000);
+  }
+
+  // ----- Playback problems (Admin → Playback problems) -----
+  // Every device notes what wouldn't play, what kept buffering and which live channels failed ("aurora-playlog",
+  // see playLog). Read here from every account, so a problem shows up before a customer calls.
+  const PROBLEM_KINDS = {
+    failed: ['Would not play', 'bad'], converted: ['Had to convert', 'warn'], stalling: ['Kept buffering', 'warn'],
+    'live-failed': ['Live channel failed', 'bad'], 'live-stalling': ['Live TV kept buffering', 'warn'], 'live-slow-start': ['Channels slow to start', 'warn'],
+  };
+  async function playProblems(users, days) {
+    const since = Date.now() - days * DAY;
+    // Customers can write their own preferences, so only well-formed entries are shown.
+    return (await allFeedback(users, 'aurora-playlog'))
+      .filter((e) => typeof e.kind === 'string' && Object.prototype.hasOwnProperty.call(PROBLEM_KINDS, e.kind) && Number(e.t) > since);
+  }
+  function problemDetail(e) {
+    const mbps = e.bitrate ? `limit ${Math.round(e.bitrate / 1e6)} Mbps` : '';
+    if (e.kind === 'stalling') return [`${e.stalls} stalls, ${e.stalledSec} s buffering (${e.pct}%) in ${e.watchedMin} min`, e.method, mbps].filter(Boolean).join(' · ');
+    if (e.kind === 'live-stalling') return `${e.stalls} stalls in ${e.watchedMin} min · buffer ${e.buffer || 'normal'}`;
+    if (e.kind === 'live-slow-start') return `Channels took about ${e.seconds} s to start${e.count > 1 ? ' (' + e.count + ' slow starts)' : ''} · buffer ${e.buffer || 'normal'}`;
+    const err = String(e.error || '');
+    const why = /StartTimeout/.test(err) ? 'never started (the server sent nothing)'
+      : err.startsWith('unplayable:') ? `this device couldn't play the file as it is (${err.slice(11)}), so the server converted it`
+        : err.startsWith('failed:') ? `stopped and couldn't reconnect (${err.slice(7)})` : err;
+    return [why, e.method, e.atSec ? `at ${Math.floor(e.atSec / 60)} min` : '', mbps].filter(Boolean).join(' · ');
+  }
+  function problemRow(e) {
+    const [label, cls] = PROBLEM_KINDS[e.kind];
+    return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.user || '')}</strong> · ${esc(e.title || 'Unknown')} <span class="pill ${cls}">${label}</span>
+      <div class="muted">${esc(problemDetail(e))}</div>
+      <div class="muted">${esc(e.device || '')}${e.version ? ' · Aurora ' + esc(e.version) : ''}</div></div>
+      <div class="admin-row-time">${esc(timeAgo(e.t))}</div></div>`;
+  }
+  function groupProblems(events, key) {
+    const m = new Map();
+    for (const e of events) {
+      const k = key(e);
+      if (!k) continue;
+      const g = m.get(k) || { key: k, n: 0, users: new Set(), titles: new Set(), devices: new Set(), kinds: {}, last: 0 };
+      g.n++; g.users.add(e.user); g.titles.add(e.title); g.devices.add(e.device); g.kinds[e.kind] = (g.kinds[e.kind] || 0) + 1; g.last = Math.max(g.last, e.t || 0);
+      m.set(k, g);
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n || b.last - a.last);
+  }
+  const kindsText = (g) => Object.entries(g.kinds).map(([k, n]) => `${n} ${PROBLEM_KINDS[k][0].toLowerCase()}`).join(', ');
+
+  async function adminProblems(body, isCurrent) {
+    const days = [1, 7, 14].includes(Number(new URLSearchParams(location.hash.split('?')[1] || '').get('days'))) ? Number(new URLSearchParams(location.hash.split('?')[1] || '').get('days')) : 7;
+    let users, events;
+    try { users = await api('/Users'); events = await playProblems(users, days); } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    const n = (...kinds) => events.filter((e) => kinds.includes(e.kind)).length;
+    const titles = groupProblems(events, (e) => e.title).filter((g) => g.n >= 2);
+    const people = groupProblems(events, (e) => e.user).filter((g) => g.n >= 3);
+    const vod = events.filter((e) => !e.kind.startsWith('live'));
+    const transcoded = vod.filter((e) => e.method === 'Transcode').length;
+    const range = (d, label) => `<a href="#/admin?tab=problems&days=${d}" class="tab${d === days ? ' active' : ''}">${label}</a>`;
+    body.innerHTML = `
+      <div class="tab-bar admin-subtabs">${range(1, 'Last 24 hours')}${range(7, 'Last 7 days')}${range(14, 'Last 14 days')}</div>
+      <div class="stat-grid">
+        ${statTile('Problems', events.length, events.length ? `${new Set(events.map((e) => e.user)).size} customers affected` : 'Nothing went wrong', events.length ? '' : 'good')}
+        ${statTile('Would not play', n('failed'), n('converted') ? `${n('converted')} more played after converting` : '')}
+        ${statTile('Kept buffering', n('stalling'), vod.length ? `${transcoded} of ${vod.length} on-demand problems were converting (transcode)` : '')}
+        ${statTile('Live TV', n('live-failed', 'live-stalling', 'live-slow-start'), `${n('live-failed')} channel failures · ${n('live-stalling')} buffering · ${n('live-slow-start')} slow starts`)}
+      </div>
+      ${titles.length || people.length ? `<section class="admin-card">
+        <h2>Repeat problems <small>Worth a look</small></h2>
+        <div class="admin-list">
+          ${titles.map((g) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(g.key)}</strong> <span class="pill ${g.kinds.failed || g.kinds['live-failed'] ? 'bad' : 'warn'}">${g.n} times</span>
+            <div class="muted">${esc(kindsText(g))} · ${g.users.size} ${g.users.size === 1 ? 'customer' : 'customers'}</div>
+            <div class="muted">${g.users.size > 1 ? 'Several customers: most likely the file itself, the server, or the channel at the provider.' : 'One customer: most likely their connection or device. See them below.'}</div></div>
+            <div class="admin-row-time">${esc(timeAgo(g.last))}</div></div>`).join('')}
+          ${people.map((g) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(g.key)}</strong> <span class="pill warn">${g.n} problems</span>
+            <div class="muted">${esc(kindsText(g))} · on ${g.titles.size} ${g.titles.size === 1 ? 'title' : 'different titles'} · ${esc([...g.devices].join(', '))}</div>
+            <div class="muted">${g.titles.size > 2 ? 'Problems on many titles: most likely this customer\'s internet or device. A lower Streaming quality or the Large Live TV buffer can help.' : 'Problems on the same few titles: check those files.'}</div></div>
+            <div class="admin-row-time">${esc(timeAgo(g.last))}</div></div>`).join('')}
+        </div></section>` : ''}
+      <section class="admin-card">
+        <h2>Everything <small>Newest first</small></h2>
+        ${events.length ? `<div class="admin-list">${events.slice(0, 200).map(problemRow).join('')}</div>
+          <button class="btn btn-gray" data-clear-problems>Clear all</button>` : '<p class="muted">No playback problems in this period. Every device sends its problems here by itself, once it has this update.</p>'}
+      </section>`;
+    $('[data-clear-problems]', body)?.addEventListener('click', async () => {
+      if (!await confirmAction('Clear playback problems?', 'This removes the list for every customer. New problems still come in.', 'Clear')) return;
+      try {
+        // Everyone with anything saved, not only those in the period shown.
+        const ids = [...new Set((await allFeedback(users, 'aurora-playlog')).map((e) => e.userId))];
+        await Promise.all(ids.map((u) => writeAuroraPref('aurora-playlog', u, { items: [] })));
+        toast('Cleared', 1500);
+        adminProblems(body, isCurrent);
+      } catch (e) { toast("Couldn't clear them: " + adminError(e)); }
+    });
+  }
+
+  // ----- TV provider connections (Admin → Overview) -----
+  // Aurora Guard 1.3.0 counts them every minute and sends the alerts; with an older guard the page counts by itself.
+  // An Xtream account also says how many connections the provider itself sees in use.
+  let providerCache = null;
+  async function providerAccount({ fresh = false } = {}) {
+    const cfg = iptv.config;
+    if (!cfg || cfg.type !== 'xtream' || !iptvOn(cfg)) return null;
+    // Asked at most every 2 minutes (the Overview refreshes every 30 s); the health check asks fresh.
+    if (!fresh && providerCache && Date.now() - providerCache.t < 120000) return providerCache.r;
+    const r = await providerAccountNow(cfg);
+    providerCache = { t: Date.now(), r };
+    return r;
+  }
+  async function providerAccountNow(cfg) {
+    try {
+      const r = await xtJson(cfg, {});
+      const u = r?.user_info;
+      if (!u) return { error: 'The provider did not send account details.' };
+      return { active: Number(u.active_cons) || 0, max: Number(u.max_connections) || 0, status: u.status || '', expires: Number(u.exp_date) ? new Date(Number(u.exp_date) * 1000) : null };
+    } catch (e) { return { error: e.message }; }
+  }
+  async function connectionStatus(users) {
+    let g = null;
+    if (guardEnabled) { try { g = await guard('/connections'); } catch (e) { g = { error: e, old: e.status === 404 }; } }
+    const out = { fromGuard: !!(g && !g.error), guardOld: !!g?.old, limit: 0, alertAt: 0, peak: 0, streams: [] };
+    if (out.fromGuard) Object.assign(out, { limit: g.limit, alertAt: g.alertAt, peak: g.peak, streams: g.streams || [], checkedAt: g.checkedAt });
+    else {
+      const [sessions, live] = await Promise.all([api('/Sessions').catch(() => []), liveWatching(users)]);
+      out.streams = [
+        ...live.now.map((e) => ({ source: 'aurora', user: e.user, device: e.device, channel: [e.num, e.name].filter(Boolean).join(' ') })),
+        ...(Array.isArray(sessions) ? sessions : []).filter((s) => s.NowPlayingItem?.Type === 'TvChannel').map((s) => ({ source: 'emby', user: s.UserName, device: s.DeviceName, channel: s.NowPlayingItem.Name })),
+      ];
+      try { const c = JSON.parse(store.get('ef.connLimit') || 'null'); if (c) { out.limit = c.limit || 0; out.alertAt = c.alertAt || 0; } } catch { /* not set */ }
+    }
+    out.inUse = out.streams.length;
+    return out;
+  }
+  function connectionsHtml(c, acct) {
+    const limit = c.limit || acct?.max || 0;
+    const pct = limit ? Math.min(100, Math.round((c.inUse / limit) * 100)) : 0;
+    const level = !limit ? '' : c.inUse >= limit ? 'bad' : (c.alertAt && c.inUse >= c.alertAt) || pct >= 85 ? 'warn' : 'ok';
+    return `
+      <div class="conn-meter"><div class="conn-count"><strong>${c.inUse}</strong>${limit ? ` of ${limit}` : ''} in use</div>
+        ${limit ? `<div class="conn-bar"><span class="${level}" style="width:${pct}%"></span></div>` : ''}</div>
+      <dl class="admin-dl">
+        ${acct && !acct.error ? `<dt>The provider says</dt><dd>${acct.active} of ${acct.max || '?'} in use${acct.status && acct.status !== 'Active' ? ` · <span class="pill bad">${esc(acct.status)}</span>` : ''}${acct.expires ? ` · account ends ${esc(acct.expires.toLocaleDateString())}` : ''}</dd>` : ''}
+        ${acct?.error ? `<dt>The provider says</dt><dd class="muted">${esc(acct.error)}</dd>` : ''}
+        ${c.fromGuard ? `<dt>Peak today</dt><dd>${c.peak}</dd>` : ''}
+        <dt>Alerts</dt><dd>${c.fromGuard ? (c.limit ? `Aurora Guard alerts at ${c.alertAt ? c.alertAt + ' and ' : ''}${c.limit} (full)` : 'Set the limit below to get alerts') : c.guardOld ? '<span class="pill warn">Update Aurora Guard to 1.3.0</span> for alerts and today\'s peak' : 'Aurora Guard is off: no alerts'}</dd>
+      </dl>
+      ${c.streams.length ? `<details class="conn-list"><summary>Who is using them</summary><div class="admin-list">${c.streams.map((s) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(s.user || '')}</strong> · ${esc(s.channel || '')}<div class="muted">${esc(s.device || '')} · ${s.source === 'emby' ? 'Emby Live TV' : 'Aurora live player'}</div></div></div>`).join('')}</div></details>` : ''}
+      ${acct && !acct.error && acct.max && c.limit && c.limit !== acct.max ? `<div class="live-result warn" role="status" data-conn-diff>Your provider says this account now allows <strong>${acct.max}</strong> connections, but Aurora is set to <strong>${c.limit}</strong>. <button class="btn btn-white" data-conn-sync data-max="${acct.max}">Use ${acct.max}${c.alertAt ? ` and warn at ${Math.max(1, Math.round(c.alertAt * acct.max / c.limit))}` : ''}</button></div>` : ''}
+      <div class="conn-form">
+        <label class="admin-field"><span>Connections on the account</span><input type="number" min="0" max="1000" inputmode="numeric" data-conn-limit value="${c.limit || acct?.max || ''}" placeholder="60"></label>
+        <label class="admin-field"><span>Warn me at</span><input type="number" min="0" max="1000" inputmode="numeric" data-conn-alert value="${c.alertAt || ''}" placeholder="50"></label>
+        <button class="btn btn-gray" data-conn-save>Save</button>
+      </div>`;
+  }
+  async function renderConnections(el, isCurrent, users) {
+    const [c, acct] = await Promise.all([connectionStatus(users), providerAccount()]);
+    if (!isCurrent() || !el.isConnected) return null;
+    // Nothing changed, or the admin is using the section (typing, or the remote's focus is in it): leave it as it is.
+    const html = connectionsHtml(c, acct);
+    if (html === el.__html || (el.__html && el.contains(document.activeElement))) return c;
+    const open = !!$('details[open]', el);
+    el.innerHTML = html;
+    el.__html = html;
+    if (open) $('details', el)?.setAttribute('open', '');
+    $('[data-conn-sync]', el)?.addEventListener('click', (ev) => {
+      const max = Number(ev.currentTarget.dataset.max) || 0;
+      const oldLimit = Number($('[data-conn-limit]', el).value) || 0, oldAlert = Number($('[data-conn-alert]', el).value) || 0;
+      $('[data-conn-limit]', el).value = String(max);
+      $('[data-conn-alert]', el).value = oldAlert && oldLimit ? String(Math.max(1, Math.round(oldAlert * max / oldLimit))) : '';
+      $('[data-conn-save]', el).click();
+    });
+    $('[data-conn-save]', el).addEventListener('click', async () => {
+      const limit = Math.max(0, Math.round(Number($('[data-conn-limit]', el).value) || 0));
+      const alertAt = Math.max(0, Math.round(Number($('[data-conn-alert]', el).value) || 0));
+      if (limit && alertAt > limit) { toast('"Warn me at" must be no higher than the number of connections.'); return; }
+      store.set('ef.connLimit', JSON.stringify({ limit, alertAt }));
+      try {
+        if (!guardEnabled) throw Object.assign(new Error('off'), { off: true });
+        await guard('/connections', { method: 'PUT', body: { limit, alertAt } });
+        toast('Saved. Aurora Guard will alert you.', 2500);
+      } catch (e) {
+        toast(e.off ? 'Saved on this device. Aurora Guard is off, so there are no alerts.' : e.status === 404 ? 'Saved on this device. Update Aurora Guard to 1.3.0 to get alerts.' : `Saved on this device, but Aurora Guard said: ${e.message}`, 6000);
+      }
+      el.__html = '';
+      document.activeElement?.blur?.();
+      renderConnections(el, isCurrent, users);
+    });
+    return c;
+  }
+
+  // ----- Check everything (Admin → Overview) -----
+  // One line per part of the service, green, amber or red, with what to do about anything that isn't right.
+  async function runHealthCheck(el, users) {
+    const lines = [];
+    const draw = () => {
+      el.innerHTML = `<div class="health-list">${lines.map((l) => `<div class="health-row ${l.level}"><span class="health-dot"></span>
+        <div><strong>${esc(l.name)}</strong> <span class="health-state">${l.level === 'ok' ? 'OK' : l.level === 'warn' ? 'Check' : l.level === 'bad' ? 'Problem' : 'Checking…'}</span>
+        <div class="muted">${l.html ?? esc(l.text || '')}</div></div></div>`).join('')}</div>`;
+    };
+    const check = (name, fn) => {
+      const line = { name, level: 'wait', text: '' };
+      lines.push(line);
+      return (async () => {
+        try { Object.assign(line, await fn()); } catch (e) { Object.assign(line, { level: 'bad', text: e.message || String(e) }); }
+        draw();
+      })();
+    };
+    const ok = (text) => ({ level: 'ok', text }), warn = (text) => ({ level: 'warn', text }), bad = (text) => ({ level: 'bad', text });
+    const guardOn = guardEnabled;
+    const jobs = [
+      check('Emby server', async () => {
+        const t0 = performance.now();
+        const info = await api('/System/Info');
+        const ms = Math.round(performance.now() - t0);
+        const extra = [info.HasPendingRestart && 'it needs a restart', info.HasUpdateAvailable && 'an Emby update is available'].filter(Boolean).join(', ');
+        if (ms > 2500) return warn(`Answered, but slowly (${ms} ms). The server PC may be busy.${extra ? ' Also ' + extra + '.' : ''}`);
+        return extra ? warn(`Answered in ${ms} ms, but ${extra}.`) : ok(`Answered in ${ms} ms (${info.ServerName || ''} ${info.Version || ''})`);
+      }),
+      check('Server tasks', async () => {
+        const tasks = await api('/ScheduledTasks');
+        const failed = (tasks || []).filter((t) => t.LastExecutionResult?.Status === 'Failed');
+        return failed.length ? warn(`Failed last time: ${failed.map((t) => t.Name).join(', ')}`) : ok('All scheduled tasks finished normally');
+      }),
+      check('Speed from this device', async () => {
+        const r = await measureBitrate(6000000, 8000);
+        const mbps = r.bps / 1e6;
+        const t = `${mbps.toFixed(1)} Mbps from the server to this device${r.complete ? '' : ' (the test didn\'t finish in time)'}. Customers' speeds depend on their own internet.`;
+        return mbps < 4 ? bad(t + ' Too slow for HD: check the server PC\'s upload speed.') : mbps < 10 ? warn(t) : ok(t);
+      }),
+      check('Aurora Guard', async () => {
+        if (!guardOn) return warn('Switched off ("guardEnabled" in aurora-config.json), so device limits and expiry dates are not enforced.');
+        const s = await guard('/status/users');
+        const ver = String(s.version || '0'), age = s.lastRun?.at ? Date.now() - s.lastRun.at : Infinity;
+        if (!s.emby?.online) return bad(`Running (${ver}) but can't reach Emby: ${s.emby?.error || 'no answer'}. Check "embyUrl" and "apiKey" in its config.json.`);
+        if (!s.lastRun?.ok || age > 5 * 60000) return bad(`Running (${ver}) but its every-minute check ${s.lastRun?.error ? 'failed: ' + s.lastRun.error : 'has not run lately'}.`);
+        if (s.dryRun) return warn(`Running (${ver}) in DRY RUN: it only logs, nobody is signed out or switched off. Set "dryRun": false in config.json.`);
+        const over = s.totals?.over || 0;
+        const old = ver.localeCompare('1.3.0', undefined, { numeric: true }) < 0;
+        const t = `Running ${ver}, enforcing. ${s.totals?.activeDevices || 0} ${s.totals?.activeDevices === 1 ? 'device' : 'devices'} in use${over ? `, ${over} ${over === 1 ? 'account' : 'accounts'} over the limit right now` : ''}.`;
+        return old ? warn(t + ' Update it to 1.3.0 for the connection alerts (copy the new aurora-guard.js and restart the task).') : over ? warn(t) : ok(t);
+      }),
+      check('Live TV source', async () => {
+        const cfg = iptv.config;
+        if (!iptvOn(cfg)) return hasLiveTv() ? ok('Emby\'s own Live TV') : warn('No Live TV source is set up (Admin → Live TV).');
+        if (cfg.type === 'xtream') {
+          const a = await providerAccount({ fresh: true });
+          if (a?.error) return bad(`The provider didn't answer properly: ${a.error}`);
+          const days = a.expires ? Math.ceil((a.expires - Date.now()) / DAY) : null;
+          const t = `Xtream account ${a.status || 'answered'} · ${a.active} of ${a.max || '?'} connections in use${days != null ? ` · ends in ${days} days` : ''}`;
+          if (a.status && a.status !== 'Active') return bad(t);
+          return (days != null && days <= 7) || (a.max && a.active >= a.max) ? warn(t) : ok(t);
+        }
+        const text = await iptvText(withScheme(cfg.m3uUrl), cfg, 30000);
+        if (!/#EXTM3U|#EXTINF/.test(text.slice(0, 5000))) return bad("The playlist address didn't return an M3U playlist.");
+        return ok(`The M3U playlist loads (${fmtSize(text.length)})`);
+      }),
+      check('TV provider connections', async () => {
+        const c = await connectionStatus(users);
+        if (!c.limit) return warn(`${c.inUse} in use. Set the number of connections on your account below to get warnings.`);
+        const t = `${c.inUse} of ${c.limit} in use`;
+        return c.inUse >= c.limit ? bad(t + ': full, new channels will fail.') : c.alertAt && c.inUse >= c.alertAt ? warn(t) : ok(t);
+      }),
+      check('Channel reports to the provider', async () => {
+        if (!guardOn) return warn('Needs Aurora Guard.');
+        const [p, r] = await Promise.all([guard('/provider'), guard('/reports').catch(() => null)]);
+        if (!p.enabled || !p.keySet) return warn('Off: customers\' reports are kept in Admin → Channel reports but not sent to the provider.');
+        const recent = (r?.reports || []).filter((x) => Date.now() - x.at < DAY);
+        const failed = recent.filter((x) => x.forwarded === 'failed').length;
+        return failed ? bad(`${failed} of ${recent.length} reports today couldn't be sent. Check the key in Admin → Channel reports.`) : ok(`On${recent.length ? `, ${recent.length} sent today` : ''}`);
+      }),
+      check('Playback problems (24 hours)', async () => {
+        const ev = await playProblems(users, 1);
+        if (!ev.length) return ok('None reported');
+        const rep = groupProblems(ev, (e) => e.title).filter((g) => g.users.size >= 2);
+        const html = `${ev.length} from ${new Set(ev.map((e) => e.user)).size} customers${rep.length ? `, ${esc(rep.map((g) => g.key).slice(0, 3).join(', '))} for several people` : ''} · <a href="#/admin?tab=problems&days=1">See them</a>`;
+        return { level: ev.length >= 5 || rep.length ? 'bad' : 'warn', html };
+      }),
+      check('App updates', async () => {
+        const rel = await latestAuroraRelease();
+        if (!rel) return bad("Couldn't read the releases on GitHub, so apps can't find updates right now.");
+        const devices = await api('/Devices').catch(() => null);
+        const list = (Array.isArray(devices) ? devices : devices?.Items || []).filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY);
+        const behind = list.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < rel.code);
+        const t = `Latest is ${rel.name} · ${behind.length} of ${list.length} devices behind`;
+        return behind.length && behind.length === list.length ? warn(t) : ok(t);
+      }),
+      check('App settings file', async () => {
+        for (const url of REMOTE_CONFIG_URLS) {
+          try { const r = await fetch(`${url}?t=${Date.now()}`, { cache: 'no-store', signal: timeoutSignal(8000) }); if (r.ok) { await r.json(); return ok('aurora-config.json loads'); } } catch { /* next */ }
+        }
+        return bad("aurora-config.json couldn't be read, so apps keep their last settings (guard address, Requests).");
+      }),
+    ];
+    draw();
+    await Promise.all(jobs);
+    const bads = lines.filter((l) => l.level === 'bad').length, warns = lines.filter((l) => l.level === 'warn').length;
+    return { bads, warns };
+  }
+
+  async function adminOverview(body, isCurrent) {
+    const since = new Date(Date.now() - 14 * DAY);
+    const safe = (p) => p.catch((e) => ({ error: e }));
+    const [info, sessions, users, counts, devices, activity, tasks, release] = await Promise.all([
+      safe(api('/System/Info')), safe(api('/Sessions')), safe(api('/Users')), safe(api('/Items/Counts')),
+      safe(api('/Devices')), safe(api('/System/ActivityLog/Entries', { params: { MinDate: since.toISOString(), Limit: 2000 } })),
+      safe(api('/ScheduledTasks')), latestAuroraRelease(),
+    ]);
+    if (!isCurrent()) return;
+    if (info?.error && sessions?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(info.error))}</p>`; return; }
+    const live = users?.error ? { now: [], history: [] } : await liveWatching(users);
+    if (!isCurrent()) return;
+
+    const list = (x) => (Array.isArray(x) ? x : x?.Items || []);
+    const active = list(sessions).filter((s) => s.NowPlayingItem);
+    const recent = list(sessions).filter((s) => Date.now() - new Date(s.LastActivityDate).getTime() < 10 * 60000);
+    const transcoding = active.filter((s) => (s.PlayState?.PlayMethod || '') === 'Transcode').length;
+    const aurora = list(devices).filter((d) => /aurora|embyflix/i.test(d.AppName || ''));
+    const auroraActive30 = aurora.filter((d) => Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY);
+    const outdated = release?.code ? auroraActive30.filter((d) => auroraVersionCode(d.AppVersion) && auroraVersionCode(d.AppVersion) < release.code) : [];
+    const plays = list(activity).filter((a) => a.Type === 'VideoPlayback');
+    const failedTasks = list(tasks).filter((t) => t.LastExecutionResult?.Status === 'Failed');
+    const errors = list(activity).filter((a) => /error|fatal/i.test(a.Severity || '') || /failed/i.test(a.Type || ''));
+
+    // Waiting extension requests (Aurora Guard 1.4.0+), up top where the admin looks first.
+    let waiting = 0;
+    if (guardEnabled) { try { waiting = (await guard('/extensions', { quick: true })).pending.filter((x) => x.needsAdmin !== false).length; } catch { /* older or unreachable guard */ } }
+    if (!isCurrent()) return;
+    body.innerHTML = `
+      ${waiting ? `<a class="admin-card ext-banner" href="#/admin?tab=users"><strong>${waiting} extension ${waiting === 1 ? 'request' : 'requests'} waiting</strong> <span class="muted">Tap to review and approve</span></a>` : ''}
+      <div class="stat-grid">
+        ${statTile('Watching now', active.length + live.now.length, active.length + live.now.length
+          ? `${live.now.length} live TV · ${transcoding} converting (transcode), ${active.length - transcoding} direct` : 'Nobody is watching')}
+        ${statTile('Online now', recent.length, 'Active in the last 10 minutes')}
+        ${statTile('Plays (14 days)', plays.length, plays.length ? `About ${Math.round(plays.length / 14 * 10) / 10} a day` : '')}
+        ${statTile('Users', list(users).length, `${list(users).filter((u) => Date.now() - new Date(u.LastActivityDate).getTime() < 7 * DAY).length} active this week`)}
+        ${statTile('Aurora devices', auroraActive30.length, 'Used in the last 30 days')}
+        ${statTile('Library', counts?.error ? '—' : (counts.MovieCount || 0) + (counts.SeriesCount || 0),
+          counts?.error ? '' : `${counts.MovieCount || 0} movies · ${counts.SeriesCount || 0} shows · ${counts.EpisodeCount || 0} episodes`)}
+      </div>
+
+      <section class="admin-card">
+        <h2>Health check <small>Every part of the service</small></h2>
+        <div data-health><p class="muted">Checks the Emby server, Aurora Guard, the Live TV source and provider connections, channel reporting, app updates and the last day's playback problems.</p></div>
+        <button class="btn btn-white" data-health-run>Check everything</button>
+      </section>
+
+      <section class="admin-card">
+        <h2>TV provider connections <small>Updates every 30 seconds</small></h2>
+        <div data-conn><div class="spinner"></div></div>
+      </section>
+
+      <section class="admin-card">
+        <h2>Watching now <small data-watch-updated>Updates every 30 seconds</small></h2>
+        <div data-watching>${watchingHtml(active, live.now)}</div>
+      </section>
+
+      <section class="admin-card">
+        <h2>Server activity <small>Updates every 30 seconds</small></h2>
+        <div data-server-activity>${activityHtml(list(activity).slice().sort((a, b) => new Date(b.Date) - new Date(a.Date)), list(tasks))}</div>
+      </section>
+
+      <section class="admin-card">
+        <h2>Plays per day <small>Last 14 days</small></h2>
+        ${playsChart(plays)}
+      </section>
+
+      <div class="admin-cols">
+        <section class="admin-card">
+          <h2>Most watched <small>Last 14 days</small></h2>
+          ${topList(plays.map((a) => parsePlayback(a).title))}
+        </section>
+        <section class="admin-card">
+          <h2>Most active viewers <small>Last 14 days</small></h2>
+          ${topList(plays.map((a) => parsePlayback(a).user))}
+        </section>
+      </div>
+
+      <div class="admin-cols">
+        <section class="admin-card">
+          <h2>Server</h2>
+          ${info?.error ? `<p class="muted">${esc(adminError(info.error))}</p>` : `
+          <dl class="admin-dl">
+            <dt>Name</dt><dd>${esc(info.ServerName || '')}</dd>
+            <dt>Emby version</dt><dd>${esc(info.Version || '')}${info.HasUpdateAvailable ? ' <span class="pill warn">Update available</span>' : ''}</dd>
+            <dt>System</dt><dd>${esc(info.OperatingSystemDisplayName || info.OperatingSystem || '')}</dd>
+            <dt>Restart needed</dt><dd>${info.HasPendingRestart ? '<span class="pill warn">Yes</span>' : 'No'}</dd>
+            <dt>Scheduled tasks</dt><dd>${failedTasks.length ? `<span class="pill bad">${failedTasks.length} failed</span> ${esc(failedTasks.map((t) => t.Name).join(', '))}` : 'All OK'}</dd>
+            <dt>Problems (14 days)</dt><dd>${errors.length ? `<a href="#/admin?tab=activity&filter=errors">${errors.length} in the activity log</a>` : 'None'}</dd>
+          </dl>
+          <button class="btn btn-gray" data-scan>Scan all libraries</button>`}
+        </section>
+        <section class="admin-card">
+          <h2>Aurora app</h2>
+          <dl class="admin-dl">
+            <dt>Latest version</dt><dd>${release ? `${esc(release.name)} <span class="muted">(${esc(timeAgo(release.date))})</span>` : "Couldn't check GitHub"}</dd>
+            <dt>This device</dt><dd>${esc(nativeApp?.getVersionName ? 'Aurora V' + nativeApp.getVersionName() : 'Web browser')}</dd>
+            <dt>Devices behind</dt><dd>${outdated.length ? `<a href="#/admin?tab=devices">${outdated.length} on an older version</a>` : 'None'}</dd>
+            <dt>Requests tab</dt><dd>${state.requestsEnabled && state.requestsServer ? `On · ${esc(state.requestsServer)}` : 'Coming soon (off)'}</dd>
+          </dl>
+          ${release?.notes?.length ? `<h3 class="admin-sub">In the latest version</h3><ul class="admin-notes">${release.notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul>` : ''}
+        </section>
+      </div>`;
+
+    $('[data-scan]', body)?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try { await api('/Library/Refresh', { method: 'POST' }); toast('Library scan started'); } catch (err) { toast(adminError(err)); }
+      e.target.disabled = false;
+    });
+    if (!users?.error) refreshWatching(body, isCurrent, users);
+    const userList = users?.error ? [] : list(users);
+    $('[data-health-run]', body).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      btn.textContent = 'Checking…';
+      try {
+        const r = await runHealthCheck($('[data-health]', body), userList);
+        btn.textContent = r.bads ? `${r.bads} ${r.bads === 1 ? 'problem' : 'problems'} · check again` : r.warns ? `${r.warns} to check · check again` : 'All good · check again';
+      } catch (err) { btn.textContent = 'Check everything'; toast("Couldn't finish the check: " + err.message); }
+      btn.disabled = false;
+    });
+    const connEl = $('[data-conn]', body);
+    renderConnections(connEl, isCurrent, userList).catch((e) => { connEl.innerHTML = `<p class="muted">${esc(adminError(e))}</p>`; });
+    const connTimer = routeInterval(() => {
+      if (!isCurrent() || !connEl.isConnected) { clearInterval(connTimer); return; }
+      renderConnections(connEl, isCurrent, userList).catch(() => {});
+    }, 30000);
+  }
+
+  // Live TV source: Emby's own Live TV, an M3U playlist, or an Xtream Codes account. Saved for every account.
+  // ----- Admin → Requests: who asked for what (read from Jellyseerr; Android app only) -----
+  // One row per request: the title, who asked, when, and where it stands. Waiting requests can be approved or declined here (Jellyseerr's
+  // own permission applies). "By person" counts them per requester.
+  async function adminRequestList(box, isCurrent) {
+    const note = (html) => { box.innerHTML = `<section class="admin-card"><h2>Recent requests</h2><p class="muted">${html}</p></section>`; };
+    if (!state.requestsEnabled || !state.requestsServer) { note('The Requests tab is off, so there is nothing to list. Switch it on below.'); return; }
+    if (!hasRequests()) { note('Open Aurora on your Android phone or TV to see who asked for what here. Jellyseerr\'s own Requests page shows the same list in a browser.'); return; }
+    box.innerHTML = '<section class="admin-card"><h2>Recent requests</h2><div class="spinner"></div></section>';
+    let me, data;
+    try {
+      me = await seerrMe();
+      if (!me) { if (isCurrent()) note('Open the <strong>Requests</strong> tab once to sign in to Jellyseerr, then come back here.'); return; }
+      data = (await seerr('/request?take=100&skip=0&sort=added&filter=all')).data;
+    } catch (e) { if (isCurrent()) note(`Couldn't read the requests: ${esc(e.message)}`); return; }
+    if (!isCurrent()) return;
+    const stateOf = (r) => (r.status === 3 ? 'no' : r.status === 1 ? 'wait' : (r.media?.status || 0) >= 5 ? 'ok' : (r.media?.status || 0) === 4 ? 'part' : 'appr');
+    const LABEL = { wait: 'Waiting for approval', appr: 'Approved, getting it', part: 'Partly available', ok: 'Available', no: 'Declined' };
+    const rows = (data?.results || []).filter((r) => r.media?.tmdbId).map((r) => ({
+      id: r.id, type: r.media.mediaType || r.type, tmdb: r.media.tmdbId, who: r.requestedBy?.displayName || r.requestedBy?.username || 'Someone', whoId: r.requestedBy?.id,
+      at: r.createdAt, seasons: (r.seasons || []).map((x) => x.seasonNumber).filter((n) => n != null).sort((a, b) => a - b), st: stateOf(r), title: '', year: '', poster: '' }));
+    let view = 'list', filter = 'all';
+    const hue = (name) => ['#4f7bff', '#2ad4d0', '#7a5cff', '#e5384f', '#ff9f43', '#46d369'][[...String(name)].reduce((n, c) => n + c.charCodeAt(0), 0) % 6];
+    const seasonText = (r) => (r.type !== 'tv' || !r.seasons.length ? '' : r.seasons.length === 1 ? ` · Season ${r.seasons[0]}` : ` · Seasons ${r.seasons[0]} to ${r.seasons[r.seasons.length - 1]}`);
+    const draw = () => {
+      const counts = { all: rows.length }; for (const k of ['wait', 'appr', 'part', 'ok', 'no']) counts[k] = rows.filter((r) => r.st === k).length;
+      const names = { all: 'All', wait: 'Waiting', appr: 'Approved', ok: 'Available', no: 'Declined' };
+      const chips = view === 'list' ? `<div class="rq-chips">${Object.keys(names).map((k) => `<button type="button" class="rq-chip" data-rq-f="${k}" aria-pressed="${filter === k}">${names[k]} ${k === 'appr' ? counts.appr + counts.part : counts[k]}</button>`).join('')}</div>` : '';
+      let inner;
+      if (!rows.length) inner = '<div class="rq-empty">Nobody has asked for anything yet.</div>';
+      else if (view === 'people') {
+        const by = new Map(); rows.forEach((r) => { const k = r.whoId ?? r.who; (by.get(k) || by.set(k, { name: r.who, list: [] }).get(k)).list.push(r); });
+        inner = `<div class="rq-people">${[...by.values()].sort((a, b) => b.list.length - a.list.length).map((p) => {
+          const waiting = p.list.filter((r) => r.st === 'wait').length;
+          return `<div class="rq-p"><span class="rq-av" style="background:${hue(p.name)}">${esc(p.name[0].toUpperCase())}</span><div><b>${esc(p.name)}</b><small>${esc(p.list.slice(0, 4).map((r) => r.title || '…').join(', '))}${p.list.length > 4 ? ` and ${p.list.length - 4} more` : ''}${waiting ? ` · ${waiting} waiting` : ''}</small></div><span class="rq-count">${p.list.length}</span></div>`;
+        }).join('')}</div>`;
+      } else {
+        const shown = rows.filter((r) => filter === 'all' || r.st === filter || (filter === 'appr' && r.st === 'part'));
+        inner = shown.length ? `<div class="rq-list">${shown.map((r) => `<div class="rq-req" data-rq="${r.id}">
+          <div class="rq-poster" ${r.poster ? `style="background-image:url('${esc(r.poster)}')"` : `style="background:linear-gradient(160deg,${hue(r.title || r.who)},#101a40)"`}></div>
+          <div><div class="rq-top"><span class="rq-title">${esc(r.title || 'Loading…')}${r.year ? ` <span class="rq-year">(${esc(r.year)})</span>` : ''}</span><span class="rq-tag ${r.st}">${LABEL[r.st]}</span></div>
+            <div class="rq-meta">${r.type === 'tv' ? 'Series' : 'Movie'}${esc(seasonText(r))} · ${esc(timeAgo(r.at))}</div>
+            <div class="rq-who"><span class="rq-av" style="background:${hue(r.who)}">${esc(r.who[0].toUpperCase())}</span>Requested by <b>${esc(r.who)}</b></div>
+            ${r.st === 'wait' ? `<div class="rq-acts"><button class="btn btn-red" data-rq-a="approve">Approve</button><button class="btn btn-gray" data-rq-a="decline">Decline</button></div><div class="live-result" data-rq-res></div>` : ''}</div></div>`).join('')}</div>` : '<div class="rq-empty">No requests here.</div>';
+      }
+      const onlyMine = rows.length && rows.every((r) => r.whoId === me.id);
+      box.innerHTML = `<section class="admin-card rq"><h2>Recent requests <small>${rows.length}</small></h2>
+        <p class="muted">What people asked for through the Requests tab, newest first. ${onlyMine ? 'You only see your own requests here: your Jellyseerr account needs the "Manage Requests" permission to see everyone\'s.' : ''}</p>
+        <div class="rq-tabs"><button type="button" class="rq-chip" data-rq-v="list" aria-pressed="${view === 'list'}">Requests</button><button type="button" class="rq-chip" data-rq-v="people" aria-pressed="${view === 'people'}">By person</button></div>${chips}${inner}</section>`;
+    };
+    box.addEventListener('click', async (ev) => {
+      const v = ev.target.closest('[data-rq-v]'); if (v) { view = v.dataset.rqV; draw(); return; }
+      const f = ev.target.closest('[data-rq-f]'); if (f) { filter = f.dataset.rqF; draw(); return; }
+      const a = ev.target.closest('[data-rq-a]'); if (!a) return;
+      const row = a.closest('[data-rq]'), r = rows.find((x) => String(x.id) === row.dataset.rq), out = $('[data-rq-res]', row), approve = a.dataset.rqA === 'approve';
+      if (!approve && !(await confirmAction(`Decline ${r.title || 'this request'}?`, `${r.who} will see it as declined.`, 'Decline'))) return;
+      $$('.rq-acts .btn', row).forEach((b) => { b.disabled = true; });
+      try { await seerr(`/request/${r.id}/${approve ? 'approve' : 'decline'}`, { method: 'POST' }); r.st = approve ? 'appr' : 'no'; draw(); }
+      catch (e) { $$('.rq-acts .btn', row).forEach((b) => { b.disabled = false; }); out.className = 'live-result bad'; out.textContent = e.status === 403 ? "Your Jellyseerr account isn't allowed to approve or decline requests (it needs the Manage Requests permission)." : e.message; }
+    });
+    draw();
+    // Titles and pictures come from Jellyseerr's details, a few at a time; the list redraws as they arrive (not once per title).
+    let next = 0, timer = 0;
+    const later = () => { if (!timer) timer = setTimeout(() => { timer = 0; if (isCurrent() && box.isConnected && !box.querySelector('[data-rq-res]:not(:empty)')) draw(); }, 150); };
+    const worker = async () => {
+      while (next < rows.length && isCurrent()) {
+        const r = rows[next++];
+        try { const m = await seerrDetail(r.type, r.tmdb); r.title = seerrTitle(m); r.year = seerrYear(m); r.poster = tmdbImage(m.posterPath, 'w185'); } catch { r.title = r.title || 'A title'; }
+        later();
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    later();
+  }
+
+  async function adminRequests(body, isCurrent) {
+    await refreshRequestsConfig();
+    if (!isCurrent()) return;
+    const fromApp = !!requestsOverride;
+    const listBox = document.createElement('div'), settingsBox = document.createElement('div');
+    body.innerHTML = ''; body.append(listBox, settingsBox);
+    adminRequestList(listBox, isCurrent);
+    body = settingsBox;
+    body.innerHTML = `
+      <section class="admin-card req-admin">
+        <h2>Request server (Jellyseerr)</h2>
+        <p class="muted">The address everyone's Requests tab connects to. Saving applies it to every account; apps pick it up the next time they open.</p>
+        <dl class="admin-dl">
+          <dt>In use now</dt><dd>${state.requestsServer ? esc(state.requestsServer) : 'None'} <span class="pill">${fromApp ? 'set here' : 'from the app settings file'}</span></dd>
+        </dl>
+        <label class="admin-field"><span>Jellyseerr address</span>
+          <input type="url" data-f="server" value="${esc(state.requestsServer)}" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="https://….trycloudflare.com">
+          <small>Using a Cloudflare quick tunnel? It gets a new address every time cloudflared restarts. Find the new one in cloudflared's output,
+            on the line "Your quick Tunnel has been created! Visit it at https://….trycloudflare.com", and paste it here.</small></label>
+        <label class="admin-check"><input type="checkbox" data-f="on"${state.requestsEnabled || !fromApp ? ' checked' : ''}> Show the Requests tab</label>
+        <div class="m-actions">
+          <button class="btn btn-gray" data-test>Test</button>
+          <button class="btn btn-red" data-save>Save for everyone</button>
+          ${fromApp ? '<button class="btn btn-gray" data-reset>Use the settings file instead</button>' : ''}
+        </div>
+        <div class="live-result" data-result></div>
+      </section>
+      <section class="admin-card">
+        <h2>A steadier address</h2>
+        <p class="muted">Quick tunnels change address whenever they restart, which is why Requests can suddenly stop working. A permanent address avoids that:
+          a free <strong>named</strong> Cloudflare Tunnel (with a Cloudflare account) keeps the same address, or Jellyseerr can be reached on your DuckDNS name
+          the same way Emby is (for example https://emby4836.duckdns.org:5055, with that port forwarded on your router).</p>
+      </section>`;
+    // Customers added by the admin, a reseller or a sub-reseller are imported into Seerr by the guard (1.24.0), so Requests works for them at once.
+    if (guardEnabled) {
+      const box = document.createElement('section');
+      box.className = 'admin-card';
+      body.append(box);
+      const paint = async (note) => {
+        let st = null;
+        try { st = await guard('/requests-sync', { quick: true }); } catch (e) { box.innerHTML = '<h2>Customers in Requests</h2><p class="muted">' + (e.status === 404 ? 'Update Aurora Guard to 1.24.0 to import customers into Seerr automatically.' : esc(e.message)) + '</p>'; return; }
+        if (!isCurrent()) return;
+        const last = st.last;
+        box.innerHTML = `<h2>Customers in Requests</h2>
+          <p class="muted">Every customer added by you, a reseller or a sub-reseller is imported into Seerr automatically, so they can use Requests straight away (Seerr's own limits still apply).</p>
+          ${st.configured ? `<dl class="admin-dl"><dt>Imported</dt><dd>${st.imported} ${st.imported === 1 ? 'customer' : 'customers'}${st.pending ? ` · <strong>${st.pending} waiting</strong>` : ''}${st.failed ? ` · ${st.failed} Seerr would not take` : ''}</dd>
+            ${last ? `<dt>Last check</dt><dd>${esc(timeAgo(last.at))}${last.error ? ` <span class="pill warn">${esc(last.error)}</span>` : ' <span class="pill">OK</span>'}</dd>` : ''}</dl>
+            <div class="m-actions"><button class="btn btn-gray" data-import-now>Import now</button></div>`
+            : `<p class="live-result bad">Not switched on yet. Add <code>"requestsApiKey": "..."</code> to the guard's config.json (Seerr → Settings → General → API Key) and restart the guard. If Seerr runs on the same PC, also add <code>"requestsUrl": "http://localhost:5055"</code>, which does not change like a quick tunnel does.</p>`}
+          <div class="live-result" data-import-result>${note || ''}</div>`;
+        $('[data-import-now]', box)?.addEventListener('click', async (e) => {
+          e.target.disabled = true;
+          const out = $('[data-import-result]', box);
+          out.className = 'live-result'; out.innerHTML = '<div class="spinner"></div> Importing…';
+          try {
+            const r = await guard('/requests-sync/run', { method: 'POST', body: {} });
+            paint(r.ok ? `<span class="good">${r.imported ? `Imported ${r.imported}.` : 'Everyone is already in Seerr.'}</span>` : `<span class="bad">${esc(r.error || 'It did not work.')}</span>`);
+          } catch (err) { out.className = 'live-result bad'; out.textContent = err.message; e.target.disabled = false; }
+        });
+      };
+      paint();
+    }
+    const input = $('[data-f="server"]', body), on = $('[data-f="on"]', body), result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const value = () => { let v = input.value.trim().replace(/\/+$/, ''); if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v; return v; };
+    const test = async (v) => {
+      if (!v) throw new Error('Enter the Jellyseerr address first.');
+      if (!nativeApp?.httpRequest) throw new Error('Testing works in the Aurora app for Android.');
+      const r = await nativeHttp('GET', v + '/api/v1/status', { Accept: 'application/json' }, null, 20000).catch((e) => ({ status: 0, error: e.message }));
+      if (!r.status) throw new Error(`Couldn't connect to ${esc(v)}. ${r.error ? esc(r.error) + '. ' : ''}Check the address, and that Jellyseerr and its tunnel are running.`);
+      let data = null; try { data = JSON.parse(r.body); } catch { /* not JSON */ }
+      if (r.status >= 400 || !data?.version) throw new Error(`${esc(v)} answered, but it doesn't look like Jellyseerr (status ${r.status}).`);
+      return `<strong>It works.</strong> Jellyseerr ${esc(data.version)}${data.updateAvailable ? ' (an update is available)' : ''}.`;
+    };
+    $('[data-test]', body).addEventListener('click', async () => {
+      say('<div class="spinner"></div>');
+      try { say(await test(value()), 'good'); } catch (e) { say(e.message, 'bad'); }
+    });
+    let confirmUnreachable = false;
+    $('[data-save]', body).addEventListener('click', async () => {
+      const v = value();
+      if (v && !secureAddress(v)) return say('The address must start with https:// (customers\' sign-in details are sent to it, so a plain http:// address is not allowed).', 'bad');
+      say('<div class="spinner"></div> Checking the address…');
+      let note = '';
+      try { note = await test(v); } catch (e) {
+        if (!v || !confirmUnreachable) {
+          confirmUnreachable = !!v;
+          return say(`${e.message}${v ? '<br>Press <strong>Save for everyone</strong> again to save it anyway.' : ''}`, 'bad');
+        }
+      }
+      confirmUnreachable = false;
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        const cfg = { server: v, on: on.checked, t: Date.now() };
+        const r = await writeAuroraPrefForAll(REQ_PREFS.id, cfg);
+        requestsOverride = cfg;
+        applyRequestsServer(v, on.checked);
+        $('.req-admin dd', body).innerHTML = `${esc(v)} <span class="pill">set here</span>`;
+        say(`${note ? note + '<br>' : ''}Saved for ${r.saved} of ${r.total} accounts.${r.failed ? ` ${r.failed} couldn't be updated.` : ''} Everyone's app uses it the next time it opens.`, r.failed ? 'bad' : 'good');
+      } catch (e) { say(`Couldn't save: ${esc(e.message)}`, 'bad'); }
+    });
+    $('[data-reset]', body)?.addEventListener('click', async () => {
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        await writeAuroraPrefForAll(REQ_PREFS.id, null);
+        requestsOverride = null;
+        await loadRemoteConfig();
+        adminRequests(body, isCurrent);
+      } catch (e) { say(`Couldn't save: ${esc(e.message)}`, 'bad'); }
+    });
+    autoFocus(input);
+  }
+
+  async function adminLiveTv(body, isCurrent) {
+    await refreshIptvConfig();
+    if (!isCurrent()) return;
+    const cfg = iptv.config || { type: 'emby' };
+    const field = (label, name, value, type = 'text', hint = '') => `
+      <label class="admin-field"><span>${label}</span>
+        <input type="${type}" data-f="${name}" value="${esc(value || '')}" autocomplete="off" autocapitalize="none" spellcheck="false">
+        ${hint ? `<small>${hint}</small>` : ''}</label>`;
+    body.innerHTML = `
+      <section class="admin-card" data-live-watch><h2>Watching live TV now</h2><div class="spinner"></div></section>
+      <section class="admin-card live-source">
+        <h2>Live TV source</h2>
+        <p class="muted">Pick where Live TV comes from. Saving applies it to every account, and each customer's app switches over the next time it opens.
+          M3U and Xtream channels play in Aurora's own TV player straight from your provider, without going through Emby.</p>
+        <div class="chip-row source-pick">
+          <button class="chip${cfg.type === 'emby' || !cfg.type ? ' active' : ''}" data-type="emby">Emby Live TV</button>
+          <button class="chip${cfg.type === 'm3u' ? ' active' : ''}" data-type="m3u">M3U playlist</button>
+          <button class="chip${cfg.type === 'xtream' ? ' active' : ''}" data-type="xtream">Xtream Codes</button>
+        </div>
+        <div class="source-fields" data-for="emby"><p class="muted">Uses the channels and guide set up in Emby (Emby dashboard → Live TV).</p></div>
+        <div class="source-fields" data-for="m3u">
+          ${field('Playlist address (M3U link)', 'm3uUrl', cfg.m3uUrl, 'url', 'For example http://provider.com:8080/get.php?username=…&password=…&type=m3u_plus')}
+        </div>
+        <div class="source-fields" data-for="xtream">
+          ${field('Server address', 'server', cfg.server, 'url', 'For example http://provider.com:8080')}
+          ${field('Username', 'username', cfg.username)}
+          ${field('Password', 'password', cfg.password, 'password')}
+          <label class="admin-field"><span>Stream type</span>
+            <select data-f="format">
+              <option value="ts"${cfg.format !== 'hls' ? ' selected' : ''}>MPEG-TS (recommended)</option>
+              <option value="hls"${cfg.format === 'hls' ? ' selected' : ''}>HLS (m3u8)</option>
+            </select><small>Try HLS if channels won't start with MPEG-TS.</small></label>
+        </div>
+        <div class="source-fields" data-for="m3u xtream">
+          ${field('TV guide link (XMLTV, optional)', 'epgUrl', cfg.epgUrl, 'url', 'Leave empty to use the guide from your provider: Xtream accounts have one built in, and many M3U playlists name theirs. .xml and .xml.gz both work.')}
+          ${field('User agent (optional)', 'userAgent', cfg.userAgent, 'text', 'Only if your provider asks for a particular player name.')}
+          <div class="cat-pick-wrap">
+            <div class="cat-pick-head">
+              <div><strong>Categories shown to customers</strong><div class="muted" data-cat-summary></div></div>
+              <button class="btn btn-gray" data-cat-load>Choose categories</button>
+            </div>
+            <div class="cat-pick hidden">
+              <div class="cat-pick-tools">
+                <input type="search" data-cat-filter placeholder="Find a category" autocomplete="off">
+                <button class="btn btn-gray" data-cat-all>Show all</button>
+                <button class="btn btn-gray" data-cat-none>Hide all</button>
+              </div>
+              <label class="admin-check"><input type="checkbox" data-cat-auto> Show new categories automatically when the provider adds them</label>
+              <div class="cat-list"></div>
+            </div>
+          </div>
+        </div>
+        <div class="m-actions">
+          <button class="btn btn-gray" data-test>Test</button>
+          <button class="btn btn-red" data-save>Save for everyone</button>
+        </div>
+        <div class="live-result" data-result></div>
+      </section>`;
+    // Who's watching which channel, and what was watched lately.
+    (async () => {
+      const box = $('[data-live-watch]', body);
+      const paint = async () => {
+        try {
+          const live = await liveWatching(await api('/Users'));
+          if (!isCurrent() || !box.isConnected) return false;
+          box.innerHTML = `<h2>Watching live TV now <small>${live.now.length ? `${live.now.length} watching · ` : ''}updates every 30 seconds</small></h2>
+            ${live.now.length ? `<div class="admin-list">${live.now.map(liveRow).join('')}</div>` : '<p class="muted">Nobody is watching live TV right now.</p>'}
+            <h3 class="admin-sub">Recently watched</h3>
+            ${live.history.length ? `<div class="admin-list">${live.history.slice(0, 25).map(liveHistoryRow).join('')}</div>` : '<p class="muted">Nothing yet. Channels watched for a minute or more show up here.</p>'}`;
+        } catch (e) {
+          if (isCurrent() && box.isConnected) box.innerHTML = `<h2>Watching live TV now</h2><p class="muted">${esc(adminError(e))}</p>`;
+        }
+        return isCurrent() && box.isConnected;
+      };
+      if (!(await paint())) return;
+      const timer = routeInterval(async () => { if (!(await paint())) clearInterval(timer); }, 30000);
+    })();
+
+    let type = cfg.type || 'emby';
+    const showFields = () => {
+      $$('.source-pick .chip', body).forEach((c) => c.classList.toggle('active', c.dataset.type === type));
+      $$('.source-fields', body).forEach((f) => f.classList.toggle('hidden', !f.dataset.for.split(' ').includes(type)));
+      $('[data-test]', body).classList.toggle('hidden', type === 'emby');
+    };
+    $$('.source-pick .chip', body).forEach((c) => c.addEventListener('click', () => { type = c.dataset.type; showFields(); }));
+    showFields();
+    const result = $('[data-result]', body);
+
+    // ----- Category picker -----
+    // hidden: ids switched off; cats: the provider's full list once loaded (null until then).
+    let cats = null, catsFor = '', hidden = new Set((cfg.catsHidden || []).map(String)), autoNew = Array.isArray(cfg.catsHidden);
+    let adultSel = null; // the ids ticked as adult once the provider's list is loaded
+    const pickEl = $('.cat-pick', body), listEl = $('.cat-list', body), summary = $('[data-cat-summary]', body);
+    const sourceOf = (c) => (c.type === 'm3u' ? c.m3uUrl : `${c.server}|${c.username}`);
+    const sameSource = () => { const d = rawDraft(); return d.type === cfg.type && sourceOf(d) === sourceOf(cfg); };
+    const showSummary = () => {
+      if (!cats || catsFor !== sourceOf(rawDraft())) {
+        const n = cfg.catsShown?.length, h = cfg.catsHidden?.length;
+        summary.textContent = !sameSource() ? 'All categories (choose after testing the new source)'
+          : Array.isArray(cfg.catsShown) ? `${n} chosen categor${n === 1 ? 'y' : 'ies'} shown` : h ? `All except ${h} hidden` : 'All categories';
+        return;
+      }
+      const on = cats.length - cats.filter((c) => hidden.has(c.id)).length;
+      summary.textContent = on === cats.length ? `All ${cats.length} categories` : `${on} of ${cats.length} categories shown`;
+    };
+    const paintCats = () => {
+      const q = $('[data-cat-filter]', body).value.trim().toLowerCase();
+      listEl.innerHTML = cats.filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => `
+        <label class="cat-row"><input type="checkbox" data-id="${esc(c.id)}"${hidden.has(c.id) ? '' : ' checked'}>
+          <span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}<span class="cat-adult" title="Adult: hidden from everyone except accounts with the Adult channels switch on"><input type="checkbox" data-adult-id="${esc(c.id)}"${adultSel && adultSel.has(c.id) ? ' checked' : ''}> Adult</span></label>`).join('') || '<p class="muted">No categories match.</p>';
+      $$('input[data-adult-id]', listEl).forEach((cb) => { cb.addEventListener('click', (e) => e.stopPropagation()); cb.addEventListener('change', () => { if (cb.checked) adultSel.add(cb.dataset.adultId); else adultSel.delete(cb.dataset.adultId); }); });
+      $$('input[data-id]', listEl).forEach((cb) => cb.addEventListener('change', () => {
+        if (cb.checked) hidden.delete(cb.dataset.id); else hidden.add(cb.dataset.id);
+        showSummary();
+      }));
+    };
+    $('[data-cat-load]', body).addEventListener('click', async (e) => {
+      const d = rawDraft(), problem = check(d);
+      if (problem) return say(esc(problem), 'bad');
+      e.target.disabled = true;
+      listEl.innerHTML = '<div class="spinner"></div>';
+      pickEl.classList.remove('hidden');
+      try {
+        const src = await iptvSource(d);
+        const fresh = src.categories.map((c) => ({ id: String(c.id), name: c.name, count: c.count }));
+        // Carry over the current choice when it's the same provider; a new one starts with everything shown.
+        if (!cats && sameSource() && Array.isArray(cfg.catsShown)) {
+          const shown = new Set(cfg.catsShown.map(String));
+          hidden = new Set(fresh.filter((c) => !shown.has(c.id)).map((c) => c.id));
+        } else if (!cats && !sameSource()) hidden = new Set();
+        cats = fresh;
+        catsFor = sourceOf(d);
+        // Adult: the ones ticked before (same provider), else any named like Adult, XXX or 18+.
+        adultSel = Array.isArray(cfg.adultCats) && sameSource() ? new Set(cfg.adultCats.map(String)) : new Set(fresh.filter((c) => ADULT_NAME.test(c.name || '')).map((c) => c.id));
+        $('[data-cat-auto]', body).checked = autoNew;
+        paintCats();
+        showSummary();
+        if (nav.on) focusEl($('[data-cat-filter]', body));
+      } catch (err) { listEl.innerHTML = `<p class="muted">Couldn't load the categories: ${esc(err.message)}</p>`; }
+      e.target.disabled = false;
+    });
+    $('[data-cat-filter]', body).addEventListener('input', () => cats && paintCats());
+    $('[data-cat-all]', body).addEventListener('click', () => { hidden.clear(); paintCats(); showSummary(); });
+    $('[data-cat-none]', body).addEventListener('click', () => { cats.forEach((c) => hidden.add(c.id)); paintCats(); showSummary(); });
+    $('[data-cat-auto]', body).addEventListener('change', (e) => { autoNew = e.target.checked; });
+    body.addEventListener('input', (e) => { if (e.target.matches('[data-f]')) showSummary(); });
+
+    const rawDraft = () => {
+      const v = (n) => ($(`[data-f="${n}"]`, body)?.value || '').trim();
+      if (type === 'emby') return { type: 'emby', v: Date.now() };
+      const d = { type, userAgent: v('userAgent'), epgUrl: v('epgUrl'), v: Date.now() };
+      if (type === 'm3u') d.m3uUrl = v('m3uUrl');
+      else Object.assign(d, { server: v('server'), username: v('username'), password: v('password'), format: v('format') || 'ts' });
+      return d;
+    };
+    // The settings to save: the source plus the category choice.
+    const draft = () => {
+      const d = rawDraft();
+      if (d.type === 'emby') return d;
+      if (cats && catsFor === sourceOf(d)) {
+        if (hidden.size && autoNew) d.catsHidden = [...hidden];
+        else if (hidden.size) d.catsShown = cats.filter((c) => !hidden.has(c.id)).map((c) => c.id);
+        if (adultSel) d.adultCats = [...adultSel];
+      } else if (sameSource()) {
+        if (cfg.adultCats) d.adultCats = cfg.adultCats;
+        // Not opened this time: keep the choice already saved.
+        if (cfg.catsShown) d.catsShown = cfg.catsShown;
+        if (cfg.catsHidden) d.catsHidden = cfg.catsHidden;
+      }
+      return d;
+    };
+    const check = (d) => {
+      if (d.type === 'm3u' && !d.m3uUrl) return 'Enter the playlist address.';
+      if (d.type === 'xtream' && (!d.server || !d.username)) return 'Enter the server address, username and password.';
+      return '';
+    };
+    const say = (html, cls = '') => { result.className = 'live-result ' + cls; result.innerHTML = html; };
+    showSummary();
+
+    async function test(d) {
+      say('<div class="spinner"></div>');
+      let account = '';
+      if (d.type === 'xtream') {
+        const info = await xtJson(d, {});
+        const u = info?.user_info;
+        if (!u || Number(u.auth) === 0) throw new Error('The Xtream account was not accepted. Check the username and password.');
+        const exp = u.exp_date ? new Date(Number(u.exp_date) * 1000).toLocaleDateString() : 'never';
+        account = `Account ${esc(u.status || 'active')} · expires ${esc(exp)} · ${esc(u.active_cons ?? 0)} of ${esc(u.max_connections ?? '?')} connections in use`;
+      }
+      const src = await iptvSource(d);
+      const count = d.type === 'm3u' ? src.all.length : null;
+      let guideNote = '';
+      if (nativeApp?.loadEpg) {
+        say('<div class="spinner"></div> Channels found. Checking the TV guide…');
+        try {
+          const g = await loadIptvGuide(d);
+          if (!g) guideNote = 'No TV guide found. Add a guide link above to get one.';
+          else {
+            const chans = d.type === 'xtream' ? await iptvAllChannels(d) : src.all;
+            let matched = 0, logos = chans.filter((c) => c.logo).length;
+            for (let i = 0; i < chans.length; i += 2000) {
+              const part = chans.slice(i, i + 2000);
+              const c = JSON.parse(nativeApp.epgCount(g.url, JSON.stringify(part.map((ch) => ({ id: ch.epgId || '', name: ch.name || '' })))));
+              matched += c.listings;
+              // Logos: from the playlist, or else from the guide.
+              const noLogo = part.filter((ch) => !ch.logo);
+              if (noLogo.length) logos += JSON.parse(nativeApp.epgCount(g.url, JSON.stringify(noLogo.map((ch) => ({ id: ch.epgId || '', name: ch.name || '' }))))).logos;
+            }
+            guideNote = `TV guide: ${Number(g.channels).toLocaleString()} channels in the guide · listings for ${matched} of ${chans.length} of your channels · logos for ${logos}.`;
+            // The test made this guide the app's current one; switch back to the saved settings' guide.
+            iptv.guideLoad = null; iptv.guide = null;
+          }
+        } catch (e) { guideNote = `TV guide: ${esc(e.message)}`; }
+      }
+      return `<strong>It works.</strong> ${src.categories.length} categor${src.categories.length === 1 ? 'y' : 'ies'}${count != null ? `, ${count} channels` : ''}.${account ? `<br>${account}` : ''}${guideNote ? `<br>${guideNote}` : ''}`;
+    }
+
+    $('[data-test]', body).addEventListener('click', async () => {
+      const d = draft(), problem = check(d);
+      if (problem) return say(esc(problem), 'bad');
+      try { say(await test(d), 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+    });
+    $('[data-save]', body).addEventListener('click', async (e) => {
+      const d = draft(), problem = check(d);
+      if (problem) return say(esc(problem), 'bad');
+      e.target.disabled = true;
+      try {
+        let tested = '';
+        if (d.type !== 'emby') {
+          try { tested = await test(d); } catch (err) {
+            say(`${esc(err.message)}<br>Not saved. Fix the details above, or press Save again to save anyway.`, 'bad');
+            e.target.disabled = false;
+            if (e.target.dataset.force !== '1') { e.target.dataset.force = '1'; return; }
+          }
+        }
+        say('<div class="spinner"></div> Saving for every account…');
+        const cfgToSave = d.type === 'emby' ? null : d;
+        const res = await syncIptvConfig(cfgToSave, { force: true });
+        iptv.config = cfgToSave;
+        if (cfgToSave) store.set(iptvLocalKey(), JSON.stringify(cfgToSave)); else store.del(iptvLocalKey());
+        resetIptvCaches();
+        store.set('ef.iptv.sync', String(Date.now()));
+        $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+        say(`${tested ? tested + '<br>' : ''}<strong>Saved for ${res.saved} of ${res.total} accounts.</strong>${res.failed ? ` ${res.failed} couldn't be updated; they'll be retried later.` : ''}
+          Customers' apps switch over the next time they open Aurora.`, res.failed ? 'warn' : 'good');
+        e.target.dataset.force = '';
+      } catch (err) {
+        say(esc(adminError(err)), 'bad');
+      }
+      e.target.disabled = false;
+    });
+  }
+
+  // ----- Live TV viewing (M3U / Xtream) -----
+  // Aurora's live player records what it's playing in each viewer's Emby display preferences ("aurora-watching");
+  // an entry not refreshed for three minutes counts as stopped.
+  const WATCHING_FRESH = 3 * 60000;
+  // The Overview asks for this twice every 30 s (Watching now and the connection meter): share one reading.
+  let watchingCache = null;
+  function liveWatching(users) {
+    const key = ((Array.isArray(users) ? users : users?.Items) || []).map((u) => u.Id).join();
+    if (watchingCache && watchingCache.key === key && Date.now() - watchingCache.t < 15000) return watchingCache.p;
+    const p = liveWatchingNow(users);
+    watchingCache = { key, t: Date.now(), p };
+    p.catch(() => { watchingCache = null; });
+    return p;
+  }
+  async function liveWatchingNow(users) {
+    const out = { now: [], history: [] };
+    const list = (Array.isArray(users) ? users : users?.Items) || [];
+    const queue = list.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        let data = null;
+        try { data = await readAuroraPref('aurora-watching', u.Id); } catch { continue; }
+        for (const [deviceId, e] of Object.entries(data?.devices || {})) {
+          if (Date.now() - (e.at || 0) < WATCHING_FRESH) out.now.push({ ...e, deviceId, user: u.Name });
+        }
+        (data?.history || []).forEach((h) => out.history.push({ ...h, user: u.Name }));
+      }
+    };
+    await Promise.all([0, 1, 2, 3].map(worker));
+    out.now.sort((a, b) => (a.user || '').localeCompare(b.user || ''));
+    out.history.sort((a, b) => (b.ended || 0) - (a.ended || 0));
+    return out;
+  }
+  const minutes = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`; };
+  function liveRow(e) {
+    const ch = [e.num, e.name].filter(Boolean).join('  ');
+    return `<div class="admin-row session-row live-row">
+      ${e.logo ? `<img class="live-row-logo" src="${esc(e.logo)}" alt="" referrerpolicy="no-referrer" onerror="this.remove()">` : ''}
+      <div class="admin-row-main"><strong>${esc(e.user || 'Someone')}</strong> · ${esc(ch)} <span class="pill live">Live TV</span>
+        <div class="muted">${e.now ? esc(e.now) + ' · ' : ''}${esc(e.device || '')} · watching for ${minutes(Date.now() - (e.started || Date.now()))}${e.group ? ' · ' + esc(e.group) : ''}</div>
+      </div></div>`;
+  }
+  function liveHistoryRow(h) {
+    return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(h.user || '')}</strong> · ${esc([h.num, h.name].filter(Boolean).join('  '))}
+      <div class="muted">${esc(h.device || '')} · ${minutes((h.ended || 0) - (h.started || 0))} · ${esc(timeAgo(h.ended))}</div></div></div>`;
+  }
+
+  // Aurora reports its version as 1.2.<build>; the build number orders versions.
+  // Versions read V2.5.4: the build number N is shown as 2.(N div 50).(N mod 50). Older "2.0.N" / "1.2.N" names still map to N.
+  const auroraVersionCode = (v) => {
+    const m = String(v || '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!m) return 0;
+    return m[1] === '2' && m[2] !== '0' ? Number(m[2]) * 50 + Number(m[3]) : Number(m[3]);
+  };
+  const auroraVersionName = (code) => `2.${Math.floor(code / 50)}.${code % 50}`;
+
+  // Why Emby had to convert (re-encode) a stream, in plain words.
+  const TRANSCODE_REASONS = {
+    ContainerNotSupported: 'the file type isn\'t supported by the device', VideoCodecNotSupported: 'the video format isn\'t supported',
+    AudioCodecNotSupported: 'the sound format isn\'t supported', SubtitleCodecNotSupported: 'the subtitle format isn\'t supported',
+    ContainerBitrateExceedsLimit: 'it\'s over the quality limit', VideoBitrateNotSupported: 'the video bitrate is too high',
+    AudioBitrateNotSupported: 'the sound bitrate is too high', VideoProfileNotSupported: 'the video profile isn\'t supported',
+    VideoLevelNotSupported: 'the video level isn\'t supported', VideoResolutionNotSupported: 'the resolution isn\'t supported',
+    VideoBitDepthNotSupported: 'the video bit depth isn\'t supported', AnamorphicVideoNotSupported: 'anamorphic video isn\'t supported',
+    InterlacedVideoNotSupported: 'interlaced video isn\'t supported', RefFramesNotSupported: 'too many reference frames',
+    AudioChannelsNotSupported: 'the sound channels aren\'t supported', AudioSampleRateNotSupported: 'the sound sample rate isn\'t supported',
+    SecondaryAudioNotSupported: 'the second audio track isn\'t supported', DirectPlayError: 'direct play failed',
+    VideoFramerateNotSupported: 'the frame rate isn\'t supported', UnknownVideoStreamInfo: 'the video details are unknown',
+    UnknownAudioStreamInfo: 'the sound details are unknown', SubtitleBurn: 'subtitles are being burned in',
+  };
+  const reasonText = (r) => TRANSCODE_REASONS[r] || String(r).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+  const mbps = (bps) => (bps ? `${bps >= 1e7 ? Math.round(bps / 1e6) : (bps / 1e6).toFixed(1)} Mbps` : '');
+  const codecName = (c) => ({ h264: 'H.264', hevc: 'HEVC (H.265)', h265: 'HEVC (H.265)', av1: 'AV1', vp9: 'VP9', mpeg2video: 'MPEG-2', eac3: 'E-AC-3', ac3: 'AC-3', aac: 'AAC', dts: 'DTS', truehd: 'TrueHD', mp3: 'MP3', opus: 'Opus', flac: 'FLAC' })[String(c || '').toLowerCase()] || String(c || '').toUpperCase();
+  const channelsName = (n) => ({ 1: 'mono', 2: 'stereo', 6: '5.1', 8: '7.1' })[n] || (n ? n + ' ch' : '');
+
+  // What Emby is actually doing for one stream: the file it plays from, and (when it converts) what ffmpeg is doing.
+  function streamDetails(s) {
+    const it = s.NowPlayingItem, ps = s.PlayState || {}, ti = s.TranscodingInfo;
+    const streams = it.MediaStreams || it.MediaSources?.[0]?.MediaStreams || [];
+    const src = it.MediaSources?.[0];
+    const video = streams.find((x) => x.Type === 'Video');
+    const audio = (ps.AudioStreamIndex != null && streams.find((x) => x.Type === 'Audio' && x.Index === ps.AudioStreamIndex)) || streams.find((x) => x.Type === 'Audio' && x.IsDefault) || streams.find((x) => x.Type === 'Audio');
+    const res = video?.Height ? (video.Height >= 2000 ? '4K' : video.Height + 'p') : '';
+    const source = [String(it.Container || src?.Container || '').toUpperCase(), video ? [codecName(video.Codec), res].filter(Boolean).join(' ') : '',
+      mbps(src?.Bitrate || video?.BitRate), audio ? [codecName(audio.Codec), channelsName(audio.Channels)].filter(Boolean).join(' ') : ''].filter(Boolean).join(' · ');
+    const method = ps.PlayMethod || '';
+    let label = '', tone = '', server = '', why = '';
+    if (method === 'DirectPlay') { label = 'Direct play'; tone = 'good'; server = 'The device plays the file as it is. The server only sends it, with no converting.'; }
+    else if (method === 'DirectStream') { label = 'Direct stream'; tone = 'good'; server = 'ffmpeg repackages the file for the device without re-encoding, so the quality is untouched.'; }
+    else if (method === 'Transcode') {
+      const none = ti && ti.IsVideoDirect && ti.IsAudioDirect;
+      label = none ? 'Repackaging (ffmpeg)' : 'Converting (ffmpeg)'; tone = none ? 'good' : 'warn';
+      if (ti) {
+        const parts = [
+          ti.IsVideoDirect ? `video copied${video ? ' (' + codecName(video.Codec) + ')' : ''}` : `video converted${ti.VideoCodec ? ' to ' + codecName(ti.VideoCodec) : ''}${ti.Width && ti.Height ? ` at ${ti.Height}p` : ''}`,
+          ti.IsAudioDirect ? `sound copied${audio ? ' (' + codecName(audio.Codec) + ')' : ''}` : `sound converted${ti.AudioCodec ? ' to ' + codecName(ti.AudioCodec) : ''}`,
+        ];
+        const extra = [ti.Container ? 'into ' + String(ti.Container).toUpperCase() : '', mbps(ti.Bitrate), ti.Framerate ? Math.round(ti.Framerate) + ' fps' : '',
+          ti.CompletionPercentage ? Math.round(ti.CompletionPercentage) + '% prepared' : '', ti.HardwareAccelerationType ? 'hardware: ' + ti.HardwareAccelerationType : ''].filter(Boolean);
+        server = `ffmpeg is running: ${parts.join(', ')}${extra.length ? ' · ' + extra.join(' · ') : ''}`;
+        if (ti.TranscodeReasons?.length) why = 'Why: ' + [...new Set(ti.TranscodeReasons.map(reasonText))].join(', ');
+      } else server = 'ffmpeg is converting this for the device.';
+    }
+    // About how much of the connection this stream uses.
+    const bps = method === 'Transcode' && ti?.Bitrate ? ti.Bitrate : (src?.Bitrate || video?.BitRate || 0);
+    return { label, tone, server, why, source, bps };
+  }
+
+  function sessionRow(s) {
+    const it = s.NowPlayingItem, ps = s.PlayState || {};
+    const title = it.SeriesName ? `${it.SeriesName} · ${episodeLabel(it)}` : it.Name;
+    const pct = it.RunTimeTicks ? Math.min(100, (ps.PositionTicks || 0) / it.RunTimeTicks * 100) : 0;
+    const d = streamDetails(s);
+    const clock = it.RunTimeTicks ? `${formatClock((ps.PositionTicks || 0) / TICKS_PER_SECOND)} / ${formatClock(it.RunTimeTicks / TICKS_PER_SECOND)}` : '';
+    return `<div class="admin-row session-row">
+      <div class="admin-row-main"><strong>${esc(s.UserName || 'Someone')}</strong> · ${esc(title || '')}${ps.IsPaused ? ' <span class="pill">Paused</span>' : ''}${d.label ? ` <span class="pill ${d.tone}">${esc(d.label)}</span>` : ''}
+        <div class="muted">${esc(s.DeviceName || '')} · ${esc(s.Client || '')} ${esc(s.ApplicationVersion || '')}${s.RemoteEndPoint ? ' · ' + esc(String(s.RemoteEndPoint).replace(/^::ffff:/, '')) : ''}${clock ? ' · ' + clock : ''}</div>
+        ${d.source ? `<div class="session-detail"><span>File</span> ${esc(d.source)}</div>` : ''}
+        ${d.server ? `<div class="session-detail"><span>Server</span> ${esc(d.server)}</div>` : ''}
+        ${d.why ? `<div class="session-detail"><span></span> ${esc(d.why)}</div>` : ''}
+        ${pct ? `<div class="session-bar"><span style="width:${pct.toFixed(1)}%"></span></div>` : ''}
+      </div></div>`;
+  }
+
+  // "Johnny is playing Movie on Living Room TV" → who and what.
+  function parsePlayback(a) {
+    const m = (a.Name || '').match(/^(.+?) (?:is playing|has finished playing|started playing) (.+?)(?: on (.+))?$/i);
+    return m ? { user: m[1], title: m[2], device: m[3] || '' } : { user: '', title: a.Name || '', device: '' };
+  }
+
+  function topList(names) {
+    const counts = new Map();
+    names.filter(Boolean).forEach((n) => counts.set(n, (counts.get(n) || 0) + 1));
+    const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (!top.length) return '<p class="muted">No plays yet.</p>';
+    const max = top[0][1];
+    return `<ol class="top-list">${top.map(([n, c]) => `<li><span class="top-name">${esc(n)}</span><span class="top-bar"><span style="width:${(c / max * 100).toFixed(1)}%"></span></span><span class="top-count">${c}</span></li>`).join('')}</ol>`;
+  }
+
+  function playsChart(plays) {
+    const days = [];
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    for (let i = 13; i >= 0; i--) days.push({ date: new Date(today.getTime() - i * DAY), count: 0 });
+    plays.forEach((a) => {
+      const d = new Date(a.Date); d.setHours(0, 0, 0, 0);
+      const slot = days.find((x) => x.date.getTime() === d.getTime());
+      if (slot) slot.count++;
+    });
+    const max = Math.max(1, ...days.map((d) => d.count));
+    const label = (d) => d.date.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+    return `<div class="plays-chart" role="img" aria-label="Plays per day for the last 14 days">
+      ${days.map((d, i) => `<div class="pc-col" title="${esc(label(d))}: ${d.count} play${d.count === 1 ? '' : 's'}">
+        <span class="pc-val">${d.count || ''}</span>
+        <span class="pc-bar" style="height:${Math.round(d.count / max * 130)}px"></span>
+        <span class="pc-day">${i % 2 === 1 || days.length < 8 ? esc(d.date.toLocaleDateString([], { month: 'numeric', day: 'numeric' })) : ''}</span>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  const ACTIVITY_FILTERS = [['all', 'All'], ['playback', 'Playback'], ['signin', 'Sign-ins'], ['errors', 'Problems']];
+  function activityMatches(a, filter) {
+    if (filter === 'playback') return /playback/i.test(a.Type || '');
+    if (filter === 'signin') return /authentication|session|login|user/i.test(a.Type || '');
+    if (filter === 'errors') return /error|fatal|warn/i.test(a.Severity || '') || /fail/i.test(a.Type || '');
+    return true;
+  }
+
+  async function adminActivity(body, isCurrent) {
+    const filter = new URLSearchParams(location.hash.split('?')[1] || '').get('filter') || 'all';
+    body.innerHTML = `
+      <div class="chip-row">${ACTIVITY_FILTERS.map(([id, l]) => `<a class="chip${id === filter ? ' active' : ''}" href="#/admin?tab=activity&filter=${id}">${l}</a>`).join('')}</div>
+      <div class="admin-card"><div class="admin-list" data-list><div class="spinner"></div></div>
+      <button class="btn btn-gray hidden" data-more>Show more</button></div>`;
+    const listEl = $('[data-list]', body), more = $('[data-more]', body);
+    let start = 0, shown = 0;
+    const load = async () => {
+      more.classList.add('hidden');
+      try {
+        const res = await api('/System/ActivityLog/Entries', { params: { StartIndex: start, Limit: 200 } });
+        if (!isCurrent()) return;
+        if (start === 0) listEl.innerHTML = '';
+        const items = (res?.Items || []).filter((a) => activityMatches(a, filter));
+        start += res?.Items?.length || 0;
+        listEl.insertAdjacentHTML('beforeend', items.map((a) => {
+          const sev = /error|fatal/i.test(a.Severity || '') ? 'bad' : /warn/i.test(a.Severity || '') ? 'warn' : '';
+          return `<div class="admin-row" tabindex="-1">
+            <div class="admin-row-main">${sev ? `<span class="pill ${sev}">${esc(a.Severity)}</span> ` : ''}${esc(a.Name || '')}
+              ${a.ShortOverview || a.Overview ? `<div class="muted">${esc(a.ShortOverview || a.Overview)}</div>` : ''}</div>
+            <div class="admin-row-time" title="${esc(new Date(a.Date).toLocaleString())}">${esc(fmtDateTime(a.Date))}</div>
+          </div>`;
+        }).join(''));
+        shown += items.length;
+        if (!shown && start >= (res?.TotalRecordCount || 0)) listEl.innerHTML = '<p class="muted">Nothing here.</p>';
+        if (start < (res?.TotalRecordCount || 0)) more.classList.remove('hidden');
+      } catch (e) { if (isCurrent()) listEl.innerHTML = `<p class="muted">${esc(adminError(e))}</p>`; }
+    };
+    more.addEventListener('click', load);
+    await load();
+  }
+
+  // ----- Users (device limits, expiry, accounts) -----
+  async function setDisabled(userId, disabled) {
+    const user = await api(`/Users/${userId}`);
+    await api(`/Users/${userId}/Policy`, { method: 'POST', body: { ...(user.Policy || {}), IsDisabled: !!disabled } });
+  }
+
+  // Limits saved by older versions in each account's (user-writable) display preferences: moved into the
+  // guard once, then cleared, so nothing reads them again.
+  async function moveOldLimits(users, guardUsers) {
+    const moved = [];
+    const queue = users.filter((u) => !guardUsers[u.Id]);
+    const worker = async () => {
+      while (queue.length) {
+        const u = queue.shift();
+        let old = null;
+        try { old = await readAuroraPref(OLD_LIMITS_PREFS, u.Id); } catch { continue; }
+        if (!old || (!old.limit && !old.expires)) continue;
+        try {
+          const r = await guard(`/limits/${u.Id}`, { method: 'PUT', body: { limit: Math.max(1, Number(old.limit) || DEFAULT_DEVICE_LIMIT), expires: old.expires || null } });
+          guardUsers[u.Id] = r.record;
+          await writeAuroraPref(OLD_LIMITS_PREFS, u.Id, null);
+          moved.push(u.Name);
+        } catch (e) { console.warn('Moving limits for', u.Name, e); }
+      }
+    };
+    await Promise.all([0, 1, 2].map(worker));
+    return moved;
+  }
+
+  // User management needs a real Emby administrator (not just one of Aurora's admin names): Emby and the
+  // guard both refuse anyone else, and the page doesn't show controls that would fail.
+  async function embyAdminCheck(body) {
+    try {
+      const me = await api(`/Users/${state.userId}`);
+      if (me?.Policy?.IsAdministrator) return true;
+    } catch { /* fall through */ }
+    body.innerHTML = '<p class="empty-msg">User management needs an Emby administrator account. Make this account an administrator in the Emby dashboard (Users → this user → "Allow this user to manage the server"), then sign in again.</p>';
+    return false;
+  }
+
+  const guardHelp = (e) => `<section class="admin-card"><h2>Aurora Guard isn't answering</h2>
+    <p class="live-result bad">${esc(e.message)}${e.status ? '' : ` (${esc(guardUrl)})`}</p>
+    <p class="muted">Device limits and expiration dates are kept and enforced by Aurora Guard on the Emby server PC. Check that it is running
+      (Task Scheduler → "Aurora Guard"; its log is in the guard's data folder) and that port ${esc(new URL(guardUrl).port || '443')} is forwarded to that PC.
+      Accounts can still be enabled, disabled or deleted below.</p></section>`;
+
+  const userStatus = (u, lim) => (isExpired(lim) ? 'expired' : u.Policy?.IsDisabled ? 'disabled' : 'active');
+  const statusPill = (st) => `<span class="pill ${st === 'active' ? 'good' : st === 'expired' ? 'bad' : 'warn'}">${st === 'active' ? 'Active' : st === 'expired' ? 'Expired' : 'Disabled'}</span>`;
+
+  // ----- Subscription plans (Admin -> Plans) -----
+  // A plan: a price for a length of time, a number of connections (devices at once) and, optionally, only some of the Live
+  // TV categories. Kept in Aurora Guard. Put on a customer (Admin -> Users, or when approving a request) it sets their device
+  // limit, end date and categories in one go, and adds a line to the subscription history. Aurora records the price; it
+  // doesn't take payments.
+  const money = (n) => '$' + (Number.isInteger(Number(n)) ? Number(n) : Number(n).toFixed(2));
+  const planLength = (p) => `${p.length} ${p.unit}${p.length === 1 ? '' : 's'}`;
+  const planSummary = (p) => `${money(p.price)} · ${planLength(p)} · ${p.connections} ${p.connections === 1 ? 'connection' : 'connections'}`;
+  const planCreditCost = (p) => (Number.isInteger(p.credits) && p.credits >= 0 ? p.credits : Math.max(1, p.connections * (p.unit === 'day' ? Math.ceil(p.length / 30) : p.length)));
+  const creditsWord = (n) => `${n} ${n === 1 ? 'credit' : 'credits'}`;
+  const planCatsText = (p) => (p.categories ? `${p.categories.length} Live TV ${p.categories.length === 1 ? 'category' : 'categories'}` : 'All Live TV categories');
+  const planOptions = (plans, selected = '') => plans.filter((p) => p.active || p.id === selected)
+    .map((p) => `<option value="${esc(p.id)}"${p.id === selected ? ' selected' : ''}>${esc(p.name)} — ${esc(money(p.price))}${p.active ? '' : ' (hidden)'}</option>`).join('');
+  // The provider's full category list (not narrowed to what customers see).
+  async function allLiveCategories() {
+    const cfg = iptv.config;
+    if (!iptvOn(cfg)) return [];
+    const src = await iptvSource({ ...cfg, catsShown: undefined, catsHidden: undefined, v: 'plans-' + (cfg.v || 0) });
+    return src.categories.map((c) => ({ id: String(c.id), name: c.name, count: c.count }));
+  }
+
+  // Channel packages (Sports, Kids, 24/7): groups of Live TV categories that resellers give to customers in one tap (guard 1.41.0).
+  async function bindPackages(body, isCurrent) {
+    const card = $('[data-packs]', body); if (!card) return;
+    let data;
+    try { data = await guard('/packages'); } catch (e) {
+      if (isCurrent()) card.innerHTML = `<h2>Channel packages</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.41.0 to use packages.' : esc(e.message)}</p>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const draw = () => {
+      const noSupport = !data.supported;
+      card.innerHTML = `<h2>Channel packages <small>Resellers give these to customers</small></h2>
+        <p class="muted">Group Live TV categories under a name, like Sports or Kids. A reseller then gives a customer one or more packages in one tap. Changing a package updates every customer who has it. Adult categories are never in a package.</p>
+        ${noSupport ? `<p class="live-result bad">${esc(data.error || 'Packages work with an Xtream TV provider. Yours is set up another way.')}</p>` : ''}
+        <div class="admin-list">${(data.packages || []).map((x) => `<div class="admin-row" data-pack="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.name)}</strong>
+          <div class="muted">${x.categories.length} ${x.categories.length === 1 ? 'category' : 'categories'}: ${esc(x.categories.map((id) => (data.categories.find((c) => c.id === id) || {}).name || '(removed)').slice(0, 6).join(', '))}${x.categories.length > 6 ? ', ...' : ''}</div></div>
+          <div class="plan-actions"><button class="btn btn-gray" data-pk-edit>Edit</button><button class="btn btn-gray" data-pk-del>Delete</button></div></div>`).join('') || '<p class="muted">No packages yet.</p>'}</div>
+        ${noSupport ? '' : '<div class="m-actions"><button class="btn btn-white" data-pk-add>Add a package</button></div>'}
+        <div class="plan-form hidden" data-pk-form></div><p class="live-result" data-pk-result hidden></p>`;
+      const out = $('[data-pk-result]', card), say = (html, cls = '') => { out.hidden = !html; out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+      const form = $('[data-pk-form]', card);
+      const open = (pk) => {
+        const have = new Set((pk ? pk.categories : []).map(String));
+        form.classList.remove('hidden');
+        form.innerHTML = `<h3 class="admin-sub">${pk ? 'Edit package' : 'New package'}</h3>
+          <label class="admin-field"><span>Name</span><input type="text" data-pk-name maxlength="40" value="${esc(pk ? pk.name : '')}" placeholder="Sports"></label>
+          <div class="m-actions"><input type="search" class="users-search" data-pk-q placeholder="Search categories" autocomplete="off" spellcheck="false"><button class="btn btn-gray" data-pk-247>Tick 24/7</button><button class="btn btn-gray" data-pk-none>Untick all</button></div>
+          <div class="admin-list" data-pk-list style="max-height:300px;overflow:auto">${data.categories.map((k) => `<label class="admin-row" data-n="${esc(k.name.toLowerCase())}"><div class="admin-row-main"><input type="checkbox" value="${esc(k.id)}"${have.has(String(k.id)) ? ' checked' : ''}> ${esc(k.name)} <span class="muted">${k.count}</span></div></label>`).join('')}</div>
+          <div class="m-actions"><button class="btn btn-red" data-pk-save>${pk ? 'Save changes' : 'Make the package'}</button><button class="btn btn-gray" data-pk-cancel>Cancel</button></div>`;
+        const boxes = () => $$('[data-pk-list] input', form);
+        $('[data-pk-q]', form).addEventListener('input', (e) => { const t = e.target.value.trim().toLowerCase(); $$('[data-pk-list] [data-n]', form).forEach((r) => { r.style.display = !t || r.dataset.n.includes(t) ? '' : 'none'; }); });
+        $('[data-pk-247]', form).addEventListener('click', () => boxes().forEach((b) => { if (/24\s*[\/x]?\s*7/i.test(b.closest('[data-n]').dataset.n)) b.checked = true; }));
+        $('[data-pk-none]', form).addEventListener('click', () => boxes().forEach((b) => { b.checked = false; }));
+        $('[data-pk-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+        $('[data-pk-save]', form).addEventListener('click', async () => {
+          const body2 = { name: $('[data-pk-name]', form).value, categories: boxes().filter((b) => b.checked).map((b) => b.value) };
+          try {
+            const r = await guard(pk ? `/packages/${pk.id}` : '/packages', { method: pk ? 'PUT' : 'POST', body: body2 });
+            if (pk) Object.assign(pk, r.package); else data.packages.push(r.package);
+            toast(pk ? 'Package saved' : 'Package made', 2500); draw();
+          } catch (e) { say(esc(e.message), 'bad'); }
+        });
+        form.scrollIntoView({ block: 'nearest' });
+      };
+      $('[data-pk-add]', card)?.addEventListener('click', () => open(null));
+      $$('[data-pack]', card).forEach((row) => {
+        const pk = data.packages.find((x) => x.id === row.dataset.pack);
+        $('[data-pk-edit]', row).addEventListener('click', () => open(pk));
+        $('[data-pk-del]', row).addEventListener('click', async () => {
+          if (!(await confirmAction(`Delete the ${pk.name} package?`, 'Customers who have it lose those categories (customers with no other package go back to their plan).', 'Delete'))) return;
+          try { await guard(`/packages/${pk.id}`, { method: 'DELETE' }); data.packages = data.packages.filter((x) => x.id !== pk.id); toast('Package deleted', 2500); draw(); } catch (e) { say(esc(e.message), 'bad'); }
+        });
+      });
+    };
+    draw();
+  }
+  async function adminPlans(body, isCurrent) {
+    if (!guardEnabled) { body.innerHTML = '<section class="admin-card"><h2>Plans</h2><p class="muted">Plans need Aurora Guard (it is switched off). See server/README.md.</p></section>'; return; }
+    let data;
+    try { data = await guard('/plans'); } catch (e) {
+      if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Plans</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.5.0 to use plans (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const t = data.totals || { thisMonth: { count: 0, revenue: 0 }, lastMonth: { count: 0, revenue: 0 } };
+    const row = (p) => `<div class="admin-row" data-plan="${esc(p.id)}"><div class="admin-row-main">
+        <strong>${esc(p.name)}</strong>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}
+        <div class="muted">${esc(planSummary(p))} · ${esc(planCatsText(p))}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit>Edit</button><button class="btn btn-gray" data-del>Delete</button></div></div>`;
+    const sub = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.name)}</strong> · ${esc(e.planName)} <span class="pill">${esc(money(e.price))}</span>
+        <div class="muted">Until ${esc(fmtDay(e.expires))} · ${e.mode === 'today' ? 'started that day' : 'added to the time left'}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(e.at))}</div></div>`;
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('This month', money(t.thisMonth.revenue), `${t.thisMonth.count} ${t.thisMonth.count === 1 ? 'subscription' : 'subscriptions'}`)}
+        ${statTile('Last month', money(t.lastMonth.revenue), `${t.lastMonth.count} ${t.lastMonth.count === 1 ? 'subscription' : 'subscriptions'}`)}
+        ${statTile('Plans', data.plans.length, `${data.plans.filter((p) => p.active).length} on offer`)}
+      </div>
+      <section class="admin-card">
+        <h2>Plans <small>Put them on customers in Admin → Users</small></h2>
+        <div class="admin-list" data-plans>${data.plans.map(row).join('') || '<p class="muted">No plans yet. Add one below.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add>Add a plan</button></div>
+        <div class="plan-form hidden" data-form></div>
+      </section>
+      <section class="admin-card" data-packs><h2>Channel packages</h2><div class="spinner"></div></section>
+      <section class="admin-card">
+        <h2>Subscription history <small>Newest first</small></h2>
+        <div class="admin-list">${data.subscriptions.map(sub).join('') || '<p class="muted">Nothing yet. A line is added each time you put a plan on a customer.</p>'}</div>
+      </section>`;
+    bindPackages(body, isCurrent);
+    const form = $('[data-form]', body);
+    let cats = null;
+    const openForm = (p) => {
+      const edit = !!p;
+      p = p || { name: '', price: '', length: 1, unit: 'month', connections: 2, categories: null, active: true };
+      form.classList.remove('hidden');
+      form.innerHTML = `
+        <h3 class="admin-sub">${edit ? 'Edit plan' : 'New plan'}</h3>
+        <label class="admin-field"><span>Name</span><input type="text" data-p="name" maxlength="60" value="${esc(p.name)}" placeholder="1 Month · 2 Connections"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Price ($)</span><input type="number" data-p="price" min="0" step="0.01" inputmode="decimal" value="${esc(p.price)}"></label>
+          <label class="admin-field"><span>Length</span><input type="number" data-p="length" min="1" step="1" inputmode="numeric" value="${esc(p.length)}"></label>
+          <label class="admin-field"><span>&nbsp;</span><select data-p="unit"><option value="month"${p.unit === 'month' ? ' selected' : ''}>month(s)</option><option value="day"${p.unit === 'day' ? ' selected' : ''}>day(s)</option></select></label>
+          <label class="admin-field"><span>Connections</span><input type="number" data-p="connections" min="1" max="50" step="1" inputmode="numeric" value="${esc(p.connections)}"></label>
+          <label class="admin-field"><span>Reseller credits</span><input type="number" data-p="credits" min="0" step="1" inputmode="numeric" value="${p.credits == null ? '' : esc(p.credits)}" placeholder="automatic"></label>
+        </div>
+        <p class="muted">Credits a reseller pays for this plan. Blank means connections × months (1 credit is one connection for one month).</p>
+        <label class="admin-check"><input type="checkbox" data-p="active"${p.active ? ' checked' : ''}> On offer (customers can ask for it, and it shows when you pick a plan)</label>
+        <label class="admin-check"><input type="checkbox" data-p="vod"${p.vod ? ' checked' : ''}> Includes the provider's movies and TV shows (switches it on for the customer when you put this plan on their account)</label>
+        <div class="cat-pick-wrap">
+          <div class="cat-pick-head"><div><strong>Live TV categories</strong><div class="muted" data-cat-summary></div></div>
+            <div><label class="admin-check"><input type="radio" name="plancats" data-p="catsAll"${p.categories ? '' : ' checked'}> All categories</label>
+              <label class="admin-check"><input type="radio" name="plancats" data-p="catsSome"${p.categories ? ' checked' : ''}> Only the ones I choose</label></div></div>
+          <div class="cat-pick hidden" data-cat-box>
+            <div class="cat-pick-tools"><input type="search" data-cat-filter placeholder="Find a category" autocomplete="off">
+              <button class="btn btn-gray" data-cat-all>All</button><button class="btn btn-gray" data-cat-none>None</button></div>
+            <div class="cat-list" data-cat-list></div></div>
+        </div>
+        <div class="m-actions"><button class="btn btn-red" data-save>${edit ? 'Save changes' : 'Add plan'}</button><button class="btn btn-gray" data-cancel>Cancel</button></div>
+        <div class="live-result" data-result></div>`;
+      const chosen = new Set((p.categories || []).map(String));
+      const summary = $('[data-cat-summary]', form), box = $('[data-cat-box]', form), list = $('[data-cat-list]', form);
+      const say = (html, cls = '') => { const r = $('[data-result]', form); r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; };
+      const showSummary = () => { summary.textContent = $('[data-p="catsAll"]', form).checked ? 'Every category your Live TV source has' : `${chosen.size} chosen`; };
+      const paint = () => {
+        const q = $('[data-cat-filter]', form).value.trim().toLowerCase();
+        list.innerHTML = (cats || []).filter((c) => !q || c.name.toLowerCase().includes(q)).map((c) => `<label class="cat-row"><input type="checkbox" data-id="${esc(c.id)}"${chosen.has(c.id) ? ' checked' : ''}><span>${esc(c.name)}</span>${c.count ? `<small>${c.count}</small>` : ''}</label>`).join('') || '<p class="muted">No categories match.</p>';
+        $$('input[data-id]', list).forEach((cb) => cb.addEventListener('change', () => { if (cb.checked) chosen.add(cb.dataset.id); else chosen.delete(cb.dataset.id); showSummary(); }));
+      };
+      const loadCats = async () => {
+        box.classList.remove('hidden');
+        if (cats) return paint();
+        if (!iptvOn()) { list.innerHTML = '<p class="muted">Categories come from an M3U playlist or Xtream account (Admin → Live TV). Emby\'s own Live TV has none to choose.</p>'; return; }
+        list.innerHTML = '<div class="spinner"></div>';
+        try { cats = await allLiveCategories(); paint(); } catch (e) { list.innerHTML = `<p class="muted">Couldn't load the categories: ${esc(e.message)}</p>`; }
+      };
+      const mode = () => { const some = $('[data-p="catsSome"]', form).checked; box.classList.toggle('hidden', !some); if (some) loadCats(); showSummary(); };
+      $('[data-p="catsAll"]', form).addEventListener('change', mode);
+      $('[data-p="catsSome"]', form).addEventListener('change', mode);
+      $('[data-cat-filter]', form).addEventListener('input', () => cats && paint());
+      $('[data-cat-all]', form).addEventListener('click', () => { (cats || []).forEach((c) => chosen.add(c.id)); paint(); showSummary(); });
+      $('[data-cat-none]', form).addEventListener('click', () => { chosen.clear(); paint(); showSummary(); });
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      mode();
+      $('[data-save]', form).addEventListener('click', async () => {
+        const v = (n) => $(`[data-p="${n}"]`, form).value;
+        const payload = { name: v('name').trim(), price: Number(v('price')), length: Number(v('length')), unit: v('unit'), connections: Number(v('connections')),
+          active: $('[data-p="active"]', form).checked, vod: $('[data-p="vod"]', form).checked, categories: $('[data-p="catsSome"]', form).checked ? [...chosen] : null, credits: v('credits').trim() === '' ? null : Number(v('credits')) };
+        if (v('price') === '' || Number.isNaN(payload.price)) return say('Enter the price.', 'bad');
+        say('<div class="spinner"></div>');
+        try {
+          await guard(edit ? `/plans/${encodeURIComponent(p.id)}` : '/plans', { method: edit ? 'PUT' : 'POST', body: payload });
+          toast(edit ? 'Plan saved' : 'Plan added', 2000);
+          if (isCurrent()) adminPlans(body, isCurrent);
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl($('[data-p="name"]', form)); else $('[data-p="name"]', form).scrollIntoView({ block: 'center' });
+    };
+    $('[data-add]', body).addEventListener('click', () => openForm(null));
+    $$('[data-plan]', body).forEach((el) => {
+      const p = data.plans.find((x) => x.id === el.dataset.plan);
+      $('[data-edit]', el).addEventListener('click', () => openForm(p));
+      $('[data-del]', el).addEventListener('click', async () => {
+        if (!(await confirmAction(`Delete "${p.name}"?`, 'Customers who already have it keep what they were given (their connections, end date and categories). It just disappears from the list.', 'Delete plan'))) return;
+        try { await guard(`/plans/${encodeURIComponent(p.id)}`, { method: 'DELETE' }); toast('Plan deleted', 2000); if (isCurrent()) adminPlans(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
+  // ----- Admin → Resellers (Aurora Guard 1.10.0) -----
+  // A reseller is an Emby account that has credits. They sign in to Aurora as usual and get a Reseller panel (profile menu) where credits
+  // pay for creating and renewing their own customers. Here the admin adds resellers, sets what they can sell and adds or removes credits.
+  async function adminResellers(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Resellers');
+    // The Admin PIN (guard 1.34.0): a 4-digit PIN in front of this tab, so another administrator can't open it.
+    const gate = await pinGate(body, isCurrent, 'the Resellers tab', () => adminResellers(body, isCurrent));
+    if (!isCurrent() || gate.locked) return;
+    const pinState = gate.st; // an older guard has no PIN: null
+    let d, plans;
+    try { [d, plans] = await Promise.all([guard('/resellers'), guard('/plans').then((x) => x.plans || [])]); } catch (e) {
+      if (e.status === 423) { if (isCurrent()) showPinPad(body, isCurrent, 'the Resellers tab', () => adminResellers(body, isCurrent)); return; }
+      if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Resellers</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.10.0 to use resellers (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const pinHandlers = () => {
+      if (!pinState) return;
+      const say = (t, cls = '') => { const r = $('[data-pin-set-result]', body); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.textContent = t; } };
+      const digits = (el) => el && el.addEventListener('input', () => { el.value = el.value.replace(/\D/g, '').slice(0, 4); });
+      digits($('[data-pin-cur]', body)); digits($('[data-pin-new]', body));
+      $('[data-pin-save]', body)?.addEventListener('click', async () => {
+        const pin = $('[data-pin-new]', body).value, current = $('[data-pin-cur]', body)?.value || '';
+        if (!/^\d{4}$/.test(pin)) return say('The PIN must be exactly 4 digits.', 'bad');
+        try { await guard('/reseller-pin', { method: 'PUT', body: { pin, current } }); toast(pinState.set ? 'PIN changed' : 'PIN set', 2500); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); }
+      });
+      $('[data-pin-off]', body)?.addEventListener('click', async () => {
+        const current = $('[data-pin-cur]', body).value;
+        if (!/^\d{4}$/.test(current)) return say('Type the current PIN first.', 'bad');
+        try { await guard('/reseller-pin', { method: 'PUT', body: { pin: null, current } }); toast('PIN removed', 2500); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); }
+      });
+      $('[data-pin-lock]', body)?.addEventListener('click', async () => { try { await guard('/reseller-pin/lock', { method: 'POST', body: {} }); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); } });
+    };
+    queueMicrotask(pinHandlers);
+    const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
+    const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
+        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>${r.warnings ? ` <span class="pill bad">${r.warnings} ${r.warnings === 1 ? 'warning' : 'warnings'}</span>` : ''}${r.rulesOk === false ? ' <span class="pill warn">Rules not agreed</span>' : ''}
+        <div class="muted">${esc(r.userName)}${r.contact ? ' · ' + esc(r.contact) : ''}${r.parentName ? ' · sub-reseller of ' + esc(r.parentName) : ''} · ${r.customers} ${r.customers === 1 ? 'customer' : 'customers'}${r.subs ? ` · ${r.subs} sub-${r.subs === 1 ? 'reseller' : 'resellers'}` : ''}${r.status === 'active' && r.low ? ' · low on credits' : ''}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-cr>Credits</button><button class="btn btn-gray" data-ed>Edit</button><button class="btn btn-gray" data-pw>New password</button><button class="btn btn-gray" data-wn>Warnings</button><button class="btn btn-gray" data-su>${r.status === 'active' ? 'Suspend' : 'Restore'}</button></div></div>`;
+    const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
+        <div class="muted">${esc(e.by)} · balance ${e.balance}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
+    const viaResellers = d.resellers.reduce((n, r) => n + r.customers, 0);
+    const pinCard = pinState ? `<section class="admin-card"><h2>Admin PIN <small>${pinState.set ? 'on' : 'off'}</small></h2>
+        <p class="muted">${pinState.set ? 'Other administrators have to type this 4-digit PIN to open Resellers, Users and credit requests. It is asked again after 30 quiet minutes.' : 'Set a 4-digit PIN so another administrator you add can\'t open Resellers, Users or credit requests. Do it before you add anyone.'}</p>
+        <div class="plan-grid"><label class="admin-field${pinState.set ? '' : ' hidden'}"><span>Current PIN</span><input type="password" class="st-note-input" data-pin-cur inputmode="numeric" maxlength="4" autocomplete="off"></label>
+          <label class="admin-field"><span>${pinState.set ? 'New PIN' : 'PIN'} (4 digits)</span><input type="password" class="st-note-input" data-pin-new inputmode="numeric" maxlength="4" autocomplete="off"></label></div>
+        <div class="m-actions"><button class="btn btn-white" data-pin-save>${pinState.set ? 'Change PIN' : 'Set PIN'}</button>${pinState.set ? '<button class="btn btn-gray" data-pin-off>Remove PIN</button><button class="btn btn-gray" data-pin-lock>Lock now</button>' : ''}</div>
+        <div class="live-result" data-pin-set-result></div></section>` : '';
+    body.innerHTML = `${pinCard}
+      <div class="stat-grid">
+        ${statTile('Resellers', d.resellers.length, `${d.resellers.filter((r) => r.status === 'active').length} active`)}
+        ${statTile('Credits held', d.totalCredits, 'across all resellers')}
+        ${statTile('Customers', viaResellers, 'created by resellers')}
+        ${statTile('Low on credits', d.resellers.filter((r) => r.status === 'active' && r.low).length, `at ${d.lowCredits} or fewer`, d.resellers.some((r) => r.status === 'active' && r.low) ? 'bad' : '')}
+      </div>
+      <section class="admin-card"><h2>Resellers <small>They sign in to Aurora with the login you give them</small></h2>
+        <div class="admin-list" data-list>${d.resellers.map(row).join('') || '<p class="muted">No resellers yet. Add one below.</p>'}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add>Add a reseller</button></div>
+        <div class="plan-form hidden" data-form></div></section>
+      <section class="admin-card"><h2>Recent credit changes <small>Newest first</small></h2>
+        <div class="admin-list">${d.log.map(logRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></section>`;
+    const form = $('[data-form]', body);
+    const reload = () => { if (isCurrent()) adminResellers(body, isCurrent); };
+    const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    const chosenPlans = () => $$('[data-plan]:checked', form).map((x) => x.dataset.plan);
+    const openAdd = () => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">New reseller</h3>
+        <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" placeholder="e.g. Dave Tech"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Login name</span><input type="text" data-f="login" maxlength="32" autocapitalize="none" autocomplete="off" placeholder="davetech"></label>
+          <label class="admin-field"><span>Password (blank = make one)</span><input type="text" data-f="pw" maxlength="64" autocomplete="off"></label>
+          <label class="admin-field"><span>Starting credits</span><input type="number" data-f="credits" min="0" step="1" inputmode="numeric" value="10"></label>
+        </div>
+        <label class="admin-field"><span>Contact (email or phone)</span><input type="text" data-f="contact" maxlength="100"></label>
+        <div class="admin-field"><span>Plans they can sell</span>${planChecks(plans.filter((p) => p.active).map((p) => p.id))}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save>Add reseller</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        const f = (n) => $(`[data-f="${n}"]`, form).value.trim();
+        say('<div class="spinner"></div>');
+        try {
+          const r = await guard('/resellers', { method: 'POST', body: { name: f('name'), userName: f('login'), password: f('pw') || undefined, credits: f('credits') === '' ? 0 : Number(f('credits')), contact: f('contact'), plans: chosenPlans() } });
+          toast(`${r.reseller.name} added`, 2500);
+          form.innerHTML = `<h3 class="admin-sub">${esc(r.reseller.name)} is ready</h3><p>Give them this to sign in to Aurora. The password is shown only now.</p>
+            <div class="live-result good"><strong>Login:</strong> ${esc(r.reseller.userName)}<br><strong>Password:</strong> ${esc(r.password)}</div>
+            <div class="m-actions"><button class="btn btn-white" data-done>Done</button></div>`;
+          $('[data-done]', form).addEventListener('click', reload);
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl($('[data-f="name"]', form)); else $('[data-f="name"]', form).scrollIntoView({ block: 'center' });
+    };
+    const openCredits = (r) => {
+      form.classList.remove('hidden');
+      let mode = 'add';
+      form.innerHTML = `<h3 class="admin-sub">Credits for ${esc(r.name)} <small>now ${esc(creditsWord(r.credits))}</small></h3>
+        <div class="seg-row">${[['add', 'Add'], ['remove', 'Remove'], ['set', 'Set to']].map(([m, l]) => `<label class="admin-check"><input type="radio" name="crmode" data-mode="${m}"${m === 'add' ? ' checked' : ''}> ${l}</label>`).join('')}</div>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Credits</span><input type="number" data-f="amount" min="0" step="1" inputmode="numeric" value="10"></label>
+          <label class="admin-field"><span>Reason (saved in the ledger)</span><select data-f="why">${['Payment received', 'Monthly top-up', 'Refund', 'Correction', 'Other'].map((x) => `<option>${x}</option>`).join('')}</select></label>
+        </div><p class="muted" data-sum></p>
+        <div class="m-actions"><button class="btn btn-red" data-save>Confirm</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      const calc = () => { const a = Number($('[data-f="amount"]', form).value) || 0; return mode === 'add' ? r.credits + a : mode === 'remove' ? Math.max(0, r.credits - a) : a; };
+      const sum = () => { const n = calc(), dlt = n - r.credits; $('[data-sum]', form).textContent = `New balance: ${creditsWord(n)} (${dlt >= 0 ? '+' : ''}${dlt})`; };
+      sum();
+      $$('[data-mode]', form).forEach((x) => x.addEventListener('change', () => { mode = x.dataset.mode; sum(); }));
+      $('[data-f="amount"]', form).addEventListener('input', sum);
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        say('<div class="spinner"></div>');
+        try {
+          await guard(`/resellers/${encodeURIComponent(r.id)}/credits`, { method: 'POST', body: { mode, amount: Number($('[data-f="amount"]', form).value), why: $('[data-f="why"]', form).value } });
+          toast(`${r.name}: now ${creditsWord(calc())}`, 2500); reload();
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    const openEdit = (r) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">Edit ${esc(r.name)}</h3>
+        <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" value="${esc(r.name)}"></label>
+        <label class="admin-field"><span>Contact</span><input type="text" data-f="contact" maxlength="100" value="${esc(r.contact)}"></label>
+        <div class="admin-field"><span>Plans they can sell</span>${planChecks(r.plans)}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-save]', form).addEventListener('click', async () => {
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { name: $('[data-f="name"]', form).value.trim(), contact: $('[data-f="contact"]', form).value.trim(), plans: chosenPlans() } }); toast('Saved', 2000); reload(); }
+        catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    const openWarnings = async (r) => {
+      form.classList.remove('hidden'); form.innerHTML = '<div class="spinner"></div>';
+      let w;
+      try { w = await guard(`/resellers/${encodeURIComponent(r.id)}/warnings`); } catch (e) { form.innerHTML = `<div class="live-result bad">${esc(e.status === 404 ? 'Update Aurora Guard to 1.49.0 to use warnings.' : e.message)}</div>`; return; }
+      const active = w.warnings.filter((x) => x.active).length;
+      form.innerHTML = `<h3 class="admin-sub">Warnings for ${esc(r.name)} <small>${active} of ${w.max} active</small></h3>
+        <p class="muted">${w.rulesOk ? 'They have agreed to the current rules.' : 'They have not agreed to the current rules yet, so they cannot make changes.'} A warning lasts 90 days. A warning when ${w.max} are already active suspends them automatically.</p>
+        <div class="admin-list">${w.warnings.map((x) => `<div class="admin-row" data-wid="${esc(x.id)}"><div class="admin-row-main">${esc(x.reason)}<div class="muted">${esc(x.by)} · ${esc(fmtDateTime(x.at))}${x.active ? '' : ' · expired'}</div></div><div class="plan-actions"><button class="btn btn-gray" data-wdel>Remove</button></div></div>`).join('') || '<p class="muted">No warnings yet.</p>'}</div>
+        <label class="admin-field"><span>Give a warning. What is it for?</span><input type="text" data-wreason maxlength="300" placeholder="For example: Gave a customer more than they paid for"></label>
+        <div class="m-actions"><button class="btn btn-red" data-wgive>Give a warning</button><button class="btn btn-gray" data-cancel>Close</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
+      $('[data-wgive]', form).addEventListener('click', async () => {
+        const reason = $('[data-wreason]', form).value.trim();
+        if (!reason) return say('Say what the warning is for.', 'bad');
+        const over = active >= w.max;
+        if (!(await confirmAction(over ? `Suspend ${r.name}?` : `Warn ${r.name}?`, over ? `They already have ${w.max} active warnings, so this one suspends their reseller account.` : `This will be warning ${active + 1} of ${w.max}. They see it at the top of their panel.`, over ? 'Warn and suspend' : 'Give warning'))) return;
+        try { const x = await guard(`/resellers/${encodeURIComponent(r.id)}/warnings`, { method: 'POST', body: { reason } }); toast(x.suspended ? 'Warned and suspended' : 'Warning given', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $$('[data-wdel]', form).forEach((b) => b.addEventListener('click', async () => {
+        const id = b.closest('[data-wid]').dataset.wid;
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}/warnings/${id}`, { method: 'DELETE' }); toast('Removed', 1800); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      }));
+      form.scrollIntoView({ block: 'center' });
+    };
+    $('[data-add]', body).addEventListener('click', openAdd);
+    $$('[data-r]', body).forEach((el) => {
+      const r = d.resellers.find((x) => x.id === el.dataset.r);
+      $('[data-cr]', el).addEventListener('click', () => openCredits(r));
+      $('[data-ed]', el).addEventListener('click', () => openEdit(r));
+      $('[data-wn]', el).addEventListener('click', () => openWarnings(r));
+      $('[data-su]', el).addEventListener('click', async () => {
+        const stop = r.status === 'active';
+        if (stop && !(await confirmAction(`Suspend ${r.name}?`, 'They can no longer create or renew customers or see the panel. Their customers keep working.', 'Suspend'))) return;
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { status: stop ? 'suspended' : 'active' } }); toast(stop ? 'Suspended' : 'Restored', 2000); reload(); } catch (e) { toast(e.message, 4000); }
+      });
+      $('[data-pw]', el).addEventListener('click', async () => {
+        if (!(await confirmAction(`New password for ${r.name}?`, 'Their old password stops working. The new one is shown once.', 'Make new password'))) return;
+        try { const x = await guard(`/resellers/${encodeURIComponent(r.id)}/password`, { method: 'POST', body: {} }); form.classList.remove('hidden'); form.innerHTML = `<h3 class="admin-sub">New password for ${esc(r.name)}</h3><div class="live-result good"><strong>Login:</strong> ${esc(r.userName)}<br><strong>Password:</strong> ${esc(x.password)}</div><p class="muted">Shown only now.</p>`; form.scrollIntoView({ block: 'center' }); } catch (e) { toast(e.message, 4000); }
+      });
+    });
+  }
+
+  // ---------- Speed test (Settings → Speed test) ----------
+  // Measures the connection to the Aurora server, which is what streaming depends on: ping (and lost replies) with small requests, download
+  // with the server's own bitrate-test address, upload with a few seconds of data sent to Aurora Guard (which throws it away).
+  const SPD_HIST = 'ef.speed.hist';
+  const spdHist = () => { try { return JSON.parse(store.get(SPD_HIST) || '[]'); } catch { return []; } };
+  // Speed in Mbps from {t: ms, b: bytes} samples: over the last second while running, and for the result from after the first
+  // moments (slow start) to the end, so a short test is not dragged down by the ramp-up.
+  const spdLive = (samples) => {
+    const last = samples[samples.length - 1];
+    const from = samples.find((x) => x.t >= last.t - 1000) || samples[0];
+    const dt = last.t - from.t;
+    return dt > 150 ? ((last.b - from.b) * 8) / 1e6 / (dt / 1000) : 0;
+  };
+  const spdFinal = (samples) => {
+    const last = samples[samples.length - 1];
+    const from = last.t > 2200 ? (samples.find((x) => x.t >= 800) || samples[0]) : samples[0];
+    const dt = last.t - from.t;
+    return dt > 0 ? ((last.b - from.b) * 8) / 1e6 / (dt / 1000) : 0;
+  };
+  async function spdPing(ctl, onTick) {
+    const times = []; let lost = 0;
+    for (let i = 0; i < 10; i++) {
+      if (ctl.stopped) throw new Error('stopped');
+      const t0 = performance.now();
+      try {
+        const res = await fetch(state.server + '/emby/System/Info/Public?x=' + Date.now(), { cache: 'no-store', signal: timeoutSignal(3000) });
+        if (!res.ok) throw new Error('bad');
+        times.push(performance.now() - t0); onTick(times[times.length - 1]);
+      } catch { lost++; }
+    }
+    if (!times.length) throw new Error("Couldn't reach the Aurora server.");
+    const sorted = [...times].sort((a, b) => a - b);
+    const body = times.length > 2 ? sorted.slice(0, Math.ceil(sorted.length * 0.8)) : sorted; // the slowest few are usually the first connection
+    const ping = Math.round(sorted[Math.floor(sorted.length / 2)]);
+    const jitter = Math.round(times.slice(1).reduce((n, t, i) => n + Math.abs(t - times[i]), 0) / Math.max(1, times.length - 1));
+    return { ping, jitter, loss: Math.round((lost / 10) * 100), samples: body.length };
+  }
+  async function spdDown(ctl, onTick) {
+    const ac = new AbortController(); ctl.abort = () => ac.abort();
+    const samples = [{ t: 0, b: 0 }];
+    const t0 = performance.now(); let bytes = 0;
+    const timer = setTimeout(() => ac.abort(), 7000);
+    try {
+      let res = await fetch(apiUrl('/Playback/BitrateTest', { Size: 60000000 }), { cache: 'no-store', signal: ac.signal });
+      if (!res.ok) res = await fetch(apiUrl('/Playback/BitrateTest', { Size: 10000000 }), { cache: 'no-store', signal: ac.signal });
+      if (!res.ok) throw new Error('The server did not answer the speed test.');
+      const reader = res.body?.getReader?.();
+      if (!reader) { bytes = (await res.arrayBuffer()).byteLength; samples.push({ t: performance.now() - t0, b: bytes }); }
+      else for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        samples.push({ t: performance.now() - t0, b: bytes });
+        onTick(spdLive(samples));
+      }
+    } catch (e) {
+      if (ctl.stopped) throw new Error('stopped');
+      if (e.name !== 'AbortError' && samples.length < 3) throw e; // an abort at the time limit is the normal end
+    } finally { clearTimeout(timer); }
+    if (samples.length < 2) throw new Error('No data came back from the server.');
+    return spdFinal(samples);
+  }
+  // Returns Mbps, or null when this Guard can't take uploads (older, or switched off).
+  function spdUp(ctl, onTick) {
+    return new Promise((resolve, reject) => {
+      if (!guardEnabled) return resolve(null);
+      const block = new Uint8Array(1 << 20);
+      for (let i = 0; i < block.length; i += 65536) crypto.getRandomValues(block.subarray(i, i + 65536));
+      const payload = new Blob(Array(32).fill(block), { type: 'application/octet-stream' });
+      const xhr = new XMLHttpRequest();
+      const samples = [{ t: 0, b: 0 }];
+      const t0 = performance.now();
+      let ended = false, timer = null;
+      const finish = () => { if (ended) return; ended = true; clearTimeout(timer); resolve(samples.length > 2 ? spdFinal(samples) : null); };
+      ctl.abort = () => xhr.abort();
+      xhr.open('POST', `${guardUrl.replace(/\/+$/, '')}/speedtest/up?userId=${encodeURIComponent(state.userId)}`);
+      xhr.setRequestHeader('X-Emby-Token', state.apiKey);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => { samples.push({ t: performance.now() - t0, b: e.loaded }); onTick(spdLive(samples)); };
+      xhr.onload = () => {
+        if (xhr.status === 429) { ended = true; clearTimeout(timer); return reject(new Error('That is a lot of speed tests. Please try again in a little while.')); }
+        if (xhr.status === 200) return finish();
+        ended = true; clearTimeout(timer); resolve(null);
+      };
+      xhr.onerror = () => { if (samples.length > 3) finish(); else { ended = true; clearTimeout(timer); resolve(null); } };
+      xhr.onabort = () => { if (ctl.stopped) { ended = true; clearTimeout(timer); reject(new Error('stopped')); } else finish(); };
+      timer = setTimeout(() => xhr.abort(), 6000);
+      xhr.send(payload);
+    });
+  }
+  const spdAnswer = (r) => {
+    const d = r.down, rough = r.loss >= 3 || r.jitter > 60;
+    const can = [
+      ['Live TV', d >= 6 ? 'ok' : d >= 3 ? 'warn' : 'bad', d >= 6 ? '' : 'may buffer'],
+      ['Movies and shows in 1080p', d >= 12 ? 'ok' : d >= 6 ? 'warn' : 'bad', d >= 12 ? '' : 'use a lower quality'],
+      ['4K video', d >= 40 ? 'ok' : d >= 25 ? 'warn' : 'bad', d >= 40 ? '' : d >= 25 ? 'borderline' : 'needs about 40 Mbps'],
+    ];
+    let level, title, text;
+    if (d >= 40 && r.ping < 80) { level = 'ok'; title = 'Your connection is great'; text = 'Everything on Aurora should play smoothly, including 4K.'; }
+    else if (d >= 12 && r.ping < 150) { level = 'ok'; title = 'Your connection is good'; text = 'Live TV and 1080p will play well. 4K may stop to buffer.'; }
+    else if (d >= 4) { level = 'warn'; title = 'Your connection is a bit slow'; text = "Live TV should work. For movies, choose a lower quality so they don't keep stopping."; }
+    else { level = 'bad'; title = 'Your connection is too slow right now'; text = 'Videos will keep stopping. Try the tips below, then test again.'; }
+    if (rough && level === 'ok') { level = 'warn'; title = 'The speed is fine, but the connection is unsteady'; text = 'Some data is arriving late or going missing. That can make video freeze even when the speed looks good.'; }
+    // The best quality that fits in about 80% of the measured speed (Auto when it is fast enough for anything).
+    const fit = QUALITY_OPTIONS.slice(1).find((q) => q.bitrate <= d * 0.8 * 1e6 && (!qualityCap() || q.bitrate <= qualityCap())) || QUALITY_OPTIONS[QUALITY_OPTIONS.length - 1];
+    const quality = d >= 40 ? QUALITY_OPTIONS[0] : fit;
+    return { level, title, text, can, quality };
+  }
+  async function renderSpeedTest(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad spd-page"><div class="page-head"><h1>Speed test</h1></div><div data-body></div></div>';
+    const root = $('[data-body]', page);
+    let state_ = 'idle', ctl = null, res = null, live = 0, phase = '', lastPaint = 0;
+    const tick = (v) => { live = v; const n = performance.now(); if (n - lastPaint > 120) { lastPaint = n; paint(); } };
+    const gauge = (pct) => { const r = 96, c = 2 * Math.PI * r, arc = c * 0.75; return `<svg viewBox="0 0 230 230"><defs><linearGradient id="spdg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5eead4"/><stop offset=".6" stop-color="#7c8cff"/><stop offset="1" stop-color="#c084fc"/></linearGradient></defs><circle class="spd-trk" cx="115" cy="115" r="${r}" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="${arc} ${c}"/><circle class="spd-val" cx="115" cy="115" r="${r}" fill="none" stroke-width="16" stroke-linecap="round" stroke-dasharray="${arc} ${c}" stroke-dashoffset="${arc * (1 - Math.min(1, Math.max(0, pct)))}"/></svg>`; };
+    const resultText = (r) => `Speed test: ${r.down.toFixed(1)} Mbps down, ${r.up == null ? 'upload not tested' : r.up.toFixed(1) + ' Mbps up'}, ${r.ping} ms ping${r.loss ? ', ' + r.loss + '% of replies lost' : ''}.`;
+    const num = (v) => (v == null ? '–' : v >= 100 ? Math.round(v) : (Math.round(v * 10) / 10));
+    const paint = () => {
+      if (!isCurrent()) return;
+      const hist = spdHist();
+      if (state_ === 'idle') {
+        root.innerHTML = `<p class="muted">Check how well your connection works with Aurora. It takes about 20 seconds and uses roughly 30 to 60 MB of data.</p>
+          <section class="settings-section spd-card"><div class="spd-gauge">${gauge(0)}<div class="spd-gv"><b>0</b><small>Mbps</small></div></div><button class="btn btn-white" data-go data-autofocus>Start test</button><p class="muted">It measures the connection to the Aurora server. Close other apps for the best result.</p></section>
+          <div class="live-result bad hidden" data-err></div>
+          ${hist.length ? `<section class="settings-section"><h2>Your last tests</h2>${hist.map((h) => `<div class="admin-row"><div class="admin-row-main">${esc(timeAgo(h.t))}</div><div class="admin-row-time"><strong>${esc(String(h.d))} Mbps</strong> down${h.u != null ? ` · ${esc(String(h.u))} up` : ''} · ${esc(String(h.p))} ms</div></div>`).join('')}</section>` : ''}`;
+        $('[data-go]', root).addEventListener('click', start);
+        autoFocus($('[data-go]', root));
+      } else if (state_ === 'running') {
+        const label = { ping: 'Checking the connection', down: 'Download', up: 'Upload' }[phase] || '';
+        const pct = phase === 'ping' ? live / 300 : Math.log10(1 + live) / Math.log10(201);
+        root.innerHTML = `<section class="settings-section spd-card"><div class="spd-gauge">${gauge(pct)}<div class="spd-gv"><span class="spd-ph">${esc(label)}</span><b>${esc(String(num(live)))}</b><small>${phase === 'ping' ? 'ms' : 'Mbps'}</small></div></div><button class="btn btn-gray" data-stop>Stop</button></section>
+          <div class="spd-three"><div class="spd-m"><small>Ping</small><b>${res.ping ?? '–'}</b><i>ms</i></div><div class="spd-m"><small>Download</small><b>${num(res.down)}</b><i>Mbps</i></div><div class="spd-m"><small>Upload</small><b>${num(res.up)}</b><i>Mbps</i></div></div>`;
+        $('[data-stop]', root).addEventListener('click', () => { if (ctl) { ctl.stopped = true; ctl.abort?.(); } });
+      } else {
+        const a = spdAnswer(res), icon = { ok: '✓', warn: '!', bad: '✕' };
+        root.innerHTML = `<div class="spd-verdict ${a.level}"><h3>${esc(a.title)}</h3><p>${esc(a.text)}</p></div>
+          <div class="spd-three"><div class="spd-m"><small>Ping</small><b>${res.ping}</b><i>ms${res.jitter ? ' · ±' + res.jitter : ''}</i></div><div class="spd-m"><small>Download</small><b>${num(res.down)}</b><i>Mbps</i></div><div class="spd-m"><small>Upload</small><b>${num(res.up)}</b><i>${res.up == null ? 'not tested' : 'Mbps'}</i></div></div>
+          <section class="settings-section"><h2>What this means for you</h2><div class="spd-can">${a.can.map((c) => `<div><span class="spd-i ${c[1]}">${icon[c[1]]}</span>${esc(c[0])}<small>${esc(c[2])}</small></div>`).join('')}</div></section>
+          <section class="settings-section"><h2>Suggested</h2>
+            <div class="admin-row"><div class="admin-row-main"><strong>Video quality: ${esc(a.quality.label)}</strong><div class="muted">The best that should play without stopping on this connection.</div></div><button class="btn btn-gray" data-apply>Use it</button></div>
+            ${res.down < 12 ? '<div class="admin-row"><div class="admin-row-main"><strong>Tips</strong><div class="muted">Move closer to your router, switch between Wi-Fi and mobile data, or ask others at home to pause downloads and streaming, then test again.</div></div></div>' : ''}
+            ${res.loss > 0 ? `<div class="admin-row"><div class="admin-row-main"><strong>${res.loss}% of replies were lost</strong><div class="muted">Your connection is dropping some data. That causes freezing even when the speed looks fine.</div></div></div>` : ''}</section>
+          <div class="m-actions"><button class="btn btn-white" data-again>Test again</button><button class="btn btn-gray" data-send>Send to support</button><button class="btn btn-gray" data-copy>Copy</button></div><div class="live-result" data-result></div>`;
+        $('[data-again]', root).addEventListener('click', () => { state_ = 'idle'; paint(); });
+        $('[data-apply]', root).addEventListener('click', () => { store.set('ef.maxBitrate', String(a.quality.bitrate)); toast(`Video quality set to ${a.quality.label}`, 3000); });
+        $('[data-copy]', root).addEventListener('click', () => { try { navigator.clipboard.writeText(resultText(res)).then(() => toast('Copied', 1500), () => toast(resultText(res), 7000)); } catch { toast(resultText(res), 7000); } });
+        $('[data-send]', root).addEventListener('click', async () => {
+          const out = $('[data-result]', root), btn = $('[data-send]', root);
+          if (!guardEnabled) { out.className = 'live-result bad'; out.textContent = 'Messages to your provider are not available right now.'; return; }
+          btn.disabled = true;
+          try { await guard('/support', { method: 'POST', params: { userId: state.userId }, body: { text: 'I ran a speed test. ' + resultText(res), diag: { ...helpDiag(), speed: resultText(res) } } }); toast('Sent to your provider', 3000); out.className = 'live-result good'; out.textContent = 'Sent. Your provider will answer under Help & support.'; }
+          catch (e) { btn.disabled = false; out.className = 'live-result bad'; out.textContent = guardMissing(e) ? "This isn't available yet. Please check back soon." : e.message; }
+        });
+        autoFocus($('[data-again]', root));
+      }
+    };
+    async function start() {
+      if (navigator.connection?.type === 'cellular' && !(await confirmAction('Test on mobile data?', 'The test uses roughly 30 to 60 MB of your mobile data.', 'Start the test'))) return;
+      ctl = { stopped: false, abort: null };
+      res = { ping: null, down: null, up: null, jitter: 0, loss: 0 };
+      state_ = 'running'; phase = 'ping'; live = 0; paint();
+      try {
+        const p = await spdPing(ctl, tick);
+        Object.assign(res, p); res.ping = p.ping; phase = 'down'; live = 0; paint();
+        res.down = await spdDown(ctl, tick);
+        phase = 'up'; live = 0; paint();
+        try { res.up = await spdUp(ctl, tick); } catch (e) { if (e.message === 'stopped' || /lot of speed tests/.test(e.message)) throw e; res.up = null; }
+        const h = spdHist(); h.unshift({ t: Date.now(), d: Math.round(res.down * 10) / 10, u: res.up == null ? null : Math.round(res.up * 10) / 10, p: res.ping });
+        store.set(SPD_HIST, JSON.stringify(h.slice(0, 5)));
+        measuredBitrate = { bps: Math.max(700000, Math.round(res.down * 1e6 * 0.7)), t: Date.now() }; // Auto quality uses what was just measured
+        appLog.add(res.down < 4 ? 'warn' : 'info', resultText(res));
+        state_ = 'done'; paint();
+      } catch (e) {
+        state_ = 'idle'; paint();
+        if (e.message !== 'stopped') { const err = $('[data-err]', root); if (err) { err.textContent = /lot of speed tests/.test(e.message) ? e.message : (e.message || "The test couldn't finish.") + ' Check your connection and try again.'; err.classList.remove('hidden'); } }
+        else toast('Test stopped', 1800);
+      }
+    }
+    paint();
+  }
+
+  // ---------- Offline downloads (Android app) ----------
+  // The Android side (Downloads.java) saves the file with the system DownloadManager; this page asks Emby for the file, lists progress
+  // and plays a finished one through the normal player. Downloads stop working when the account ends (checked online with the guard and
+  // remembered as a date for offline use), and the admin can switch the feature off in Admin → Playback.
+  const dlSupported = () => !!nativeApp?.startDownload;
+  const downloadsAllowed = () => playbackCfg.downloads !== 'off';
+  const dlWifi = () => store.get('ef.dlWifi') !== '0';
+  let offlinePlaying = null, offlineMode = false;
+  // Downloads belong to the account that saved them (their key starts with its id), so another account on the same phone doesn't see or play them.
+  const dlKey = (itemId) => `${state.userId}_${itemId}`;
+  const dlItems = () => { try { return JSON.parse(nativeApp.downloadsList() || '[]').filter((d) => !String(d.itemId).includes('_') || String(d.itemId).startsWith(state.userId + '_')); } catch { return []; } }; // (an id with no prefix is from an earlier version: it is shown to whoever is signed in)
+  const dlStorage = () => { try { return JSON.parse(nativeApp.downloadsStorage() || '{}'); } catch { return {}; } };
+  const offlineLicenseOk = () => { const e = store.get('ef.dl.expires'); return !e || Date.now() <= new Date(e + 'T23:59:59').getTime(); };
+  async function syncDownloadLicense() {
+    if (!dlSupported()) return;
+    if (!downloadsAllowed()) { dlItems().forEach((d) => nativeApp.removeDownload(d.itemId)); return; }
+    if (!guardEnabled || isAdmin()) return;
+    try {
+      const a = await guard('/account', { params: { userId: state.userId }, quick: true });
+      if (a.admin) return;
+      if (a.expired || a.disabled) { dlItems().forEach((d) => nativeApp.removeDownload(d.itemId)); store.del('ef.dl.expires'); } else store.set('ef.dl.expires', a.expires || '');
+    } catch { /* offline or an older guard: keep what is saved */ }
+  }
+  async function startItemDownload(item) {
+    try {
+      const full = await api(`/Users/${state.userId}/Items/${item.Id}`);
+      const source = full.MediaSources?.[0];
+      if (!source) throw new Error('This video has no file to download.');
+      const size = source.Size ? fmtBytes(source.Size) : '';
+      if (!(await confirmAction(`Download "${itemTitle(full)}"?`, `${size ? size + '. ' : ''}${dlWifi() ? 'It downloads on Wi-Fi only. ' : ''}You can watch it without internet while your plan is active.`, 'Download'))) return;
+      const ext = String(source.Container || 'mp4').split(',')[0].replace(/[^a-z0-9]/gi, '') || 'mp4';
+      const url = `${state.server}/emby/Items/${full.Id}/Download?MediaSourceId=${encodeURIComponent(source.Id)}`;
+      const err = nativeApp.startDownload(dlKey(full.Id), url, state.apiKey, full.Type === 'Episode' ? (full.SeriesName || full.Name) : full.Name, full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''), ext, dlWifi());
+      if (err) toast(err, 5000); else { toast('Download started. You can follow it in Settings → Downloads.', 4500); appLog.add('info', 'Download started: ' + itemTitle(full)); }
+    } catch (e) { toast(e.message || "Couldn't start the download", 4000); }
+  }
+  function playDownload(d) {
+    if (!offlineLicenseOk()) { toast('Your access has ended, so saved downloads are locked. Renew to watch them again.', 6000); return; }
+    offlinePlaying = d.itemId;
+    nativeApp.playVod(JSON.stringify({ url: d.url, hls: false, startMs: Number(store.get('ef.dl.pos.' + d.itemId)) || 0, title: d.title, subtitle: d.subtitle, subs: [], softwareDecoders: getPref('ffmpeg') !== 'off' }));
+  }
+  const dlRowHtml = (d) => {
+    const pct = d.total > 0 ? Math.min(100, Math.round(d.bytes / d.total * 100)) : 0;
+    const line = d.status === 'done' ? `Ready to watch offline${d.size ? ' · ' + fmtBytes(d.size) : ''}` : d.status === 'running' ? `${pct}%${d.total ? ` · ${fmtBytes(d.bytes)} of ${fmtBytes(d.total)}` : ''}` : d.status === 'paused' ? 'Waiting for Wi-Fi or a connection' : d.status === 'pending' ? 'Waiting to start' : "Failed. Remove it and try again.";
+    return `<div class="admin-row dl-row" data-dl="${esc(d.itemId)}"><div class="admin-row-main"><strong>${esc(d.title)}</strong>${d.subtitle ? ' <span class="muted">' + esc(d.subtitle) + '</span>' : ''}
+      <div class="muted">${esc(line)}</div>${d.status === 'running' || d.status === 'paused' || d.status === 'pending' ? `<div class="usage-bar"><span style="width:${Math.max(2, pct)}%"></span></div>` : ''}</div>
+      <div class="plan-actions">${d.status === 'done' ? '<button class="btn btn-white" data-play>Play</button>' : ''}<button class="btn btn-gray" data-rm>${d.status === 'done' || d.status === 'failed' ? 'Remove' : 'Cancel'}</button></div></div>`;
+  };
+  async function renderDownloads(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad dl-page"><div class="page-head"><h1>Downloads</h1></div><div data-body></div></div>';
+    const root = $('[data-body]', page);
+    if (!dlSupported()) { root.innerHTML = '<p class="empty-msg">Downloads are available in the Android app.</p>'; return; }
+    if (!downloadsAllowed()) { root.innerHTML = '<p class="empty-msg">Downloads are switched off by your provider.</p>'; return; }
+    let sig = '';
+    const paint = () => {
+      const list = dlItems(), st = dlStorage();
+      const now = JSON.stringify([list.map((d) => [d.itemId, d.status, d.total ? Math.floor(d.bytes / d.total * 50) : 0]), st.used, dlWifi()]);
+      if (now === sig) return;
+      sig = now;
+      root.innerHTML = `
+        <div class="stat-grid">${statTile('Saved here', st.used != null ? fmtBytes(st.used) : '…', `${list.filter((d) => d.status === 'done').length} ready`)}${statTile('Free space', st.free != null ? fmtBytes(st.free) : '…', 'on this device')}</div>
+        <section class="settings-section"><h2>Downloads</h2><div class="admin-list">${list.map(dlRowHtml).join('') || '<p class="muted">Nothing saved yet. Open a movie or show and press Download.</p>'}</div>
+          <label class="admin-check"><input type="checkbox" data-wifi${dlWifi() ? ' checked' : ''}> Only download on Wi-Fi</label>
+          ${offlineLicenseOk() ? '' : '<p class="live-result bad">Your access has ended, so saved downloads are locked.</p>'}</section>`;
+      $('[data-wifi]', root)?.addEventListener('change', (e) => { store.set('ef.dlWifi', e.target.checked ? '1' : '0'); });
+      $$('[data-dl]', root).forEach((el) => {
+        const d = list.find((x) => x.itemId === el.dataset.dl);
+        $('[data-play]', el)?.addEventListener('click', () => playDownload(d));
+        $('[data-rm]', el).addEventListener('click', async () => {
+          if (d.status === 'done' && !(await confirmAction(`Remove "${d.title}"?`, 'It is deleted from this device. You can download it again later.', 'Remove'))) return;
+          nativeApp.removeDownload(d.itemId); sig = ''; paint();
+        });
+      });
+    };
+    paint();
+    const timer = routeInterval(() => { if (!isCurrent() || !page.isConnected) clearInterval(timer); else paint(); }, 2000);
+  }
+  // No connection when Aurora opens: let people reach what they saved.
+  function offerOfflineDownloads() {
+    if (!dlSupported() || !downloadsAllowed() || $('#setup-offline')) return;
+    if (!dlItems().some((d) => d.status === 'done')) return;
+    const b = document.createElement('button');
+    b.id = 'setup-offline'; b.type = 'button'; b.className = 'btn btn-gray btn-block'; b.textContent = 'Watch my downloads';
+    b.addEventListener('click', openOfflineDownloads);
+    $('#setup-form').after(b);
+  }
+  function openOfflineDownloads() {
+    offlineMode = true;
+    const modal = $('#modal'), content = $('#modal-content');
+    const list = dlItems().filter((d) => d.status === 'done');
+    content.innerHTML = `<div class="m-body"><h2>Downloads</h2>${offlineLicenseOk() ? '' : '<p class="live-result bad">Your access has ended, so saved downloads are locked.</p>'}
+      <div class="admin-list">${list.map((d) => `<div class="admin-row" data-dl="${esc(d.itemId)}"><div class="admin-row-main"><strong>${esc(d.title)}</strong>${d.subtitle ? ' <span class="muted">' + esc(d.subtitle) + '</span>' : ''}</div><button class="btn btn-white" data-play>Play</button></div>`).join('') || '<p class="muted">Nothing saved on this device.</p>'}</div></div>`;
+    modal.classList.remove('hidden');
+    $$('[data-dl]', content).forEach((el) => $('[data-play]', el).addEventListener('click', () => playDownload(list.find((x) => x.itemId === el.dataset.dl))));
+    autoFocus($('[data-play]', content));
+  }
+
+  // ---------- Maintenance mode (Aurora Guard 1.12.0) ----------
+  // The admin switches parts of Aurora into maintenance (Admin → Maintenance mode). Customers see a friendly page there and cannot open the
+  // tab, the titles in it or its channels; the admin always keeps full access. Kept on the device so it applies at once when Aurora opens.
+  const MAINT_TABS = [['movies', 'Movies', 'Movies'], ['tv', 'TV Shows', 'TV Shows'], ['favorites', 'Favorites', 'Favorites'], ['livetv', 'Live TV', 'Live TV'], ['sports', 'Sports', 'Sports (inside Live TV)'], ['requests', 'Requests', 'Requests'], ['downloads', 'Downloads', 'Downloads (Android)']];
+  const MAINT_DEFAULT = "We're giving this part of Aurora some love. Please try again a little later. Thank you for your patience! 💙";
+  let maint = (() => { try { return JSON.parse(store.get('ef.maint') || '{}') || {}; } catch { return {}; } })();
+  let maintTimer = null;
+  const maintOn = (key) => !isAdmin() && !!maint.tabs?.[key];
+  const maintLabel = (key) => (MAINT_TABS.find((t) => t[0] === key) || [])[1] || 'This part of Aurora';
+  const maintText = (key) => `The ${maintLabel(key)} section is in maintenance mode. ${maint.message || MAINT_DEFAULT}${maint.back ? ' We expect to be back ' + maint.back + '.' : ''}`;
+  function maintKeyOfRoute(name, params) {
+    if (name === 'movies') return 'movies';
+    if (name === 'tv') return 'tv';
+    if (name === 'mylist' || name === 'favorites') return 'favorites';
+    if (name === 'requests') return 'requests';
+    if (name === 'downloads') return 'downloads';
+    if (name === 'livetv') return params.get('tab') === 'sports' && maintOn('sports') ? 'sports' : 'livetv';
+    return null;
+  }
+  function maintKeyOfItem(item) {
+    const t = item?.Type;
+    if (t === 'Movie') return 'movies';
+    if (t === 'Series' || t === 'Season' || t === 'Episode') return 'tv';
+    if (t === 'TvChannel' || t === 'Program') return 'livetv';
+    return null;
+  }
+  function paintMaintNav() {
+    const map = { home: null, tv: 'tv', movies: 'movies', mylist: 'favorites', livetv: 'livetv', requests: 'requests' };
+    $$('[data-route]').forEach((a) => {
+      const key = map[a.dataset.route];
+      const on = !!key && !!maint.tabs?.[key];
+      a.classList.toggle('in-maint', on);
+      a.title = on ? (isAdmin() ? 'In maintenance for customers' : 'In maintenance') : '';
+    });
+  }
+  function renderMaintenance(page, key) {
+    page.innerHTML = `<div class="page-pad maint-page"><div class="maint-card"><div class="maint-ic">🔧</div>
+      <p class="maint-what">${esc(maintLabel(key))} · maintenance mode</p>
+      <h1>We'll be right back!</h1>
+      <p class="maint-msg">${esc(maint.message || MAINT_DEFAULT)}</p>
+      ${maint.back ? `<p class="maint-back">We expect to be back ${esc(maint.back)}.</p>` : ''}
+      <div class="m-actions"><a class="btn btn-white" href="#/home">Back to Home</a></div></div></div>`;
+    autoFocus($('.maint-card .btn', page));
+  }
+  async function refreshMaintenance() {
+    if (!guardEnabled || !state.userId) return;
+    let d;
+    try { d = await guard('/maintenance', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    const before = JSON.stringify(maint);
+    maint = { tabs: d.tabs || {}, message: d.message || '', back: d.back || '' };
+    store.set('ef.maint', JSON.stringify(maint));
+    paintMaintNav();
+    // The page being looked at just changed state (turned on or off): redraw it, unless something is playing.
+    if (JSON.stringify(maint) !== before && !isPlayerOpen() && $('#modal').classList.contains('hidden')) {
+      const hash = location.hash.replace(/^#\/?/, ''), [path, q] = hash.split('?');
+      const key = maintKeyOfRoute(path || 'home', new URLSearchParams(q || ''));
+      if (key && ($('#page .maint-page') || maintOn(key))) route();
+    }
+  }
+
+  // ----- Admin → Maintenance mode -----
+  async function adminMaintenance(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Maintenance mode');
+    let d;
+    try { d = await guard('/maintenance', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Maintenance mode</h2><p class="live-result bad">${e.status === 404 ? 'Update Aurora Guard to 1.12.0 to use Maintenance mode (copy the new aurora-guard.js and restart the task).' : esc(e.message)}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const onCount = Object.keys(d.tabs).length;
+    body.innerHTML = `
+      <section class="admin-card"><h2>Maintenance mode <small>While you work on something, customers see a friendly message instead</small></h2>
+        <p class="muted">Switch on the parts you are working on. Customers can't open them (or the titles and channels inside), and see the message below. <strong>You can always open everything</strong>, and a wrench marks what's in maintenance. Switching it off opens it again within about two minutes.</p>
+        <div class="admin-list" data-tabs>${MAINT_TABS.map(([k, , label]) => `<label class="admin-row maint-row"><div class="admin-row-main"><strong>${esc(label)}</strong> ${d.tabs[k] ? '<span class="pill warn">In maintenance</span>' : '<span class="pill">Open</span>'}</div>
+          <input type="checkbox" class="maint-switch" data-k="${k}"${d.tabs[k] ? ' checked' : ''} aria-label="${esc(label)} in maintenance"></label>`).join('')}</div>
+        <label class="admin-field"><span>Message customers see</span><textarea class="st-note-input" data-msg rows="3" maxlength="240" placeholder="${esc(MAINT_DEFAULT)}">${esc(d.message)}</textarea></label>
+        <label class="admin-field"><span>Back around (optional)</span><input type="text" class="st-note-input" data-back maxlength="60" placeholder="e.g. around 3 PM, or tomorrow morning" value="${esc(d.back)}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-off>Open everything</button></div><div class="live-result" data-result></div></section>
+      <section class="admin-card"><h2>What customers see</h2><div class="maint-card maint-preview"><div class="maint-ic">🔧</div><p class="maint-what" data-pw></p><h3 data-ph>…</h3><p data-pm></p><p class="maint-back" data-pb></p></div></section>`;
+    const msg = $('[data-msg]', body), back = $('[data-back]', body), result = $('[data-result]', body);
+    const preview = () => { const k = $('[data-k]:checked', body)?.dataset.k || 'livetv'; $('[data-ph]', body).textContent = "We'll be right back!"; $('[data-pw]', body).textContent = `${maintLabel(k)} · maintenance mode`; $('[data-pm]', body).textContent = msg.value.trim() || MAINT_DEFAULT; $('[data-pb]', body).textContent = back.value.trim() ? `We expect to be back ${back.value.trim()}.` : ''; };
+    preview();
+    msg.addEventListener('input', preview); back.addEventListener('input', preview); $$('[data-k]', body).forEach((c) => c.addEventListener('change', preview));
+    const save = async (tabs, done) => {
+      result.className = 'live-result'; result.innerHTML = '<div class="spinner"></div>';
+      try { await guard('/maintenance', { method: 'PUT', body: { tabs, message: msg.value.trim(), back: back.value.trim() } }); toast(done, 2500); refreshMaintenance(); if (isCurrent()) adminMaintenance(body, isCurrent); }
+      catch (e) { result.className = 'live-result bad'; result.textContent = e.message; }
+    };
+    $('[data-save]', body).addEventListener('click', () => { const tabs = {}; $$('[data-k]:checked', body).forEach((c) => { tabs[c.dataset.k] = true; }); save(tabs, Object.keys(tabs).length ? 'Saved. Customers see the message now.' : 'Everything is open'); });
+    $('[data-off]', body).addEventListener('click', () => save({}, 'Everything is open'));
+    if (onCount) $('[data-save]', body).textContent = 'Save changes';
+  }
+
+  // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
+  let inboxState = { items: [], unread: 0, banners: [], ok: false };
+  let inboxTimer = null;
+  const annTimers = new Map();
+  const dismissedAnn = () => { try { return new Set(JSON.parse(store.get('ef.annDismissed') || '[]')); } catch { return new Set(); } };
+  function paintBell() {
+    const b = $('#bell-btn'), badge = $('#bell-badge');
+    if (!b) return;
+    b.classList.toggle('hidden', !inboxState.ok || kidsOn());
+    b.onclick = () => { location.hash = isStaff() ? '#/admin?tab=inbox' : '#/inbox'; };
+    const n = inboxState.badge ?? inboxState.unread;
+    badge.textContent = n > 9 ? '9+' : String(n);
+    badge.classList.toggle('hidden', !n);
+  }
+  function paintBanners() {
+    const el = $('#announce');
+    if (!el) return;
+    const gone = dismissedAnn();
+    // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
+    const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
+    const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
+    const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : resellerOnly() ? 4 : 2); // (a reseller has no bell to see the rest in)
+    // A remote can't press the ✕, so on a TV an info notice goes by itself after a while (warnings and outages stay).
+    if (nav.tv) for (const a of list) if (!sticky(a) && !annTimers.has(a.id)) annTimers.set(a.id, setTimeout(() => { const g = dismissedAnn(); g.add(a.id); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }, 20000));
+    el.classList.toggle('hidden', !list.length || kidsOn());
+    el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span>${sticky(a) ? '' : `<button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button>`}</div>`).join('');
+    document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
+    $$('[data-ann]', el).forEach((x) => x.addEventListener('click', () => { const g = dismissedAnn(); g.add(x.dataset.ann); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }));
+  }
+  async function refreshInbox() {
+    if (!guardEnabled || !state.userId) { inboxState.ok = false; paintBell(); return; }
+    try {
+      const d = await guard('/inbox', { params: { userId: state.userId }, quick: true });
+      inboxState = { ...d, ok: true };
+      if (isStaff()) { try { const a = await guard('/admin-inbox', { quick: true }); inboxState.badge = a.total; inboxState.adminTotal = a.total; } catch { /* older guard */ } }
+    } catch { inboxState.ok = false; }
+    paintBell(); paintBanners();
+  }
+  const inboxIcon = (i) => ({ announcement: '📣', plan: '⏳', new: '🎬', support: '💬', reminder: '🏀', message: '✉️' })[i.type] || '🔔';
+  async function renderInbox(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad inbox-page"><div class="page-head"><h1>Notifications</h1></div><div class="spinner"></div></div>';
+    const root = $('.inbox-page', page);
+    const head = '<div class="page-head"><h1>Notifications</h1></div>';
+    let d;
+    try { d = await guard('/inbox', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'notifications')}</p>`; return; }
+    if (!isCurrent()) return;
+    const now = Date.now();
+    const local = (sportsPrefs.reminders || []).filter((r) => r.start > now && r.start < now + 36 * 3600000).map((r) => ({ id: 'rem:' + r.id, type: 'reminder', level: 'info', title: r.title, text: `Reminder · ${new Date(r.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${r.chan ? ' · ' + r.chan : ''}`, at: r.start, action: 'sports', unread: false }));
+    const items = [...local, ...d.items].sort((a, b) => b.at - a.at);
+    const btn = (i) => ({ renew: '<button class="btn btn-white" data-act="renew">Ask for more time</button>', help: '<a class="btn btn-gray" href="#/help">Open</a>', browse: '<a class="btn btn-gray" href="#/movies">Browse</a>', sports: '<a class="btn btn-gray" href="#/livetv?tab=sports">Open Sports</a>' })[i.action] || '';
+    root.innerHTML = `${head}${items.length ? '' : '<p class="empty-msg">You are all caught up.</p>'}
+      <div class="inbox-list">${items.map((i, k) => `<div class="inbox-item${i.unread ? ' unread' : ''}" data-i="${k}"><div class="inbox-ic">${inboxIcon(i)}</div>
+        <div class="inbox-main"><strong>${esc(i.title)}</strong><div class="muted">${esc(i.text)}${i.type === 'plan' ? '' : ' · ' + esc(timeAgo(i.at))}</div>${i.action ? `<div class="m-actions">${btn(i)}</div>` : ''}</div>${i.unread ? '<span class="inbox-dot"></span>' : ''}</div>`).join('')}</div>
+      ${d.unread ? '<div class="m-actions"><button class="btn btn-gray" data-readall>Mark all as read</button></div>' : ''}`;
+    guard('/inbox/read', { method: 'POST', params: { userId: state.userId }, body: {} }).then(refreshInbox).catch(() => {});
+    $('[data-readall]', root)?.addEventListener('click', () => { $$('.inbox-item.unread', root).forEach((x) => x.classList.remove('unread')); $$('.inbox-dot', root).forEach((x) => x.remove()); });
+    $$('[data-act="renew"]', root).forEach((b) => b.addEventListener('click', async () => {
+      b.disabled = true;
+      try { await guard('/extension', { method: 'POST', body: { userId: state.userId, note: '' } }); toast('Request sent to your provider', 3000); b.textContent = 'Requested'; }
+      catch (e) { b.disabled = false; toast(e.message || "Couldn't send the request", 4000); }
+    }));
+  }
+
+  // An older Aurora Guard doesn't know these addresses (it answers 404, or "Emby administrators only" to a customer). Customers just hear it isn't ready;
+  // admins and resellers are told what to update.
+  const guardMissing = (e) => e.status === 404 || (e.status === 403 && /administrators only/i.test(e.message || ''));
+  const notReady = (e, what) => (guardMissing(e) ? (isAdmin() || state.isReseller ? `Aurora Guard needs updating to 1.11.0 for ${what}.` : "This isn't available yet. Please check back soon.") : esc(e.message));
+  // Help & support: a message to the provider with the details they would otherwise have to ask for.
+  function helpDiag() {
+    return {
+      app: nativeApp?.getVersionName ? `Aurora V${nativeApp.getVersionName()} (Android)` : 'Aurora (web)',
+      device: nativeApp?.getDeviceName?.() || navigator.userAgent.slice(0, 80),
+      connection: `${navigator.onLine === false ? 'offline' : 'online'}${measuredBitrate ? `, about ${(measuredBitrate.bps / 1e6).toFixed(1)} Mbps` : ''}`,
+      playing: lastLive && Date.now() - lastLive.t < 30 * 60000 ? `Live: ${lastLive.name}` : '',
+      status: lastStatusVerdict,
+      errors: [...(lastLiveError && Date.now() - lastLiveErrorAt < 30 * 60000 ? [lastLiveError.slice(0, 140)] : []), ...appLog.read().filter((e) => e.level === 'error' || e.level === 'warn').slice(-3).map((e) => String(e.msg).slice(0, 100))],
+    };
+  }
+  async function renderHelp(page, isCurrent) {
+    const prefill = Date.now() - helpPrefillAt < 15000 ? helpPrefill : ''; helpPrefill = ''; helpPrefillAt = 0;
+    page.innerHTML = '<div class="page-pad help-page"><div class="page-head"><h1>Help &amp; support</h1></div><div class="spinner"></div></div>';
+    const root = $('.help-page', page);
+    const head = '<div class="page-head"><h1>Help &amp; support</h1></div>';
+    let t = null;
+    try { t = (await guard('/support', { params: { userId: state.userId } })).ticket; } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Help &amp; support')}</p>`; return; }
+    if (!isCurrent()) return;
+    const open = t && t.status === 'open';
+    const dg = helpDiag();
+    // The reseller's own contact details (guard 1.33.0), when this customer has a reseller who set them.
+    let sup = null;
+    try { sup = (await guard('/account', { params: { userId: state.userId }, quick: true })).support || null; } catch { sup = null; }
+    if (!isCurrent()) return;
+    const digits = (v) => String(v || '').replace(/[^\d]/g, '');
+    const supHtml = sup ? `<section class="settings-section"><h2>${esc(sup.name || 'Your provider')}</h2>${sup.note ? `<p class="muted">${esc(sup.note)}</p>` : ''}
+        <div class="m-actions">${sup.whatsapp && digits(sup.whatsapp).length >= 7 ? `<a class="btn btn-white" href="https://wa.me/${digits(sup.whatsapp)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}${sup.phone ? `<a class="btn btn-gray" href="tel:${esc(sup.phone.replace(/[^\d+]/g, ''))}">Call ${esc(sup.phone)}</a>` : ''}${sup.email ? `<a class="btn btn-gray" href="mailto:${esc(sup.email)}">Email</a>` : ''}</div></section>` : '';
+    root.innerHTML = `${head}
+      ${supHtml}
+      <section class="settings-section"><h2>Quick answers</h2>
+        <details class="faq"><summary>Why did my video quality drop?</summary><p>Aurora lowers the quality when your connection is slow, so the picture doesn't keep stopping. Move closer to the router, or choose a lower quality in Settings.</p></details>
+        <details class="faq"><summary>A channel won't load or keeps freezing</summary><p>Open <a href="#/status">Status</a> and press <strong>Check now</strong>. It tells you if it is just you or everyone. If other channels work, try the same game on another channel.</p></details>
+        <details class="faq"><summary>I forgot my password</summary><p>Send a message below, or contact the person you got Aurora from. They can make you a new one.</p></details>
+      </section>
+      <section class="settings-section"><h2>Message your provider${open ? ' <small>conversation open</small>' : ''}</h2>
+        <div class="help-thread" data-thread>${(t?.messages || []).map((m) => `<div class="help-msg ${m.from === 'user' ? 'me' : 'them'}">${esc(m.text)}<small>${m.from === 'user' ? 'You' : 'Support'} · ${esc(timeAgo(m.at))}</small></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div>
+        <textarea class="st-note-input" data-msg rows="3" maxlength="1000" placeholder="Describe the problem">${esc(prefill)}</textarea>
+        <p class="muted help-diag">Sent with your message: ${esc(dg.app)} · ${esc(dg.device)} · ${esc(dg.connection)}${dg.playing ? ' · ' + esc(dg.playing) : ''}${dg.status ? ' · ' + esc(dg.status) : ''}</p>
+        <div class="m-actions"><button class="btn btn-white" data-send>Send</button></div><div class="live-result" data-result></div></section>`;
+    $('[data-send]', root).addEventListener('click', async () => {
+      const text = $('[data-msg]', root).value.trim();
+      const r = $('[data-result]', root);
+      if (!text) { r.className = 'live-result bad'; r.textContent = 'Write a message first.'; return; }
+      $('[data-send]', root).disabled = true;
+      try { await guard('/support', { method: 'POST', params: { userId: state.userId }, body: { text, diag: helpDiag() } }); toast('Sent', 2000); renderHelp(page, isCurrent); }
+      catch (e) { $('[data-send]', root).disabled = false; r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+  }
+
+  async function renderRefer(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad refer-page"><div class="page-head"><h1>Refer a friend</h1></div><div class="spinner"></div></div>';
+    const root = $('.refer-page', page);
+    const head = '<div class="page-head"><h1>Refer a friend</h1></div>';
+    let d;
+    try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Refer a friend')}</p>`; return; }
+    if (!isCurrent()) return;
+    if (!d.enabled) { root.innerHTML = `${head}<p class="empty-msg">Referrals are not on right now.</p>`; return; }
+    const msg = `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
+    root.innerHTML = `${head}
+      <section class="settings-section refer-card"><p class="muted">Your code</p><div class="refer-code">${esc(d.code)}</div>
+        <p class="muted">Your friend gets <strong>${d.days} free days</strong>, and so do you when they join.</p>
+        <div class="m-actions"><button class="btn btn-white" data-share>Share my code</button><button class="btn btn-gray" data-copy>Copy</button></div></section>
+      <div class="stat-grid">${statTile('Friends joined', d.friends.length, '')}${statTile('Free days earned', d.earned, '')}</div>
+      ${d.friends.length ? `<section class="settings-section"><h2>Your friends</h2>${d.friends.map((f) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(f.name)}</strong><div class="muted">Joined ${esc(timeAgo(f.at))} · +${d.days} days</div></div></div>`).join('')}</section>` : ''}
+      ${d.canRedeem ? `<section class="settings-section"><h2>Did a friend invite you?</h2><p class="muted">Enter their code in your first 14 days.</p>
+        <div class="refer-redeem"><input type="text" class="st-note-input" data-code maxlength="20" autocapitalize="characters" autocomplete="off" placeholder="FRIEND-1AB"><button class="btn btn-white" data-redeem>Use code</button></div><div class="live-result" data-result></div></section>` : ''}`;
+    const copy = () => { try { navigator.clipboard.writeText(msg).then(() => toast('Copied', 1500), () => toast(msg, 6000)); } catch { toast(msg, 6000); } };
+    $('[data-copy]', root).addEventListener('click', copy);
+    $('[data-share]', root).addEventListener('click', () => { if (navigator.share) navigator.share({ text: msg }).catch(() => {}); else copy(); });
+    $('[data-redeem]', root)?.addEventListener('click', async () => {
+      const r = $('[data-result]', root);
+      try { const x = await guard('/referral/redeem', { method: 'POST', body: { userId: state.userId, code: $('[data-code]', root).value } }); toast(x.days ? `You got ${x.days} free days` : 'Code accepted', 3500); renderRefer(page, isCurrent); }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+  }
+
+  async function renderStats(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad stats-page"><div class="page-head"><h1>Your Aurora</h1></div><div class="spinner"></div></div>';
+    const root = $('.stats-page', page);
+    const head = '<div class="page-head"><h1>Your Aurora</h1></div>';
+    let d;
+    try { d = await guard('/stats', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'this page')}</p>`; return; }
+    if (!isCurrent()) return;
+    const hm = (m) => `${Math.floor(m / 60)}h ${m % 60}m`;
+    const diff = d.thisWeek - d.lastWeek;
+    const txt = d.thisWeek ? `This week on Aurora I watched ${hm(d.thisWeek)}${d.top[0] ? `, mostly ${d.top[0].title}` : ''}.` : '';
+    root.innerHTML = `${head}
+      <section class="settings-section stats-hero"><p class="muted">You watched this week</p><div class="stats-big">${d.thisWeek ? hm(d.thisWeek) : '0h 0m'}</div>
+        <p class="muted">${d.lastWeek || d.thisWeek ? (diff === 0 ? 'The same as last week' : `${hm(Math.abs(diff))} ${diff > 0 ? 'more' : 'less'} than last week`) : 'Start watching and your week will show up here.'}</p></section>
+      <div class="stat-grid">${statTile('Days you watched', d.days, 'of 7')}${statTile('Live TV', hm(d.live), 'this week')}</div>
+      ${d.top.length ? `<section class="settings-section"><h2>Most watched</h2>${d.top.map((t) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(t.title)}</strong></div><div class="admin-row-time">${esc(hm(t.minutes))}</div></div>`).join('')}</section>` : ''}
+      ${txt ? '<div class="m-actions"><button class="btn btn-white" data-share>Share my week</button></div>' : ''}`;
+    $('[data-share]', root)?.addEventListener('click', () => { if (navigator.share) navigator.share({ text: txt }).catch(() => {}); else { try { navigator.clipboard.writeText(txt); toast('Copied', 1500); } catch { toast(txt, 6000); } } });
+  }
+
+  // ----- Admin → Inbox, Announcements and Support (Aurora Guard 1.11.0) -----
+  const guardTooOld = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.11.0 to use ${what} (copy the new aurora-guard.js and restart the task).` : esc(e.message));
+  async function adminInbox(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Inbox');
+    if (isMod()) {
+      let tk;
+      try { tk = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="empty-msg">${esc(e.message)}</p></section>`; return; }
+      if (!isCurrent()) return;
+      const open = (tk.tickets || []).filter((t) => t.status === 'open');
+      body.innerHTML = `<div class="stat-grid">${statTile('Support messages', open.length, open.length ? 'waiting for an answer' : 'all answered', open.length ? 'bad' : '')}</div>
+        <section class="admin-card"><h2>Moderator</h2><p class="muted">You can answer customers, send announcements, and look at problems, feedback and activity. Users, resellers, credits and server settings stay with the administrator.</p>
+        <div class="m-actions"><a class="btn btn-white" href="#/admin?tab=support">Open support messages</a></div></section>`;
+      return;
+    }
+    let inbox, reqs, tickets;
+    try { [inbox, reqs, tickets] = await Promise.all([guard('/admin-inbox'), guard('/credit-requests').catch((e) => { if (e.status === 423) return { requests: [], locked: true }; throw e; }), guard('/support')]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Inbox</h2><p class="live-result bad">${guardTooOld(e, 'the Inbox')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const pending = reqs.requests.filter((x) => x.status === 'pending');
+    const open = tickets.tickets.filter((t) => t.status === 'open');
+    body.innerHTML = `
+      <div class="stat-grid">${statTile('Waiting for you', inbox.total, '', inbox.total ? 'bad' : '')}${statTile('Credit requests', inbox.creditRequests, '')}${statTile('Support messages', inbox.tickets, 'not answered')}${statTile('Time requests', inbox.extensions, 'customers')}</div>
+      <section class="admin-card"><h2>Credit requests</h2>${reqs.locked ? '<p class="muted">Credit requests are behind the Admin PIN. Open <a href="#/admin?tab=resellers">Resellers</a> and enter it to see them.</p>' : ''}<div class="admin-list">${pending.map((x) => `<div class="admin-row" data-req="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.resellerName)}</strong> wants ${esc(creditsWord(x.amount))}
+          <div class="muted">${x.note ? '"' + esc(x.note) + '" · ' : ''}has ${x.balance} now · ${esc(timeAgo(x.at))}</div></div>
+          <div class="plan-actions"><button class="btn btn-white" data-ok>Approve ${x.amount}</button><button class="btn btn-gray" data-no>Decline</button></div></div>`).join('') || (reqs.locked ? '' : '<p class="muted">No credit requests.</p>')}</div></section>
+      <section class="admin-card"><h2>Other things waiting</h2><div class="admin-list">
+        <div class="admin-row"><div class="admin-row-main"><strong>${open.length} open support ${open.length === 1 ? 'message' : 'messages'}</strong></div><a class="btn btn-gray" href="#/admin?tab=support">Open Support</a></div>
+        <div class="admin-row"><div class="admin-row-main"><strong>${inbox.extensions} customer ${inbox.extensions === 1 ? 'request' : 'requests'} for more time</strong></div><a class="btn btn-gray" href="#/admin?tab=users">Open Users</a></div>
+        ${inbox.lowResellers.map((r) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(r.name)}</strong> is low on credits <span class="pill warn">${r.credits}</span></div><a class="btn btn-gray" href="#/admin?tab=resellers">Open Resellers</a></div>`).join('')}</div></section>`;
+    $$('[data-req]', body).forEach((el) => {
+      const id = el.dataset.req;
+      const act = async (action) => { try { await guard(`/credit-requests/${encodeURIComponent(id)}`, { method: 'PUT', body: { action } }); toast(action === 'approve' ? 'Credits added' : 'Declined', 2000); refreshInbox(); if (isCurrent()) adminInbox(body, isCurrent); } catch (e) { toast(e.message, 4000); } };
+      $('[data-ok]', el).addEventListener('click', () => act('approve'));
+      $('[data-no]', el).addEventListener('click', () => act('deny'));
+    });
+  }
+
+  async function adminAnnounce(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Announcements');
+    let list, plans, resellers;
+    try { [list, plans, resellers] = await Promise.all([guard('/announcements'), guard('/plans').then((x) => x.plans || []), guard('/resellers').then((x) => x.resellers || []).catch(() => [])]); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Announcements</h2><p class="live-result bad">${guardTooOld(e, 'announcements')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const levelName = { info: 'Info', warn: 'Warning', bad: 'Outage' };
+    body.innerHTML = `
+      <section class="admin-card"><h2>New announcement <small>Customers see it as a banner and in their notifications</small></h2>
+        <label class="admin-field"><span>Message</span><input type="text" data-f="text" maxlength="200" placeholder="e.g. Maintenance tonight 2–3 AM"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Style</span><select data-f="level"><option value="info">Info (customers can dismiss it)</option><option value="warn">Warning (stays until it expires)</option><option value="bad">Outage (stays until it expires)</option></select></label>
+          <label class="admin-field"><span>Send to</span><select data-f="aud"><option value="all">Everyone</option><option value="resellers">All resellers</option>${plans.length ? '<optgroup label="One plan">' + plans.map((p) => `<option value="plan:${esc(p.id)}">${esc(p.name)}</option>`).join('') + '</optgroup>' : ''}${resellers.length ? '<optgroup label="One reseller\'s customers">' + resellers.map((r) => `<option value="reseller:${esc(r.id)}">${esc(r.name)}</option>`).join('') + '</optgroup>' : ''}</select></label>
+          <label class="admin-field"><span>Disappears after</span><select data-f="hours"><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">7 days</option></select></label>
+        </div>
+        <div class="m-actions"><button class="btn btn-red" data-send>Send now</button></div><div class="live-result" data-result></div></section>
+      <section class="admin-card"><h2>Showing now</h2><div class="admin-list">${list.announcements.map((a) => `<div class="admin-row" data-a="${esc(a.id)}"><div class="admin-row-main"><span class="pill${a.level === 'bad' ? ' bad' : a.level === 'warn' ? ' warn' : ''}">${levelName[a.level] || 'Info'}</span> <strong>${esc(a.text)}</strong>
+          <div class="muted">${a.audience?.type === 'plan' ? 'One plan' : a.audience?.type === 'reseller' ? 'One reseller' : a.audience?.type === 'resellers' ? 'All resellers' : 'Everyone'} · sent ${esc(timeAgo(a.at))} by ${esc(a.by)}</div></div><button class="btn btn-gray" data-rm>Remove</button></div>`).join('') || '<p class="muted">Nothing is showing.</p>'}</div></section>`;
+    const f = (k) => $(`[data-f="${k}"]`, body);
+    $('[data-send]', body).addEventListener('click', async () => {
+      const [type, id] = f('aud').value.split(':'), r = $('[data-result]', body);
+      try { await guard('/announcements', { method: 'POST', body: { text: f('text').value, level: f('level').value, hours: Number(f('hours').value), audience: { type, id } } }); toast('Sent', 2500); refreshInbox(); if (isCurrent()) adminAnnounce(body, isCurrent); }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+    $$('[data-a]', body).forEach((el) => $('[data-rm]', el).addEventListener('click', async () => { try { await guard(`/announcements/${encodeURIComponent(el.dataset.a)}`, { method: 'DELETE' }); toast('Removed', 1500); refreshInbox(); if (isCurrent()) adminAnnounce(body, isCurrent); } catch (e) { toast(e.message, 4000); } }));
+  }
+
+  async function adminSupport(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Support');
+    let d;
+    try { d = await guard('/support'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Support</h2><p class="live-result bad">${guardTooOld(e, 'Support')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const tickets = [...d.tickets].sort((a, b) => (a.status === 'open' ? 0 : 1) - (b.status === 'open' ? 0 : 1) || b.updated - a.updated);
+    const diag = (g) => g ? Object.entries({ App: g.app, Device: g.device, Connection: g.connection, Playing: g.playing, 'Speed test': g.speed, 'Last status check': g.status, 'Recent problems': g.errors }).filter(([, v]) => v).map(([k, v]) => `<div><strong>${k}:</strong> ${esc(v)}</div>`).join('') : '';
+    body.innerHTML = `<section class="admin-card"><h2>Support <small>Messages customers sent with Get help</small></h2><div class="admin-list">${tickets.map((t) => `<div class="admin-row support-row" data-t="${esc(t.id)}"><div class="admin-row-main">
+        <strong>${esc(t.name)}</strong> <span class="pill${t.status === 'open' ? ' warn' : ''}">${t.status === 'open' ? 'Open' : 'Solved'}</span>${t.reseller ? ` <span class="muted">via ${esc(t.reseller)}</span>` : ''}
+        <div class="help-thread">${t.messages.map((m) => `<div class="help-msg ${m.from === 'user' ? 'them' : 'me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(t.name) : esc(m.by || 'You')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
+        <div class="help-diag muted">${diag(t.diag)}</div>
+        <textarea class="st-note-input" data-reply rows="2" maxlength="1000" placeholder="Reply"></textarea>
+        <div class="m-actions"><button class="btn btn-white" data-send>Reply</button><button class="btn btn-gray" data-toggle>${t.status === 'open' ? 'Mark solved' : 'Reopen'}</button></div></div></div>`).join('') || '<p class="muted">No messages yet.</p>'}</div></section>`;
+    $$('[data-t]', body).forEach((el) => {
+      const t = tickets.find((x) => x.id === el.dataset.t);
+      $('[data-send]', el).addEventListener('click', async () => {
+        const text = $('[data-reply]', el).value.trim();
+        if (!text) { toast('Write a reply first', 2000); return; }
+        try { await guard(`/support/${encodeURIComponent(t.id)}/reply`, { method: 'POST', body: { text } }); toast('Reply sent', 2000); refreshInbox(); if (isCurrent()) adminSupport(body, isCurrent); } catch (e) { toast(e.message, 4000); }
+      });
+      $('[data-toggle]', el).addEventListener('click', async () => { try { await guard(`/support/${encodeURIComponent(t.id)}`, { method: 'PUT', body: { status: t.status === 'open' ? 'solved' : 'open' } }); refreshInbox(); if (isCurrent()) adminSupport(body, isCurrent); } catch (e) { toast(e.message, 4000); } });
+    });
+  }
+
+  // ----- The reseller's own panel (profile menu → Reseller panel) -----
+  async function renderReseller(page, isCurrent) {
+    page.innerHTML = '<div class="page-pad reseller-page"><div class="page-head"><h1>Reseller panel</h1></div><div class="spinner"></div></div>';
+    const root = $('.reseller-page', page);
+    const head = '<div class="page-head"><h1>Reseller panel</h1></div>';
+    let d;
+    try { d = await guard('/reseller/me', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'the Reseller panel')}</p>`; return; }
+    if (!isCurrent()) return;
+    if (!d.reseller) { location.replace('#/home'); return; }
+    if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
+    const fillTpl = (t, c, extra = {}) => {
+      const nm = (c.full || c.name || '').trim(), first = nm.split(/\s+/)[0] || 'there';
+      const date = c.expires ? new Date(c.expires + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+      const vals = { name: first, username: c.name || '', date, days: c.daysLeft == null ? '' : String(Math.max(0, c.daysLeft)), plan: c.planName || extra.plan || '', password: extra.password || '' };
+      return String(t).replace(/\{(name|username|date|days|plan|password)\}/g, (_, k) => vals[k]);
+    };
+    const welcomeText = (c, pw) => (d.templates && d.templates.welcome ? fillTpl(d.templates.welcome, c, { password: pw }) : welcomeTextDefault(c, pw));
+    const welcomeTextDefault = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
+    // One clear status for each customer.
+    const statusOf = (c) => (c.hold ? { k: 'hold', label: 'On hold', cls: 'bad' } : c.expired ? { k: 'expired', label: 'Expired', cls: 'bad' } : c.trial ? { k: 'trial', label: 'Trial', cls: '' }
+      : c.daysLeft != null && c.daysLeft <= 7 ? { k: 'soon', label: 'Ending soon', cls: 'warn' } : { k: 'active', label: 'Active', cls: 'good' });
+    const leftText = (c) => (c.daysLeft == null ? 'No end date' : c.expired ? `Ended ${c.expires ? fmtDay(c.expires) : ''}`.trim() : c.daysLeft === 0 ? 'Ends today' : `${c.daysLeft} ${c.daysLeft === 1 ? 'day' : 'days'} left`);
+    const lRow = (e) => `<div class="admin-row"><div class="admin-row-main">${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}<div class="muted">${esc(e.by)}</div></div><div class="admin-row-time"><span class="pill${e.delta < 0 ? ' bad' : ''}">${e.delta > 0 ? '+' : ''}${e.delta}</span> ${esc(timeAgo(e.at))}</div></div>`;
+    const cnt = (k) => d.customers.filter((c) => statusOf(c).k === k).length;
+    const soon = cnt('soon'), gone = cnt('expired'), held = cnt('hold');
+    const need = d.customers.filter((c) => !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)));
+    let inactiveSet = null;
+    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold'], ['due14', 'Due in 14 days'], ['due30', 'Due in 30 days'], ['inact', 'Inactive 14 days']];
+    const dueCount = (k) => d.customers.filter((c) => !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(k.slice(3))).length;
+    const savedView = (() => { try { return JSON.parse(store.get('ef.resView') || '{}') || {}; } catch { return {}; } })();
+    const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25, label: '' };
+    const RULES_URL = 'https://aurora-streaming.org/rules/';
+    const rules = d.rules || {}, warns = d.warnings || [];
+    const rulesHtml = `${warns.length ? `<section class="admin-card res-warn" role="alert"><h2>${warns.length >= (d.warningsMax || 3) ? 'Final warning' : 'Warning'}: ${warns.length} of ${d.warningsMax || 3} active</h2>
+        <p class="muted">${warns.length >= (d.warningsMax || 3) ? 'One more warning suspends your reseller account. ' : ''}Warnings expire after 90 days.</p>
+        <ul>${warns.map((x) => `<li>${esc(x.reason)} <span class="muted">(${esc(fmtDay(new Date(x.at).toISOString().slice(0, 10)))})</span></li>`).join('')}</ul></section>` : ''}
+      ${rules.required && !rules.accepted ? `<section class="admin-card res-rules" role="alert"><h2>Please read and agree to the reseller rules</h2>
+        <p class="muted">Until you agree you can look around, but you cannot add, renew or change anything.</p>
+        <p><a class="btn btn-gray" href="${RULES_URL}" target="_blank" rel="noopener">Read the rules and regulations</a></p>
+        <label class="admin-check"><input type="checkbox" data-rules-ck> I have read the rules and regulations (version ${esc(rules.version)}) and I agree to follow them.</label>
+        <div class="m-actions"><button class="btn btn-red" data-rules-go disabled>I have read and agree</button></div></section>`
+      : rules.accepted ? `<p class="muted">You agreed to the <a href="${RULES_URL}" target="_blank" rel="noopener">reseller rules</a> on ${esc(fmtDay(new Date(rules.at).toISOString().slice(0, 10)))}.</p>` : ''}`;
+    root.addEventListener('change', (e) => { if (e.target.matches('[data-rules-ck]')) { const go = $('[data-rules-go]', root); if (go) go.disabled = !e.target.checked; } });
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-rules-go]'); if (!b) return;
+      b.disabled = true;
+      try { await guard('/reseller/rules/accept', { method: 'POST', params: { userId: state.userId }, body: {} }); toast('Thank you. Your agreement is recorded.', 2500); renderReseller(page, isCurrent); }
+      catch (err) { toast(err.message || "Couldn't record that. Try again.", 4000); b.disabled = false; }
+    });
+    const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
+    root.innerHTML = `${head}
+      ${rulesHtml}
+      <div class="res-chips res-tabs" role="tablist" aria-label="Reseller panel sections" data-rtabs>
+        <button class="chip on" role="tab" data-rtab="overview">Overview</button>
+        <button class="chip" role="tab" data-rtab="customers">Customers</button>
+        <button class="chip" role="tab" data-rtab="money">Money <span class="pill bad hidden" data-moneybadge></span></button>
+        <button class="chip" role="tab" data-rtab="messages">Messages</button>
+        <button class="chip" role="tab" data-rtab="support">Support <span class="pill bad${d.ticketsOpen ? '' : ' hidden'}" data-tkbadge>${d.ticketsOpen || ''}</span></button>
+        <button class="chip" role="tab" data-rtab="reports">Reports</button>
+        <button class="chip" role="tab" data-rtab="sales">Sales tools</button>
+        <button class="chip" role="tab" data-rtab="guides">Guides</button>
+        <button class="chip" role="tab" data-rtab="settings">Settings</button>
+      </div>
+      <div class="plan-form hidden" data-form></div>
+      <section class="res-hero" data-rp="overview"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
+        <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
+      <div class="plan-form hidden" data-askform data-rp="overview"></div>
+      ${d.report ? '' : '<section class="admin-card" data-rp="overview"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
+      <div class="stat-grid" data-rp="overview">
+        ${statTile('Customers', d.customers.length, 'you created')}
+        ${statTile('Active', d.customers.filter((c) => ['active', 'trial'].includes(statusOf(c).k)).length, 'signed up and running')}
+        ${statTile('Ending within 7 days', soon, '')}
+        ${statTile('Expired', gone, held ? `${held} on hold` : '')}
+      </div>
+      ${need.length ? `<section class="admin-card" data-rp="overview"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
+        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
+        <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
+      <section class="admin-card" data-rp="settings"><h2>Notice for your customers</h2>
+        <p class="muted">It shows at the top of the app for your customers only, for as long as you choose. Good for maintenance, price changes or new channels.</p>
+        <label class="admin-field"><span>Message (200 characters)</span><input type="text" data-nt-text maxlength="200" placeholder="e.g. Aurora will restart tonight at 10pm. Back in 10 minutes."></label>
+        <div class="plan-grid"><label class="admin-field"><span>Look</span><select data-nt-level><option value="info">Information</option><option value="warn">Heads up</option><option value="bad">Problem</option></select></label>
+          <label class="admin-field"><span>Show it for</span><select data-nt-hours><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option></select></label></div>
+        <div class="m-actions"><button class="btn btn-white" data-nt-send>Send</button></div><div class="live-result" data-nt-result></div>
+        <h3 class="users-sub">Showing now</h3><div class="admin-list" data-nt-list><p class="muted">Nothing showing.</p></div></section>
+      <section class="admin-card" data-rp="settings"><h2>Your contact details</h2>
+        <p class="muted">Your customers see these under Help &amp; support, so they reach you with questions. Leave a box empty to hide it.</p>
+        <div class="plan-grid"><label class="admin-field"><span>Name</span><input type="text" data-sp="name" maxlength="40" value="${esc(d.support?.name || '')}" placeholder="e.g. Alpha Support"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-sp="phone" maxlength="30" inputmode="tel" value="${esc(d.support?.phone || '')}" placeholder="+1 555 123 4567"></label>
+          <label class="admin-field"><span>WhatsApp number</span><input type="text" data-sp="whatsapp" maxlength="30" inputmode="tel" value="${esc(d.support?.whatsapp || '')}" placeholder="+15551234567"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-sp="email" maxlength="80" inputmode="email" value="${esc(d.support?.email || '')}" placeholder="help@example.com"></label></div>
+        <label class="admin-field"><span>A short note</span><input type="text" data-sp="note" maxlength="120" value="${esc(d.support?.note || '')}" placeholder="e.g. Replies 9am to 9pm"></label>
+        <div class="m-actions"><button class="btn btn-white" data-sp-save>Save</button></div><div class="live-result" data-sp-result></div></section>
+      <section class="admin-card" data-rp="overview"><h2>Watching now <small data-wcount>0</small></h2>
+        <p class="muted">What your customers are playing right now. It updates by itself every 20 seconds.</p>
+        <div class="admin-list" data-watchlist><p class="muted">Nobody is watching right now.</p></div></section>
+      <section class="admin-card" data-rp="customers"><h2>My customers <small data-count></small></h2>
+        <div class="res-tools"><input type="search" class="st-note-input" data-search placeholder="Search name, username, email, phone, note" autocomplete="off">
+          <select class="st-note-input" data-sort aria-label="Sort"><option value="days">Ending soonest first</option><option value="name">Name A–Z</option><option value="new">Newest first</option><option value="plan">Plan</option></select></div>
+        <div class="res-chips" data-chips>${FILTERS.map(([k, l]) => `<button class="chip${view.filter === k ? ' on' : ''}" data-filter="${k}">${l} <span data-n-${k}></span></button>`).join('')}</div>
+        <div class="res-chips" data-lblchips></div>
+        <div class="m-actions"><button class="btn btn-gray" data-renewshown>Renew everyone shown</button></div>
+        <div class="admin-list res-list" data-list></div>
+        <div class="m-actions"><button class="btn btn-gray hidden" data-more>Show more</button></div>
+        <div class="res-export"><span class="muted">Export this list:</span><button class="btn btn-gray" data-copycsv>Copy</button><button class="btn btn-gray" data-dlcsv>Download .csv</button></div></section>
+      <details class="admin-card res-fold" data-rp="reports"><summary>This month${d.report ? ' · ' + esc(d.report.month) : ''}</summary>
+        <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div></details>
+      <details class="admin-card res-fold" data-rp="reports"><summary>Credit history · ${d.ledger.length}</summary><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></details>
+      <section class="admin-card" data-rp="support" hidden><h2>Support inbox <small data-tk-open></small></h2>
+        <p class="muted">Messages from your own customers. Your provider can see and answer them too, so you both work from one thread.</p>
+        <div class="admin-list" data-tk-list><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="support" hidden><h2>Channel problems <small>last 7 days</small></h2><div data-prob-list><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="reports" hidden><h2>Sales and income</h2>
+        <div class="res-tools"><select class="st-note-input" data-rp-months aria-label="Period"><option value="3">Last 3 months</option><option value="6" selected>Last 6 months</option><option value="12">Last 12 months</option></select></div>
+        <div class="stat-grid" data-rp-kpis></div>
+        <div class="res-bars" data-rp-bars role="img" aria-label="Customers added and renewed each month"></div>
+        <div class="res-legend"><span><i class="lg a"></i>New customers</span><span><i class="lg r"></i>Renewals</span></div>
+        <p class="muted" data-rp-note></p>
+        <div class="m-actions"><button class="btn btn-gray" data-st-copy>Copy credit statement</button><button class="btn btn-gray" data-st-dl>Download .csv</button></div></section>
+      <section class="admin-card" data-rp="reports" hidden><h2>Your activity <small>newest first</small></h2><div class="admin-list" data-rp-activity><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-tl></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-pr></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-pl></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-cp></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-tp></section>
+      <section class="admin-card" data-rp="overview" data-fc></section>
+      <section class="admin-card" data-rp="money" hidden data-mfc></section>
+      <div class="stat-grid" data-rp="money" hidden data-mkpis></div>
+      <section class="admin-card" data-rp="money" hidden><h2>Record a payment</h2>
+        <p class="muted">Your own record of who paid you. Aurora does not take payments.</p>
+        <label class="admin-field"><span>Customer</span><select data-pm-cust></select></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Amount</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-pm-amt placeholder="25.00"></label>
+          <label class="admin-field"><span>Status</span><select data-pm-st><option value="paid">Paid</option><option value="owes">Still owes</option></select></label>
+          <label class="admin-field"><span>Method</span><select data-pm-me><option value="">-</option><option>Cash</option><option>Zelle</option><option>Cash App</option><option>PayPal</option><option>Venmo</option><option>Bank</option><option>Other</option></select></label>
+          <label class="admin-field"><span>Note</span><input type="text" class="st-note-input" data-pm-no maxlength="80" placeholder="e.g. November"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-pm-save>Save payment</button></div><div class="live-result" data-pm-msg></div></section>
+      <section class="admin-card" data-rp="money" hidden data-pm-owed></section>
+      <section class="admin-card" data-rp="money" hidden><h2>Recent payments <small>last 3 months</small></h2><div class="admin-list" data-pm-list><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="messages" hidden><h2>Message your customers</h2>
+        <p class="muted">It shows in each customer's inbox in the app and on their account page for 30 days, and it comes from you.</p>
+        <label class="admin-field"><span>Who</span><select data-ms-filter></select></label>
+        <div class="m-actions"><button class="btn btn-gray" data-ms-all>Select all shown</button><button class="btn btn-gray" data-ms-none>Clear</button></div>
+        <div class="admin-list res-msglist" data-ms-list></div>
+        <label class="admin-field"><span>Message (300 characters)</span><textarea class="st-note-input" rows="3" maxlength="300" data-ms-text placeholder="Write your message..."></textarea></label>
+        <div class="chip-row" data-ms-tpl></div>
+        <div class="m-actions"><button class="btn btn-red" data-ms-send>Send message</button></div><div class="live-result" data-ms-msg></div></section>
+      <section class="admin-card" data-rp="messages" hidden><h2>Sent</h2><div class="admin-list" data-ms-sent><p class="muted">Nothing sent yet.</p></div></section>
+      <section class="admin-card" data-rp="guides" hidden><h2>Setup guides for your customers</h2>
+        <p class="muted">Pick a device and copy the instructions into a message. Or share the link to the public setup page.</p>
+        <div class="chip-row" data-gd-tabs></div>
+        <label class="admin-field"><span>Add a customer's username (optional)</span><select data-gd-cust></select></label>
+        <textarea class="st-note-input" rows="10" readonly data-gd-text aria-label="Instructions"></textarea>
+        <div class="m-actions"><button class="btn btn-red" data-gd-copy>Copy instructions</button><button class="btn btn-gray" data-gd-link>Copy link to this guide</button></div></section>
+      <section class="admin-card" data-rp="guides" hidden><h2>Reseller help center</h2><p class="muted">Answers to common questions about customers, trials, prices, coupons, payments and messages.</p>
+        <div class="m-actions"><a class="btn btn-white" href="https://aurora-streaming.org/reseller/help/" target="_blank" rel="noopener">Open the help center</a></div></section>
+      <details class="admin-card res-fold" data-rp="customers" data-imp><summary>Import many customers at once</summary>
+        <p class="muted">Paste rows from a spreadsheet or a CSV file. Columns: Full name, Email, Phone, Note (a header row is fine). Usernames and passwords are made for you. Up to 50 at a time, and each one uses the plan's credits.</p>
+        <label class="admin-field"><span>Plan for everyone</span><select data-imp-plan>${planOpts('')}</select></label>
+        <input type="file" accept=".csv,.tsv,.txt,text/csv" data-imp-file aria-label="Choose a CSV file">
+        <label class="admin-field"><span>Customers</span><textarea class="st-note-input" rows="6" data-imp-text placeholder="Mike Turner, mike@example.com, +1 555 0100, pays on the 1st"></textarea></label>
+        <p class="muted" data-imp-prev></p>
+        <div class="m-actions"><button class="btn btn-gray" data-imp-check>Preview</button><button class="btn btn-red" data-imp-go disabled>Import</button></div><div class="live-result" data-imp-msg></div><div data-imp-res></div></details>`;
+    const form = $('[data-form]', root);
+    const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
+    const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    const q = (k) => $(`[data-f="${k}"]`, form);
+    const copyText = (text, el) => { try { navigator.clipboard.writeText(text).then(() => toast('Copied', 1500), () => { el?.select(); toast('Select and copy the text', 3000); }); } catch { el?.select(); toast('Select and copy the text', 3000); } };
+    const makePw = () => { const w = ['Blue', 'Tiger', 'Maple', 'River', 'Cloud', 'Amber', 'Falcon', 'Cedar', 'Pearl', 'Comet']; const r = (n) => Math.floor(Math.random() * n); return w[r(w.length)] + w[r(w.length)] + (10 + r(90)); };
+    const closeForm = () => { form.classList.add('hidden'); form.innerHTML = ''; };
+    const showWelcome = (c, pw, headline, note) => {
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">${esc(headline)}</h3><p>${esc(note)} Copy this and send it to your customer. The password is shown only now.</p>
+        <textarea class="st-note-input" data-welcome rows="9" readonly>${esc(welcomeText(c, pw))}</textarea>
+        <div class="m-actions"><button class="btn btn-white" data-copy>Copy</button><button class="btn btn-gray" data-done>Done</button></div>`;
+      $('[data-copy]', form).addEventListener('click', () => copyText($('[data-welcome]', form).value, $('[data-welcome]', form)));
+      $('[data-done]', form).addEventListener('click', reload);
+      form.scrollIntoView({ block: 'center' });
+    };
+    const openNew = () => {
+      if (!d.plans.length) { toast('You have no plans to sell yet. Ask your provider.', 4000); return; }
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">New customer</h3><p class="muted">Only the username and plan are needed. The plan's cost comes out of your credits.</p>
+        <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" placeholder="e.g. Mike Turner"></label>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Username *</span><input type="text" data-f="user" maxlength="32" autocapitalize="none" autocomplete="off" placeholder="mike_t"></label>
+          <label class="admin-field"><span>Password</span><input type="text" data-f="pw" maxlength="64" autocomplete="off" value="${esc(makePw())}"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" placeholder="optional"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" placeholder="optional"></label>
+        </div>
+        <label class="admin-field"><span>Plan *</span><select data-f="plan">${planOpts('')}</select></label>
+        <label class="admin-check"><input type="checkbox" data-f="trial"> Free 2-day trial instead (${d.trialsLeft} left today)</label>
+        <label class="admin-field"><span>Note (only you and the admin see this)</span><input type="text" data-f="note" maxlength="300" placeholder="e.g. Pays on the 1st"></label>
+        <p class="muted" data-sum></p>
+        <div class="m-actions"><button class="btn btn-red" data-save>Create customer</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
+      const cost = () => (q('trial').checked ? 0 : (d.plans.find((p) => p.id === q('plan').value)?.credits || 0));
+      const sum = () => { const c = cost(); $('[data-sum]', form).textContent = (q('trial').checked ? 'Free trial, ends in 2 days. ' : `Cost: ${creditsWord(c)}. `) + `Balance after: ${d.credits - c}${d.credits - c < 0 ? ' (not enough credits)' : ''}`; $('[data-save]', form).disabled = d.credits - c < 0 || (q('trial').checked && d.trialsLeft <= 0); };
+      sum(); q('plan').addEventListener('change', sum); q('trial').addEventListener('change', sum);
+      $('[data-cancel]', form).addEventListener('click', closeForm);
+      $('[data-save]', form).addEventListener('click', async () => {
+        const btn = $('[data-save]', form), pw = q('pw').value;
+        btn.disabled = true; say('<div class="spinner"></div>');
+        try {
+          const r = await guard('/reseller/customers', { method: 'POST', params: { userId: state.userId }, body: { fullName: q('full').value, username: q('user').value, password: pw, email: q('email').value, phone: q('phone').value, note: q('note').value, planId: q('plan').value, trial: q('trial').checked } });
+          d.credits = r.credits;
+          toast(`${r.customer.full || r.customer.name} created`, 2500);
+          showWelcome(r.customer, r.password, `${r.customer.full || r.customer.name} is ready`, cost() ? `${creditsWord(cost())} used.` : 'Free trial.');
+        } catch (e) { btn.disabled = false; say(esc(e.message), 'bad'); }
+      });
+      if (nav.on) focusEl(q('full')); else form.scrollIntoView({ block: 'center' });
+    };
+    const openDetails = (c) => {
+      const st = statusOf(c);
+      form.classList.remove('hidden');
+      form.innerHTML = `<h3 class="admin-sub">${esc(c.full || c.name)} <span class="pill ${st.cls}">${esc(st.label)}</span></h3>
+        <p class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${esc(leftText(c))}${c.expires ? ' (' + esc(fmtDay(c.expires)) + ')' : ''} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use${c.created ? ' · added ' + esc(fmtDay(new Date(c.created).toISOString().slice(0, 10))) : ''}</p>
+        ${d.plans.length ? `<div class="res-renew"><label class="admin-field"><span>Renew with</span><select data-f="rplan">${planOpts(c.planId)}</select></label><button class="btn btn-white" data-dren>Renew</button></div>${c.hold ? '<p class="muted">This customer is on hold: renewing adds time but they stay on hold until you release them.</p>' : ''}` : ''}
+        <div class="plan-grid">
+          <label class="admin-field"><span>Full name</span><input type="text" data-f="full" maxlength="60" value="${esc(c.full)}"></label>
+          <label class="admin-field"><span>Email</span><input type="text" data-f="email" maxlength="80" value="${esc(c.email)}"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" value="${esc(c.phone)}"></label>
+        </div>
+        <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
+        <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button><button class="btn btn-gray" data-cg>Channels: ${c.cats == null ? 'all' : c.cats}</button></div><div class="res-extra hidden" data-extra></div>
+        <div class="m-actions"><button class="btn btn-gray" data-lb>Labels${(c.labels || []).length ? ': ' + esc(c.labels.join(', ')) : ''}</button><button class="btn btn-gray" data-pmt>Record payment</button><button class="btn btn-gray" data-tlx>Timeline</button></div>
+        <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancel]', form).addEventListener('click', closeForm);
+      const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
+      $('[data-dren]', form)?.addEventListener('click', async () => {
+        const plan = d.plans.find((p) => p.id === q('rplan').value);
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.`, 'Renew'))) return;
+        try { const r = await guard(path('/renew'), { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-save]', form).addEventListener('click', async () => {
+        try { await guard(path(), { method: 'PUT', params: { userId: state.userId }, body: { fullName: q('full').value, email: q('email').value, phone: q('phone').value, note: q('note').value } }); toast('Saved', 2000); reload(); }
+        catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-pw]', form).addEventListener('click', async () => {
+        if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working and a new one is shown once, with a welcome message you can send.', 'Reset password'))) return;
+        try { const x = await guard(path('/password'), { method: 'POST', params: { userId: state.userId }, body: {} }); showWelcome(c, x.password, `New password for ${c.full || c.name}`, 'Their old password no longer works.'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-out]', form).addEventListener('click', async () => {
+        try { const x = await guard(path('/signout'), { method: 'POST', params: { userId: state.userId }, body: {} }); say(x.signedOut ? `Signed out of ${x.signedOut} ${x.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.', 'good'); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      // Playback quality and devices for this customer (guard 1.33.0).
+      const extra = $('[data-extra]', form);
+      const showExtra = (kind, html) => { extra.classList.remove('hidden'); extra.dataset.kind = kind; extra.innerHTML = html; };
+      $('[data-pq]', form).addEventListener('click', async () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'q') { extra.classList.add('hidden'); return; }
+        showExtra('q', '<div class="spinner"></div>');
+        try {
+          const q2 = await guard(path('/quality'), { params: { userId: state.userId } });
+          if (!q2.reported) { showExtra('q', '<p class="muted">Nothing reported yet. The numbers arrive after this customer updates to the newest app and watches something.</p>'); return; }
+          const l = q2.you.live, v = q2.you.vod, a = q2.everyone, last = q2.last || {};
+          const per = (x) => (x == null ? '–' : `${x}/hour`), sec = (x) => (x == null ? '–' : `${x} s`), pct = (x) => (x == null ? '–' : `${x}%`);
+          const facts = [last.device && `Device: ${last.device}`, last.app && `App: ${last.app}`, last.buffer && `Live TV buffer: ${last.buffer}`, last.kbps && `Stream speed: ${(last.kbps / 1000).toFixed(1)} Mbit/s`, l.failed > 0 && `${l.failed} channel${l.failed === 1 ? '' : 's'} stopped working`].filter(Boolean);
+          showExtra('q', `<div class="stat-grid">${statTile('Live buffering', per(l.stallsPerHour), `everyone: ${per(a.live.stallsPerHour)}`)}${statTile('Channel start', sec(l.avgStartSec), `everyone: ${sec(a.live.avgStartSec)}`)}${statTile('Movies and shows buffering', pct(v.bufferingPct), `everyone: ${pct(a.vod.bufferingPct)}`)}</div>
+            ${facts.length ? `<p class="muted">${esc(facts.join(' · '))}</p>` : ''}
+            ${q2.hints.length ? `<div class="admin-card-note"><strong>What to try</strong><ul>${q2.hints.map((h) => `<li>${esc(h)}</li>`).join('')}</ul></div>` : '<p class="muted">Nothing stands out: their viewing looks normal.</p>'}`);
+        } catch (e) { showExtra('q', `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`); }
+      });
+      const loadDevices = async () => {
+        try {
+          const r = await guard(path('/devices'), { params: { userId: state.userId } });
+          const ds = r.devices || [];
+          showExtra('d', `<strong>Signed in on ${ds.length} ${ds.length === 1 ? 'device' : 'devices'}</strong><div class="admin-list">${ds.map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.name)}${x.app ? ' · ' + esc(x.app) : ''}${x.active ? ' <span class="pill good">Now</span>' : ''}<div class="muted">Last seen ${x.last ? esc(timeAgo(new Date(x.last).getTime())) : 'unknown'}</div></div><div class="plan-actions"><button class="btn btn-gray" data-rmdev="${esc(x.id)}">Remove</button></div></div>`).join('') || '<p class="muted">No devices.</p>'}</div>`);
+          $$('[data-rmdev]', extra).forEach((b) => b.addEventListener('click', async () => {
+            if (!(await confirmAction('Remove this device?', 'It is signed out and the customer has to sign in again there.', 'Remove'))) return;
+            try { await guard(path('/device-remove'), { method: 'POST', params: { userId: state.userId }, body: { deviceId: b.dataset.rmdev } }); toast('Device removed', 2000); loadDevices(); } catch (e) { say(esc(e.message), 'bad'); }
+          }));
+        } catch (e) { showExtra('d', `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`); }
+      };
+      $('[data-dev]', form).addEventListener('click', () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'd') { extra.classList.add('hidden'); return; }
+        showExtra('d', '<div class="spinner"></div>'); loadDevices();
+      });
+      // Labels, payments and the timeline (guard 1.51.0).
+      $('[data-lb]', form).addEventListener('click', () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'l') { extra.classList.add('hidden'); return; }
+        showExtra('l', `<strong>Labels</strong><p class="muted">Private tags only you see, like Family, VIP or Sports fan. Separate them with commas (up to 5).</p><input type="text" class="st-note-input" data-l-in maxlength="120" value="${esc((c.labels || []).join(', '))}" placeholder="Family, VIP"><div class="m-actions"><button class="btn btn-red" data-l-save>Save labels</button></div>`);
+        $('[data-l-save]', extra).addEventListener('click', async () => {
+          try { await guard(path('/labels'), { method: 'PUT', params: { userId: state.userId }, body: { labels: $('[data-l-in]', extra).value.split(',').map((x) => x.trim()).filter(Boolean) } }); toast('Labels saved', 2000); reload(); }
+          catch (err) { say(oldGuard(err, 'labels'), 'bad'); }
+        });
+      });
+      $('[data-pmt]', form).addEventListener('click', () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'p') { extra.classList.add('hidden'); return; }
+        const pr = (d.prices || {})[c.planId];
+        showExtra('p', `<strong>Record a payment</strong><div class="plan-grid"><label class="admin-field"><span>Amount</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-p-amt value="${pr || ''}"></label><label class="admin-field"><span>Status</span><select data-p-st><option value="paid">Paid</option><option value="owes">Still owes</option></select></label><label class="admin-field"><span>Method</span><select data-p-me><option value="">-</option><option>Cash</option><option>Zelle</option><option>Cash App</option><option>PayPal</option><option>Venmo</option><option>Bank</option><option>Other</option></select></label></div><div class="m-actions"><button class="btn btn-red" data-p-save>Save payment</button></div>`);
+        $('[data-p-save]', extra).addEventListener('click', async () => {
+          try { await guard(path('/payments'), { method: 'POST', params: { userId: state.userId }, body: { amount: Number($('[data-p-amt]', extra).value), paid: $('[data-p-st]', extra).value === 'paid', method: $('[data-p-me]', extra).value } }); toast('Payment saved. See it under Money.', 3000); extra.classList.add('hidden'); }
+          catch (err) { say(oldGuard(err, 'payments'), 'bad'); }
+        });
+      });
+      $('[data-tlx]', form).addEventListener('click', async () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 't') { extra.classList.add('hidden'); return; }
+        showExtra('t', '<div class="spinner"></div>');
+        try {
+          const r = await guard(path('/timeline'), { params: { userId: state.userId } });
+          showExtra('t', `<strong>Timeline</strong><div class="admin-list">${(r.events || []).map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.text)}</div><div class="admin-row-time">${esc(timeAgo(x.at))}</div></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>`);
+        } catch (err) { showExtra('t', `<p class="muted">${oldGuard(err, 'the timeline')}</p>`); }
+      });
+      // Live TV categories for this customer, like the 24/7 channels (guard 1.40.0).
+      $('[data-cg]', form).addEventListener('click', async () => {
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'c') { extra.classList.add('hidden'); return; }
+        showExtra('c', '<div class="spinner"></div>');
+        try {
+          // One after the other: a reseller can only have one request running at a time.
+          const all = await guard('/reseller/categories', { params: { userId: state.userId } });
+          const mine = await guard(path('/categories'), { params: { userId: state.userId } });
+          if (!all.supported) { showExtra('c', '<p class="muted">Choosing categories works with an Xtream TV provider. Yours is set up another way.</p>'); return; }
+          const pkAll = await guard('/reseller/packages', { params: { userId: state.userId } }).catch(() => ({ packages: [] }));
+          const myPacks = new Set((mine.packs || []).map(String));
+          const have = mine.categories ? new Set(mine.categories.map(String)) : null;
+          const packHtml = pkAll.packages.length ? `<div class="admin-card-note"><strong>Packages</strong><p class="muted">Give ${esc(c.full || c.name)} a ready-made group of channels in one tap.</p>
+            <div class="chip-row" data-pk-chips>${pkAll.packages.map((x) => `<label class="chip${myPacks.has(x.id) ? ' active' : ''}"><input type="checkbox" value="${esc(x.id)}" ${myPacks.has(x.id) ? 'checked' : ''} hidden> ${esc(x.name)} · ${x.count}</label>`).join('')}</div>
+            <div class="m-actions"><button class="btn btn-red" data-pk-apply>Give the ticked packages</button></div></div><p class="muted">Or pick categories by hand:</p>` : '';
+          showExtra('c', `${packHtml}<strong>Live TV categories for ${esc(c.full || c.name)}</strong>
+            <p class="muted">${have ? 'They see only the ticked categories.' : `Right now they see all categories${mine.planName ? ' (' + esc(mine.planName) + ')' : ''}. Tick some to limit them.`} Adult categories are controlled by the adult switch, not here.</p>
+            <div class="m-actions"><input type="search" class="users-search" data-cg-q placeholder="Search categories" autocomplete="off" spellcheck="false"><button class="btn btn-gray" data-cg-247>Tick 24/7</button><button class="btn btn-gray" data-cg-all>Tick all</button><button class="btn btn-gray" data-cg-none>Untick all</button></div>
+            <div class="admin-list" data-cg-list style="max-height:300px;overflow:auto">${all.categories.map((k) => `<label class="admin-row" data-n="${esc(k.name.toLowerCase())}"><div class="admin-row-main"><input type="checkbox" value="${esc(k.id)}"${have ? (have.has(String(k.id)) ? ' checked' : '') : ' checked'}> ${esc(k.name)} <span class="muted">${k.count}</span></div></label>`).join('')}</div>
+            <div class="m-actions"><button class="btn btn-red" data-cg-save>Save</button><button class="btn btn-gray" data-cg-plan>Back to their plan (all)</button></div>`);
+          const boxes = () => $$('[data-cg-list] input', extra);
+          $$('[data-pk-chips] label', extra).forEach((l) => l.addEventListener('click', (e) => { e.preventDefault(); const i = $('input', l); i.checked = !i.checked; l.classList.toggle('active', i.checked); }));
+          $('[data-pk-apply]', extra)?.addEventListener('click', async () => {
+            const packs = $$('[data-pk-chips] input', extra).filter((i) => i.checked).map((i) => i.value);
+            try { await guard(path('/packages'), { method: 'POST', params: { userId: state.userId }, body: { packs } }); toast(packs.length ? 'Packages given' : 'Back on their plan', 3000); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+          });
+          $('[data-cg-q]', extra).addEventListener('input', (e) => { const t = e.target.value.trim().toLowerCase(); $$('[data-cg-list] [data-n]', extra).forEach((r) => { r.style.display = !t || r.dataset.n.includes(t) ? '' : 'none'; }); });
+          $('[data-cg-247]', extra).addEventListener('click', () => boxes().forEach((b) => { if (/24\s*[\/x]?\s*7/i.test(b.closest('[data-n]').dataset.n)) b.checked = true; }));
+          $('[data-cg-all]', extra).addEventListener('click', () => boxes().forEach((b) => { b.checked = true; }));
+          $('[data-cg-none]', extra).addEventListener('click', () => boxes().forEach((b) => { b.checked = false; }));
+          $('[data-cg-save]', extra).addEventListener('click', async () => {
+            const ids = boxes().filter((b) => b.checked).map((b) => b.value);
+            if (!ids.length) { say('Tick at least one category.', 'bad'); return; }
+            try {
+              await guard(path('/categories'), { method: 'POST', params: { userId: state.userId }, body: { categories: ids.length === boxes().length ? null : ids } });
+              toast(ids.length === boxes().length ? 'Now on all categories' : `Saved: ${ids.length} categories`, 3000); reload();
+            } catch (e) { say(esc(e.message), 'bad'); }
+          });
+          $('[data-cg-plan]', extra).addEventListener('click', async () => {
+            try { await guard(path('/categories'), { method: 'POST', params: { userId: state.userId }, body: { categories: null } }); toast('Back on all categories', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+          });
+        } catch (e) { showExtra('c', `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`); }
+      });
+      $('[data-hold]', form).addEventListener('click', async () => {
+        const putOn = !c.hold;
+        if (putOn && !(await confirmAction(`Put ${c.full || c.name} on hold?`, 'They are signed out and can\'t sign in until you release them. Their end date keeps running.', 'Put on hold'))) return;
+        try { await guard(path('/hold'), { method: 'POST', params: { userId: state.userId }, body: { hold: putOn } }); toast(putOn ? 'On hold' : 'Released', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-del]', form).addEventListener('click', async () => {
+        if (!(await confirmAction(`Delete ${c.full || c.name} for good?`, `The account ${c.name} and their watch history are removed. Credits are not refunded. This can't be undone.`, 'Delete customer'))) return;
+        try { await guard(path(), { method: 'DELETE', params: { userId: state.userId } }); toast('Customer deleted', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      form.scrollIntoView({ block: 'center' });
+    };
+    $('[data-new]', root).addEventListener('click', openNew);
+    // ----- Notices and contact details for this reseller's customers (guard 1.33.0) -----
+    const ntList = $('[data-nt-list]', root), ntSay = (html, cls = '') => { const r = $('[data-nt-result]', root); r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; };
+    const loadNotices = async () => {
+      try {
+        const r = await guard('/reseller/notices', { params: { userId: state.userId } });
+        ntList.innerHTML = (r.notices || []).map((n) => `<div class="admin-row"><div class="admin-row-main">${esc(n.text)}<div class="muted">Until ${esc(fmtDay(new Date(n.expires).toISOString().slice(0, 10)))}</div></div><div class="plan-actions"><button class="btn btn-gray" data-nt-del="${esc(n.id)}">Remove</button></div></div>`).join('') || '<p class="muted">Nothing showing.</p>';
+        $$('[data-nt-del]', ntList).forEach((b) => b.addEventListener('click', async () => { try { await guard(`/reseller/notices/${encodeURIComponent(b.dataset.ntDel)}`, { method: 'DELETE', params: { userId: state.userId } }); loadNotices(); } catch (e) { ntSay(esc(e.message), 'bad'); } }));
+      } catch (e) { ntList.innerHTML = `<p class="muted">${esc(e.message)} Your provider may need to update Aurora Guard.</p>`; }
+    };
+    loadNotices();
+    $('[data-nt-send]', root).addEventListener('click', async () => {
+      const text = $('[data-nt-text]', root).value.trim();
+      if (!text) { ntSay('Write the message first.', 'bad'); return; }
+      try { await guard('/reseller/notices', { method: 'POST', params: { userId: state.userId }, body: { text, level: $('[data-nt-level]', root).value, hours: Number($('[data-nt-hours]', root).value) } }); $('[data-nt-text]', root).value = ''; ntSay('Sent. Your customers see it the next time they open the app.', 'good'); loadNotices(); }
+      catch (e) { ntSay(esc(e.message), 'bad'); }
+    });
+    $('[data-sp-save]', root).addEventListener('click', async () => {
+      const body = {}; $$('[data-sp]', root).forEach((i) => { body[i.dataset.sp] = i.value; });
+      const r = $('[data-sp-result]', root);
+      try { const x = await guard('/reseller/support', { method: 'PUT', params: { userId: state.userId }, body }); r.className = 'live-result good'; r.textContent = x.support ? 'Saved. Your customers see this under Help & support.' : 'Removed.'; }
+      catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
+    });
+    $('[data-ask]', root)?.addEventListener('click', () => {
+      const af = $('[data-askform]', root); af.classList.remove('hidden');
+      af.innerHTML = `<div class="plan-grid"><label class="admin-field"><span>How many credits?</span><input type="number" data-f="amount" min="1" max="1000" step="1" inputmode="numeric" value="20"></label><label class="admin-field"><span>Note (optional)</span><input type="text" data-f="note" maxlength="200" placeholder="e.g. 12 renewals this week"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-sendreq>Send request</button><button class="btn btn-gray" data-cancelreq>Cancel</button></div><div class="live-result" data-result></div>`;
+      $('[data-cancelreq]', af).addEventListener('click', () => { af.classList.add('hidden'); af.innerHTML = ''; });
+      $('[data-sendreq]', af).addEventListener('click', async () => {
+        try { await guard('/reseller/credit-request', { method: 'POST', params: { userId: state.userId }, body: { amount: Number($('[data-f="amount"]', af).value), note: $('[data-f="note"]', af).value } }); toast('Request sent to your provider', 3000); reload(); }
+        catch (e) { const r = $('[data-result]', af); r.className = 'live-result bad'; r.textContent = e.message; }
+      });
+    });
+    const chosenIds = () => $$('[data-n]:checked', root).map((x) => x.dataset.n);
+    $('[data-bulk]', root)?.addEventListener('click', async () => {
+      const ids = chosenIds(), res = $('[data-bulkresult]', root);
+      if (!ids.length) { res.className = 'live-result bad'; res.textContent = 'Choose at least one customer.'; return; }
+      const cost = ids.reduce((n, id) => { const c = d.customers.find((x) => x.id === id); const p = d.plans.find((x) => x.id === c.planId) || d.plans[0]; return n + (p ? p.credits : 0); }, 0);
+      if (!(await confirmAction(`Renew ${ids.length} ${ids.length === 1 ? 'customer' : 'customers'}?`, `This uses ${creditsWord(cost)}. You have ${d.credits}.`, 'Renew'))) return;
+      try { const r = await guard('/reseller/renew-many', { method: 'POST', params: { userId: state.userId }, body: { ids } }); toast(`Renewed ${r.renewed} · ${creditsWord(r.spent)} used`, 3500); reload(); }
+      catch (e) { res.className = 'live-result bad'; res.textContent = e.message; }
+    });
+    $('[data-msgs]', root)?.addEventListener('click', () => {
+      const lines = chosenIds().map((id) => d.customers.find((x) => x.id === id)).filter(Boolean).map((c) => {
+        const tpl = c.expired ? d.templates?.expired : (c.daysLeft != null && c.daysLeft <= 3 ? (d.templates?.ending || d.templates?.reminder) : d.templates?.reminder);
+        if (tpl) return fillTpl(tpl, c);
+        const first = (c.full || c.name).split(' ')[0];
+        return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
+      }).join('\n\n');
+      if (!lines) { toast('Choose at least one customer', 2500); return; }
+      copyText(lines);
+    });
+
+    // ----- the customer list: search, filter, sort -----
+    const listEl = $('[data-list]', root), moreBtn = $('[data-more]', root);
+    const saveView = () => store.set('ef.resView', JSON.stringify({ filter: view.filter, sort: view.sort }));
+    const matches = (c) => {
+      const t = view.q.trim().toLowerCase();
+      if (t && ![c.name, c.full, c.email, c.phone, c.note, c.planName].some((x) => String(x || '').toLowerCase().includes(t))) return false;
+      const k = statusOf(c).k;
+      if (view.label && !(c.labels || []).includes(view.label)) return false;
+      if (view.filter === 'inact') return !!inactiveSet && inactiveSet.has(c.id);
+      if (/^due/.test(view.filter)) return !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(view.filter.slice(3));
+      return view.filter === 'all' || k === view.filter || (view.filter === 'active' && k === 'soon') ;
+    };
+    const sorters = { days: (a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999), name: (a, b) => (a.full || a.name).localeCompare(b.full || b.name), new: (a, b) => (b.created || 0) - (a.created || 0), plan: (a, b) => (a.planName || '').localeCompare(b.planName || '') || (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999) };
+    const visible = () => d.customers.filter(matches).sort(sorters[view.sort] || sorters.days);
+    // ----- Watching now: what this reseller's own customers are playing, refreshed every 20 s while this page is open -----
+    let watching = {}, watchTimer = null;
+    const watchLine = (w) => `${w.paused ? 'Paused ' : ''}${w.kind === 'live' ? 'Live: ' + w.title : w.title + (w.episode ? ' · ' + w.episode : '')}${w.device ? ' on ' + w.device : ''}`;
+    const nowText = (id) => ((watching[id] || []).length ? `<span class="live-dot"></span>${esc(watching[id].map(watchLine).join(' · '))}` : '');
+    const paintWatch = (list) => {
+      watching = {}; for (const w of list) (watching[w.userId] ||= []).push(w);
+      const box = $('[data-watchlist]', root); if (!box) return;
+      $('[data-wcount]', root).textContent = list.length;
+      const ids = Object.keys(watching);
+      box.innerHTML = ids.length ? ids.map((id) => { const c = d.customers.find((x) => x.id === id); return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(c ? c.full || c.name : 'Customer')}</strong><div class="res-now">${nowText(id)}</div></div></div>`; }).join('') : '<p class="muted">Nobody is watching right now.</p>';
+      $$('[data-now]', root).forEach((n) => { n.innerHTML = nowText(n.dataset.now); });
+    };
+    const pollWatch = async () => {
+      if (!isCurrent() || !root.isConnected) { clearInterval(watchTimer); return; }
+      if (document.hidden) return;
+      try { const r = await guard('/reseller/watching', { params: { userId: state.userId } }); if (isCurrent()) paintWatch(r.watching || []); } catch { /* an older Guard has no such page: show nothing */ }
+    };
+    watchTimer = setInterval(pollWatch, 20000); pollWatch();
+    const cRow = (c) => {
+      const st = statusOf(c), cost = (d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits;
+      return `<div class="res-row" data-c="${esc(c.id)}"><div class="res-av ${st.cls}">${esc((c.full || c.name).trim().charAt(0).toUpperCase() || '?')}</div>
+        <div class="res-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${st.cls}">${esc(st.label)}</span>
+          <div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div>
+          <div class="res-now" data-now="${esc(c.id)}">${nowText(c.id)}</div></div>
+        <div class="res-end">${esc(leftText(c))}${c.expires && !c.expired ? `<small>${esc(fmtDay(c.expires))}</small>` : ''}</div>
+        <div class="plan-actions"><button class="btn btn-gray" data-renew>Renew${cost != null ? ' · ' + cost : ''}</button><button class="btn btn-gray" data-details>Details</button></div></div>`;
+    };
+    const paintList = () => {
+      const all = visible(), shown = all.slice(0, view.shown);
+      listEl.innerHTML = shown.map(cRow).join('') || `<p class="muted">${d.customers.length ? 'No customers match.' : 'No customers yet. Add your first one.'}</p>`;
+      $('[data-count]', root).textContent = all.length === d.customers.length ? `${d.customers.length}` : `${all.length} of ${d.customers.length}`;
+      moreBtn.classList.toggle('hidden', all.length <= shown.length);
+      moreBtn.textContent = `Show more (${all.length - shown.length} left)`;
+      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : /^due/.test(k) ? dueCount(k) : k === 'inact' ? (inactiveSet ? inactiveSet.size : '') : cnt(k); });
+      paintLbl();
+    };
+    $('[data-sort]', root).value = view.sort;
+    $('[data-search]', root).addEventListener('input', (e) => { view.q = e.target.value; view.shown = 25; paintList(); });
+    $('[data-sort]', root).addEventListener('change', (e) => { view.sort = e.target.value; saveView(); paintList(); });
+    $$('[data-filter]', root).forEach((b) => b.addEventListener('click', () => { view.filter = b.dataset.filter; view.shown = 25; saveView(); $$('[data-filter]', root).forEach((x) => x.classList.toggle('on', x === b)); paintList(); }));
+    moreBtn.addEventListener('click', () => { view.shown += 25; paintList(); });
+    listEl.addEventListener('click', async (e) => {
+      const el = e.target.closest('[data-c]'); if (!el) return;
+      const c = d.customers.find((x) => x.id === el.dataset.c); if (!c) return;
+      if (e.target.closest('[data-details]')) return openDetails(c);
+      if (e.target.closest('[data-renew]')) {
+        const plan = d.plans.find((p) => p.id === c.planId) || d.plans[0];
+        if (!plan) { toast('You have no plans to sell yet.', 3000); return; }
+        if (!(await confirmAction(`Renew ${c.full || c.name}?`, `${plan.name} for ${creditsWord(plan.credits)}. You have ${d.credits}.${c.hold ? ' They are on hold, so they stay on hold until you release them.' : ''}`, 'Renew'))) return;
+        try { const r = await guard(`/reseller/customers/${encodeURIComponent(c.id)}/renew`, { method: 'POST', params: { userId: state.userId }, body: { planId: plan.id } }); toast(`Renewed until ${fmtDay(r.expires)}`, 3000); reload(); }
+        catch (err) { toast(err.message, 5000); }
+      }
+    });
+    // Export the customers on screen (after search and filter) as a spreadsheet file.
+    const csvText = () => {
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const rows = [['Name', 'Username', 'Email', 'Phone', 'Plan', 'Status', 'Ends', 'Note'], ...visible().map((c) => [c.full, c.name, c.email, c.phone, c.planName, statusOf(c).label, c.expires || '', c.note])];
+      return rows.map((r) => r.map(cell).join(',')).join('\r\n');
+    };
+    $('[data-copycsv]', root).addEventListener('click', () => copyText(csvText()));
+    $('[data-dlcsv]', root).addEventListener('click', () => {
+      try {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob(['﻿' + csvText()], { type: 'text/csv' })); a.download = 'aurora-customers.csv';
+        document.body.appendChild(a); a.click(); a.remove(); toast('Downloading…', 2000);
+      } catch { copyText(csvText()); }
+    });
+    paintList();
+    // ===== Reseller tools (guard 1.50.0): tabs, support inbox, reports, sales tools, renew everyone shown =====
+    const SITE = 'https://aurora-streaming.org/';
+    const money = (n) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.51.0 to use ${what}.` : esc(e.message));
+    const setRp = (name) => {
+      try { store.set('ef.resTab', name); } catch { /* ignore */ }
+      $$('[data-rp]', root).forEach((el) => { el.hidden = el.dataset.rp !== name; });
+      $$('[data-rtab]', root).forEach((b) => b.classList.toggle('on', b.dataset.rtab === name));
+      if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMsgs(); else if (name === 'guides') paintGuides();
+    };
+    $$('[data-rtab]', root).forEach((b) => b.addEventListener('click', () => { setRp(b.dataset.rtab); root.scrollIntoView({ block: 'start' }); }));
+
+    // ----- renew everyone shown
+    $('[data-renewshown]', root).addEventListener('click', async () => {
+      const list = visible().filter((c) => !c.hold);
+      if (!list.length) { toast('Nobody to renew in this list', 2500); return; }
+      if (list.length > 50) { toast('That is more than 50 customers. Narrow the list first, for example to Ending soon.', 5000); return; }
+      const cost = list.reduce((n, c) => n + ((d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits || 0), 0);
+      if (!(await confirmAction(`Renew ${list.length} ${list.length === 1 ? 'customer' : 'customers'}?`, `Each on their own plan. This uses ${creditsWord(cost)}. You have ${d.credits}.`, 'Renew all'))) return;
+      try { const r = await guard('/reseller/renew-many', { method: 'POST', params: { userId: state.userId }, body: { ids: list.map((c) => c.id) } }); toast(`Renewed ${r.renewed} · ${creditsWord(r.spent)} used`, 3500); reload(); }
+      catch (e) { toast(e.message, 5000); }
+    });
+
+    // ----- support inbox and channel problems
+    const loadSupport = async () => {
+      const list = $('[data-tk-list]', root), prob = $('[data-prob-list]', root);
+      try {
+        const r = await guard('/reseller/tickets', { params: { userId: state.userId } });
+        const b = $('[data-tkbadge]', root); if (b) { b.textContent = r.open || ''; b.classList.toggle('hidden', !r.open); }
+        $('[data-tk-open]', root).textContent = r.open ? `${r.open} open` : '';
+        list.innerHTML = r.tickets.length ? r.tickets.map((t) => {
+          const open = t.status === 'open', who = t.full || t.name;
+          return `<div class="admin-row res-tk" data-tk="${esc(t.id)}"><div class="admin-row-main"><strong>${esc(who)}</strong> <span class="pill ${open ? 'warn' : 'good'}">${open ? 'Open' : 'Solved'}</span> <span class="muted">${esc(timeAgo(t.updated || t.at))}</span>
+            <div class="res-thread">${(t.messages || []).slice(-8).map((m) => `<div class="res-bub${m.from === 'user' ? '' : ' me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(who) : esc(m.by || 'Support')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
+            <div class="res-reply"><input type="text" class="st-note-input" data-tk-text maxlength="1000" placeholder="Write a reply..." aria-label="Reply to ${esc(who)}"><button class="btn btn-white" data-tk-send>Send</button><button class="btn btn-gray" data-tk-state>${open ? 'Mark solved' : 'Reopen'}</button></div><div class="live-result" data-tk-msg></div></div></div>`;
+        }).join('') : '<p class="muted">No messages from your customers yet. When one writes to support, it shows up here.</p>';
+      } catch (e) { list.innerHTML = `<p class="muted">${oldGuard(e, 'the support inbox')}</p>`; }
+      try {
+        const r = await guard('/reseller/problems', { params: { userId: state.userId } });
+        prob.innerHTML = r.problems.length ? `<div class="admin-list">${r.problems.map((x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.channel)}</strong> <span class="pill warn">${esc(x.reason)}</span><div class="muted">${esc(x.customers.join(', '))}</div></div><div class="admin-row-time">${x.count} ${x.count === 1 ? 'report' : 'reports'} · ${esc(timeAgo(x.last))}</div></div>`).join('')}</div><p class="muted">Several customers on one channel usually means the channel is down. One customer usually means their own connection or device.</p>`
+          : '<p class="muted">No problems reported. None of your customers reported a channel problem in the last 7 days.</p>';
+      } catch (e) { prob.innerHTML = `<p class="muted">${oldGuard(e, 'channel problems')}</p>`; }
+    };
+    $('[data-tk-list]', root).addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      const card = b.closest('[data-tk]'), id = card.dataset.tk, msg = $('[data-tk-msg]', card);
+      const bad = (t) => { msg.className = 'live-result bad'; msg.textContent = t; };
+      if (b.matches('[data-tk-send]')) {
+        const text = $('[data-tk-text]', card).value.trim(); if (!text) return bad('Write a reply first.');
+        b.disabled = true;
+        try { await guard(`/reseller/tickets/${encodeURIComponent(id)}/reply`, { method: 'POST', params: { userId: state.userId }, body: { text } }); loadSupport(); } catch (err) { b.disabled = false; bad(err.message); }
+      } else if (b.matches('[data-tk-state]')) {
+        const solve = /solved/i.test(b.textContent); b.disabled = true;
+        try { await guard(`/reseller/tickets/${encodeURIComponent(id)}/${solve ? 'solve' : 'reopen'}`, { method: 'POST', params: { userId: state.userId }, body: {} }); loadSupport(); } catch (err) { b.disabled = false; bad(err.message); }
+      }
+    });
+
+    // ----- reports
+    const loadReports = async () => {
+      const n = $('[data-rp-months]', root).value;
+      try {
+        const j = await guard('/reseller/reports', { params: { userId: state.userId, months: n } });
+        const t = j.total, sales = t.added + t.renewed;
+        $('[data-rp-kpis]', root).innerHTML = statTile('Customers', j.customers, `${j.activeNow} active now`) + statTile('Sales', sales, `${t.added} new · ${t.renewed} renewals`) + statTile('Credits used', t.used, 'in this period')
+          + statTile('Estimated income', j.pricesSet ? money(t.revenue) : '–', j.pricesSet ? `profit about ${money(t.revenue - t.cost)}` : 'set prices in Sales tools');
+        const max = Math.max(1, ...j.months.map((m) => m.added + m.renewed));
+        $('[data-rp-bars]', root).innerHTML = j.months.map((m) => { const tot = m.added + m.renewed; return `<div class="res-bcol"><span class="res-bval">${tot || ''}</span><div class="res-bstack" style="height:${Math.round(tot / max * 100)}%" title="${esc(m.label)}: ${m.added} new, ${m.renewed} renewals"><i class="seg a" style="flex:${m.added}"></i><i class="seg r" style="flex:${m.renewed}"></i></div><span class="res-blab">${esc(m.label.replace(/ \d{4}$/, ''))}</span>${j.pricesSet && m.revenue ? `<span class="res-bmoney">${money(m.revenue)}</span>` : ''}</div>`; }).join('');
+        $('[data-rp-note]', root).textContent = j.pricesSet ? 'Income is an estimate from the prices you entered.' : 'Enter your prices in Sales tools to see income.';
+      } catch (e) { $('[data-rp-kpis]', root).innerHTML = ''; $('[data-rp-bars]', root).innerHTML = `<p class="muted">${oldGuard(e, 'reports')}</p>`; }
+      try {
+        const a = await guard('/reseller/activity', { params: { userId: state.userId } });
+        $('[data-rp-activity]', root).innerHTML = a.activity.length ? a.activity.slice(0, 40).map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.text)}</div><div class="admin-row-time">${esc(timeAgo(x.at))}</div></div>`).join('') : '<p class="muted">Nothing yet.</p>';
+      } catch (e) { $('[data-rp-activity]', root).innerHTML = `<p class="muted">${oldGuard(e, 'the activity list')}</p>`; }
+    };
+    $('[data-rp-months]', root).addEventListener('change', loadReports);
+    const statementCsv = async () => {
+      const r = await guard('/reseller/ledger', { params: { userId: state.userId } });
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/^([=+\-@])/, "'$1")}"`;
+      return [['Date', 'Description', 'Customer', 'Credits', 'Balance', 'By'], ...r.ledger.map((e) => [new Date(e.at).toISOString().slice(0, 16).replace('T', ' '), e.why, e.customer || '', e.delta, e.balance, e.by])].map((row) => row.map(cell).join(',')).join('\r\n');
+    };
+    $('[data-st-copy]', root).addEventListener('click', async () => { try { copyText(await statementCsv()); } catch (e) { toast(e.message, 4000); } });
+    $('[data-st-dl]', root).addEventListener('click', async () => {
+      try {
+        const text = await statementCsv();
+        try { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/csv' })); a.download = 'aurora-credit-statement.csv'; document.body.appendChild(a); a.click(); a.remove(); toast('Downloading…', 2000); } catch { copyText(text); }
+      } catch (e) { toast(e.message, 4000); }
+    });
+
+    // ----- sales tools: trial link, prices, price list, message templates
+    const TPL_DEFAULTS = { welcome: 'Welcome to Aurora, {name}!\nUsername: {username}\nPassword: {password}\nPlan: {plan}', reminder: 'Hi {name}, your Aurora plan ends on {date} (in {days} days). Reply here to renew.', ending: 'Hi {name}, your Aurora plan ends on {date}, very soon. Reply here to renew and keep watching.', expired: 'Hi {name}, your Aurora plan ended on {date}. Reply here to renew and get back to watching.' };
+    const priceListText = () => {
+      const pr = d.prices || {}, rows = d.plans.filter((p) => pr[p.id] > 0); if (!rows.length) return '';
+      return `${d.name || 'Aurora'} · Aurora plans\n\n` + rows.map((p) => `• ${p.name} — ${p.length} ${p.unit}${p.length === 1 ? '' : 's'} · ${p.connections} ${p.connections === 1 ? 'device' : 'devices'} — ${money(pr[p.id])}`).join('\n') + '\n\nMessage me to get started.';
+    };
+    const paintMargins = () => {
+      const cc = Number($('[data-s-cc]', root)?.value) || 0;
+      $$('[data-s-m]', root).forEach((td) => { const inp = $(`[data-s-price="${td.dataset.sM}"]`, root), price = Number(inp?.value), plan = d.plans.find((p) => p.id === td.dataset.sM); td.textContent = price > 0 && cc > 0 && plan ? `margin ${money(price - plan.credits * cc)}` : ''; });
+    };
+    const paintPriceList = () => {
+      const t = priceListText();
+      $('[data-s-pl]', root).innerHTML = `<h2>Your price list</h2><p class="muted">A ready-to-send list of your plans and prices. Copy it into a text, WhatsApp or Messenger.</p>` +
+        (t ? `<textarea class="st-note-input" data-s-pltext rows="${Math.min(12, t.split('\n').length + 1)}" readonly>${esc(t)}</textarea><div class="m-actions"><button class="btn btn-white" data-s-plcopy>Copy price list</button></div>` : '<p class="muted">Enter your prices above and your price list appears here.</p>');
+    };
+    const paintSales = () => {
+      loadCoupons();
+      const tl = d.trialLink || {}, pr = d.prices || {}, tp = d.templates || {}, url = tl.code ? `${SITE}trial/?r=${tl.code}` : '';
+      $('[data-s-tl]', root).innerHTML = `<h2>Your free-trial link <span class="pill ${tl.on ? 'good' : ''}">${tl.on ? 'On' : 'Off'}</span></h2>
+        <p class="muted">Share this link. Anyone who opens it can start a free trial that lands in your customer list. Each trial uses one of your ${tl.limit || 5} free trials a day, and one email can only be used once.</p>
+        ${url ? `<input type="text" class="st-note-input" data-s-url readonly value="${esc(url)}" aria-label="Your trial link"><div class="m-actions"><button class="btn btn-white" data-s-urlcopy>Copy link</button></div>` : ''}
+        <p class="muted">${tl.made || 0} trials started with your link · ${tl.today || 0} of ${tl.limit || 5} daily trials used today</p>
+        <div class="m-actions"><button class="btn ${tl.on ? 'btn-gray' : 'btn-red'}" data-s-tlon>${tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')}</button>${tl.code ? '<button class="btn btn-gray" data-s-tlnew>Make a new link</button>' : ''}</div><div class="live-result" data-s-tlmsg></div>`;
+      $('[data-s-pr]', root).innerHTML = `<h2>Your prices</h2><p class="muted">What you charge your customers. Private, only you see it. It powers your income report and price list.</p>
+        ${d.plans.length ? d.plans.map((p) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(p.name)}</strong><div class="muted">You pay ${esc(creditsWord(p.credits))} <span data-s-m="${esc(p.id)}"></span></div></div><div class="plan-actions"><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" placeholder="Price" data-s-price="${esc(p.id)}" value="${pr[p.id] != null ? pr[p.id] : ''}" aria-label="Price for ${esc(p.name)}" style="width:7rem"></div></div>`).join('') : '<p class="muted">You have no plans to sell yet.</p>'}
+        <label class="admin-field"><span>What you pay for one credit (optional, to see profit)</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-s-cc placeholder="e.g. 8.00" value="${d.creditCost || ''}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-s-prsave>Save prices</button></div><div class="live-result" data-s-prmsg></div>`;
+      paintMargins(); paintPriceList();
+      $('[data-s-tp]', root).innerHTML = `<h2>Your messages</h2><p class="muted">Write the messages you send to customers once, then copy them in one tap. Leave a box empty for the standard wording. You can use {name} {username} {password} {plan} {date} {days}.</p>` +
+        [['welcome', 'Welcome message (after you create a customer)'], ['reminder', 'Renewal reminder'], ['ending', 'Ending very soon (3 days or less)'], ['expired', 'Expired']].map(([k, l]) => `<label class="admin-field"><span>${l}</span><textarea class="st-note-input" rows="3" maxlength="600" data-s-tpl="${k}" placeholder="${esc(TPL_DEFAULTS[k])}">${esc(tp[k] || '')}</textarea></label>`).join('') +
+        '<div class="m-actions"><button class="btn btn-red" data-s-tpsave>Save messages</button></div><div class="live-result" data-s-tpmsg></div>';
+    };
+    const say2 = (sel, html, cls = '') => { const r = $(sel, root); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    root.addEventListener('input', (e) => { if (e.target.matches('[data-s-price], [data-s-cc]')) paintMargins(); });
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b || !b.closest('[data-rp="sales"]')) return;
+      if (b.matches('[data-s-urlcopy]')) copyText($('[data-s-url]', root).value, $('[data-s-url]', root));
+      else if (b.matches('[data-s-plcopy]')) copyText($('[data-s-pltext]', root).value, $('[data-s-pltext]', root));
+      else if (b.matches('[data-s-tlon], [data-s-tlnew]')) {
+        const neu = b.matches('[data-s-tlnew]');
+        if (neu && !(await confirmAction('Make a new link?', 'The old link stops working straight away.', 'Make a new link'))) return;
+        b.disabled = true;
+        try { const r = await guard('/reseller/trial-link', { method: 'POST', params: { userId: state.userId }, body: neu ? { regenerate: true, on: true } : { on: !(d.trialLink || {}).on } }); d.trialLink = r.trialLink; paintSales(); }
+        catch (err) { b.disabled = false; say2('[data-s-tlmsg]', oldGuard(err, 'the trial link'), 'bad'); }
+      } else if (b.matches('[data-s-prsave]')) {
+        const prices = {}; $$('[data-s-price]', root).forEach((i) => { if (i.value !== '') prices[i.dataset.sPrice] = Number(i.value); });
+        b.disabled = true;
+        try { const r = await guard('/reseller/prices', { method: 'PUT', params: { userId: state.userId }, body: { prices, creditCost: $('[data-s-cc]', root).value } }); d.prices = r.prices; d.creditCost = r.creditCost; b.disabled = false; say2('[data-s-prmsg]', 'Saved.', 'good'); paintPriceList(); }
+        catch (err) { b.disabled = false; say2('[data-s-prmsg]', oldGuard(err, 'prices'), 'bad'); }
+      } else if (b.matches('[data-s-tpsave]')) {
+        const body = {}; $$('[data-s-tpl]', root).forEach((i) => { body[i.dataset.sTpl] = i.value.trim(); });
+        b.disabled = true;
+        try { const r = await guard('/reseller/templates', { method: 'PUT', params: { userId: state.userId }, body }); d.templates = r.templates; b.disabled = false; say2('[data-s-tpmsg]', 'Saved. Your messages are used when you copy a reminder or a welcome message.', 'good'); }
+        catch (err) { b.disabled = false; say2('[data-s-tpmsg]', oldGuard(err, 'message templates'), 'bad'); }
+      }
+    });
+
+    // ===== Reseller tools, part 2 (guard 1.51.0): forecast, money, messages, guides, labels, inactive, import, coupons =====
+    const gq = (path, opts = {}) => guard(path, { ...opts, params: { userId: state.userId, ...(opts.params || {}) } });
+    const retry409 = async (fn, tries = 4) => { for (let i = 0; ; i++) { try { return await fn(); } catch (e) { if (e.status !== 409 || i >= tries) throw e; await new Promise((r) => setTimeout(r, 800)); } } };
+    function paintLbl() {
+      const all = {}; d.customers.forEach((c) => (c.labels || []).forEach((l) => { all[l] = (all[l] || 0) + 1; }));
+      const box = $('[data-lblchips]', root); if (!box) return;
+      box.innerHTML = Object.keys(all).sort().map((l) => `<button class="chip${view.label === l ? ' on' : ''}" data-lbl="${esc(l)}">${esc(l)} ${all[l]}</button>`).join('');
+    }
+    root.addEventListener('click', (e) => { const b = e.target.closest('[data-lbl]'); if (!b) return; view.label = view.label === b.dataset.lbl ? '' : b.dataset.lbl; view.shown = 25; paintList(); });
+    retry409(() => gq('/reseller/inactive', { params: { days: 14 } })).then((r) => { if (!isCurrent()) return; inactiveSet = new Set((r.customers || []).map((c) => c.id)); paintList(); }).catch(() => { /* an older Guard */ });
+
+    // ----- credits forecast
+    const forecast = () => {
+      const bs = [{ label: 'Already ended', n: 0, c: 0 }, { label: 'Due this week (7 days)', n: 0, c: 0 }, { label: 'Due in 8 to 14 days', n: 0, c: 0 }, { label: 'Due in 15 to 30 days', n: 0, c: 0 }];
+      d.customers.forEach((c) => {
+        if (c.hold || !c.expires) return;
+        const cr = (d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits || 0;
+        const b = c.expired ? bs[0] : c.daysLeft <= 7 ? bs[1] : c.daysLeft <= 14 ? bs[2] : c.daysLeft <= 30 ? bs[3] : null;
+        if (b) { b.n++; b.c += cr; }
+      });
+      const n = bs.reduce((a, b) => a + b.n, 0), credits = bs.reduce((a, b) => a + b.c, 0);
+      return { bs, n, credits, short: Math.max(0, credits - d.credits) };
+    };
+    const forecastLine = (f) => f.n ? `<strong>${f.n}</strong> ${f.n === 1 ? 'renewal' : 'renewals'} due in the next 30 days (including anyone already ended) would use <strong>${creditsWord(f.credits)}</strong>. You have <strong>${d.credits}</strong>. ${f.short ? `<span class="res-low">You are ${f.short} short, so ask for more credits soon.</span>` : 'You have enough.'}` : 'Nobody is due for renewal in the next 30 days.';
+    const paintForecast = () => {
+      const f = forecast();
+      $('[data-fc]', root).innerHTML = `<h2>Credits forecast</h2><p class="muted">${forecastLine(f)}</p><div class="m-actions"><button class="btn btn-gray" data-rtab-go="money">Details</button></div>`;
+      $('[data-mfc]', root).innerHTML = `<h2>Credits forecast <small>next 30 days</small></h2><p class="muted">${forecastLine(f)}</p>${f.n ? `<div class="admin-list">${f.bs.map((b) => `<div class="admin-row"><div class="admin-row-main">${esc(b.label)}</div><div class="admin-row-time">${b.n} · ${creditsWord(b.c)}</div></div>`).join('')}</div>` : ''}`;
+    };
+    root.addEventListener('click', (e) => { const b = e.target.closest('[data-rtab-go]'); if (b) setRp(b.dataset.rtabGo); });
+    paintForecast();
+
+    // ----- money
+    const custOptions = (keep) => d.customers.slice().sort((a, b) => String(a.full || a.name).localeCompare(String(b.full || b.name))).map((c) => `<option value="${esc(c.id)}"${c.id === keep ? ' selected' : ''}>${esc(c.full || c.name)} (${esc(c.name)})</option>`).join('') || '<option value="">No customers yet</option>';
+    const loadMoney = async () => {
+      paintForecast();
+      const sel = $('[data-pm-cust]', root); if (sel && !sel.options.length) sel.innerHTML = custOptions();
+      try {
+        const r = await retry409(() => gq('/reseller/payments', { params: { months: 3 } }));
+        const key = new Date().toISOString().slice(0, 7), cur = (r.months || []).find((m) => m.key === key) || { paid: 0 };
+        const bd = $('[data-moneybadge]', root); bd.textContent = (r.owed || []).length || ''; bd.classList.toggle('hidden', !(r.owed || []).length);
+        $('[data-mkpis]', root).innerHTML = statTile('Received this month', money(cur.paid), 'cash you recorded') + statTile('Still owed to you', money(r.owedTotal), `${(r.owed || []).length} ${(r.owed || []).length === 1 ? 'customer' : 'customers'}`) + statTile('Payments recorded', (r.payments || []).length, 'last 3 months');
+        $('[data-pm-owed]', root).innerHTML = `<h2>Who owes you</h2>${(r.owed || []).length ? `<div class="admin-list">${r.owed.map((o) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(o.full || o.name)}</strong><div class="muted">${esc(o.name)} · since ${esc(timeAgo(o.since))}</div></div><div class="admin-row-time"><strong>${esc(money(o.amount))}</strong></div></div>`).join('')}</div>` : '<p class="muted">Nobody owes you anything. Save an amount as "Still owes" when someone has not paid yet.</p>'}`;
+        $('[data-pm-list]', root).innerHTML = (r.payments || []).slice(0, 40).map((x) => `<div class="admin-row" data-pid="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.name)}</strong> <span class="pill ${x.paid ? 'good' : 'warn'}">${x.paid ? 'Paid' : 'Owes'}</span><div class="muted">${esc(money(x.amount))}${x.method ? ' · ' + esc(x.method) : ''}${x.note ? ' · ' + esc(x.note) : ''} · ${esc(timeAgo(x.at))}</div></div><div class="plan-actions">${x.paid ? '' : '<button class="btn btn-gray" data-pm-paid>Mark paid</button>'}<button class="btn btn-gray" data-pm-del>Delete</button></div></div>`).join('') || '<p class="muted">No payments recorded yet.</p>';
+      } catch (e) { $('[data-pm-list]', root).innerHTML = `<p class="muted">${oldGuard(e, 'the money page')}</p>`; }
+    };
+    $('[data-pm-cust]', root).addEventListener('change', () => { const c = d.customers.find((x) => x.id === $('[data-pm-cust]', root).value), pr = c && (d.prices || {})[c.planId]; if (pr) $('[data-pm-amt]', root).value = pr; });
+    $('[data-pm-save]', root).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const id = $('[data-pm-cust]', root).value, amt = Number($('[data-pm-amt]', root).value);
+      if (!id) { say2('[data-pm-msg]', 'Choose a customer first.', 'bad'); return; }
+      if (!(amt > 0)) { say2('[data-pm-msg]', 'Enter the amount.', 'bad'); return; }
+      btn.disabled = true;
+      try { await gq(`/reseller/customers/${encodeURIComponent(id)}/payments`, { method: 'POST', body: { amount: amt, paid: $('[data-pm-st]', root).value === 'paid', method: $('[data-pm-me]', root).value, note: $('[data-pm-no]', root).value.trim() } }); say2('[data-pm-msg]', 'Saved.', 'good'); $('[data-pm-amt]', root).value = ''; $('[data-pm-no]', root).value = ''; loadMoney(); }
+      catch (err) { say2('[data-pm-msg]', oldGuard(err, 'payments'), 'bad'); }
+      btn.disabled = false;
+    });
+    $('[data-pm-list]', root).addEventListener('click', async (e) => {
+      const row = e.target.closest('[data-pid]'); if (!row) return; const id = row.dataset.pid;
+      try {
+        if (e.target.closest('[data-pm-paid]')) { await gq(`/reseller/payments/${encodeURIComponent(id)}/paid`, { method: 'POST', body: { paid: true } }); loadMoney(); }
+        else if (e.target.closest('[data-pm-del]')) { if (!(await confirmAction('Delete this payment record?', 'This only removes your own note of it.', 'Delete'))) return; await gq(`/reseller/payments/${encodeURIComponent(id)}`, { method: 'DELETE' }); loadMoney(); }
+      } catch (err) { toast(err.message, 4000); }
+    });
+
+    // ----- messages to chosen customers
+    const MS_TPL = [['We miss you', 'Hi! We noticed you have not watched Aurora in a while. Is anything wrong? Reply and I will help.'], ['Maintenance', 'Heads up: Aurora may be slow for a few minutes tonight while we do maintenance. Thanks for your patience.'], ['New channels', 'Good news: new channels were just added to Aurora. Restart the app to see them.'], ['Renew soon', 'Your Aurora plan ends soon. Reply here when you are ready to renew.']];
+    let msPick = {};
+    const msRows = () => {
+      const f = $('[data-ms-filter]', root).value || 'all';
+      return d.customers.filter((c) => f === 'all' ? true : f === 'inact' ? !!inactiveSet && inactiveSet.has(c.id) : f.startsWith('l:') ? (c.labels || []).includes(f.slice(2)) : f === 'on' ? ['active', 'soon'].includes(statusOf(c).k) : statusOf(c).k === f);
+    };
+    const paintMsList = () => {
+      const rows = msRows(), n = Object.keys(msPick).filter((k) => msPick[k]).length;
+      $('[data-ms-list]', root).innerHTML = rows.slice(0, 200).map((c) => `<label class="admin-row need-row"><input type="checkbox" data-ms-id="${esc(c.id)}"${msPick[c.id] ? ' checked' : ''}><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(statusOf(c).label)}</span><div class="muted">${esc(c.name)}</div></div></label>`).join('') || '<p class="muted">Nobody matches.</p>';
+      $('[data-ms-send]', root).textContent = n ? `Send to ${n} ${n === 1 ? 'customer' : 'customers'}` : 'Send message';
+    };
+    const paintMsgs = async () => {
+      const f = $('[data-ms-filter]', root), keep = f.value, labels = [...new Set(d.customers.flatMap((c) => c.labels || []))].sort();
+      f.innerHTML = '<option value="all">Everyone</option><option value="on">Active</option><option value="soon">Ending soon</option><option value="expired">Expired</option><option value="trial">On a trial</option><option value="inact">Inactive 14 days</option>' + labels.map((l) => `<option value="l:${esc(l)}">Label: ${esc(l)}</option>`).join('');
+      if (keep) f.value = keep;
+      $('[data-ms-tpl]', root).innerHTML = MS_TPL.map((t, i) => `<button class="chip" data-ms-t="${i}">${esc(t[0])}</button>`).join('');
+      paintMsList();
+      try {
+        const r = await retry409(() => gq('/reseller/messages'));
+        $('[data-ms-sent]', root).innerHTML = (r.sent || []).map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.text)}<div class="muted">to ${x.count} ${x.count === 1 ? 'customer' : 'customers'} · ${esc(timeAgo(x.at))}</div></div></div>`).join('') || '<p class="muted">Nothing sent yet.</p>';
+      } catch (e) { $('[data-ms-sent]', root).innerHTML = `<p class="muted">${oldGuard(e, 'messages')}</p>`; }
+    };
+    $('[data-ms-filter]', root).addEventListener('change', paintMsList);
+    $('[data-ms-list]', root).addEventListener('change', (e) => { const id = e.target.dataset.msId; if (id) { msPick[id] = e.target.checked; paintMsList(); } });
+    $('[data-ms-all]', root).addEventListener('click', () => { msRows().forEach((c) => { msPick[c.id] = true; }); paintMsList(); });
+    $('[data-ms-none]', root).addEventListener('click', () => { msPick = {}; paintMsList(); });
+    $('[data-ms-tpl]', root).addEventListener('click', (e) => { const b = e.target.closest('[data-ms-t]'); if (b) $('[data-ms-text]', root).value = MS_TPL[Number(b.dataset.msT)][1]; });
+    $('[data-ms-send]', root).addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const ids = Object.keys(msPick).filter((k) => msPick[k]), text = $('[data-ms-text]', root).value.trim();
+      if (!ids.length) { say2('[data-ms-msg]', 'Choose at least one customer.', 'bad'); return; }
+      if (!text) { say2('[data-ms-msg]', 'Write the message first.', 'bad'); return; }
+      if (ids.length > 40) { say2('[data-ms-msg]', 'You can send to up to 40 customers at a time.', 'bad'); return; }
+      btn.disabled = true;
+      try { const r = await gq('/reseller/messages', { method: 'POST', body: { ids, text } }); say2('[data-ms-msg]', `Sent to ${r.sent} ${r.sent === 1 ? 'customer' : 'customers'}.`, 'good'); $('[data-ms-text]', root).value = ''; msPick = {}; paintMsgs(); }
+      catch (err) { say2('[data-ms-msg]', oldGuard(err, 'messages'), 'bad'); }
+      btn.disabled = false;
+    });
+
+    // ----- setup guides
+    const GUIDES = {
+      firetv: ['Fire TV Stick or Android TV', ['On the TV, open the app store and install the free "Downloader" app.', 'Open Downloader and type this code: 3643447, then press Go.', 'Choose Install, then Open.', 'Sign in with your username and password.', 'Older Fire Stick 4K (1st generation)? Use Aurora Lite instead: in Downloader type aurora-streaming.org/lite']],
+      android: ['Android phone or tablet', ['Open this link on the phone: https://david-hall.b-cdn.net/Aurora.apk/Aurora%20(6).apk', 'Open the downloaded file and allow "install from this source" if asked.', 'Open Aurora and sign in with your username and password.']],
+      iphone: ['iPhone or iPad', ['Install the free TestFlight app from the App Store.', 'Open this link on the iPhone: https://testflight.apple.com/join/appxqJyp', 'Tap Accept, then Install, then Open.', 'Sign in with your username and password.']],
+      windows: ['Windows laptop or PC', ['Download the Aurora installer: https://aurora-streaming.org/windows', 'Open it. If Windows says "Windows protected your PC", choose More info, then Run anyway.', 'Aurora opens by itself. Sign in with your username and password.', 'Aurora updates itself. Press F11 for full screen.']],
+      web: ['Web browser', ['Open https://aurora-streaming.org/app/ in Chrome, Edge or Safari.', 'Sign in with your username and password.', 'In Chrome or Edge, open Settings in Aurora and press Install to add it as an app.']],
+      lite: ['Aurora Lite (older devices)', ['For older Android 7 devices and the Fire TV Stick 4K (1st generation).', 'In the Downloader app, type: aurora-streaming.org/lite', 'Choose Install, then Open.', 'Sign in with your username and password.']]
+    };
+    let gdKey = 'firetv';
+    const guideText = () => {
+      const g = GUIDES[gdKey], c = d.customers.find((x) => x.id === $('[data-gd-cust]', root).value);
+      return `Aurora setup: ${g[0]}\n\n${g[1].map((t, i) => `${i + 1}. ${t}`).join('\n')}${c ? `\n\nYour username: ${c.name}\n(Your password is the one I sent you.)` : ''}\n\nNeed help? Just reply to me.`;
+    };
+    const paintGuides = () => {
+      $('[data-gd-tabs]', root).innerHTML = Object.keys(GUIDES).map((k) => `<button class="chip${gdKey === k ? ' on' : ''}" data-gd-k="${k}">${esc(GUIDES[k][0])}</button>`).join('');
+      const sel = $('[data-gd-cust]', root), keep = sel.value;
+      sel.innerHTML = '<option value="">No one in particular</option>' + custOptions(keep); if (keep) sel.value = keep;
+      $('[data-gd-text]', root).value = guideText();
+    };
+    $('[data-gd-tabs]', root).addEventListener('click', (e) => { const b = e.target.closest('[data-gd-k]'); if (b) { gdKey = b.dataset.gdK; paintGuides(); } });
+    $('[data-gd-cust]', root).addEventListener('change', () => { $('[data-gd-text]', root).value = guideText(); });
+    $('[data-gd-copy]', root).addEventListener('click', () => copyText($('[data-gd-text]', root).value, $('[data-gd-text]', root)));
+    $('[data-gd-link]', root).addEventListener('click', () => copyText(`${SITE}setup/#${gdKey}`));
+
+    // ----- import many customers
+    let impRows = [];
+    const splitLine = (line, dl) => { const out = []; let cur = '', q = false; for (let i = 0; i < line.length; i++) { const ch = line[i]; if (q) { if (ch === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (ch === '"') q = false; else cur += ch; } else if (ch === '"') q = true; else if (ch === dl) { out.push(cur.trim()); cur = ''; } else cur += ch; } out.push(cur.trim()); return out; };
+    const parseImport = (text) => {
+      let lines = String(text || '').split(/\r?\n/).filter((l) => l.trim()); if (!lines.length) return [];
+      const dl = lines[0].includes('\t') ? '\t' : (lines[0].split(';').length > lines[0].split(',').length ? ';' : ',');
+      const first = splitLine(lines[0], dl).map((x) => x.toLowerCase());
+      const header = first.some((x) => ['name', 'full name', 'fullname', 'email', 'phone', 'note', 'username', 'user'].includes(x)) && !first.some((x) => x.includes('@'));
+      let idx = { full: 0, email: 1, phone: 2, note: 3, username: -1 };
+      if (header) { idx = { full: -1, email: -1, phone: -1, note: -1, username: -1 }; first.forEach((h, i) => { if (['name', 'full name', 'fullname'].includes(h)) idx.full = i; else if (h === 'email') idx.email = i; else if (h === 'phone') idx.phone = i; else if (h === 'note') idx.note = i; else if (['username', 'user'].includes(h)) idx.username = i; }); lines = lines.slice(1); }
+      return lines.slice(0, 200).map((l) => { const c = splitLine(l, dl), g = (i) => (i >= 0 && c[i] ? c[i] : ''); return { full: g(idx.full), email: g(idx.email), phone: g(idx.phone), note: g(idx.note), username: g(idx.username) }; }).filter((r) => r.full || r.email || r.username);
+    };
+    $('[data-imp-file]', root).addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => { $('[data-imp-text]', root).value = String(r.result || ''); $('[data-imp-check]', root).click(); }; r.readAsText(f); });
+    $('[data-imp-text]', root).addEventListener('input', () => { $('[data-imp-go]', root).disabled = true; });
+    $('[data-imp-check]', root).addEventListener('click', () => {
+      impRows = parseImport($('[data-imp-text]', root).value); $('[data-imp-res]', root).innerHTML = '';
+      const plan = d.plans.find((p) => p.id === $('[data-imp-plan]', root).value);
+      if (!impRows.length) { $('[data-imp-go]', root).disabled = true; $('[data-imp-prev]', root).textContent = ''; say2('[data-imp-msg]', 'Nothing to import yet. Paste your rows above.', 'bad'); return; }
+      const n = Math.min(impRows.length, 50), cost = (plan?.credits || 0) * n;
+      $('[data-imp-prev]', root).innerHTML = `<strong>${impRows.length} rows found.</strong> ${impRows.length > 50 ? 'Only the first 50 are imported at a time. ' : ''}This will use ${esc(creditsWord(cost))} (you have ${d.credits}).<br>${impRows.slice(0, 5).map((r) => esc([r.full || r.username, r.email, r.phone].filter(Boolean).join(' · '))).join('<br>')}${impRows.length > 5 ? `<br>and ${impRows.length - 5} more` : ''}`;
+      $('[data-imp-go]', root).disabled = !plan || cost > d.credits; say2('[data-imp-msg]', cost > d.credits ? 'Not enough credits for all of them.' : '', 'bad');
+    });
+    $('[data-imp-go]', root).addEventListener('click', async (e) => {
+      if (!impRows.length) return; const b = e.currentTarget; b.disabled = true; say2('[data-imp-msg]', 'Importing... this takes a few seconds.');
+      try {
+        const r = await gq('/reseller/import', { method: 'POST', body: { planId: $('[data-imp-plan]', root).value, rows: impRows.slice(0, 50) } });
+        say2('[data-imp-msg]', `Created ${r.created} ${r.created === 1 ? 'customer' : 'customers'}${r.failed ? `, ${r.failed} could not be created.` : '.'}`, r.failed ? 'bad' : 'good');
+        const res = r.results || [];
+        $('[data-imp-res]', root).innerHTML = `<div class="admin-list">${res.map((x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.username || '')}</strong><div class="muted">${x.ok ? 'Password: ' + esc(x.password) : esc(x.error)}</div></div></div>`).join('')}</div><div class="m-actions"><button class="btn btn-gray" data-imp-copy>Copy all logins</button></div>`;
+        $('[data-imp-copy]', root).addEventListener('click', () => copyText(res.filter((x) => x.ok).map((x) => `${x.full || x.username}\nUsername: ${x.username}\nPassword: ${x.password}`).join('\n\n')));
+        d.credits = r.credits ?? d.credits; impRows = []; $('[data-imp-text]', root).value = '';
+      } catch (err) { b.disabled = false; say2('[data-imp-msg]', oldGuard(err, 'import'), 'bad'); }
+    });
+
+    // ----- coupons (Sales tools)
+    const loadCoupons = async () => {
+      const box = $('[data-s-cp]', root);
+      try {
+        const r = await retry409(() => gq('/reseller/coupons')), list = r.coupons || [];
+        box.innerHTML = `<h2>Coupons for your customers</h2><p class="muted">Make a discount code and send it to a customer. They type it on their account page when they ask for more time, and you see the discounted price on their request (on the website panel).</p>
+          <div class="plan-grid"><label class="admin-field"><span>Code (blank = make one)</span><input type="text" class="st-note-input" data-cp-code maxlength="20" autocapitalize="characters" placeholder="WELCOME10"></label>
+          <label class="admin-field"><span>Discount</span><select data-cp-type><option value="percent">Percent off</option><option value="amount">Money off</option></select></label>
+          <label class="admin-field"><span>Amount</span><input type="number" class="st-note-input" data-cp-val min="0" step="0.01" inputmode="decimal" placeholder="10"></label>
+          <label class="admin-field"><span>Most uses (optional)</span><input type="number" class="st-note-input" data-cp-max min="0" inputmode="numeric"></label></div>
+          <div class="m-actions"><button class="btn btn-red" data-cp-make>Make coupon</button></div><div class="live-result" data-cp-msg></div>
+          <div class="admin-list">${list.map((c) => `<div class="admin-row" data-cid="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.code)}</strong> ${c.on === false ? '<span class="pill bad">Off</span>' : ''}<div class="muted">${c.type === 'percent' ? c.value + '% off' : esc(money(c.value)) + ' off'} · used ${c.used || 0}${c.max ? ' of ' + c.max : ''}${c.expires ? ' · ends ' + esc(fmtDay(c.expires)) : ''}</div></div><div class="plan-actions"><button class="btn btn-gray" data-cp-copy>Copy</button><button class="btn btn-gray" data-cp-tog>${c.on === false ? 'Turn on' : 'Turn off'}</button><button class="btn btn-gray" data-cp-del>Delete</button></div></div>`).join('') || '<p class="muted">No coupons yet.</p>'}</div>`;
+      } catch (e) { box.innerHTML = `<h2>Coupons</h2><p class="muted">${oldGuard(e, 'coupons')}</p>`; }
+    };
+    $('[data-s-cp]', root).addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return; const row = b.closest('[data-cid]'), id = row?.dataset.cid;
+      try {
+        if (b.matches('[data-cp-make]')) { b.disabled = true; await gq('/reseller/coupons', { method: 'POST', body: { code: $('[data-cp-code]', root).value.trim(), type: $('[data-cp-type]', root).value, value: Number($('[data-cp-val]', root).value), max: Number($('[data-cp-max]', root).value) || 0 } }); loadCoupons(); }
+        else if (b.matches('[data-cp-copy]')) copyText($('strong', row).textContent);
+        else if (b.matches('[data-cp-tog]')) { await gq(`/reseller/coupons/${encodeURIComponent(id)}/toggle`, { method: 'POST', body: {} }); loadCoupons(); }
+        else if (b.matches('[data-cp-del]')) { if (!(await confirmAction('Delete this coupon?', 'The code stops working straight away.', 'Delete'))) return; await gq(`/reseller/coupons/${encodeURIComponent(id)}`, { method: 'DELETE' }); loadCoupons(); }
+      } catch (err) { b.disabled = false; say2('[data-cp-msg]', esc(err.message), 'bad'); }
+    });
+    setRp((() => { try { return store.get('ef.resTab') || 'overview'; } catch { return 'overview'; } })());
+  }
+
+  // ----- Extension requests (Admin -> Users) -----
+  const EXT_DAYS = [[7, '7 days'], [14, '14 days'], [30, '30 days'], [60, '60 days'], [90, '90 days'], [180, '6 months'], [365, '1 year']];
+  function extensionsCardHtml(ext, plans) {
+    if (!ext || (!ext.pending?.length && !ext.decided?.length)) return '';
+    const row = (x) => `<div class="admin-row ext-row" data-ext="${esc(x.id)}"><div class="admin-row-main">
+        <strong>${esc(x.name)}</strong> <span class="pill warn">Asked for more time</span>${x.resellerName ? ` <span class="pill">Reseller: ${esc(x.resellerName)}${x.needsAdmin === false ? ' is handling it' : ' (suspended)'}</span>` : ''}
+        <div class="muted">${x.currentExpires ? `Ends ${esc(fmtDay(x.currentExpires))}${isExpired({ expires: x.currentExpires }) ? ' (expired)' : ''}` : 'No end date set'} · asked ${esc(timeAgo(x.at))}</div>
+        ${x.wantedPlanName ? `<div class="ext-note">Wants: ${esc(x.wantedPlanName)}</div>` : ''}
+        ${x.note ? `<div class="ext-note">"${esc(x.note)}"</div>` : ''}
+        <div class="ext-actions">
+          <select data-ext-days aria-label="Extend by">${(plans || []).length ? `<optgroup label="Renew with a plan">${planOptions(plans, x.wantedPlanId || '').replace(/value="([^"]+)"/g, 'value="plan:$1"')}</optgroup><optgroup label="Or just add time">` : ''}${EXT_DAYS.map(([d, l]) => `<option value="${d}"${d === 30 && !x.wantedPlanId ? ' selected' : ''}>${l}</option>`).join('')}${(plans || []).length ? '</optgroup>' : ''}</select>
+          <button class="btn btn-white" data-ext-approve>Approve</button>
+          <button class="btn btn-gray" data-ext-deny>Deny</button>
+        </div></div></div>`;
+    const done = (x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> ${x.status === 'approved' ? `<span class="pill">Approved</span> ${x.planName ? esc(x.planName) : x.days + ' days'}, ends ${esc(fmtDay(x.newExpires))}` : '<span class="pill bad">Denied</span>'}</div>
+        <div class="admin-row-time">${esc(timeAgo(x.decidedAt))}</div></div>`;
+    return `<section class="admin-card ext-card">
+      <h2>Extension requests <small>${ext.pending.filter((x) => x.needsAdmin !== false).length ? `${ext.pending.filter((x) => x.needsAdmin !== false).length} waiting for you` : 'None waiting for you'}${ext.pending.some((x) => x.needsAdmin === false) ? ` · ${ext.pending.filter((x) => x.needsAdmin === false).length} with resellers` : ''}</small></h2>
+      <div class="admin-list">${ext.pending.map(row).join('') || '<p class="muted">Nobody is waiting for an answer.</p>'}</div>
+      ${ext.decided.length ? `<details class="conn-list"><summary>Recent decisions</summary><div class="admin-list">${ext.decided.slice(0, 10).map(done).join('')}</div></details>` : ''}
+    </section>`;
+  }
+  function bindExtensions(body, isCurrent) {
+    $$('[data-ext]', body).forEach((rowEl) => {
+      const id = rowEl.dataset.ext;
+      const decide = async (action, btn) => {
+        $$('button', rowEl).forEach((b) => { b.disabled = true; });
+        try {
+          const pick = $('[data-ext-days]', rowEl).value;
+          const r = await guard(`/extensions/${encodeURIComponent(id)}`, { method: 'PUT', body: pick.startsWith('plan:') ? { action, planId: pick.slice(5) } : { action, days: Number(pick) } });
+          toast(action === 'approve' ? `Approved: now ends ${fmtDay(r.request.newExpires)}` : 'Denied', 3000);
+        } catch (e) { toast(e.status === 404 ? 'Update Aurora Guard to 1.4.0 first.' : e.message, 5000); }
+        if (isCurrent()) adminUsers(body, isCurrent);
+      };
+      $('[data-ext-approve]', rowEl).addEventListener('click', (e) => decide('approve', e.currentTarget));
+      $('[data-ext-deny]', rowEl).addEventListener('click', (e) => decide('deny', e.currentTarget));
+    });
+  }
+
+  // Administrators and moderators in one place: who they are, remove them, add an account as either at any time (guard 1.35.0).
+  function staffCardHtml(rows) {
+    const admins = rows.filter((r) => r.u.Policy?.IsAdministrator), mods = rows.filter((r) => !r.u.Policy?.IsAdministrator && r.lim?.mod);
+    const pickable = rows.filter((r) => !r.u.Policy?.IsAdministrator && !r.lim?.mod && !r.u.Policy?.IsDisabled);
+    const line = (r, kind) => `<div class="admin-row" data-staff="${esc(r.u.Id)}" data-kind="${kind}"><div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> <span class="pill">${kind === 'admin' ? 'Administrator' : 'Moderator'}</span></div>
+      <div class="plan-actions">${kind === 'admin' && r.u.Id === state.userId ? '<span class="muted">You</span>' : '<button class="btn btn-gray" data-staff-remove>Remove</button>'}</div></div>`;
+    return `<section class="admin-card"><h2>Admins and moderators <small>${admins.length + mods.length}</small></h2>
+      <p class="muted">Administrators see the whole Admin menu. Moderators only answer customers and look at problems. Add an account as either one at any time, and remove it again here.</p>
+      <div class="admin-list" data-staff-list>${admins.map((r) => line(r, 'admin')).join('')}${mods.map((r) => line(r, 'mod')).join('') || ''}</div>
+      <div class="plan-grid"><label class="admin-field"><span>Account</span><select data-staff-user><option value="">Choose an account</option>${pickable.sort((a, b) => a.u.Name.localeCompare(b.u.Name)).map((r) => `<option value="${esc(r.u.Id)}">${esc(r.u.Name)}</option>`).join('')}</select></label>
+        <label class="admin-field"><span>Make them</span><select data-staff-role><option value="mod">A moderator</option><option value="admin">An administrator</option></select></label></div>
+      <div class="m-actions"><button class="btn btn-white" data-staff-add>Add</button></div><div class="live-result" data-staff-result></div></section>`;
+  }
+  // Clean up old accounts: preview the customers whose end date passed N days ago, then remove the ones that are ticked.
+  function bindCleanup(body, isCurrent) {
+    const card = $('[data-cleanup]', body); if (!card) return;
+    const list = $('[data-cleanup-list]', card), out = $('[data-cleanup-result]', card);
+    const say = (html, cls = '') => { out.hidden = !html; out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+    let days = 30;
+    const find = async () => {
+      days = Number($('[data-cleanup-days]', card).value) || 30; say(''); list.innerHTML = '<p class="muted">Looking...</p>';
+      let r;
+      try { r = await guardWithPin(`/limits/expired?days=${days}`); } catch (e) { list.innerHTML = ''; say(e.status === 404 ? 'Update Aurora Guard to 1.38.0 first.' : esc(e.message), 'bad'); return; }
+      if (!isCurrent()) return;
+      const users = r.users || [];
+      if (!users.length) { list.innerHTML = '<p class="muted">No accounts ended that long ago.</p>'; return; }
+      list.innerHTML = `<p class="muted"><strong data-cleanup-count></strong> <button class="btn btn-gray" data-cleanup-all="1">Tick all</button> <button class="btn btn-gray" data-cleanup-all="0">Untick all</button></p>
+        <div class="admin-list">${users.map((u) => `<label class="admin-row"><div class="admin-row-main"><input type="checkbox" data-cleanup-id="${esc(u.id)}" checked> <strong>${esc(u.name)}</strong> ·
+          ended ${esc(u.expires)} (${u.daysAgo} days ago)${u.trial ? ' · trial' : ''}${u.reseller ? ' · ' + esc(u.reseller) + "'s customer" : ''}</div></label>`).join('')}</div>
+        <button class="btn btn-red" data-cleanup-go>Remove the ticked accounts</button>`;
+      const boxes = () => $$('[data-cleanup-id]', list);
+      const count = () => { const n = boxes().filter((b) => b.checked).length; $('[data-cleanup-count]', list).textContent = `${n} of ${users.length} ticked`; $('[data-cleanup-go]', list).disabled = !n; };
+      list.addEventListener('change', count);
+      $$('[data-cleanup-all]', list).forEach((b) => b.addEventListener('click', () => { boxes().forEach((x) => { x.checked = b.dataset.cleanupAll === '1'; }); count(); }));
+      count();
+      $('[data-cleanup-go]', list).addEventListener('click', async () => {
+        const ids = boxes().filter((b) => b.checked).map((b) => b.dataset.cleanupId); if (!ids.length) return;
+        if (!(await confirmAction(`Remove ${ids.length} account${ids.length === 1 ? '' : 's'} for good?`, 'Their watch history, My List and settings go too. This cannot be undone, and credits are not refunded.', `Remove ${ids.length}`))) return;
+        try {
+          const res = await guardWithPin('/limits/expired', { method: 'POST', body: { days, ids } });
+          toast(`${res.deleted} account${res.deleted === 1 ? '' : 's'} removed`, 3500);
+          if (isCurrent()) adminUsers(body, isCurrent);
+          if (res.failed?.length) say(`${res.failed.length} could not be removed: ${esc(res.failed.map((f) => f.name || f.id).join(', '))}`, 'bad');
+        } catch (e) { say(esc(e.message), 'bad'); }
+      });
+    };
+    $('[data-cleanup-find]', card).addEventListener('click', find);
+  }
+  function bindStaffCard(body, rows, isCurrent) {
+    const out = $('[data-staff-result]', body); if (!out) return;
+    const say = (html, cls = '') => { out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+    const set = async (id, kind, on) => {
+      const name = rows.find((r) => r.u.Id === id)?.u.Name || 'That account';
+      if (kind === 'admin' && on && !(await confirmAction(`Make ${name} an administrator?`, 'They get the whole Admin menu and can change almost anything. Only do this for someone you trust.', 'Make administrator'))) return;
+      if (kind === 'admin' && !on && !(await confirmAction(`Remove ${name} as an administrator?`, 'They become an ordinary account again and lose the Admin menu.', 'Remove'))) return;
+      try {
+        if (kind === 'admin') await guardWithPin(`/limits/${id}/admin`, { method: 'PUT', body: { on } });
+        else await guard(`/limits/${id}/mod`, { method: 'PUT', body: { on } });
+        toast(on ? `${name} added` : `${name} removed`, 2500);
+        if (isCurrent()) adminUsers(body, isCurrent);
+      } catch (e) { say(e.status === 404 ? 'Update Aurora Guard to 1.35.0 first.' : esc(e.message), 'bad'); }
+    };
+    $('[data-staff-add]', body).addEventListener('click', () => {
+      const id = $('[data-staff-user]', body).value, role = $('[data-staff-role]', body).value;
+      if (!id) { say('Choose an account first.', 'bad'); return; }
+      set(id, role, true);
+    });
+    $$('[data-staff-remove]', body).forEach((b) => b.addEventListener('click', () => { const row = b.closest('[data-staff]'); set(row.dataset.staff, row.dataset.kind, false); }));
+  }
+  async function adminUsers(body, isCurrent) {
+    if (guardEnabled) { const gate = await pinGate(body, isCurrent, 'Users', () => adminUsers(body, isCurrent)); if (!isCurrent() || gate.locked) return; }
+    const params = new URLSearchParams(location.hash.split('?')[1] || '');
+    if (params.get('user') === 'new') return adminUserNew(body, isCurrent);
+    if (params.get('user')) return adminUserDetail(body, isCurrent, params.get('user'));
+    if (!(await embyAdminCheck(body)) || !isCurrent()) return;
+    let users, sessions, g = null, guardError = null;
+    try {
+      [users, sessions] = await Promise.all([api('/Users'), api('/Sessions', { params: { ActiveWithinSeconds: ACTIVE_WINDOW / 1000 } }).catch(() => [])]);
+      users = users || [];
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { if (e.status === 423) { if (isCurrent()) showPinPad(body, isCurrent, 'Users', () => adminUsers(body, isCurrent)); return; } guardError = e; } }
+    const ext = g ? await guard('/extensions').catch(() => null) : null;
+    const planList = g ? (await guard('/plans').catch(() => null))?.plans || [] : [];
+    if (!isCurrent()) return;
+    // Once only (the guard remembers): any account can write its own display preferences, so values found
+    // there later must not be trusted.
+    let moved = [];
+    if (g && !g.migrated) {
+      moved = await moveOldLimits(users, g.users).catch(() => []);
+      await guard('/migrated', { method: 'PUT' }).catch(() => {});
+    }
+    if (!isCurrent()) return;
+    const limits = new Map(users.map((u) => [u.Id, g?.users?.[u.Id] || null]));
+    // Live device counts straight from the guard (GET /status/users, guard 1.2.0+): the same count it enforces with,
+    // and it names the devices. An older or unreachable guard just means the count is worked out here from Emby.
+    let live = null;
+    if (g) live = await guard('/status/users').catch(() => null);
+    const actions = g ? (await guard('/actions').catch(() => ({ actions: [] }))).actions : [];
+    if (!isCurrent()) return;
+    const inUse = new Map();
+    for (const se of Array.isArray(sessions) ? sessions : []) {
+      if (!se.UserId || !se.DeviceId || Date.now() - Date.parse(se.LastActivityDate || 0) > ACTIVE_WINDOW) continue;
+      if (!inUse.has(se.UserId)) inUse.set(se.UserId, new Set());
+      inUse.get(se.UserId).add(se.DeviceId);
+    }
+    const liveOf = (data, id) => (data ? (data.users || []).find((x) => x.userId === id) || { activeDevices: 0, over: false, devices: [], limit: undefined } : null);
+    const rows = users.map((u) => {
+      const lim = limits.get(u.Id), st = userStatus(u, lim), exempt = exemptFromLimits(u);
+      return { u, lim, st, exempt, devices: inUse.get(u.Id)?.size || 0, live: exempt ? null : liveOf(live, u.Id), search: (u.Name || '').toLowerCase() };
+    }).sort((a, b) => (a.u.Name || '').localeCompare(b.u.Name || ''));
+    // What a row says about devices. With the guard's live data: "2 of 2 devices in use · Pixel, TV", and a red
+    // "Over limit" when there are more than allowed.
+    const liveHtml = (r) => {
+      const n = r.live ? r.live.activeDevices : r.devices, word = n === 1 ? 'device' : 'devices';
+      if (r.exempt || !guardEnabled) return `${n} ${word} in use`;
+      const limit = r.live?.limit || r.lim?.limit || g?.defaultLimit || DEFAULT_DEVICE_LIMIT;
+      const names = r.live?.devices?.length ? ' · ' + esc(r.live.devices.map((d) => d.name + (d.playing ? ' (playing)' : '')).join(', ')) : '';
+      return `${n} of ${limit} devices in use${r.live?.over ? ' <span class="pill bad">Over limit</span>' : ''}${names}`;
+    };
+    const summaryText = (data) => {
+      if (!data) return '';
+      const t = data.totals || {};
+      return `Live from Aurora Guard: ${t.activeDevices || 0} ${t.activeDevices === 1 ? 'device' : 'devices'} in use across ${t.accounts || 0} ${t.accounts === 1 ? 'account' : 'accounts'}`
+        + `${t.over ? ` · ${t.over} over the limit` : ' · none over the limit'} · updated ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`;
+    };
+    const counts = { all: rows.length, active: 0, disabled: 0, expired: 0 };
+    rows.forEach((r) => { counts[r.st]++; });
+    const filters = guardEnabled ? ['all', 'active', 'disabled', 'expired'] : ['all', 'active', 'disabled'];
+    let filter = store.get('ef.usersFilter') || 'all', query = '';
+    if (!filters.includes(filter)) filter = 'all';
+    body.innerHTML = `
+      ${extensionsCardHtml(ext, planList)}
+      ${guardEnabled && !guardError ? staffCardHtml(rows) : ''}
+      ${guardEnabled && !guardError && iptv.config?.type === 'xtream' && iptvOn() ? `<section class="admin-card">
+        <h2>Provider movies and TV <small>${rows.filter((r) => !r.exempt && r.lim?.vod).length} of ${rows.filter((r) => !r.exempt).length} customers</small></h2>
+        <p class="muted">Switch it on or off for one customer on their page, or for a plan in Admin → Plans. Here you can change everyone at once.</p>
+        <div class="m-actions"><button class="btn btn-gray" data-vod-all="1">Turn on for everyone</button><button class="btn btn-gray" data-vod-all="0">Turn off for everyone</button></div>
+        <div class="live-result" data-vod-all-result></div>
+      </section>` : ''}
+      <section class="admin-card">
+        <div class="users-head">
+          <h2>Users <small>${rows.length}</small></h2>
+          <span class="osd-spacer"></span>
+          ${guardEnabled && !guardError ? '<button class="btn btn-gray" data-select-mode>Select</button>' : ''}
+          <a class="btn btn-red" href="#/admin?tab=users&user=new">Add user</a>
+        </div>
+        ${moved.length ? `<p class="live-result good">Moved the limits saved by the older version into Aurora Guard (once only) for: ${esc(moved.join(', '))}. Check they look right: any account could edit its own old copy.</p>` : ''}
+        ${g?.dryRun ? '<p class="live-result bad">Aurora Guard is in dry-run mode: it only logs what it would do. Set "dryRun": false in its config.json to enforce.</p>' : ''}
+        <div class="users-tools">
+          <input type="search" class="users-search" placeholder="Search users" autocomplete="off" spellcheck="false">
+          <div class="chip-row">${filters.map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
+        </div>
+        <p class="muted users-live" data-live-summary>${esc(summaryText(live))}</p>
+        <div class="bulk-bar hidden" data-bulk></div>
+        <div class="admin-list users-list"></div>
+        <p class="muted">Devices: how many are in use now (active in the last ${ACTIVE_WINDOW / 60000} minutes)${guardEnabled ? " out of the account's limit. Admin accounts have no limits." : '.'}</p>
+      </section>
+      ${!guardEnabled ? `<section class="admin-card"><h2>Device limits and expiration are switched off</h2>
+        <p class="muted">Aurora Guard is disabled, so accounts have no device limit or expiration date. Everything else on this page still works.
+          To turn it back on, set "guardEnabled": true in aurora-config.json once the guard service is running (see server/README.md).</p></section>` : guardError ? guardHelp(guardError) : `<section class="admin-card">
+        <h2>Enforcement <small>Aurora Guard · checks every ${g.intervalSeconds} s</small></h2>
+        <p class="muted">Last check ${g.lastRun?.at ? esc(timeAgo(new Date(g.lastRun.at))) : 'not yet'}${g.lastRun?.at && !g.lastRun.ok ? ` · <span class="pill bad">Failed</span> ${esc(g.lastRun.error)}` : ''}.
+          The guard signs out devices over an account's limit and switches off expired accounts, in every Emby app.</p>
+        <div class="admin-list">${actions.slice(0, 15).map((a) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(a.name || '')}</strong> · ${esc(
+          a.type === 'signedOut' ? `signed out ${a.device || 'a device'}${a.client ? ' (' + a.client + ')' : ''}, ${a.why}`
+            : a.type === 'disabled' ? `disabled, ${a.why}` : a.type === 'enabled' ? `enabled again, ${a.why}` : a.why || a.type)}</div>
+          <div class="admin-row-time">${esc(timeAgo(new Date(a.at)))}</div></div>`).join('') || '<p class="muted">Nothing done yet.</p>'}</div>
+      </section>
+      <section class="admin-card" data-cleanup>
+        <h2>Clean up old accounts</h2>
+        <p class="muted">Find customers whose end date passed a while ago and remove their accounts for good. Administrators, moderators, resellers and accounts with no end date are never listed. Nothing is removed until you tick the accounts and confirm.</p>
+        <div class="users-head">
+          <label class="muted" for="cleanup-days">Ended at least</label>
+          <select id="cleanup-days" data-cleanup-days><option value="30" selected>1 month ago</option><option value="60">2 months ago</option><option value="90">3 months ago</option><option value="180">6 months ago</option></select>
+          <button class="btn btn-gray" data-cleanup-find>Find accounts</button>
+        </div>
+        <div data-cleanup-list></div>
+        <p class="live-result" data-cleanup-result hidden></p>
+      </section>`}`;
+    bindExtensions(body, isCurrent);
+    bindStaffCard(body, rows, isCurrent);
+    bindCleanup(body, isCurrent);
+    const list = $('.users-list', body);
+    // Select mode (bulk edit): tapping a row ticks it instead of opening it.
+    let selecting = false;
+    const picked = new Set();
+    const draw = () => {
+      const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
+      list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}${selecting && picked.has(r.u.Id) ? ' picked' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}" data-uid="${esc(r.u.Id)}"${selecting && r.exempt ? ' data-exempt' : ''}>
+        ${selecting ? `<span class="sel-box${picked.has(r.u.Id) ? ' on' : ''}${r.exempt ? ' off' : ''}" aria-hidden="true"></span>` : ''}
+        <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
+          <div class="muted"><span data-live="${esc(r.u.Id)}">${liveHtml(r)}</span>
+            ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}${r.lim?.plan ? ` · ${esc(r.lim.plan.name)}` : ''}` : ''}</div></div>
+        <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
+    };
+    draw();
+    // Keep the counts live while this page is open: ask the guard every 10 s and change just the device text
+    // in place (so a row the remote is on keeps its focus). Stops when the page is left.
+    clearInterval(body.__usersTimer); // a redraw (after a bulk change) must not leave the old refresh running
+    if (live) {
+      let failures = 0;
+      const timer = body.__usersTimer = routeInterval(async () => {
+        if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
+        if (document.hidden) return;
+        try {
+          const fresh = await guard('/status/users');
+          failures = 0;
+          for (const r of rows) { if (!r.exempt) r.live = liveOf(fresh, r.u.Id); }
+          for (const r of rows) { const el = $(`[data-live="${CSS.escape(r.u.Id)}"]`, body); if (el) el.innerHTML = liveHtml(r); }
+          const sum = $('[data-live-summary]', body);
+          if (sum) sum.textContent = summaryText(fresh);
+        } catch {
+          if (++failures >= 3) { const sum = $('[data-live-summary]', body); if (sum) sum.textContent = 'Live counts paused: Aurora Guard is not answering.'; }
+        }
+      }, 10000);
+    }
+    $$('[data-vod-all]', body).forEach((btn) => btn.addEventListener('click', async () => {
+      const on = btn.dataset.vodAll === '1', out = $('[data-vod-all-result]', body);
+      if (!(await confirmAction(on ? 'Turn on for everyone?' : 'Turn off for everyone?', on ? "Every customer gets the provider's movies and TV shows." : "No customer will see the provider's movies and TV shows.", on ? 'Turn on' : 'Turn off'))) return;
+      out.className = 'live-result'; out.innerHTML = '<div class="spinner"></div>';
+      try { const r = await guard('/vod/all', { method: 'POST', body: { on } }); out.className = 'live-result good'; out.textContent = `Done. ${r.changed} ${r.changed === 1 ? 'customer' : 'customers'} changed.`; setTimeout(() => { if (isCurrent()) adminUsers(body, isCurrent); }, 1200); }
+      catch (e) { out.className = 'live-result bad'; out.textContent = e.message; }
+    }));
+    const bulkBox = $('[data-bulk]', body), selectBtn = $('[data-select-mode]', body);
+    const drawBulk = () => {
+      if (!selecting) { bulkBox.classList.add('hidden'); return; }
+      bulkBox.classList.remove('hidden');
+      const n = picked.size;
+      bulkBox.innerHTML = `<div class="bulk-head"><strong>${n ? `${n} selected` : 'Tap accounts to select them'}</strong>
+          <button class="btn btn-gray" data-bulk-all>Select all shown</button><button class="btn btn-gray" data-bulk-none>None</button></div>
+        ${n ? `<label class="admin-field"><span>Do this to them</span><select data-bulk-op>
+          <option value="limit">Set the device limit</option>
+          <option value="addDays">Add days to the end date</option>
+          <option value="setDate">Set one end date</option>
+          <option value="noExpiry">Remove the end date</option>
+          ${planList.length ? '<option value="plan">Put a plan on them</option>' : ''}
+          <option value="disable">Disable the accounts</option>
+          <option value="enable">Enable the accounts</option></select></label>
+        <div data-bulk-arg></div>
+        <div class="m-actions"><button class="btn btn-red" data-bulk-go>Apply to ${n} ${n === 1 ? 'account' : 'accounts'}</button></div>
+        <div class="live-result" data-bulk-result></div>` : ''}`;
+      if (!n) return;
+      const opSel = $('[data-bulk-op]', bulkBox), arg = $('[data-bulk-arg]', bulkBox);
+      const argFor = () => {
+        const op = opSel.value;
+        arg.innerHTML = op === 'limit' ? `<label class="admin-field"><span>Device limit</span><select data-a="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>`
+          : op === 'addDays' ? '<label class="admin-field"><span>Days to add (counted from the end date, or from today if it has passed)</span><input type="number" data-a="days" min="1" max="730" value="30" inputmode="numeric"></label>'
+          : op === 'setDate' ? '<label class="admin-field"><span>End date</span><input type="date" data-a="date"></label>'
+          : op === 'plan' ? `<label class="admin-field"><span>Plan</span><select data-a="plan">${planOptions(planList)}</select></label>
+              <label class="admin-field"><span>Start</span><select data-a="mode"><option value="extend">Add it after the time they have left</option><option value="today">Start from today</option></select></label>` : '';
+      };
+      opSel.addEventListener('change', argFor);
+      argFor();
+      $('[data-bulk-go]', bulkBox).addEventListener('click', () => runBulk());
+    };
+    const runBulk = async () => {
+      const op = $('[data-bulk-op]', bulkBox).value, a = (k) => $(`[data-a="${k}"]`, bulkBox)?.value;
+      const targets = rows.filter((r) => picked.has(r.u.Id) && !r.exempt);
+      const out = $('[data-bulk-result]', bulkBox), go = $('[data-bulk-go]', bulkBox);
+      const say = (html, cls = '') => { out.className = 'live-result' + (cls ? ' ' + cls : ''); out.innerHTML = html; };
+      if (!targets.length) return say('Admin accounts have no limits, so there is nothing to change on them.', 'bad');
+      const today = new Date(), todayDay = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const plus = (day, n) => { const d = new Date(`${day}T12:00:00`); d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+      let days = 0, date = '';
+      if (op === 'addDays') { days = Number(a('days')); if (!Number.isInteger(days) || days < 1 || days > 730) return say('Days must be a whole number from 1 to 730.', 'bad'); }
+      if (op === 'setDate') { date = a('date'); if (!date) return say('Pick the end date.', 'bad'); }
+      const what = { limit: `Set the device limit to ${a('limit')}`, addDays: `Add ${days} days`, setDate: `Set the end date to ${date}`, noExpiry: 'Remove the end date', plan: 'Put the plan on', disable: 'Disable', enable: 'Enable' }[op];
+      const names = targets.map((r) => r.u.Name);
+      if (!(await confirmAction(`${what}: ${targets.length} ${targets.length === 1 ? 'account' : 'accounts'}?`, names.slice(0, 12).join(', ') + (names.length > 12 ? ` and ${names.length - 12} more` : ''), 'Apply'))) return;
+      go.disabled = true;
+      const failed = [], queue = targets.slice();
+      let done = 0;
+      const one = async (r) => {
+        const id = r.u.Id, cur = r.lim || {}, limit = Number(cur.limit) || g?.defaultLimit || DEFAULT_DEVICE_LIMIT;
+        if (op === 'limit') await guard(`/limits/${id}`, { method: 'PUT', body: { limit: Number(a('limit')), expires: cur.expires || null } });
+        else if (op === 'addDays') await guard(`/limits/${id}`, { method: 'PUT', body: { limit, expires: plus(cur.expires && cur.expires > todayDay ? cur.expires : todayDay, days) } });
+        else if (op === 'setDate') await guard(`/limits/${id}`, { method: 'PUT', body: { limit, expires: date } });
+        else if (op === 'noExpiry') await guard(`/limits/${id}`, { method: 'PUT', body: { limit, expires: null } });
+        else if (op === 'plan') await guard(`/limits/${id}/plan`, { method: 'POST', body: { planId: a('plan'), mode: a('mode') } });
+        else { await setDisabled(id, op === 'disable'); await guard(`/limits/${id}/manual`, { method: 'PUT' }).catch(() => {}); }
+      };
+      const worker = async () => {
+        while (queue.length) {
+          const r = queue.shift();
+          say(`<div class="spinner"></div> ${done} of ${targets.length} done…`);
+          try { await one(r); done++; } catch (e) { failed.push(`${r.u.Name} (${e.message})`); }
+        }
+      };
+      await Promise.all([0, 1, 2].map(worker));
+      if (op === 'disable' || op === 'enable') auditNote(`${op === 'disable' ? 'Disabled' : 'Enabled'} ${done} ${done === 1 ? 'account' : 'accounts'} at once: ${names.slice(0, 8).join(', ')}${names.length > 8 ? '…' : ''}`);
+      else auditNote(`Bulk change (${what.toLowerCase()}) on ${done} ${done === 1 ? 'account' : 'accounts'}`);
+      if (!isCurrent()) return;
+      if (failed.length) { go.disabled = false; say(`${done} done. Couldn't change: ${esc(failed.join('; '))}`, 'bad'); toast(`${done} changed, ${failed.length} failed`, 3500); }
+      else { toast(`${done} ${done === 1 ? 'account' : 'accounts'} changed`, 2500); adminUsers(body, isCurrent); }
+    };
+    selectBtn?.addEventListener('click', () => {
+      selecting = !selecting;
+      picked.clear();
+      selectBtn.textContent = selecting ? 'Done' : 'Select';
+      selectBtn.classList.toggle('btn-red', selecting); selectBtn.classList.toggle('btn-gray', !selecting);
+      draw(); drawBulk();
+    });
+    list.addEventListener('click', (e) => {
+      if (!selecting) return;
+      const row = e.target.closest('[data-uid]');
+      if (!row) return;
+      e.preventDefault();
+      if (row.hasAttribute('data-exempt')) { toast('Admin accounts have no limits to change', 2000); return; }
+      const id = row.dataset.uid;
+      if (picked.has(id)) picked.delete(id); else picked.add(id);
+      row.classList.toggle('picked', picked.has(id));
+      $('.sel-box', row)?.classList.toggle('on', picked.has(id));
+      drawBulk();
+    });
+    bulkBox.addEventListener('click', (e) => {
+      if (e.target.closest('[data-bulk-all]')) {
+        const q = query;
+        rows.filter((r) => !r.exempt && (filter === 'all' || r.st === filter) && (!q || r.search.includes(q))).forEach((r) => picked.add(r.u.Id));
+        draw(); drawBulk();
+      } else if (e.target.closest('[data-bulk-none]')) { picked.clear(); draw(); drawBulk(); }
+    });
+    $('.users-search', body).addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); draw(); });
+    $$('[data-filter]', body).forEach((b) => b.addEventListener('click', () => {
+      filter = b.dataset.filter;
+      store.set('ef.usersFilter', filter);
+      $$('[data-filter]', body).forEach((x) => x.classList.toggle('active', x === b));
+      draw();
+    }));
+  }
+
+  // Device limit choices: 1-10.
+  const limitOptions = (cur) => Array.from({ length: Math.max(10, cur || 0) }, (_, i) => i + 1)
+    .map((n) => `<option value="${n}"${n === cur ? ' selected' : ''}>${n} ${n === 1 ? 'device' : 'devices'}</option>`).join('');
+  const expiryFields = (expires) => `
+    <label class="admin-field"><span>Expiration date</span>
+      <input type="date" data-f="expires" value="${esc(expires || '')}"${expires ? '' : ' disabled'}></label>
+    <label class="admin-check"><input type="checkbox" data-f="noexpiry"${expires ? '' : ' checked'}> No expiration</label>`;
+  const wireExpiry = (root) => {
+    const box = $('[data-f="noexpiry"]', root), date = $('[data-f="expires"]', root);
+    box.addEventListener('change', () => {
+      date.disabled = box.checked;
+      if (!box.checked && !date.value) {
+        const d = new Date(Date.now() + 30 * DAY);
+        date.value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      }
+    });
+    return () => (box.checked ? null : (date.value || null));
+  };
+  // Sets a password without showing or keeping it: clear it, then set the new one.
+  async function setUserPassword(userId, pw) {
+    await api(`/Users/${userId}/Password`, { method: 'POST', body: { Id: userId, ResetPassword: true } });
+    await api(`/Users/${userId}/Password`, { method: 'POST', body: { Id: userId, CurrentPw: '', NewPw: pw } });
+  }
+  const passwordFields = () => `
+    <label class="admin-field"><span>New password</span><input type="password" data-f="pw" autocomplete="new-password"></label>
+    <label class="admin-field"><span>Type it again</span><input type="password" data-f="pw2" autocomplete="new-password"></label>`;
+  const readPassword = (root) => {
+    const a = $('[data-f="pw"]', root), b = $('[data-f="pw2"]', root);
+    const v = a.value, w = b.value;
+    a.value = ''; b.value = ''; // never left on screen
+    if (!v) throw new Error('Enter a password.');
+    if (v !== w) throw new Error("The two passwords don't match.");
+    return v;
+  };
+
+  async function adminUserDetail(body, isCurrent, userId) {
+    if (!(await embyAdminCheck(body)) || !isCurrent()) return;
+    let user, lim = null, devices = [], g = null, guardError = null;
+    try {
+      user = await api(`/Users/${userId}`);
+      devices = await activeDevices(userId).catch(() => []);
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))} <a href="#/admin?tab=users">Back to users</a></p>`; return; }
+    let planData = null;
+    if (guardEnabled) { try { g = await guard('/limits'); lim = g.users?.[userId] || null; planData = await guard('/plans').catch(() => null); } catch (e) { guardError = e; } }
+    if (!isCurrent()) return;
+    const self = userId === state.userId, exempt = exemptFromLimits(user);
+    const st = userStatus(user, lim);
+    body.innerHTML = `
+      <a class="btn btn-gray users-back" href="#/admin?tab=users">‹ All users</a>
+      <section class="admin-card">
+        <h2>${esc(user.Name)} ${statusPill(st)}${exempt ? ' <span class="pill">Admin</span>' : ''}${self ? ' <span class="pill">You</span>' : ''}</h2>
+        <p class="muted">Last active ${user.LastActivityDate ? esc(timeAgo(user.LastActivityDate)) : 'never'}${exempt ? ' · Admin accounts have no device limit or expiration.' : ''}</p>
+        ${!guardEnabled ? '<p class="muted">Device limits and expiration are switched off (Aurora Guard is disabled).</p>' : guardError ? `<p class="live-result bad">Device limit and expiration can't be changed: Aurora Guard isn't answering (${esc(guardError.message)}).</p>` : `
+        <label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(Number(lim?.limit) || g?.defaultLimit || DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(lim?.expires)}
+        <div class="m-actions"><button class="btn btn-red" data-save-limits>Save</button></div>
+        <p class="muted">Saved in Aurora Guard and applied straight away: an account past its date is switched off in Emby, and extending the date switches it back on.</p>
+        <div class="live-result" data-limits-result></div>`}
+      </section>
+      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
+        <h2>Subscription ${lim?.plan ? '<span class="pill good">' + esc(lim.plan.name) + '</span>' : ''}</h2>
+        <p class="muted">${lim?.plan ? `${esc(money(lim.plan.price))} · ${esc(planLength(lim.plan))} · ${lim.plan.connections} ${lim.plan.connections === 1 ? 'connection' : 'connections'} · ${lim.plan.categories ? lim.plan.categories.length + ' Live TV categories' : 'all Live TV categories'}${lim.expires ? ` · ${isExpired(lim) ? 'ended' : 'ends'} ${esc(fmtDay(lim.expires))}` : ''}` : 'No plan: the device limit and end date above were set by hand.'}</p>
+        ${planData?.plans?.length ? `
+        <label class="admin-field"><span>Plan</span><select data-plan-pick>${planOptions(planData.plans, lim?.plan?.id || '')}</select></label>
+        <label class="admin-field"><span>Start</span><select data-plan-mode><option value="extend">Add it after the time they have left</option><option value="today">Start from today</option></select></label>
+        <label class="admin-field"><span>Price paid (leave empty for the plan's price)</span><input type="number" data-plan-price min="0" step="0.01" inputmode="decimal"></label>
+        <div class="m-actions"><button class="btn btn-red" data-apply-plan>Apply plan</button></div>
+        <p class="muted">Sets their device limit, end date and Live TV categories, switches the account back on if it had expired, and adds a line to the subscription history.</p>
+        <div class="live-result" data-plan-result></div>` : '<p class="muted">No plans to choose from yet. Add them in Admin → Plans.</p>'}
+      </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && iptvOn() && iptv.config?.type === 'xtream' ? `<section class="admin-card">
+        <h2>Provider movies and TV</h2>
+        <label class="admin-check"><input type="checkbox" data-vod${lim?.vod ? ' checked' : ''}> Let ${esc(user.Name)} watch the provider's movies and TV shows</label>
+        <p class="muted">Their Movies and TV Shows pages show the provider's titles instead of your library. Saved straight away. It uses your TV provider's connections, like Live TV.</p>
+        <div class="live-result" data-vod-result></div>
+      </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && iptvOn() ? `<section class="admin-card">
+        <h2>Adult channels</h2>
+        <label class="admin-check"><input type="checkbox" data-adult${lim?.adult ? ' checked' : ''}> Let ${esc(user.Name)} open the adult Live TV categories</label>
+        <p class="muted">Only switch this on for adults. They see a locked Adult row in Live TV and choose a 4-digit PIN to open it. It never shows in the iPhone or Apple TV apps. Switching it on or off also clears their PIN. Tag which categories are adult in Admin → Live TV.</p>
+        <div class="live-result" data-adult-result></div>
+      </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && isAdmin() ? `<section class="admin-card">
+        <h2>Playback quality <small>last 7 days</small></h2>
+        <div data-quality><div class="spinner"></div></div>
+      </section>` : ''}
+      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
+        <h2>Renewal reminders</h2>
+        <p class="muted">${esc(user.Name)} sees a notice in the app when their plan is this many days from ending. ${lim?.remind ? '' : 'Right now they follow the default.'}</p>
+        <div>
+          <label class="admin-field"><span>Remind them, days before the end</span><input type="text" data-remind value="${esc((lim?.remind || '').toString().replace(/,/g, ', '))}" placeholder="${esc((g?.remindDefault || [7, 3, 1]).join(', '))}" inputmode="numeric"></label>
+          <div class="m-actions"><button class="btn btn-primary" data-remind-save>Save</button> <button class="btn btn-gray" data-remind-default>Use the default</button></div>
+          <details><summary>Change the default for everyone</summary>
+            <label class="admin-field"><span>Default days</span><input type="text" data-remind-all value="${esc((g?.remindDefault || [7, 3, 1]).join(', '))}" inputmode="numeric"></label>
+            <div class="m-actions"><button class="btn btn-gray" data-remind-all-save>Save the default</button></div>
+          </details>
+        </div>
+        <h3 class="users-sub">A message to send them</h3>
+        <textarea class="remind-text" data-remind-text rows="3">${esc(renewalMessage(lim?.contact?.full || user.Name, lim?.expires))}</textarea>
+        <div class="m-actions"><button class="btn btn-gray" data-remind-copy>Copy message</button></div>
+        <p class="muted">Paste it into Messenger, Text or WhatsApp. Aurora can't send those for you.</p>
+        <div class="live-result" data-remind-result></div>
+      </section>` : ''}
+      ${guardEnabled && !guardError && isAdmin() ? `<section class="admin-card">
+        <h2>Administrator</h2>
+        <label class="admin-check"><input type="checkbox" data-admin${user.Policy?.IsAdministrator ? ' checked' : ''}${userId === state.userId ? ' disabled' : ''}> Make ${esc(user.Name)} an administrator</label>
+        <p class="muted">${userId === state.userId ? 'This is you: you can\'t remove your own administrator access.' : 'An administrator sees the whole Admin menu and can change almost anything. Resellers, Users and credits stay behind the Admin PIN if you set one. For someone who should only answer customers, make them a moderator instead.'} This is Emby's administrator switch, so it also works in Emby.</p>
+        <div class="live-result" data-admin-result></div>
+      </section>` : ''}
+      ${guardEnabled && !guardError && !exempt && isAdmin() ? `<section class="admin-card">
+        <h2>Moderator</h2>
+        <label class="admin-check"><input type="checkbox" data-mod${lim?.mod ? ' checked' : ''}> Make ${esc(user.Name)} a moderator</label>
+        <p class="muted">A moderator gets an Admin menu with support messages, announcements, requests, channel reports, sports, and read-only problems, feedback, activity, usage and sharing. They never see Users, Resellers, credits, Server health, updates, plans, the TV provider login or the audit log, and the guard refuses those even if someone tries. They should have no end date, or the account switches off.</p>
+        <div class="live-result" data-mod-result></div>
+      </section>` : ''}
+      <section class="admin-card">
+        <h2>Devices in use <small>active in the last ${ACTIVE_WINDOW / 60000} minutes</small></h2>
+        <div class="admin-list">${devices.map((d) => `<div class="admin-row">
+          <div class="admin-row-main"><strong>${esc(d.name)}</strong>${d.deviceId === state.deviceId ? ' <span class="pill">This device</span>' : ''}${d.playing ? ' <span class="pill live">Playing</span>' : ''}
+            <div class="muted">${esc([d.client, d.version].filter(Boolean).join(' '))}${d.title ? ' · ' + esc(d.title) : ''} · ${esc(timeAgo(new Date(d.at)))}</div></div>
+          ${d.deviceId === state.deviceId ? '' : `<button class="btn btn-gray" data-signout="${esc(d.deviceId)}" data-session="${esc(d.sessionId)}" data-name="${esc(d.name)}">Sign out device</button>`}
+        </div>`).join('') || '<p class="muted">No devices in use right now.</p>'}</div>
+      </section>
+      <section class="admin-card">
+        <h2>Account</h2>
+        <div class="m-actions">
+          ${self ? '<p class="muted">You can\'t disable or delete your own account.</p>' : `
+          <button class="btn btn-gray" data-toggle>${user.Policy?.IsDisabled ? 'Enable account' : 'Disable account'}</button>
+          <button class="btn btn-gray" data-delete>Delete user</button>`}
+        </div>
+        <h3 class="users-sub">Reset password</h3>
+        ${passwordFields()}
+        <div class="m-actions"><button class="btn btn-gray" data-reset-pw>Set new password</button></div>
+        <div class="live-result" data-account-result></div>
+      </section>`;
+    const getExpiry = !guardEnabled || guardError ? null : wireExpiry(body);
+    const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
+    const reload = () => { if (isCurrent()) adminUserDetail(body, isCurrent, userId); };
+
+    $('[data-adult]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/adult`, { method: 'PUT', body: { on } }); say('[data-adult-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-adult-result]', e.status === 404 ? 'Update Aurora Guard to 1.23.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
+    $('[data-admin]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked;
+      if (on && !(await confirmAction(`Make ${user.Name} an administrator?`, 'They get the whole Admin menu and can change almost anything. Only do this for someone you trust.', 'Make administrator')) || (!on && !(await confirmAction(`Remove ${user.Name} as an administrator?`, 'They become an ordinary account again and lose the Admin menu.', 'Remove')))) { ev.target.checked = !on; return; }
+      ev.target.disabled = true;
+      try { await guardWithPin(`/limits/${userId}/admin`, { method: 'PUT', body: { on } }); say('[data-admin-result]', on ? `${esc(user.Name)} is an administrator now. They see the Admin menu next time Aurora opens.` : `${esc(user.Name)} is not an administrator any more.`, 'good'); user.Policy = { ...(user.Policy || {}), IsAdministrator: on }; }
+      catch (e) { ev.target.checked = !on; say('[data-admin-result]', e.status === 404 ? 'Update Aurora Guard to 1.35.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
+    $('[data-mod]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/mod`, { method: 'PUT', body: { on } }); say('[data-mod-result]', on ? `${esc(user.Name)} is a moderator now. They see the Admin menu next time Aurora opens.` : 'Not a moderator any more.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-mod-result]', e.status === 404 ? 'Update Aurora Guard to 1.27.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
+    // Playback quality: how this customer's viewing went, next to everyone else's.
+    const qbox = $('[data-quality]', body);
+    if (qbox) guard(`/limits/${userId}/quality`).then((q) => {
+      if (!qbox.isConnected) return;
+      if (!q.reported) { qbox.innerHTML = '<p class="muted">Nothing reported yet. The numbers arrive after this customer updates to the newest app and watches something.</p>'; return; }
+      const ago = q.last.at ? timeAgo(q.last.at) : '';
+      const sec = (v) => (v == null ? '–' : `${v} s`), per = (v) => (v == null ? '–' : `${v}/hour`), pct = (v) => (v == null ? '–' : `${v}%`);
+      const live = q.you.live, vod = q.you.vod, all = q.everyone;
+      const hrs = (m) => (m >= 60 ? `${(m / 60).toFixed(1)} h` : `${m} min`);
+      qbox.innerHTML = `<div class="stat-grid">
+          ${statTile('Live buffering', per(live.stallsPerHour), `everyone: ${per(all.live.stallsPerHour)}`)}
+          ${statTile('Channel start', sec(live.avgStartSec), `everyone: ${sec(all.live.avgStartSec)}`)}
+          ${statTile('Movies and shows buffering', pct(vod.bufferingPct), `everyone: ${pct(all.vod.bufferingPct)}`)}
+          ${statTile('Watched', hrs(live.minutes + vod.minutes), `${hrs(live.minutes)} live`)}
+        </div>
+        <p class="muted">${[q.last.device && `Device: ${esc(q.last.device)}`, q.last.app && `App: ${esc(q.last.app)}`, q.last.buffer && `Live TV buffer: ${esc(q.last.buffer)}`, q.last.kbps && `Stream speed: ${(q.last.kbps / 1000).toFixed(1)} Mbit/s`, live.failed > 0 && `${live.failed} channel${live.failed === 1 ? '' : 's'} stopped working`, ago && `Last report ${esc(ago)}`].filter(Boolean).join(' · ')}</p>
+        ${q.hints.length ? `<div class="admin-card-note"><strong>What to try</strong><ul>${q.hints.map((h) => `<li>${esc(h)}</li>`).join('')}</ul></div>` : '<p class="muted">Nothing stands out: their viewing looks normal.</p>'}
+        <details><summary>Day by day</summary><div class="admin-list">${q.days.map((d) => `<div class="admin-row"><div class="admin-row-main">${esc(d.day)}<div class="muted">Live ${hrs(d.liveMin)} · ${d.stalls} stalls · channels start in ${d.avgStartSec == null ? '–' : d.avgStartSec + ' s'} · movies and shows ${hrs(d.vodMin)}, ${d.vodStalls} stalls</div></div></div>`).join('')}</div></details>`;
+    }).catch((e) => { if (qbox.isConnected) qbox.innerHTML = `<p class="muted">${esc(e.message || 'Could not load.')} Update Aurora Guard to 1.32.0 for this.</p>`; });
+    $('[data-remind-save]', body)?.addEventListener('click', async () => {
+      const days = parseRemindDays($('[data-remind]', body).value);
+      if (!days) return say('[data-remind-result]', 'Type 1 to 5 numbers of days, like 10, 5, 2.', 'bad');
+      try { await guard(`/limits/${userId}/remind`, { method: 'PUT', body: { days } }); say('[data-remind-result]', `Saved: ${days.join(', ')} days before the end.`, 'good'); }
+      catch (e) { say('[data-remind-result]', e.status === 404 ? 'Update Aurora Guard to 1.26.0 first.' : esc(e.message), 'bad'); }
+    });
+    $('[data-remind-default]', body)?.addEventListener('click', async () => {
+      try { await guard(`/limits/${userId}/remind`, { method: 'PUT', body: { days: null } }); $('[data-remind]', body).value = ''; say('[data-remind-result]', 'They follow the default now.', 'good'); }
+      catch (e) { say('[data-remind-result]', esc(e.message), 'bad'); }
+    });
+    $('[data-remind-all-save]', body)?.addEventListener('click', async () => {
+      const days = parseRemindDays($('[data-remind-all]', body).value);
+      if (!days) return say('[data-remind-result]', 'Type 1 to 5 numbers of days, like 7, 3, 1.', 'bad');
+      try { await guard('/remind-default', { method: 'PUT', body: { days } }); say('[data-remind-result]', `The default is now ${days.join(', ')} days. Customers with their own list keep it.`, 'good'); }
+      catch (e) { say('[data-remind-result]', e.status === 404 ? 'Update Aurora Guard to 1.26.0 first.' : esc(e.message), 'bad'); }
+    });
+    $('[data-remind-copy]', body)?.addEventListener('click', async () => {
+      const t = $('[data-remind-text]', body).value;
+      if (await copyText(t)) say('[data-remind-result]', 'Copied. Paste it into your message.', 'good');
+      else say('[data-remind-result]', 'Could not copy here. Select the text above and copy it.', 'bad');
+    });
+    $('[data-vod]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/vod`, { method: 'PUT', body: { on } }); say('[data-vod-result]', on ? 'Switched on.' : 'Switched off.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-vod-result]', esc(e.message), 'bad'); }
+      ev.target.disabled = false;
+    });
+    $('[data-save-limits]', body)?.addEventListener('click', async () => {
+      const next = { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() };
+      if (isExpired(next) && !user.Policy?.IsDisabled && !self && !exempt
+        && !(await confirmAction('Disable this account?', `That date has passed, so ${user.Name}'s account will be switched off in Emby.`, 'Save and disable'))) return;
+      say('[data-limits-result]', '<div class="spinner"></div>');
+      try {
+        const r = await guard(`/limits/${userId}`, { method: 'PUT', body: next });
+        const was = !!user.Policy?.IsDisabled;
+        const note = !r.applied ? ' It will be applied at the guard\'s next check.'
+          : r.disabled && !was ? ' The date has passed, so the account is now disabled.'
+            : !r.disabled && was ? ' The account is enabled again.' : '';
+        say('[data-limits-result]', 'Saved.' + note, 'good');
+        setTimeout(reload, 1200);
+      } catch (e) { say('[data-limits-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+
+    $('[data-apply-plan]', body)?.addEventListener('click', async () => {
+      const plan = planData.plans.find((x) => x.id === $('[data-plan-pick]', body).value);
+      if (!plan) return;
+      const mode = $('[data-plan-mode]', body).value, price = $('[data-plan-price]', body).value;
+      if (!(await confirmAction(`Put "${plan.name}" on ${user.Name}?`, `${planSummary(plan)}. ${mode === 'extend' ? 'Added after the time they have left.' : 'Starts from today.'}${price !== '' ? ' Price paid: ' + money(price) + '.' : ''}`, 'Apply plan'))) return;
+      say('[data-plan-result]', '<div class="spinner"></div>');
+      try {
+        const r = await guard(`/limits/${userId}/plan`, { method: 'POST', body: { planId: plan.id, mode, price: price === '' ? undefined : Number(price) } });
+        say('[data-plan-result]', `Done: ${esc(plan.name)} until ${esc(fmtDay(r.record.expires))}.${r.applied ? '' : ' It will be applied at the next guard check.'}`, 'good');
+        setTimeout(reload, 1200);
+      } catch (e) { say('[data-plan-result]', "Couldn't apply it: " + esc(e.message), 'bad'); }
+    });
+
+    $$('[data-signout]', body).forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmAction('Sign out this device?', `${b.dataset.name} will be signed out of ${user.Name}'s account and has to sign in again. This frees a device slot.`, 'Sign out'))) return;
+      try {
+        api(`/Sessions/${encodeURIComponent(b.dataset.session)}/Playing/Stop`, { method: 'POST' }).catch(() => {});
+        await api('/Devices', { method: 'DELETE', params: { Id: b.dataset.signout } });
+        auditNote(`Signed out ${b.dataset.name} from ${user.Name}`);
+        toast(`${b.dataset.name} signed out`, 2500);
+        reload();
+      } catch (e) { toast("Couldn't sign it out: " + adminError(e)); }
+    }));
+
+    $('[data-toggle]', body)?.addEventListener('click', async () => {
+      const disabling = !user.Policy?.IsDisabled;
+      if (disabling && !(await confirmAction('Disable this account?', `${user.Name} won't be able to sign in or watch anything until the account is enabled again.`, 'Disable'))) return;
+      if (!disabling && isExpired(lim)) return say('[data-account-result]', 'This account has expired. Set a later expiration date (or No expiration) above and Save; that enables it again.', 'bad');
+      try {
+        await setDisabled(userId, disabling);
+        // A hand-made choice: the guard no longer switches this account back on by itself.
+        await guard(`/limits/${userId}/manual`, { method: 'PUT' }).catch(() => {});
+        auditNote(`${disabling ? 'Disabled' : 'Enabled'} the account ${user.Name}`);
+        toast(disabling ? 'Account disabled' : 'Account enabled', 2000);
+        reload();
+      } catch (e) { say('[data-account-result]', "Couldn't change it: " + esc(adminError(e)), 'bad'); }
+    });
+
+    $('[data-delete]', body)?.addEventListener('click', async () => {
+      if (!(await confirmAction(`Delete ${user.Name}?`, 'The account, its watch history and its settings are removed from Emby for good. This can\'t be undone.', 'Delete user'))) return;
+      try {
+        await api(`/Users/${userId}`, { method: 'DELETE' });
+        await guard(`/limits/${userId}`, { method: 'DELETE' }).catch(() => {});
+        auditNote(`Deleted the account ${user.Name}`);
+        toast(`${user.Name} deleted`, 2500);
+        location.hash = '#/admin?tab=users';
+      } catch (e) { say('[data-account-result]', "Couldn't delete it: " + esc(adminError(e)), 'bad'); }
+    });
+
+    $('[data-reset-pw]', body).addEventListener('click', async () => {
+      let pw;
+      try { pw = readPassword(body); } catch (e) { return say('[data-account-result]', esc(e.message), 'bad'); }
+      if (!(await confirmAction('Set a new password?', `${user.Name}'s current password stops working straight away.`, 'Set password'))) return;
+      try {
+        await setUserPassword(userId, pw);
+        auditNote(`Set a new password for ${user.Name}`);
+        say('[data-account-result]', 'New password set.', 'good');
+      } catch (e) { say('[data-account-result]', "Couldn't set it: " + esc(adminError(e)), 'bad'); }
+    });
+  }
+
+  async function adminUserNew(body, isCurrent) {
+    if (!(await embyAdminCheck(body)) || !isCurrent()) return;
+    body.innerHTML = `
+      <a class="btn btn-gray users-back" href="#/admin?tab=users">‹ All users</a>
+      <section class="admin-card">
+        <h2>Add user</h2>
+        <label class="admin-field"><span>Name (used to sign in)</span><input type="text" data-f="name" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+        ${passwordFields()}
+        ${guardEnabled ? `<label class="admin-field"><span>Plan (sets the device limit, end date and Live TV categories)</span><select data-f="plan"><option value="">No plan: set the limit and date by hand below</option></select></label>
+        <div data-by-hand><label class="admin-field"><span>Device limit</span><select data-f="limit">${limitOptions(DEFAULT_DEVICE_LIMIT)}</select></label>
+        ${expiryFields(null)}</div>` : ''}
+        <div class="m-actions"><button class="btn btn-red" data-create>Create user</button></div>
+        <div class="live-result" data-result></div>
+      </section>`;
+    const getExpiry = guardEnabled ? wireExpiry(body) : null;
+    let plans = [];
+    if (guardEnabled) {
+      try {
+        plans = (await guard('/plans')).plans.filter((p) => p.active);
+        $('[data-f="plan"]', body).insertAdjacentHTML('beforeend', plans.map((p) => `<option value="${esc(p.id)}">${esc(p.name)} — ${esc(money(p.price))}</option>`).join(''));
+        $('[data-f="plan"]', body).addEventListener('change', (e) => $('[data-by-hand]', body).classList.toggle('hidden', !!e.target.value));
+      } catch { /* an older guard has no plans */ }
+    }
+    const result = $('[data-result]', body) || document.createElement('div');
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    $('[data-create]', body).addEventListener('click', async () => {
+      const name = $('[data-f="name"]', body).value.trim();
+      if (!name) return say('Enter a name.', 'bad');
+      let pw;
+      try { pw = readPassword(body); } catch (e) { return say(esc(e.message), 'bad'); }
+      say('<div class="spinner"></div> Creating the account…');
+      let user;
+      try {
+        user = await api('/Users/New', { method: 'POST', body: { Name: name } });
+        if (!user?.Id) throw new Error('Emby did not return the new account');
+      } catch (e) { return say("Couldn't create it: " + esc(adminError(e)) + (e.status === 400 ? ' (is the name already taken?)' : ''), 'bad'); }
+      auditNote(`Created the account ${name}`);
+      const problems = [];
+      try { await setUserPassword(user.Id, pw); } catch (e) { problems.push('the password (' + adminError(e) + ')'); }
+      if (guardEnabled) {
+        const planId = $('[data-f="plan"]', body).value;
+        if (planId) {
+          try { await guard(`/limits/${user.Id}/plan`, { method: 'POST', body: { planId, mode: 'today' } }); } catch (e) { problems.push(`the plan (Aurora Guard: ${e.message})`); }
+        } else {
+          try { await guard(`/limits/${user.Id}`, { method: 'PUT', body: { limit: Number($('[data-f="limit"]', body).value), expires: getExpiry() } }); } catch (e) { problems.push(`the device limit and expiration (Aurora Guard: ${e.message})`); }
+        }
+      }
+      // The settings saved "for everyone" (Live TV, Requests, the update lock) only reached accounts that existed then.
+      try { if (iptv.config) await writeIptvConfigFor(user.Id, iptv.config); } catch { problems.push('the Live TV settings'); }
+      for (const id of [REQ_PREFS.id, APP_PREFS, PLAYBACK_PREFS]) {
+        try { const v = await readAuroraPref(id); if (v) await writeAuroraPref(id, user.Id, v); } catch { /* not set */ }
+      }
+      if (problems.length) {
+        say(`Created ${esc(name)}, but couldn't set ${esc(problems.join(', '))}. Open the account to try again.`, 'bad');
+        setTimeout(() => { if (isCurrent()) location.hash = `#/admin?tab=users&user=${user.Id}`; }, 3000);
+      } else {
+        toast(`${name} created`, 2500);
+        location.hash = `#/admin?tab=users&user=${user.Id}`;
+      }
+    });
+  }
+
+  async function auroraReleaseCodes() {
+    try {
+      const res = await fetch(RELEASES_URL, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000) });
+      if (!res.ok) return null;
+      return (await res.json()).filter((r) => !r.draft && !r.prerelease && /^aurora-v/.test(r.tag_name || ''))
+        .map((r) => Number(r.tag_name.match(/(\d+)$/)?.[1] || 0)).filter(Boolean).sort((a, b) => b - a);
+    } catch { return null; }
+  }
+
+  async function adminUpdates(body, isCurrent) {
+    const [cfg, devices, codes] = await Promise.all([
+      readAuroraPref(APP_PREFS).catch(() => null), api('/Devices').catch((e) => ({ error: e })), auroraReleaseCodes(),
+    ]);
+    if (!isCurrent()) return;
+    const fromAdmin = cfg && Number.isFinite(Number(cfg.forceUpdateAfter));
+    const current = fromAdmin ? Number(cfg.forceUpdateAfter) : forceUpdateAfter;
+    const latest = codes?.[0] || 0;
+    const behindBy = (code) => (codes ? codes.filter((c) => c > code).length : 0);
+    const aurora = (devices?.error ? [] : (devices?.Items || devices || []))
+      .filter((d) => /aurora|embyflix/i.test(d.AppName || '') && Date.now() - new Date(d.DateLastActivity).getTime() < 30 * DAY)
+      .map((d) => ({ d, code: auroraVersionCode(d.AppVersion) }))
+      .filter((x) => x.code && latest && x.code < latest)
+      .sort((a, b) => a.code - b.code);
+    const choices = [[0, 'Off: never lock'], [1, '1 update behind'], [2, '2 updates behind'], [3, '3 updates behind'], [5, '5 updates behind'], [10, '10 updates behind']];
+    if (!choices.some(([v]) => v === current)) choices.push([current, `${current} updates behind`]);
+    const row = ({ d, code }) => {
+      const n = behindBy(code), tooOld = code < 139, locked = !tooOld && current && n >= current;
+      return `<div class="admin-row" tabindex="-1">
+        <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
+          <div class="muted">Aurora V${esc(d.AppVersion || '')} · ${n} ${n === 1 ? 'update' : 'updates'} behind
+          ${tooOld ? ' <span class="pill warn">Too old to lock: needs updating by hand</span>' : locked ? ' <span class="pill bad">Locked until updated</span>' : current && n === current - 1 ? ' <span class="pill warn">Locks at the next update</span>' : ''}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div></div>`;
+    };
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Required updates</h2>
+        <p class="muted">Aurora stops working on a device that falls this many updates behind, until it's updated (the update screen can't be dismissed).
+          Changes reach every device the next time it opens Aurora or checks for updates, and locked devices unlock by themselves.
+          Only Aurora 1.2.139 and newer can be locked.</p>
+        <dl class="admin-dl"><dt>In use now</dt><dd>${current ? `Lock at ${current} ${current === 1 ? 'update' : 'updates'} behind` : 'Off'}
+          <span class="pill">${fromAdmin ? 'set here' : 'from the app settings file'}</span></dd></dl>
+        <label class="admin-field"><span>Lock the app when it is</span>
+          <select data-lock>${choices.map(([v, l]) => `<option value="${v}"${v === current ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+        <div class="m-actions">
+          <button class="btn btn-red" data-save>Save for everyone</button>
+          ${fromAdmin ? '<button class="btn btn-gray" data-reset>Use the settings file instead</button>' : ''}
+        </div>
+        <div class="live-result" data-result></div>
+      </section>
+      <section class="admin-card">
+        <h2>Devices behind <small>used in the last 30 days${latest ? ` · latest is V${auroraVersionName(latest)}` : ''}</small></h2>
+        ${codes ? '' : '<p class="muted">Couldn\'t reach GitHub to count releases.</p>'}
+        <div class="admin-list">${aurora.map(row).join('') || '<p class="muted">Every device is up to date.</p>'}</div>
+      </section>`;
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const save = async (value, done) => {
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        const r = await writeAuroraPrefForAll(APP_PREFS, value);
+        await refreshAppConfig();
+        if (!isCurrent()) return;
+        say(`${done} Saved for ${r.saved} of ${r.total} accounts${r.failed ? ` (${r.failed} failed; try again)` : ''}.`, r.failed ? 'bad' : 'good');
+        setTimeout(() => { if (isCurrent()) adminUpdates(body, isCurrent); }, 1500);
+      } catch (e) { say("Couldn't save: " + esc(adminError(e)), 'bad'); }
+    };
+    $('[data-save]', body).addEventListener('click', () => {
+      const n = Number($('[data-lock]', body).value);
+      save({ forceUpdateAfter: n, t: Date.now() }, n ? `The app now locks at ${n} ${n === 1 ? 'update' : 'updates'} behind.` : 'The update lock is off.');
+    });
+    $('[data-reset]', body)?.addEventListener('click', () => save(null, 'Using the settings file again.'));
+  }
+
+
+  // ----- Admin → Channel reports: the provider's API key, and what customers reported -----
+  // ----- Admin -> Channels: add your own channels and fix the provider's (guide v1.28.0) -----
+  async function adminChannels(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Channels');
+    let cu, provList = null, provLoading = false, sources = [], provs = [], bk = null, bkSeq = 0;
+    const load = async () => {
+      cu = await guard('/channels/all');
+      try { sources = (await guard('/channels/sources')).sources || []; } catch { /* an older guard */ }
+      if (isAdmin()) { try { provs = (await guard('/channels/providers')).providers || []; } catch { provs = []; } paintProvs(); }
+    };
+    try { await load(); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Channels</h2><p class="empty-msg">${e.status === 404 ? 'Update Aurora Guard to 1.28.0 first.' : esc(e.message)}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const catName = (id) => (cu.cats.find((c) => c.id === id) || {}).name || '';
+    const catOptions = (sel) => cu.cats.map((c) => `<option value="${esc(c.id)}"${c.id === sel ? ' selected' : ''}>${esc(c.name)}</option>`).join('');
+    let filterCat = '', q = '', pq = '';
+    const field = (k, label, val = '', ph = '', type = 'text') => `<label class="admin-field"><span>${esc(label)}</span><input type="${type}" data-k="${k}" value="${esc(val)}" placeholder="${esc(ph)}" autocomplete="off"></label>`;
+    const say = (sel, html, cls = '') => { const el = $(sel, body); if (el) { el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; } };
+    const changed = async () => { customCh = null; resetIptvCaches(); await load(); };
+    const call = async (path, method, payload, msgSel) => {
+      try { const r = await guard(path, { method, body: payload }); await changed(); return r; }
+      catch (e) { say(msgSel || '[data-chan-result]', esc(e.message), 'bad'); return null; }
+    };
+
+    const itemRow = (i) => `<div class="admin-row chan-row" data-item="${esc(i.id)}"><div class="admin-row-main"><strong>${esc(i.name)}</strong>${i.on === false ? ' <span class="pill">off</span>' : ''}
+        <div class="muted">${esc(catName(i.cat))}${i.num ? ' · #' + esc(i.num) : ''} · ${esc(i.url.length > 70 ? i.url.slice(0, 70) + '…' : i.url)}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit-item>Edit</button><button class="btn btn-gray" data-backups>Backups${i.backups && i.backups.length ? ` (${i.backups.length})` : ''}</button><button class="btn btn-gray" data-toggle-item>${i.on === false ? 'Turn on' : 'Turn off'}</button><button class="btn btn-gray" data-del-item>Delete</button></div>
+        <div class="chan-edit hidden" data-edit-box></div></div>`;
+    const provRow = (c) => `<div class="admin-row chan-row" data-pkey="${esc(c.editKey)}"><div class="admin-row-main"><strong>${esc(c.name)}</strong>${c.edited ? ' <span class="pill warn">fixed</span>' : ''}${c.hidden ? ' <span class="pill">hidden</span>' : ''}
+        <div class="muted">${c.num ? '#' + esc(c.num) + ' · ' : ''}${c.origName ? 'was ' + esc(c.origName) + ' · ' : ''}${esc(String(c.group))}</div></div>
+        <div class="plan-actions"><button class="btn btn-gray" data-edit-prov>Fix</button><button class="btn btn-gray" data-backups>Backups${(cu.edits['k' + c.editKey] || {}).backups?.length ? ` (${cu.edits['k' + c.editKey].backups.length})` : ''}</button><button class="btn btn-gray" data-hide-prov>${c.hidden ? 'Show' : 'Hide'}</button>${c.edited ? '<button class="btn btn-gray" data-undo-prov>Undo fixes</button>' : ''}</div>
+        <div class="chan-edit hidden" data-edit-box></div></div>`;
+
+    function paintProvs() {
+      const box = $('[data-provs]', body); if (!box) return;
+      $('[data-pcount]', body).textContent = provs.length;
+      box.innerHTML = provs.map((p) => `<div class="admin-row" data-pvrow="${esc(p.id)}"><div class="admin-row-main"><strong>${esc(p.name)}</strong> <span class="pill">${p.type === 'm3u' ? 'M3U' : 'Xtream'}</span><div class="muted">${esc(p.host)}${p.username ? ' · ' + esc(p.username) : ''}</div></div><div class="plan-actions"><button class="btn btn-white" data-show-prov>${p.shown && p.shown.channels ? 'Choose groups' : 'Show in the app'}</button>${p.shown && p.shown.channels ? '<button class="btn btn-gray" data-sync-prov>Update now</button><button class="btn btn-gray" data-stop-prov>Stop showing</button>' : ''}<button class="btn btn-gray" data-del-prov>Remove</button></div>${p.shown && p.shown.channels ? `<div class="muted">Showing ${p.shown.channels} channels in ${p.shown.categories} categories in the apps.</div>` : ''}<div class="chan-edit hidden" data-pvpick></div></div>`).join('') || '<p class="muted">No other providers yet.</p>';
+    }
+    const bkTarget = (row) => (row.dataset.item ? { item: row.dataset.item } : { key: row.dataset.pkey });
+    const bkList = (t) => (t.item ? (cu.items.find((x) => x.id === t.item) || {}).backups : (cu.edits['k' + t.key] || {}).backups) || [];
+    const bkQuery = (t) => (t.item ? `item=${encodeURIComponent(t.item)}` : `key=${encodeURIComponent(t.key)}`);
+    function bkHtml(t) {
+      const list = bkList(t);
+      return `<p class="muted">Backups: tried in order when this channel stops working</p>` +
+        (list.length ? list.map((b, i) => `<div class="admin-row"><div class="admin-row-main"><strong>${i + 1}. ${esc(b.label)}</strong>${b.url ? `<div class="muted">${esc(b.url.length > 80 ? b.url.slice(0, 80) + '…' : b.url)}</div>` : ''}</div><div class="plan-actions"><button class="btn btn-gray" data-bkdel="${i}">Remove</button></div></div>`).join('') : '<p class="muted">No backups yet.</p>') +
+        (list.length < 3 ? `<div class="plan-grid"><label class="admin-field"><span>Find it in another provider</span><select data-bksrc>${sources.map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('')}</select></label>${field('bkq', 'Channel name', '', 'e.g. ESPN 2')}</div><div data-bkres></div>
+          <div class="plan-grid">${field('bkurl', 'Or paste a stream link', '', 'https://…/stream.m3u8')}${field('bklabel', 'Name (optional)', '', 'e.g. Other CDN')}</div><div class="m-actions"><button class="btn btn-white" data-bkadd>Add this link</button></div>` : '');
+    }
+    const renderBk = (row) => { const box = $('[data-edit-box]', row); box.innerHTML = bkHtml(bk); box.classList.remove('hidden'); };
+    const reopenBk = () => { if (!bk) return; const row = bk.item ? $(`[data-item="${CSS.escape(bk.item)}"]`, body) : $(`[data-pkey="${CSS.escape(bk.key)}"]`, body); if (row) renderBk(row); };
+    const bkAct = async (method, path, payload) => {
+      const r = await call(path, method, payload);
+      if (r) { if (bk && bk.key) { provList = provList && provList.map((x) => x); paintProv(); setTimeout(reopenBk, 50); } else { paintLists(); reopenBk(); } }
+      return r;
+    };
+    const bkSearch = async (row) => {
+      const box = $('[data-edit-box]', row), q = $('[data-k="bkq"]', box).value.trim(), src = $('[data-bksrc]', box).value, res = $('[data-bkres]', box), seq = ++bkSeq;
+      if (!q) { res.innerHTML = ''; return; }
+      try {
+        const j = await guard('/channels/provider', { params: { src, q, limit: 8 } });
+        if (seq !== bkSeq) return;
+        res.innerHTML = j.items.map((c) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(c.name)}</strong><div class="muted">${c.num ? '#' + esc(c.num) + ' · ' : ''}${esc(c.group)}</div></div><div class="plan-actions"><button class="btn btn-gray" data-bkuse="${esc(c.key)}" data-src="${esc(src)}">Use as backup</button></div></div>`).join('') || '<p class="muted">No match.</p>';
+      } catch (e) { res.innerHTML = `<p class="muted">${esc(e.message)}</p>`; }
+    };
+    const paintLists = () => {
+      const list = cu.items.filter((i) => (!filterCat || i.cat === filterCat) && (!q || i.name.toLowerCase().includes(q)));
+      $('[data-items]', body).innerHTML = list.slice(0, 200).map(itemRow).join('') || `<p class="muted">${cu.items.length ? 'No channels match.' : 'No channels of your own yet. Add one above, or import a playlist.'}</p>`;
+      $('[data-count]', body).textContent = `${cu.items.length}`;
+      $('[data-cats]', body).innerHTML = cu.cats.map((c) => `<div class="admin-row" data-cat="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.name)}</strong> <span class="pill">${cu.items.filter((i) => i.cat === c.id).length} channels</span>${c.adult ? ' <span class="pill warn">adult</span>' : ''}</div>
+        <div class="plan-actions"><button class="btn btn-gray" data-rename-cat>Rename</button><button class="btn btn-gray" data-adult-cat>${c.adult ? 'Not adult' : 'Mark adult'}</button><button class="btn btn-gray" data-del-cat>Delete</button></div></div>`).join('') || '<p class="muted">No categories yet. Make one first (for example "My channels").</p>';
+      for (const sel of $$('[data-catsel]', body)) { const keep = sel.value; sel.innerHTML = catOptions(keep || ''); if (keep) sel.value = keep; }
+      const fc = $('[data-filter-cat]', body); if (fc) { fc.innerHTML = '<option value="">All categories</option>' + catOptions(filterCat); fc.value = filterCat; }
+      paintProv(); paintProvs();
+    };
+    const paintProv = () => {
+      const box = $('[data-prov]', body);
+      if (!box) return;
+      if (!provList) { box.innerHTML = provLoading ? '<div class="spinner"></div>' : '<div class="m-actions"><button class="btn btn-gray" data-load-prov>Load the provider\'s channels</button></div>'; return; }
+      const list = provList.filter((c) => !pq || c.name.toLowerCase().includes(pq) || String(c.num).includes(pq));
+      box.innerHTML = `<label class="admin-field"><span>Search the provider's ${provList.length} channels</span><input type="text" data-prov-q value="${esc(pq)}" placeholder="Type a name or number"></label>
+        <div class="admin-list">${list.slice(0, 40).map(provRow).join('') || '<p class="muted">No match.</p>'}</div>${list.length > 40 ? `<p class="muted">Showing 40 of ${list.length}. Type more to narrow it down.</p>` : ''}`;
+    };
+
+    body.innerHTML = `
+      <section class="admin-card"><h2>Channels <small>your own channels and fixes, for every customer</small></h2>
+        <p class="muted">Like a channel manager: add channels of your own, import a playlist, and fix the provider's channels (rename, new picture, number, guide, another stream, or hide). Changes reach the apps within a few minutes. Adult categories stay behind the adult switch and PIN, and never show in the iPhone or Apple TV apps.</p>
+        <div class="live-result" data-chan-result></div></section>
+      ${isAdmin() ? `<section class="admin-card"><h2>Other providers <small data-pcount>0</small></h2>
+        <p class="muted">Add your other TV providers, then press Show in the app to put their channels in every customer's app next to your main provider's. Any channel can then use a channel from one of them as a backup: if the main one stops working, the app switches to the backup by itself. Only administrators see this (it holds the provider's login).</p>
+        <div class="admin-list" data-provs></div>
+        <div class="plan-grid">${field('pvname', 'Name', '', 'e.g. Provider B')}
+          <label class="admin-field"><span>Kind</span><select data-k="pvtype"><option value="xtream">Xtream login</option><option value="m3u">M3U playlist link</option></select></label>
+          ${field('pvserver', 'Server address', '', 'http://provider.example.com:8080')}${field('pvuser', 'Username')}${field('pvpass', 'Password', '', '', 'password')}${field('pvm3u', 'Playlist address (M3U only)', '', 'https://provider.example.com/playlist.m3u')}</div>
+        <div class="m-actions"><button class="btn btn-white" data-add-prov>Add provider</button></div><div class="live-result" data-pv-result></div></section>` : ''}
+      <section class="admin-card"><h2>Your categories</h2>
+        <div class="admin-list" data-cats></div>
+        <div class="plan-grid">${field('catname', 'New category', '', 'e.g. My channels')}
+          <label class="admin-check"><input type="checkbox" data-catadult> Adult category</label></div>
+        <div class="m-actions"><button class="btn btn-white" data-add-cat>Add category</button></div></section>
+      <section class="admin-card"><h2>Add a channel</h2>
+        <div class="plan-grid">
+          <label class="admin-field"><span>Category</span><select data-k="cat" data-catsel>${catOptions('')}</select></label>
+          ${field('name', 'Channel name', '', 'e.g. My Sports')}
+          ${field('url', 'Stream address', '', 'https://…/stream.m3u8')}
+          ${field('logo', 'Picture address (optional)', '', 'https://…/logo.png')}
+          ${field('num', 'Number (optional)', '', '101')}
+          ${field('epgId', 'Guide ID (optional)', '', 'matches the TV guide')}
+        </div>
+        <div class="m-actions"><button class="btn btn-white" data-add-item>Add channel</button></div></section>
+      <section class="admin-card"><h2>Import a playlist (M3U)</h2>
+        <p class="muted">Paste an M3U playlist, or choose a file. Every channel in it is added to the category you pick.</p>
+        <label class="admin-field"><span>Category</span><select data-catsel data-imp-cat>${catOptions('')}</select></label>
+        <label class="admin-field"><span>Playlist</span><textarea rows="5" data-imp-text placeholder="#EXTM3U&#10;#EXTINF:-1 tvg-logo=&quot;…&quot; group-title=&quot;…&quot;,Channel name&#10;https://…"></textarea></label>
+        <div class="m-actions"><input type="file" data-imp-file accept=".m3u,.m3u8,.txt,text/plain"><button class="btn btn-white" data-import>Import</button></div>
+        <div class="live-result" data-imp-result></div></section>
+      <section class="admin-card"><h2>Your channels <small data-count>${cu.items.length}</small></h2>
+        <div class="plan-grid"><label class="admin-field"><span>Show</span><select data-filter-cat><option value="">All categories</option>${catOptions('')}</select></label>
+          <label class="admin-field"><span>Search</span><input type="text" data-q placeholder="Channel name"></label></div>
+        <div class="admin-list" data-items></div></section>
+      <section class="admin-card"><h2>Fix the provider's channels</h2>
+        <p class="muted">Rename a channel, change its picture or number, point it at the right guide listing, play another stream instead, or hide it. The fix stays when the provider updates its list.</p>
+        <div data-prov></div></section>`;
+    paintLists();
+
+    const itemOf = (el) => cu.items.find((i) => i.id === el.closest('[data-item]')?.dataset.item);
+    const editBox = (row, html, onSave) => {
+      const box = $('[data-edit-box]', row);
+      if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+      box.innerHTML = html + '<div class="m-actions"><button class="btn btn-white" data-save-edit>Save</button><button class="btn btn-gray" data-cancel-edit>Cancel</button></div>';
+      box.classList.remove('hidden');
+      $('[data-cancel-edit]', box).addEventListener('click', () => box.classList.add('hidden'));
+      $('[data-save-edit]', box).addEventListener('click', async () => { const get = (k) => $(`[data-k="${k}"]`, box).value; if (await onSave(get)) { paintLists(); } });
+    };
+
+    body.addEventListener('input', (ev) => {
+      if (ev.target.matches('[data-q]')) { q = ev.target.value.trim().toLowerCase(); paintLists(); const el = $('[data-q]', body); el.focus(); el.setSelectionRange(q.length, q.length); }
+      if (ev.target.matches('[data-prov-q]')) { pq = ev.target.value.trim().toLowerCase(); paintProv(); const el = $('[data-prov-q]', body); el.focus(); el.setSelectionRange(pq.length, pq.length); }
+    });
+    body.addEventListener('input', (ev) => { if (ev.target.matches('[data-pvq]')) { const q = ev.target.value.trim().toLowerCase(); for (const r of $$('[data-gname]', ev.target.closest('[data-pvpick]'))) r.classList.toggle('hidden', !!q && !r.dataset.gname.includes(q)); } });
+    body.addEventListener('change', (ev) => { if (ev.target.matches('[data-filter-cat]')) { filterCat = ev.target.value; paintLists(); } });
+    let bkTimer = null;
+    body.addEventListener('input', (ev) => { if (ev.target.matches('[data-k="bkq"]')) { const row = ev.target.closest('[data-item],[data-pkey]'); clearTimeout(bkTimer); bkTimer = setTimeout(() => bkSearch(row), 350); } });
+    body.addEventListener('change', (ev) => { if (ev.target.matches('[data-bksrc]')) bkSearch(ev.target.closest('[data-item],[data-pkey]')); });
+    body.addEventListener('click', async (ev) => {
+      const t = ev.target.closest('button'); if (!t) return;
+      if (t.matches('[data-add-prov]')) {
+        const get = (k) => $(`[data-k="${k}"]`, body).value;
+        say('[data-pv-result]', '<div class="spinner"></div> Checking the provider…');
+        const r = await call('/channels/providers', 'POST', { name: get('pvname'), type: get('pvtype'), server: get('pvserver'), username: get('pvuser'), password: get('pvpass'), m3uUrl: get('pvm3u') }, '[data-pv-result]');
+        if (r) { for (const k of ['pvname', 'pvserver', 'pvuser', 'pvpass', 'pvm3u']) $(`[data-k="${k}"]`, body).value = ''; say('[data-pv-result]', `Added. It has ${r.channels} channels.`, 'good'); }
+        return;
+      }
+      if (t.matches('[data-show-prov]')) {
+        const pr = t.closest('[data-pvrow]'), box = $('[data-pvpick]', pr), id = pr.dataset.pvrow;
+        if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+        box.classList.remove('hidden'); box.innerHTML = '<div class="spinner"></div> Reading the provider…';
+        let g; try { g = await guard(`/channels/providers/${id}/groups`); } catch (e) { box.innerHTML = `<div class="live-result bad">${esc(e.message)}</div>`; return; }
+        box.innerHTML = `<p class="muted">Tick the groups to show in the apps. Each becomes a category named after the provider. ${g.total} channels in all.</p>
+          <input class="st-note-input" data-pvq placeholder="Search groups" aria-label="Search groups">
+          <div class="admin-list" data-pvgroups>${g.groups.map((x) => `<label class="admin-row" data-gname="${esc(x.name.toLowerCase())}"><input type="checkbox" data-pvg value="${esc(x.name)}"${x.shown ? ' checked' : ''}> <span class="admin-row-main"><strong>${esc(x.name)}</strong> <span class="pill">${x.count} ${x.count === 1 ? "channel" : "channels"}</span>${x.adult ? ' <span class="pill warn">adult</span>' : ''}</span></label>`).join('')}</div>
+          <div class="m-actions"><button class="btn btn-white" data-pv-import>Show these in the app</button></div><div class="live-result" data-pv-pickresult></div>`;
+        return;
+      }
+      if (t.matches('[data-pv-import]')) {
+        const pr = t.closest('[data-pvrow]'), picked = $$('[data-pvg]:checked', pr).map((x) => x.value);
+        if (!picked.length) { say('[data-pv-pickresult]', 'Tick at least one group.', 'bad'); return; }
+        const sel = '[data-pv-pickresult]'; say(sel, '<div class="spinner"></div> Adding channels…');
+        const r = await call(`/channels/providers/${pr.dataset.pvrow}/import`, 'POST', { groups: picked }, sel);
+        if (r) { toast(`${r.result.added} channels added`); try { provs = (await guard('/channels/providers')).providers || []; } catch { /* */ } paintProvs(); paintLists(); }
+        return;
+      }
+      if (t.matches('[data-sync-prov]')) {
+        const pr = t.closest('[data-pvrow]'); t.disabled = true;
+        const r = await call(`/channels/providers/${pr.dataset.pvrow}/sync`, 'POST', null, '[data-pv-result]');
+        if (r) { toast(`${r.result.added} added, ${r.result.updated} changed, ${r.result.removed} taken out`); try { provs = (await guard('/channels/providers')).providers || []; } catch { /* */ } }
+        paintProvs(); paintLists(); return;
+      }
+      if (t.matches('[data-stop-prov]')) {
+        const pr = t.closest('[data-pvrow]');
+        if (await confirmAction('Stop showing this provider?', 'Its categories and channels leave the apps. The provider stays added, so you can show them again.', 'Stop showing') && await call(`/channels/providers/${pr.dataset.pvrow}/import`, 'DELETE', null, '[data-pv-result]')) { try { provs = (await guard('/channels/providers')).providers || []; } catch { /* */ } paintProvs(); paintLists(); }
+        return;
+      }
+      if (t.matches('[data-del-prov]')) {
+        const pr = t.closest('[data-pvrow]');
+        if (await confirmAction('Remove this provider?', 'Backups that use it are removed too.', 'Remove') && await call(`/channels/providers/${pr.dataset.pvrow}`, 'DELETE')) { paintProvs(); paintLists(); }
+        return;
+      }
+      const brow = t.closest('[data-item],[data-pkey]');
+      if (t.matches('[data-backups]') && brow) {
+        const nt = bkTarget(brow), box0 = $('[data-edit-box]', brow);
+        if (!box0.classList.contains('hidden') && bk && JSON.stringify(bk) === JSON.stringify(nt)) { box0.classList.add('hidden'); bk = null; return; }
+        bk = nt; renderBk(brow); return;
+      }
+      if (brow && bk && (t.matches('[data-bkdel]') || t.matches('[data-bkuse]') || t.matches('[data-bkadd]')) && !$('[data-edit-box]', brow).classList.contains('hidden')) {
+        if (t.matches('[data-bkdel]')) await bkAct('DELETE', `/channels/backup?${bkQuery(bk)}&i=${t.dataset.bkdel}`);
+        else if (t.matches('[data-bkuse]')) await bkAct('POST', '/channels/backup', { ...bk, src: t.dataset.src, ref: t.dataset.bkuse });
+        else { const bx = $('[data-edit-box]', brow); await bkAct('POST', '/channels/backup', { ...bk, url: $('[data-k="bkurl"]', bx).value, label: $('[data-k="bklabel"]', bx).value }); }
+        return;
+      }
+      if (t.matches('[data-add-cat]')) {
+        const name = $('[data-k="catname"]', body).value;
+        if (await call('/channels/cats', 'POST', { name, adult: $('[data-catadult]', body).checked })) { $('[data-k="catname"]', body).value = ''; $('[data-catadult]', body).checked = false; say('[data-chan-result]', 'Category added.', 'good'); paintLists(); }
+        return;
+      }
+      const cat = t.closest('[data-cat]');
+      if (cat && t.matches('[data-rename-cat]')) { const c = cu.cats.find((x) => x.id === cat.dataset.cat); const n = prompt('New name for this category', c.name); if (n && n.trim() && await call(`/channels/cats/${c.id}`, 'PUT', { name: n })) paintLists(); return; }
+      if (cat && t.matches('[data-adult-cat]')) { const c = cu.cats.find((x) => x.id === cat.dataset.cat); if (await call(`/channels/cats/${c.id}`, 'PUT', { adult: !c.adult })) paintLists(); return; }
+      if (cat && t.matches('[data-del-cat]')) {
+        const c = cu.cats.find((x) => x.id === cat.dataset.cat), n = cu.items.filter((i) => i.cat === c.id).length;
+        if (!await confirmAction(`Delete "${c.name}"?`, n ? `Its ${n} channels will be deleted too.` : 'It has no channels.', 'Delete')) return;
+        if (await call(`/channels/cats/${c.id}`, 'DELETE')) paintLists();
+        return;
+      }
+      if (t.matches('[data-add-item]')) {
+        const get = (k) => $(`[data-k="${k}"]`, body).value;
+        const r = await call('/channels/items', 'POST', { cat: get('cat'), name: get('name'), url: get('url'), logo: get('logo'), num: get('num'), epgId: get('epgId') });
+        if (r) { for (const k of ['name', 'url', 'logo', 'num', 'epgId']) $(`[data-k="${k}"]`, body).value = ''; say('[data-chan-result]', 'Channel added.', 'good'); paintLists(); }
+        return;
+      }
+      if (t.matches('[data-import]')) {
+        const text = $('[data-imp-text]', body).value, catId = $('[data-imp-cat]', body).value;
+        if (!/#EXTINF/.test(text)) return say('[data-imp-result]', 'That does not look like an M3U playlist.', 'bad');
+        const chans = parseM3u(text).all.filter((c) => /^https?:\/\//i.test(c.url)).map((c) => ({ name: c.name, url: c.url, logo: c.logo, num: c.num, epgId: c.epgId }));
+        if (!chans.length) return say('[data-imp-result]', 'No channels with an http(s) address found.', 'bad');
+        say('[data-imp-result]', '<div class="spinner"></div>');
+        let added = 0, skipped = 0;
+        for (let i = 0; i < chans.length; i += 500) {
+          const r = await call('/channels/items/bulk', 'POST', { cat: catId, items: chans.slice(i, i + 500) }, '[data-imp-result]');
+          if (!r) return; added += r.added; skipped += r.skipped;
+        }
+        $('[data-imp-text]', body).value = '';
+        say('[data-imp-result]', `Added ${added} channels${skipped ? `, skipped ${skipped} without a usable address` : ''}.`, 'good'); paintLists();
+        return;
+      }
+      if (t.matches('[data-load-prov]')) {
+        provLoading = true; paintProv();
+        try {
+          const cfg = iptv.config;
+          if (!iptvOn(cfg)) throw new Error('Live TV is not set up yet (Admin → Live TV).');
+          if (cfg.type === 'xtream') {
+            const list = await xtJson(cfg, { action: 'get_live_streams' }, { saved: true, maxAge: LIST_MAX_AGE });
+            provList = (Array.isArray(list) ? list : []).map((st) => xtChannel(cfg, st));
+          } else { const src = await iptvSource(cfg); provList = src.rawAll || src.all || []; }
+        } catch (e) { provList = null; say('[data-chan-result]', esc(e.message), 'bad'); }
+        provLoading = false; paintProv();
+        return;
+      }
+      const row = t.closest('[data-item]');
+      if (row) {
+        const it = itemOf(t);
+        if (t.matches('[data-edit-item]')) {
+          editBox(row, `<div class="plan-grid"><label class="admin-field"><span>Category</span><select data-k="cat">${catOptions(it.cat)}</select></label>${field('name', 'Name', it.name)}${field('url', 'Stream address', it.url)}${field('logo', 'Picture address', it.logo)}${field('num', 'Number', it.num)}${field('epgId', 'Guide ID', it.epgId)}</div>`,
+            async (get) => !!(await call(`/channels/items/${it.id}`, 'PUT', { cat: get('cat'), name: get('name'), url: get('url'), logo: get('logo'), num: get('num'), epgId: get('epgId') })));
+        } else if (t.matches('[data-toggle-item]')) { if (await call(`/channels/items/${it.id}`, 'PUT', { on: it.on === false })) paintLists(); }
+        else if (t.matches('[data-del-item]')) { if (await confirmAction(`Delete "${it.name}"?`, 'It disappears from every customer\'s Live TV.', 'Delete') && await call(`/channels/items/${it.id}`, 'DELETE')) paintLists(); }
+        return;
+      }
+      const prow = t.closest('[data-pkey]');
+      if (prow) {
+        const key = prow.dataset.pkey, c = provList.find((x) => x.editKey === key), e0 = (cu.edits['k' + key]) || {};
+        const refreshProv = () => { if (iptv.config?.type === 'xtream') provList = provList.map((x) => (x.editKey === key ? xtChannelUpdate(x, cu.edits['k' + key]) : x)); paintProv(); };
+        if (t.matches('[data-edit-prov]')) {
+          editBox(prow, `<div class="plan-grid">${field('name', 'Name', e0.name || '', c.origName || c.name)}${field('logo', 'Picture address', e0.logo || '')}${field('num', 'Number', e0.num || '', c.origNum || c.num || '')}${field('epgId', 'Guide ID', e0.epgId || '', c.epgId || '')}${field('url', 'Play this stream instead', e0.url || '', 'Leave empty to use the provider\'s')}</div><p class="muted">Leave a box empty to keep the provider's value.</p>`,
+            async (get) => { const r = await call('/channels/edit', 'PUT', { key, name: get('name'), logo: get('logo'), num: get('num'), epgId: get('epgId'), url: get('url') }); if (r) refreshProv(); return !!r; });
+        } else if (t.matches('[data-hide-prov]')) { const r = await call('/channels/edit', 'PUT', { key, hidden: !c.hidden }); if (r) refreshProv(); }
+        else if (t.matches('[data-undo-prov]')) { const r = await call(`/channels/edit?key=${encodeURIComponent(key)}`, 'DELETE'); if (r) refreshProv(); }
+      }
+    });
+    // the picked file becomes the pasted text
+    $('[data-imp-file]', body).addEventListener('change', async (ev) => { const f = ev.target.files && ev.target.files[0]; if (!f) return; if (f.size > 8 * 1048576) return say('[data-imp-result]', 'That file is too large (8 MB at most).', 'bad'); $('[data-imp-text]', body).value = await f.text(); });
+    // after a fix, show it in the list straight away
+    function xtChannelUpdate(x, e) { const y = { ...x }; if (!e) { y.edited = false; y.hidden = false; if (y.origName) { y.name = y.origName; y.origName = ''; } return y; } y.edited = true; y.hidden = !!e.hidden; if (e.name) { y.origName = y.origName || y.name; y.name = e.name; } else if (y.origName) { y.name = y.origName; y.origName = ''; } if (e.num) y.num = e.num; return y; }
+  }
+
+  async function adminReports(body, isCurrent) {
+    if (!guardEnabled) {
+      body.innerHTML = '<section class="admin-card"><h2>Channel reports</h2><p class="muted">Aurora Guard is switched off, and it is what keeps the provider key and the reports. Switch it on (see server/README.md), then come back.</p></section>';
+      return;
+    }
+    let prov, rep;
+    try { [prov, rep] = await Promise.all([isAdmin() ? guard('/provider') : Promise.resolve(null), guard('/reports')]); } catch (e) {
+      body.innerHTML = `<section class="admin-card"><h2>Channel reports</h2><p class="empty-msg">Couldn't reach Aurora Guard: ${esc(e.message)}. Channel reports need guard version 1.1.0 or newer on the server PC.</p></section>`;
+      return;
+    }
+    if (!isCurrent()) return;
+    const sel = (id, label, options, value) => `<label class="admin-field"><span>${esc(label)}</span><select data-pv="${id}">${options.map(([v, l]) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+    const chRow = (c) => `<div class="admin-row" tabindex="-1"><div class="admin-row-main"><strong>${esc(c.channel)}</strong>
+      <div class="muted">${esc(Object.entries(c.reasons).map(([k, v]) => `${k} ×${v}`).join(' · '))} · ${c.users} ${c.users === 1 ? 'customer' : 'customers'}</div></div>
+      <div class="admin-row-time">${c.count} ${c.count === 1 ? 'report' : 'reports'} · ${esc(timeAgo(c.last))}</div></div>`;
+    const recRow = (r) => `<div class="admin-row" tabindex="-1"><div class="admin-row-main"><strong>${esc(r.channel)}</strong> · ${esc(r.reason)}${r.auto ? ' <span class="pill">automatic</span>' : ''}
+      <div class="muted">${esc(r.user)} · ${esc(r.device)}${r.note ? ' · ' + esc(r.note) : ''} · ${r.forwarded === 'sent' ? 'sent to the provider' : r.forwarded === 'failed' ? '<span class="pill bad">the provider did not accept it</span>' : r.forwarded === 'held' ? 'kept here, waiting for a second person to report it before it goes to the provider' : 'kept here only'}</div></div>
+      <div class="admin-row-time">${esc(timeAgo(r.at))}</div></div>`;
+    body.innerHTML = `
+      ${prov ? `<section class="admin-card">
+        <h2>TV provider reporting</h2>
+        <p class="muted">When a customer reports a channel (long-press it, or press Menu on the remote), or a channel keeps buffering, Aurora can pass the report to your TV provider's system. The API key is typed here once and kept only on the server PC (Aurora Guard): it is never sent to phones or TVs, and it is never shown again, only its last 4 characters.</p>
+        <label class="admin-check"><input type="checkbox" data-pv="enabled"${prov.enabled ? ' checked' : ''}> Send reports to the provider</label>
+        <label class="admin-field"><span>Provider address (web address for reports)</span>
+          <input type="url" data-pv="url" value="${esc(prov.url)}" placeholder="https://provider.example.com/api/report" autocomplete="off"></label>
+        ${sel('method', 'Send as', [['POST', 'POST (with a body)'], ['GET', 'GET (details in the address)']], prov.method)}
+        ${sel('keyIn', 'The key goes in', [['header', 'A header'], ['bearer', 'Authorization: Bearer'], ['query', 'The address (?name=key)']], prov.keyIn)}
+        <label class="admin-field"><span>Name of the header or address field</span>
+          <input type="text" data-pv="keyName" value="${esc(prov.keyName)}" placeholder="X-API-Key" autocomplete="off"></label>
+        <label class="admin-field"><span>API key ${prov.keySet ? `<span class="pill">set · ends …${esc(prov.keyLast4)}</span>` : '<span class="pill warn">not set</span>'}</span>
+          <input type="password" data-pv="key" value="" placeholder="${prov.keySet ? 'Leave empty to keep the current key' : 'Paste the key here'}" autocomplete="new-password"></label>
+        <details><summary>Body of the report (advanced)</summary>
+          <p class="muted">For POST. JSON with these pieces filled in: {{channel}} {{channelId}} {{reason}} {{note}} {{device}} {{user}} {{group}} {{time}}. For GET, put them in the address instead, like ?ch={{channelId}}. Leave empty for the standard layout.</p>
+          <textarea data-pv="body" rows="6" placeholder="${esc(prov.defaultBody)}" spellcheck="false">${esc(prov.body)}</textarea></details>
+        <div class="m-actions">
+          <button class="btn btn-red" data-save>Save</button>
+          <button class="btn btn-gray" data-test>Send a test report</button>
+          ${prov.keySet ? '<button class="btn btn-gray" data-removekey>Remove the key</button>' : ''}
+        </div>
+        <div class="live-result" data-result></div>
+      </section>` : ''}
+      <section class="admin-card">
+        <h2>Reported channels <small>${rep.total} ${rep.total === 1 ? 'report' : 'reports'} kept</small></h2>
+        <div class="admin-list">${rep.channels.map(chRow).join('') || '<p class="muted">No reports yet.</p>'}</div>
+        ${rep.total && isAdmin() ? '<div class="m-actions"><button class="btn btn-gray" data-clear>Clear the list</button></div>' : ''}
+      </section>
+      <section class="admin-card">
+        <h2>Latest reports</h2>
+        <div class="admin-list">${rep.reports.slice(0, 30).map(recRow).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+      </section>`;
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const val = (id) => $(`[data-pv="${id}"]`, body);
+    const reload = () => setTimeout(() => { if (isCurrent()) adminReports(body, isCurrent); }, 1200);
+    $('[data-save]', body)?.addEventListener('click', async () => {
+      say('<div class="spinner"></div> Saving…');
+      try {
+        const payload = { enabled: val('enabled').checked, url: val('url').value.trim(), method: val('method').value, keyIn: val('keyIn').value, keyName: val('keyName').value.trim(), body: val('body').value };
+        const key = val('key').value.trim();
+        if (key) payload.key = key;
+        await guard('/provider', { method: 'PUT', body: payload });
+        val('key').value = '';
+        say(key ? 'Saved, with the new key.' : 'Saved.', 'good');
+        reload();
+      } catch (e) { say("Couldn't save: " + esc(e.message), 'bad'); }
+    });
+    $('[data-test]', body)?.addEventListener('click', async () => {
+      say('<div class="spinner"></div> Sending a test report… (save first if you changed anything)');
+      try {
+        const r = await guard('/provider/test', { method: 'POST' });
+        say(r.ok ? `The provider accepted it (status ${esc(r.status)}). ${esc(r.text || '')}` : `The provider did not accept it${r.status ? ` (status ${esc(r.status)})` : ''}: ${esc(r.text || '')}`, r.ok ? 'good' : 'bad');
+      } catch (e) { say("Couldn't send: " + esc(e.message), 'bad'); }
+    });
+    $('[data-removekey]', body)?.addEventListener('click', async () => {
+      if (!await confirmAction('Remove the provider key?', 'Reports will stop going to the provider until you enter a key again.', 'Remove key')) { adminReports(body, isCurrent); return; }
+      try { await guard('/provider/key', { method: 'DELETE' }); toast('Key removed', 2000); } catch (e) { toast("Couldn't remove it: " + e.message); }
+      adminReports(body, isCurrent);
+    });
+    $('[data-clear]', body)?.addEventListener('click', async () => {
+      try { await guard('/reports', { method: 'DELETE' }); } catch (e) { say("Couldn't clear: " + esc(e.message), 'bad'); return; }
+      adminReports(body, isCurrent);
+    });
+  }
+
+  // ----- Admin → Playback: settings for every customer -----
+  // Stored in each account's "aurora-playback" display preferences (the same way as the update lock) and read at
+  // sign-in. A value set here replaces the viewer's own choice in Settings; "Customer's choice" leaves it to them.
+  async function adminPlayback(body, isCurrent) {
+    const cfg = (await readAuroraPref(PLAYBACK_PREFS).catch(() => null)) || {};
+    if (!isCurrent()) return;
+    const sel = (id, label, help, options, value) => `<label class="admin-field"><span>${esc(label)}</span>
+      <select data-pb="${id}">${options.map(([v, l]) => `<option value="${esc(v)}"${String(v) === String(value ?? '') ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
+      <small class="muted">${esc(help)}</small></label>`;
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Playback for everyone</h2>
+        <p class="muted"><strong>These apply on phones and TVs.</strong> What you choose here replaces the customer's own choice in Settings (the setting is greyed out for them).
+          "Customer's choice" leaves it to them. It reaches each device the next time Aurora opens or checks for updates.
+          Aurora plays Live TV straight from your provider, and Emby converts movies and shows, so these are the settings that matter for smoothness.</p>
+        ${sel('liveBuffer', 'Live TV buffer', 'How much of a channel loads before it plays, in the Android app and TV app. Large rides out slow internet and bursts best; Small changes channel fastest.',
+          [['', "Customer's choice"], ['small', 'Small (fastest channel changes)'], ['medium', 'Medium (recommended)'], ['large', 'Large (smoothest)']], cfg.liveBuffer)}
+        ${sel('maxQuality', 'Streaming quality limit', 'The highest quality movies and shows may use, whatever the customer picks. Lowering it saves your server and upload bandwidth.',
+          [[0, 'No limit'], ...QUALITY_OPTIONS.slice(1).map((q) => [q.bitrate, q.label])], Number(cfg.maxQuality) || 0)}
+        ${sel('stallSeconds', 'Reconnect a stalled stream after', 'If a movie, show or channel sits buffering this long without recovering, the player reconnects at the same spot. Shorter recovers faster from a dead connection but may cut in on a slow one. Normal is 30 seconds for movies and shows, 25 for Live TV.',
+          [[0, 'Normal'], [10, '10 seconds'], [15, '15 seconds'], [20, '20 seconds'], [30, '30 seconds'], [45, '45 seconds'], [60, '60 seconds']], Number(cfg.stallSeconds) || 0)}
+        ${sel('appLock', 'Lock Aurora with the phone\'s PIN or fingerprint', "Phones only (never on TVs). With 'Required', Aurora asks for the phone's screen lock when it opens and after a minute away. Phones with no screen lock set are not affected.",
+          [['', "Customer's choice"], ['on', 'Required']], cfg.appLock)}
+        ${sel('asIs', 'Play as they are', "Converting needs your server's ffmpeg to start in time; when it can't, a video never starts. 'Shows and movies' sends every file untouched (no converting, no limit; a customer on a slow line may buffer). 'Each device decides' plays shows as they are, and any device whose conversions fail twice stops asking for them for 6 hours. 'Let Aurora convert' is the old behaviour.",
+          [['', 'Each device decides (shows as they are)'], ['all', 'Shows and movies as they are'], ['off', 'Let Aurora convert when it helps']], cfg.asIs || '')}
+        ${sel('downloads', 'Offline downloads (Android app)', 'Lets customers save movies and shows on their phone to watch without internet. Downloads use your server\'s upload bandwidth once per title. Off removes the Download button and deletes saved downloads the next time Aurora opens.',
+          [['', 'On'], ['off', 'Off']], cfg.downloads || '')}
+        ${sel('player', 'Video player', "Aurora player plays most files as they are with no converting (smoothest). Basic is the older player; use it for everyone only if the Aurora player has a problem.",
+          [['', "Customer's choice"], ['aurora', 'Aurora player (smoothest)'], ['web', 'Basic']], cfg.player)}
+        <div class="m-actions">
+          <button class="btn btn-red" data-save>Save for everyone</button>
+          <button class="btn btn-gray" data-reset>Back to customer's choice</button>
+        </div>
+        <div class="live-result" data-result></div>
+      </section>`;
+    const result = $('[data-result]', body);
+    const say = (html, cls = '') => { result.className = 'live-result' + (cls ? ' ' + cls : ''); result.innerHTML = html; };
+    const save = async (value, done) => {
+      say('<div class="spinner"></div> Saving for every account…');
+      try {
+        const r = await writeAuroraPrefForAll(PLAYBACK_PREFS, value);
+        await refreshAppConfig();
+        if (!isCurrent()) return;
+        say(`${done} Saved for ${r.saved} of ${r.total} accounts${r.failed ? ` (${r.failed} failed; try again)` : ''}.`, r.failed ? 'bad' : 'good');
+        setTimeout(() => { if (isCurrent()) adminPlayback(body, isCurrent); }, 1500);
+      } catch (e) { say("Couldn't save: " + esc(adminError(e)), 'bad'); }
+    };
+    const pick = (id) => $(`[data-pb="${id}"]`, body).value;
+    $('[data-save]', body).addEventListener('click', () => {
+      const value = { liveBuffer: pick('liveBuffer'), maxQuality: Number(pick('maxQuality')) || 0, stallSeconds: Number(pick('stallSeconds')) || 0, appLock: pick('appLock'), player: pick('player'), asIs: pick('asIs'), downloads: pick('downloads'), t: Date.now() };
+      save(value, 'Playback settings saved.');
+    });
+    $('[data-reset]', body).addEventListener('click', () => save(null, 'Customers choose again.'));
+  }
+
+  // ----- Usage, sharing, server health and the audit log (Aurora Guard 1.6.0) -----
+  const guardOldNote = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.6.0 to use ${what}: copy the new aurora-guard.js to the PC and restart the "Aurora Guard" task.` : esc(e.message));
+  const needGuard = (body, title) => {
+    body.innerHTML = `<section class="admin-card"><h2>${esc(title)}</h2><p class="muted">This needs Aurora Guard, which is switched off. See server/README.md.</p></section>`;
+  };
+  const fmtMinutes = (m) => {
+    m = Math.round(m || 0);
+    if (m < 1) return '0 min';
+    if (m < 60) return `${m} min`;
+    const h = Math.floor(m / 60), r = m % 60;
+    return r ? `${h} h ${r} min` : `${h} h`;
+  };
+  const fmtBytes = (b) => (b >= 1099511627776 ? `${(b / 1099511627776).toFixed(1)} TB` : b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : `${Math.round(b / 1048576)} MB`);
+  const fmtUptime = (sec) => { const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+
+  async function adminUsage(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Usage');
+    const days = [7, 30, 60].includes(Number(new URLSearchParams(location.hash.split('?')[1] || '').get('days'))) ? Number(new URLSearchParams(location.hash.split('?')[1]).get('days')) : 30;
+    let data;
+    try { data = await guard('/usage', { params: { days } }); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Usage</h2><p class="live-result bad">${guardOldNote(e, 'the usage report')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const maxDay = Math.max(1, ...data.perDay.map((d) => d.min)), maxUser = Math.max(1, ...data.users.map((u) => u.min));
+    const bars = data.perDay.map((d) => `<div class="bar-col" title="${esc(fmtDay(d.day))}: ${esc(fmtMinutes(d.min))}"><div class="bar-fill" style="height:${Math.max(3, Math.round(100 * d.min / maxDay))}%"></div></div>`).join('');
+    body.innerHTML = `
+      <div class="chip-row">${[7, 30, 60].map((n) => `<a class="chip${n === days ? ' active' : ''}" href="#/admin?tab=usage&days=${n}">Last ${n} days</a>`).join('')}</div>
+      <div class="stat-grid">
+        ${statTile('Watch time', fmtMinutes(data.totalMin), `Last ${days} days`)}
+        ${statTile('Viewers', data.users.length, data.users.length ? `${esc(data.users[0].name)} watched the most` : 'Nobody yet')}
+        ${statTile('Most watched', data.titles[0] ? esc(data.titles[0].title) : '—', data.titles[0] ? `${fmtMinutes(data.titles[0].min)} · ${data.titles[0].viewers} ${data.titles[0].viewers === 1 ? 'viewer' : 'viewers'}` : '')}
+      </div>
+      <section class="admin-card"><h2>Watch time per day</h2>
+        ${data.perDay.length ? `<div class="bar-chart" role="img" aria-label="Watch time per day">${bars}</div>
+        <div class="bar-axis"><span>${esc(fmtDay(data.perDay[0].day))}</span><span>${esc(fmtDay(data.perDay[data.perDay.length - 1].day))}</span></div>` : '<p class="muted">Nothing counted yet. The guard counts every minute something is playing, starting when guard 1.6.0 first ran.</p>'}
+      </section>
+      <section class="admin-card"><h2>Who watches <small>${data.users.length}</small></h2>
+        <div class="admin-list">${data.users.map((u) => `<a class="admin-row usage-row" href="#/admin?tab=users&user=${esc(u.userId)}">
+          <div class="admin-row-main"><strong>${esc(u.name)}</strong> <span class="muted">${esc(fmtMinutes(u.min))} · ${u.days} ${u.days === 1 ? 'day' : 'days'}</span>
+            <div class="usage-bar"><span style="width:${Math.max(2, Math.round(100 * u.min / maxUser))}%"></span></div>
+            <div class="muted">${u.top.map((t) => esc(t.title)).join(' · ')}</div></div></a>`).join('') || '<p class="muted">Nobody yet.</p>'}</div>
+      </section>
+      <section class="admin-card"><h2>Most watched</h2>
+        <div class="admin-list">${data.titles.map((t, i) => `<div class="admin-row"><div class="admin-row-main"><strong>${i + 1}. ${esc(t.title)}</strong></div>
+          <div class="admin-row-time">${esc(fmtMinutes(t.min))} · ${t.viewers} ${t.viewers === 1 ? 'viewer' : 'viewers'}</div></div>`).join('') || '<p class="muted">Nothing yet.</p>'}</div>
+        <p class="muted">Counted each minute from what Emby reports as playing (paused time isn't counted), plus channels in Aurora's own live player. Series are counted by show. Only admins see this.</p>
+      </section>`;
+  }
+
+  async function adminSharing(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Sharing');
+    let data;
+    try { data = await guard('/sharing'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Sharing</h2><p class="live-result bad">${guardOldNote(e, 'the sharing detector')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const flagged = data.list.filter((x) => x.level !== 'ok'), rest = data.list.filter((x) => x.level === 'ok');
+    const pill = (x) => (x.level === 'likely' ? '<span class="pill bad">Likely shared</span>' : x.level === 'watch' ? '<span class="pill warn">Worth a look</span>' : '<span class="pill good">Looks normal</span>');
+    const why = (x) => [x.together ? `watched from 2 different networks at the same time (${x.together} ${x.together === 1 ? 'minute' : 'minutes'} this week)` : '', `${x.networks} ${x.networks === 1 ? 'network' : 'networks'} outside the home this week`].filter(Boolean).join(' · ');
+    const card = (x) => `<div class="admin-row share-row" data-share="${esc(x.userId)}"><div class="admin-row-main">
+        <a href="#/admin?tab=users&user=${esc(x.userId)}"><strong>${esc(x.name)}</strong></a> ${pill(x)}
+        <div class="muted">${esc(why(x))} · limit ${x.limit} ${x.limit === 1 ? 'device' : 'devices'}</div>
+        <div class="share-places">${x.places.slice(0, 8).map((p) => `<span class="share-place">${p.local ? 'Home network' : esc(p.ip)}${p.device ? ' · ' + esc(p.device) : ''} · ${esc(timeAgo(p.last))}</span>`).join('')}</div></div>
+        <button class="btn btn-gray" data-clear-share="${esc(x.userId)}" data-name="${esc(x.name)}">Clear</button></div>`;
+    body.innerHTML = `
+      <div class="stat-grid">
+        ${statTile('Likely shared', flagged.filter((x) => x.level === 'likely').length, 'Playing from 2 networks at once', flagged.some((x) => x.level === 'likely') ? 'bad' : 'good')}
+        ${statTile('Worth a look', flagged.filter((x) => x.level === 'watch').length, `${data.networksAt}+ networks in a week`)}
+        ${statTile('Looks normal', rest.length, 'Seen this week')}
+      </div>
+      <section class="admin-card"><h2>Accounts to check <small>${flagged.length}</small></h2>
+        <div class="admin-list">${flagged.map(card).join('') || '<p class="muted">Nothing suspicious. Nobody has been playing from two networks at once.</p>'}</div>
+        <p class="muted">A network is the first three parts of an address, so a phone moving between 4G towers counts once. "Likely shared" means the account was playing from two networks outside the home at the same moment. Clearing an account forgets its history. The guard's device limit still applies to every account.</p>
+      </section>
+      ${rest.length ? `<section class="admin-card"><details><summary>Everyone else (${rest.length})</summary>
+        <div class="admin-list">${rest.map(card).join('')}</div></details></section>` : ''}`;
+    $$('[data-clear-share]', body).forEach((b) => b.addEventListener('click', async () => {
+      if (!(await confirmAction(`Clear ${b.dataset.name}?`, 'Forget the places this account was seen. It starts counting again from now.', 'Clear'))) return;
+      try { await guard(`/sharing/${b.dataset.clearShare}`, { method: 'DELETE' }); toast('Cleared', 2000); if (isCurrent()) adminSharing(body, isCurrent); } catch (e) { toast("Couldn't clear it: " + e.message); }
+    }));
+  }
+
+  function sparkline(points, key, max = 100, cls = '') {
+    const w = 300, h = 60;
+    const vals = points.map((p) => (p[key] == null ? null : p[key]));
+    if (vals.filter((v) => v != null).length < 2) return '<p class="muted spark-empty">Collecting… (one point a minute)</p>';
+    const step = w / (vals.length - 1);
+    const d = vals.map((v, i) => (v == null ? '' : `${i ? 'L' : 'M'}${(i * step).toFixed(1)},${(h - Math.min(1, v / max) * (h - 4) - 2).toFixed(1)}`)).filter(Boolean).join(' ').replace(/^L/, 'M');
+    return `<svg class="spark ${cls}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-hidden="true"><path d="${d}" fill="none" stroke="currentColor" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+  }
+
+  // ----- Aurora Guard updates (Admin → Server; Guard 1.17.0) -----
+  // Shows the version the guard is running and the newest release. Update now: the guard downloads it, checks it, tries it, keeps the
+  // old one and restarts itself; this card follows along and says how it went. Go back puts the kept version back.
+  async function guardUpdateCard(box, isCurrent) {
+    const verTiles = (a, b) => `<div class="gu-ver"><div><small>Running now</small><b>${esc(a)}</b></div><div><small>Latest</small><b>${esc(b || '?')}</b></div></div>`;
+    const head = (pill, cls) => `<h2>Aurora Guard <small>Updates come from the Aurora releases on GitHub</small></h2><span class="gu-pill ${cls}">${esc(pill)}</span>`;
+    const notesHtml = (title, lines) => lines?.length ? `<div class="gu-notes"><b>${esc(title)}</b><ul>${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul></div>` : '';
+    let u;
+    try { u = await guard('/update'); } catch (e) {
+      if (!isCurrent()) return;
+      box.innerHTML = e.status === 404
+        ? `<section class="admin-card"><h2>Aurora Guard <small>Updates</small></h2><p class="muted">One-tap updates arrive with Aurora Guard 1.17.0. Copy the new aurora-guard.js to the PC once and restart it, and this card appears with an Update button from then on.</p></section>`
+        : '';
+      return;
+    }
+    if (!isCurrent()) return;
+    const ago = (t) => (t ? timeAgo(t) : 'not yet');
+    let watching = null;
+    const progress = (u2, restarting) => {
+      const back = u2.run?.kind === 'rollback';
+      const steps = back ? ['Putting the kept version back', 'Restarting'] : (u2.run?.steps || []);
+      const at = restarting ? steps.length - 1 : back ? ((u2.run?.step ?? 0) >= 4 ? 1 : 0) : (u2.run?.step ?? 0);
+      box.innerHTML = `<section class="admin-card gu">${head(back ? 'Going back…' : 'Updating…', 'busy')}<div class="gu-bar"><i style="width:${Math.round(((restarting ? steps.length - 0.5 : at) / Math.max(1, steps.length)) * 100)}%"></i></div>
+        <ul class="gu-steps">${steps.map((n, i) => `<li class="${i < at ? 'done' : i === at ? 'on' : ''}">${esc(n)}</li>`).join('')}</ul>
+        <p class="muted">Keep this screen open. Admin may not answer for about a minute while the guard restarts.</p></section>`;
+    };
+    const draw = (x) => {
+      u = x;
+      const refused = x.run?.error && !x.run.busy;
+      let html;
+      if (x.error && !x.latest) html = `${head("Can't check", 'warn')}${verTiles(x.current, '')}<div class="gu-notes"><b>The guard could not find an update</b>${esc(x.error)}</div><div class="m-actions"><button class="btn btn-gray" data-gu="check">Check again</button></div>`;
+      else if (refused) html = `${head('Update refused', 'bad')}${verTiles(x.current, x.latest)}<div class="gu-notes"><b>Nothing was changed</b>The ${esc(x.run.kind === 'rollback' ? 'old version' : 'new version')} was not installed: ${esc(x.run.error)}</div><div class="m-actions">${x.available ? '<button class="btn btn-red" data-gu="update">Try again</button>' : ''}<button class="btn btn-gray" data-gu="check">Check again</button></div>`;
+      else if (x.available) html = `${head('Update available', 'new')}${verTiles(x.current, x.latest)}${notesHtml(`What changed in ${x.latest}`, x.notes)}<div class="m-actions"><button class="btn btn-red" data-gu="update">Update now</button><button class="btn btn-gray" data-gu="check">Check again</button></div><p class="muted">Last checked ${esc(ago(x.checkedAt))}. The guard restarts itself, which takes about a minute.</p>`;
+      else if (x.lastApplied) html = `${head(`Updated to ${x.lastApplied.to}`, 'ok')}${verTiles(x.current, x.latest || x.current)}<div class="gu-notes"><b>${esc(x.lastApplied.from)} → ${esc(x.lastApplied.to)}</b><ul><li>The new file matched its published checksum</li><li>It started properly on this PC</li><li>The old version is kept as a backup</li></ul></div><div class="m-actions">${x.canGoBack ? `<button class="btn btn-gray" data-gu="back">Go back to ${esc(x.lastApplied.from)}</button>` : ''}<button class="btn btn-gray" data-gu="check">Check again</button></div><p class="muted">Updated ${esc(timeAgo(x.lastApplied.at))}${x.lastApplied.by ? ` by ${esc(x.lastApplied.by)}` : ''}.</p>`;
+      else html = `${head('Up to date', 'ok')}${verTiles(x.current, x.latest || x.current)}<div class="m-actions"><button class="btn btn-gray" data-gu="check">Check again</button></div><p class="muted">Last checked ${esc(ago(x.checkedAt))}.${x.enabled ? ' Checked automatically once a day.' : ' Automatic checks are switched off in config.json.'}</p>`;
+      box.innerHTML = `<section class="admin-card gu">${html}<div class="live-result" data-gu-result></div></section>`;
+    };
+    const say = (t) => { const el = $('[data-gu-result]', box); if (el) { el.className = 'live-result bad'; el.textContent = t; } };
+    const follow = (from) => {
+      watching = { from, at: Date.now(), down: false };
+      const timer = routeInterval(async () => {
+        if (!isCurrent() || !box.isConnected) { clearInterval(timer); return; }
+        let x;
+        try { x = await guard('/update'); } catch {
+          watching.down = true; progress(u, true);
+          if (Date.now() - watching.at > 120000) { clearInterval(timer); box.innerHTML = `<section class="admin-card gu">${head('The guard did not come back', 'bad')}<div class="gu-notes"><b>It has not answered for 2 minutes</b>On the PC, run <code>Start-ScheduledTask -TaskName 'Aurora Guard'</code>, or restart the Aurora Guard task. The previous version is saved in the guard's backups folder.</div></section>`; }
+          return;
+        }
+        if (x.run?.busy && !watching.down) { u = x; progress(x, false); return; }
+        if (x.run?.busy) { progress(x, true); return; }
+        clearInterval(timer); watching = null;
+        // The guard forgets what it found when it restarts: ask again once so the card is right straight away.
+        if (!x.latest && !x.run?.error) { try { x = await guard('/update/check', { method: 'POST' }); } catch { /* shown as it is */ } }
+        draw(x);
+      }, 1500);
+    };
+    const act = async (what, btn) => {
+      if (btn) btn.disabled = true;
+      try {
+        if (what === 'check') { draw(await guard('/update/check', { method: 'POST' })); return; }
+        if (what === 'update') {
+          if (!(await confirmAction(`Update the guard to ${u.latest}?`, "Customers stay signed in. The guard restarts itself, which takes about a minute, and Admin may not answer until it is back. The current version is kept so you can go back.", 'Update now'))) { if (btn) btn.disabled = false; return; }
+          const r = await guard('/update/apply', { method: 'POST' }); u = r; progress(r, false); follow(r.current); return;
+        }
+        if (what === 'back') {
+          if (!(await confirmAction(`Go back to ${u.lastApplied?.from}?`, 'The guard puts the kept version back and restarts itself.', 'Go back'))) { if (btn) btn.disabled = false; return; }
+          const r = await guard('/update/rollback', { method: 'POST' }); u = r; progress(r, false); follow(r.current);
+        }
+      } catch (e) { if (btn) btn.disabled = false; say(e.message); }
+    };
+    box.addEventListener('click', (ev) => { const b = ev.target.closest('[data-gu]'); if (b) act(b.dataset.gu, b); });
+    if (u.run?.busy) { progress(u, false); follow(u.current); } else draw(u);
+  }
+
+  // ----- Daily summary (Admin → Server; Guard 1.18.0): when it is sent, and a button to send one now -----
+  async function dailySummaryCard(box, isCurrent) {
+    let st;
+    try { st = await guard('/summary'); } catch { return; } // an older guard: nothing to show
+    if (!isCurrent()) return;
+    const hourText = (h) => `${((h + 11) % 12) + 1}:00 ${h < 12 ? 'AM' : 'PM'}`;
+    const status = !st.webhook ? 'No alert webhook is set, so there is nowhere to send it. Add "alertWebhookUrl" to the guard\'s config.json.'
+      : st.off ? 'Switched off in config.json ("dailySummary": false).'
+        : `Sent every morning at ${hourText(st.hour)} (the PC's clock) to your alerts channel${st.lastDay ? `. Last sent for ${st.lastDay}` : ''}.`;
+    box.innerHTML = `<section class="admin-card"><h2>Daily summary <small>Discord</small></h2><p class="muted">${esc(status)} It covers the day before: who watched what, sign-ups and plans, devices signed out, channel reports, the server, and anything waiting for you.</p>
+      ${st.webhook ? '<div class="m-actions"><button class="btn btn-gray" data-sum-send>Send one now</button></div>' : ''}<div class="live-result" data-sum-result></div></section>`;
+    $('[data-sum-send]', box)?.addEventListener('click', async (ev) => {
+      const b = ev.currentTarget, out = $('[data-sum-result]', box); b.disabled = true; out.className = 'live-result'; out.textContent = 'Sending…';
+      try { await guard('/summary/send', { method: 'POST' }); out.className = 'live-result good'; out.textContent = 'Sent. Check your Discord channel.'; }
+      catch (e) { out.className = 'live-result bad'; out.textContent = e.message; }
+      b.disabled = false;
+    });
+  }
+
+  async function adminServer(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Server health');
+    // The message customers see at the top of Settings → Status. Kept apart from the numbers below, which redraw every 15 s.
+    const noteBox = document.createElement('div'), updBox = document.createElement('div'), sumBox = document.createElement('div'), main = document.createElement('div');
+    const toolsHead = document.createElement('h3'); toolsHead.className = 'srv-tools-head'; toolsHead.textContent = 'Settings and tools';
+    body.replaceChildren(main, toolsHead, noteBox, updBox, sumBox); // replaceChildren also clears the page's loading spinner
+    guardUpdateCard(updBox, isCurrent);
+    dailySummaryCard(sumBox, isCurrent);
+    (async () => {
+      let current = '';
+      try { current = (await guard('/service-status', { params: { userId: state.userId } })).note?.text || ''; } catch { return; }
+      if (!isCurrent()) return;
+      noteBox.innerHTML = `<section class="admin-card"><h2>Message on the Status page <small>Customers see it at the top of Settings → Status</small></h2>
+        <div class="admin-row st-note-row"><input type="text" class="st-note-input" data-note maxlength="200" placeholder="For example: Maintenance tonight 2–3 AM" value="${esc(current)}"> <button class="btn btn-white" data-note-save>Save</button> <button class="btn btn-gray" data-note-clear>Clear</button></div>
+        <p class="muted" data-note-result></p></section>`;
+      const save = async (text) => {
+        try { await guard('/status-note', { method: 'PUT', body: { text } }); $('[data-note]', noteBox).value = text; $('[data-note-result]', noteBox).textContent = text ? 'Saved. Customers will see it now.' : 'Cleared.'; }
+        catch (e) { $('[data-note-result]', noteBox).textContent = e.status === 404 ? 'Update Aurora Guard to 1.9.0 to use this.' : e.message; }
+      };
+      $('[data-note-save]', noteBox).addEventListener('click', () => save($('[data-note]', noteBox).value.trim()));
+      $('[data-note-clear]', noteBox).addEventListener('click', () => save(''));
+    })();
+    let checkHtml = '<p class="muted">Press Run checks to test the Emby server, Aurora Guard, your TV provider, app updates and the last day of playback problems.</p>', checkBtn = 'Run checks', checking = false;
+    const ago = (t) => { const sec = Math.max(0, Math.round((Date.now() - t) / 1000)); return sec < 5 ? 'just now' : sec < 60 ? sec + ' seconds ago' : Math.round(sec / 60) + ' min ago'; };
+    let lastDrawn = null;
+    const pill = (lvl, kind) => `<span class="srv-pill ${lvl}">${lvl === 'ok' ? 'Healthy' : kind === 'disk' ? (lvl === 'warn' ? 'Getting full' : 'Almost full') : lvl === 'warn' ? 'Busy' : 'Needs attention'}</span>`;
+    const draw = (s) => {
+      lastDrawn = s;
+      const cpuL = s.cpu == null ? 'ok' : s.cpu >= 90 ? 'bad' : s.cpu >= 75 ? 'warn' : 'ok';
+      const memL = s.mem.pct == null ? 'ok' : s.mem.pct >= 92 ? 'bad' : s.mem.pct >= 80 ? 'warn' : 'ok';
+      const embyL = s.emby.online ? 'ok' : 'bad';
+      const diskL = (d) => (d.error ? 'warn' : d.freePct < 10 ? 'bad' : d.freePct < 20 ? 'warn' : 'ok');
+      const problems = [];
+      if (!s.emby.online) problems.push('Emby cannot be reached, so nobody can watch. Check that Emby is running on the PC.');
+      if (cpuL !== 'ok') problems.push(cpuL === 'bad' ? 'The processor is almost maxed out. Streams may stutter. Fewer people converting video would help.' : 'The processor is working hard right now.');
+      if (memL !== 'ok') problems.push(memL === 'bad' ? 'The PC is nearly out of memory. Restart a heavy program or the PC at a quiet time.' : 'Memory use is high.');
+      for (const d of s.disks || []) { const l = diskL(d); if (l === 'bad') problems.push(`${d.path} is almost full (${d.freePct}% free). Free up space soon.`); else if (l === 'warn' && !d.error) problems.push(`${d.path} is getting full (${d.freePct}% free).`); }
+      const level = problems.length === 0 ? 'ok' : (!s.emby.online || cpuL === 'bad' || memL === 'bad' || (s.disks || []).some((d) => diskL(d) === 'bad')) ? 'bad' : 'warn';
+      const headline = level === 'ok' ? 'Everything is running smoothly' : level === 'warn' ? 'Running, with a few things to watch' : 'Something needs your attention';
+      const total = s.streams.playing + s.streams.live;
+      const disks = (s.disks || []).map((d) => d.error ? `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong><div class="muted">${esc(d.error)}</div></div></div>`
+        : `<div class="admin-row"><div class="admin-row-main"><strong>${esc(d.path)}</strong> ${pill(diskL(d), 'disk')}<div class="muted">${esc(fmtBytes(d.free))} free of ${esc(fmtBytes(d.total))}</div>
+          <div class="usage-bar${diskL(d) === 'bad' ? ' bad' : ''}"><span style="width:${Math.max(2, Math.round(100 - d.freePct))}%"></span></div></div><div class="admin-row-time">${d.freePct}% free</div></div>`).join('');
+      const tile = (label, value, note, lvl) => statTile(label, value, `${note}`, lvl === 'ok' ? 'good' : lvl);
+      main.innerHTML = `
+        <section class="admin-card srv-banner ${level}"><div class="srv-banner-icon" aria-hidden="true">${level === 'ok' ? '&#10003;' : '!'}</div>
+          <div class="srv-banner-text"><h2>${esc(headline)}</h2>
+            ${problems.length ? `<ul class="srv-problems">${problems.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : '<p class="muted">Emby is online and the PC has plenty of room. Nothing to do.</p>'}
+            <p class="muted srv-stamp" data-stamp>Updated ${esc(ago(s.__at || Date.now()))} · refreshes by itself</p></div>
+          <button class="btn btn-gray" data-srv-refresh>Refresh</button></section>
+        <div class="stat-grid">
+          ${tile('Emby', s.emby.online ? 'Online' : 'Offline', s.emby.online ? 'Aurora Guard can reach it' : esc(s.emby.error || 'Not answering'), embyL)}
+          ${tile('Processor', s.cpu == null ? '…' : s.cpu + '%', cpuL === 'ok' ? `Plenty of room · ${s.cores} cores` : cpuL === 'warn' ? 'Working hard' : 'Maxed out', cpuL)}
+          ${tile('Memory', s.mem.pct == null ? '…' : s.mem.pct + '%', `${fmtBytes(s.mem.used)} of ${fmtBytes(s.mem.total)}`, memL)}
+          ${tile('Watching now', total, total ? `${s.streams.playing} playing${s.streams.live ? ` · ${s.streams.live} live TV` : ''} · ${s.streams.transcoding} converting` : 'Nobody is watching', 'ok')}
+        </div>
+        <section class="admin-card"><h2>Service checks</h2>
+          <div data-health>${checkHtml}</div>
+          <button class="btn btn-white" data-srv-check ${checking ? 'disabled' : ''}>${esc(checkBtn)}</button></section>
+        <section class="admin-card"><h2>Last 24 hours</h2>
+          <div class="spark-grid">
+            <div><div class="spark-label">Processor</div>${sparkline(s.history, 'cpu')}</div>
+            <div><div class="spark-label">Memory</div>${sparkline(s.history, 'mem')}</div>
+            <div><div class="spark-label">People watching</div>${sparkline(s.history, 'playing', Math.max(4, ...s.history.map((x) => x.playing || 0)))}</div>
+            <div><div class="spark-label">Converting video</div>${sparkline(s.history, 'transcoding', Math.max(4, ...s.history.map((x) => x.transcoding || 0)))}</div>
+          </div>
+          <p class="muted">One point a minute while Aurora Guard is running. A restart starts the charts again.</p>
+        </section>
+        <section class="admin-card"><h2>Storage</h2><div class="admin-list">${disks || '<p class="muted">No drives to show.</p>'}</div>
+          <p class="muted">An alert is sent when a drive drops under 10% free. To watch your media drives too, list them in the Guard's config.json, for example <code>"diskPaths": ["D:\\\\", "E:\\\\"]</code>.</p></section>
+        <section class="admin-card"><h2>About this server</h2>
+          <div class="srv-facts">
+            <div><span>Computer</span><strong>${esc(s.hostname)}</strong></div>
+            <div><span>System</span><strong>${esc(s.platform)}</strong></div>
+            <div><span>PC on for</span><strong>${esc(fmtUptime(s.pcUptime))}</strong></div>
+            <div><span>Aurora Guard</span><strong>${esc(s.version)} · up ${esc(fmtUptime(s.guardUptime))}</strong></div>
+          </div></section>`;
+    };
+    // Admin tools (kept apart: they must not redraw every 15 s). Clicks on the health area are handled here once.
+    main.addEventListener('click', async (e) => {
+      const t = e.target.closest('button'); if (!t) return;
+      if (t.matches('[data-srv-refresh]')) { t.disabled = true; try { const f = await guard('/server'); f.__at = Date.now(); if (isCurrent()) draw(f); } catch (err) { toast("Couldn't refresh: " + err.message); } return; }
+      if (t.matches('[data-srv-check]')) {
+        if (checking) return; checking = true; checkBtn = 'Checking…'; t.disabled = true; t.textContent = checkBtn;
+        try {
+          const users = await api('/Users').catch(() => []);
+          const r = await runHealthCheck($('[data-health]', main), Array.isArray(users) ? users : []);
+          checkHtml = $('[data-health]', main).innerHTML;
+          checkBtn = r.bads ? `${r.bads} ${r.bads === 1 ? 'problem' : 'problems'} · check again` : r.warns ? `${r.warns} to look at · check again` : 'All good · check again';
+        } catch (err) { checkBtn = 'Run checks'; toast("Couldn't finish the checks: " + err.message); }
+        checking = false; if (lastDrawn) draw(lastDrawn);
+      }
+    });
+    let s;
+    try { s = await guard('/server'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Server health</h2><p class="live-result bad">${guardOldNote(e, 'server health')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    s.__at = Date.now(); draw(s);
+    // Refresh every 15 s while the page is open.
+    const timer = routeInterval(async () => {
+      if (!isCurrent() || !body.isConnected) { clearInterval(timer); return; }
+      if (document.hidden) return;
+      try { const fresh = await guard('/server'); fresh.__at = Date.now(); if (isCurrent() && !checking) draw(fresh); } catch { const st = $('[data-stamp]', main); if (st && lastDrawn) st.textContent = 'Could not reach Aurora Guard just now. Showing the last reading from ' + ago(lastDrawn.__at || Date.now()) + '.'; }
+    }, 15000);
+  }
+
+  // ----- Admin → Sports (scores feed and name aliases; Aurora Guard 1.8.0) -----
+  async function adminSports(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Sports');
+    let st;
+    try { st = await guard('/sports/status'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Sports</h2><p class="live-result bad">${guardOldNote(e, 'sports scores')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    const leagueRow = (l) => `<label class="admin-check sp-adm-lg"><input type="checkbox" data-lg="${esc(l.key)}"${l.on ? ' checked' : ''}> <strong>${esc(l.name)}</strong>
+        <span class="muted">${l.on ? (l.ok === null ? 'not asked yet' : l.ok ? `${l.games} ${l.games === 1 ? 'game' : 'games'}${l.live ? `, ${l.live} live` : ''} · ${esc(timeAgo(l.at))}` : '') : 'off'}</span>${l.on && l.ok === false ? ` <span class="pill bad">Failed: ${esc(l.error)}</span>` : ''}</label>`;
+    const aliasRow = (a = { from: '', to: '' }) => `<div class="sp-adm-alias"><input type="text" data-from maxlength="40" placeholder="Name in the guide or feed" value="${esc(a.from)}"><span>means</span><input type="text" data-to maxlength="40" placeholder="Same thing, written this way" value="${esc(a.to)}"><button class="btn btn-gray" data-rm>Remove</button></div>`;
+    body.innerHTML = `
+      <section class="admin-card"><h2>Sports scores <small>${esc(st.provider)}</small></h2>
+        <p class="muted">Live scores and schedules for the Sports tab come from ESPN's public scoreboard feed through Aurora Guard. It isn't an official, supported service: ESPN can change or stop it at any time, and the tab keeps working from the channel guide if it does. Check from the PC with <code>node aurora-guard.js --test-scores</code>.</p>
+        ${!st.configEnabled ? '<p class="live-result bad">Switched off in the guard\'s config.json ("scoresEnabled": false).</p>' : ''}
+        <label class="admin-check"><input type="checkbox" data-enabled${st.enabled ? ' checked' : ''}> Show scores in the Sports tab</label>
+        <div class="sp-adm-leagues">${st.leagues.map(leagueRow).join('')}</div>
+        <div class="m-actions"><button class="btn btn-red" data-save-leagues>Save</button><button class="btn btn-gray" data-refresh-feed>Ask the feed again now</button></div>
+        <div class="live-result" data-sp-result></div>
+      </section>
+      <section class="admin-card"><h2>Name aliases <small>${st.aliases.length}</small></h2>
+        <p class="muted">Aurora matches a game in the score feed to the channel guide by team name. When a guide spells a name differently, tell Aurora they're the same. It also helps channel names: the feed says which TV network shows a game ("Prime Video", "NBC"), and Aurora looks for a sports channel with that name.</p>
+        <div data-aliases>${st.aliases.map(aliasRow).join('')}</div>
+        <p class="muted">Examples: <em>Man City</em> means <em>Manchester City</em> · <em>SNF</em> means <em>Sunday Night Football</em> · <em>Prime Video</em> means <em>Amazon</em></p>
+        <div class="m-actions"><button class="btn btn-gray" data-add-alias>Add an alias</button><button class="btn btn-red" data-save-aliases>Save aliases</button></div>
+        <div class="live-result" data-al-result></div>
+      </section>`;
+    const say = (sel, html, cls = '') => { const el = $(sel, body); el.className = 'live-result' + (cls ? ' ' + cls : ''); el.innerHTML = html; };
+    $('[data-save-leagues]', body).addEventListener('click', async () => {
+      try {
+        await guard('/sports/settings', { method: 'PUT', body: { enabled: $('[data-enabled]', body).checked, leagues: $$('[data-lg]', body).filter((c) => c.checked).map((c) => c.dataset.lg) } });
+        say('[data-sp-result]', 'Saved.', 'good'); setTimeout(() => { if (isCurrent()) adminSports(body, isCurrent); }, 1500);
+      } catch (e) { say('[data-sp-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+    $('[data-refresh-feed]', body).addEventListener('click', async () => {
+      say('[data-sp-result]', '<div class="spinner"></div> Asking the feed…');
+      try { await guard('/sports/refresh', { method: 'POST' }); if (isCurrent()) adminSports(body, isCurrent); } catch (e) { say('[data-sp-result]', "Couldn't ask: " + esc(e.message), 'bad'); }
+    });
+    const list = $('[data-aliases]', body);
+    $('[data-add-alias]', body).addEventListener('click', () => { list.insertAdjacentHTML('beforeend', aliasRow()); focusEl($$('[data-from]', list).pop()); });
+    list.addEventListener('click', (e) => { const rm = e.target.closest('[data-rm]'); if (rm) rm.closest('.sp-adm-alias').remove(); });
+    $('[data-save-aliases]', body).addEventListener('click', async () => {
+      const aliases = $$('.sp-adm-alias', list).map((r) => ({ from: $('[data-from]', r).value.trim(), to: $('[data-to]', r).value.trim() })).filter((a) => a.from && a.to);
+      try { await guard('/sports/aliases', { method: 'PUT', body: { aliases } }); say('[data-al-result]', `Saved ${aliases.length} ${aliases.length === 1 ? 'alias' : 'aliases'}. Customers get them within a few minutes.`, 'good'); sports.loading = null; } catch (e) { say('[data-al-result]', "Couldn't save: " + esc(e.message), 'bad'); }
+    });
+  }
+
+  async function adminAudit(body, isCurrent) {
+    if (!guardEnabled) return needGuard(body, 'Audit log');
+    let data;
+    try { data = await guard('/audit'); } catch (e) { if (isCurrent()) body.innerHTML = `<section class="admin-card"><h2>Audit log</h2><p class="live-result bad">${guardOldNote(e, 'the audit log')}</p></section>`; return; }
+    if (!isCurrent()) return;
+    body.innerHTML = `<section class="admin-card"><h2>Audit log <small>${data.audit.length}</small></h2>
+      <input type="search" class="users-search" placeholder="Search the log" autocomplete="off" spellcheck="false">
+      <div class="admin-list" data-audit></div>
+      <p class="muted">Every change made in Admin (limits, end dates, plans, approvals, account changes) with who made it. The names come from the app, and only Emby administrators can reach this. The last 500 changes are kept.</p></section>`;
+    const list = $('[data-audit]', body);
+    const draw = (q = '') => {
+      const shown = data.audit.filter((a) => !q || `${a.by} ${a.text}`.toLowerCase().includes(q));
+      list.innerHTML = shown.map((a) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(a.by)}</strong> · ${esc(a.text)}</div>
+        <div class="admin-row-time" title="${esc(new Date(a.at).toLocaleString())}">${esc(fmtDateTime(a.at))}</div></div>`).join('') || '<p class="muted">Nothing here.</p>';
+    };
+    draw();
+    $('.users-search', body).addEventListener('input', (e) => draw(e.target.value.trim().toLowerCase()));
+  }
+
+  async function adminDevices(body, isCurrent) {
+    const [devices, users, release] = await Promise.all([
+      api('/Devices').catch((e) => ({ error: e })), api('/Users').catch((e) => ({ error: e })), latestAuroraRelease(),
+    ]);
+    if (!isCurrent()) return;
+    if (devices?.error) { body.innerHTML = `<p class="empty-msg">${esc(adminError(devices.error))}</p>`; return; }
+    const all = (devices?.Items || devices || []).slice().sort((a, b) => new Date(b.DateLastActivity) - new Date(a.DateLastActivity));
+    const isAurora = (d) => /aurora|embyflix/i.test(d.AppName || '');
+    const aurora = all.filter(isAurora);
+    const versions = new Map();
+    aurora.forEach((d) => versions.set(d.AppVersion || '?', (versions.get(d.AppVersion || '?') || 0) + 1));
+    const deviceRow = (d) => {
+      const code = auroraVersionCode(d.AppVersion);
+      const behind = isAurora(d) && release?.code && code && code < release.code;
+      return `<div class="admin-row" tabindex="-1">
+        <div class="admin-row-main"><strong>${esc(d.Name || 'Device')}</strong> · ${esc(d.LastUserName || '')}
+          <div class="muted">${esc(d.AppName || '')} V${esc(d.AppVersion || '')}${behind ? ' <span class="pill warn">Needs update</span>' : ''}</div></div>
+        <div class="admin-row-time">${esc(timeAgo(d.DateLastActivity))}</div>
+      </div>`;
+    };
+    const userList = users?.error ? [] : (users || []).slice().sort((a, b) => new Date(b.LastActivityDate || 0) - new Date(a.LastActivityDate || 0));
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>Aurora versions in use</h2>
+        ${versions.size ? `<div class="chip-row static">${[...versions.entries()].sort().reverse().map(([v, c]) => `<span class="chip${release && auroraVersionCode(v) >= release.code ? ' active' : ''}">V${esc(v)} · ${c} device${c === 1 ? '' : 's'}</span>`).join('')}</div>` : '<p class="muted">No Aurora devices yet.</p>'}
+        ${release ? `<p class="muted">Latest is ${esc(release.name)}. Older copies are offered the update when they open.</p>` : ''}
+      </section>
+      <div class="admin-cols">
+        <section class="admin-card">
+          <h2>Devices <small>${all.length}</small></h2>
+          <div class="admin-list">${all.map(deviceRow).join('') || '<p class="muted">No devices.</p>'}</div>
+        </section>
+        <section class="admin-card">
+          <h2>Users <small>${userList.length}</small></h2>
+          <div class="admin-list">${userList.map((u) => `<div class="admin-row" tabindex="-1">
+            <div class="admin-row-main"><strong>${esc(u.Name)}</strong>${u.Policy?.IsAdministrator ? ' <span class="pill">Admin</span>' : ''}${u.Policy?.IsDisabled ? ' <span class="pill bad">Disabled</span>' : ''}
+              <div class="muted">${u.LastLoginDate ? 'Last signed in ' + esc(timeAgo(u.LastLoginDate)) : 'Never signed in'}</div></div>
+            <div class="admin-row-time">${u.LastActivityDate ? 'Active ' + esc(timeAgo(u.LastActivityDate)) : ''}</div>
+          </div>`).join('') || `<p class="muted">${users?.error ? esc(adminError(users.error)) : 'No users.'}</p>`}</div>
+        </section>
+      </div>`;
+  }
+
+  async function adminLogs(body, isCurrent) {
+    let files;
+    try {
+      const res = await api('/System/Logs/Query').catch(() => api('/System/Logs'));
+      files = (Array.isArray(res) ? res : res?.Items || []).sort((a, b) => new Date(b.DateModified) - new Date(a.DateModified));
+    } catch (e) { if (isCurrent()) body.innerHTML = `<p class="empty-msg">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    body.innerHTML = `
+      <div class="admin-logs">
+        <section class="admin-card log-files">
+          <h2>Log files</h2>
+          <div class="admin-list">${files.map((f) => `<button class="log-file" data-name="${esc(f.Name)}">
+            <span>${esc(f.Name)}</span><span class="muted">${esc(fmtSize(f.Size))} · ${esc(timeAgo(f.DateModified))}</span></button>`).join('') || '<p class="muted">No log files.</p>'}</div>
+        </section>
+        <section class="admin-card log-view" data-view><p class="muted">Pick a log file to read it.</p></section>
+      </div>`;
+    const view = $('[data-view]', body);
+    $$('.log-file', body).forEach((btn) => btn.addEventListener('click', () => {
+      $$('.log-file', body).forEach((b) => b.classList.toggle('active', b === btn));
+      showLog(view, btn.dataset.name, isCurrent);
+    }));
+  }
+
+  const LOG_PAGE = 150;
+  async function showLog(view, name, isCurrent) {
+    view.innerHTML = `<h2>${esc(name)}</h2><div class="spinner"></div>`;
+    let lines;
+    try {
+      const text = await apiText(`/System/Logs/${encodeURIComponent(name)}`).catch(() => apiText('/System/Logs/Log', { name }));
+      lines = text.split(/\r?\n/).filter((l) => l.length);
+    } catch (e) { if (isCurrent()) view.innerHTML = `<h2>${esc(name)}</h2><p class="muted">${esc(adminError(e))}</p>`; return; }
+    if (!isCurrent()) return;
+    let only = 'all', end = lines.length; // newest lines are at the end; show the last page first
+    const draw = () => {
+      const pool = only === 'problems' ? lines.filter((l) => /\b(error|warn|exception|fatal)\b/i.test(l)) : lines;
+      end = Math.min(end, pool.length);
+      const startAt = Math.max(0, end - LOG_PAGE);
+      view.innerHTML = `
+        <h2>${esc(name)} <small>${pool.length} lines</small></h2>
+        <div class="log-tools">
+          <button class="chip${only === 'all' ? ' active' : ''}" data-only="all">All lines</button>
+          <button class="chip${only === 'problems' ? ' active' : ''}" data-only="problems">Errors &amp; warnings</button>
+          <span class="osd-spacer"></span>
+          <button class="btn btn-gray" data-older ${startAt === 0 ? 'disabled' : ''}>Older</button>
+          <button class="btn btn-gray" data-newer ${end >= pool.length ? 'disabled' : ''}>Newer</button>
+        </div>
+        <pre class="log-text">${pool.slice(startAt, end).map((l) => {
+          const cls = /\b(error|exception|fatal)\b/i.test(l) ? 'bad' : /\bwarn/i.test(l) ? 'warn' : '';
+          return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+        }).join('\n') || 'Nothing to show.'}</pre>`;
+      const pre = $('.log-text', view);
+      pre.scrollTop = pre.scrollHeight;
+      $$('[data-only]', view).forEach((b) => b.addEventListener('click', () => { only = b.dataset.only; end = Infinity; draw(); focusEl($(`[data-only="${only}"]`, view)); }));
+      $('[data-older]', view).addEventListener('click', () => { end = Math.max(LOG_PAGE, startAt); draw(); focusEl($('[data-older]:not([disabled])', view) || $('[data-newer]', view)); });
+      $('[data-newer]', view).addEventListener('click', () => { end += LOG_PAGE; draw(); focusEl($('[data-newer]:not([disabled])', view) || $('[data-older]', view)); });
+    };
+    draw();
+  }
+
+  function adminAppLog(body) {
+    const entries = appLog.read().slice().reverse();
+    body.innerHTML = `
+      <section class="admin-card">
+        <h2>App log <small>Aurora on this device · ${esc(nativeApp?.getVersionName ? 'Aurora V' + nativeApp.getVersionName() : 'web')}</small></h2>
+        <p class="muted">Errors and events Aurora recorded on this device: playback problems, failed requests, updates and crashes. Each device keeps its own.</p>
+        <div class="log-tools"><span class="osd-spacer"></span><button class="btn btn-gray" data-clear-log>Clear</button></div>
+        <div class="admin-list">${entries.map((e) => `<div class="admin-row" tabindex="-1">
+          <div class="admin-row-main">${e.level === 'error' ? '<span class="pill bad">Error</span> ' : e.level === 'warn' ? '<span class="pill warn">Warning</span> ' : ''}${esc(e.msg)}</div>
+          <div class="admin-row-time">${esc(fmtDateTime(e.t))}</div></div>`).join('') || '<p class="muted">Nothing recorded yet.</p>'}</div>
+      </section>`;
+    $('[data-clear-log]', body).addEventListener('click', () => { appLog.clear(); adminAppLog(body); toast('App log cleared', 1500); });
+  }
+
+  // ---------- App updates (Android app only) ----------
+  // Customers install the APK by hand, so the app checks GitHub Releases for a newer build itself.
+  // Recent releases, so the update prompt can list what changed in every version the person missed.
+  const RELEASES_URL = 'https://api.github.com/repos/johnny4091-allstar/johnny4091-allstar/releases?per_page=60';
+  const RECHECK_AFTER = 15 * 60000; // when coming back to the app
+  const updates = { checking: null, lastCheck: 0, dismissedCode: 0, waiting: null };
+  // How many releases behind before the app stops working until it's updated. Set by forceUpdateAfter in
+  // aurora-config.json (0 turns it off), so it can change without a new APK.
+  let forceUpdateAfter = Number(store.get('ef.forceUpdateAfter') ?? 3);
+  if (!Number.isFinite(forceUpdateAfter)) forceUpdateAfter = 3;
+
+  // The build puts the lines of aurora/whats-new.md between these markers in each release's notes.
+  function releaseNotes(body) {
+    const m = (body || '').match(/<!-- notes -->([\s\S]*?)<!-- \/notes -->/);
+    if (!m) return [];
+    // Older releases (1.2.166 to 1.2.173) carry a "reinstall, new signing key" line that ends in two invisible
+    // characters. Every device has the new key now, so those lines are never shown.
+    const OLD_KEY_NOTE = '\u200b\u200c';
+    return m[1].split('\n').map((l) => l.trim()).filter((l) => /^[-*] /.test(l))
+      .filter((l) => !l.endsWith(OLD_KEY_NOTE))
+      .map((l) => brand(l.slice(2).trim())).filter(Boolean);
+  }
+
+  // The Lite app (made for older TV sticks and phones) follows its own releases, so it never installs the full app by mistake.
+  const UPDATE_TAG_RE = window.AURORA_LITE ? /^aurora-lite-v/ : /^aurora-v/;
+
+  async function checkForUpdate() {
+    if (!nativeApp?.getVersionCode) return { status: 'web' };
+    try {
+      // Always ask GitHub fresh, and give up after 8 seconds rather than hanging on a slow connection.
+      const res = await fetch(RELEASES_URL, {
+        headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal: timeoutSignal(8000),
+      });
+      if (!res.ok) throw new Error(res.status);
+      const installed = nativeApp.getVersionCode();
+      const newer = (await res.json())
+        .filter((rel) => !rel.draft && !rel.prerelease && UPDATE_TAG_RE.test(rel.tag_name || ''))
+        .map((rel) => ({ rel, code: Number(rel.tag_name.match(/(\d+)$/)?.[1] || 0) }))
+        .filter((r) => r.code > installed)
+        .sort((a, b) => b.code - a.code);
+      // The newest release that already has its APK. (A release can exist for a few seconds before its file is attached;
+      // saying "up to date" then would also release the update lock.) Newer releases with no APK yet: ask again later.
+      const withApk = newer.filter((r) => (r.rel.assets || []).some((a) => /\.apk$/i.test(a.name)));
+      if (!withApk.length) return { status: newer.length ? 'error' : 'current' };
+      const latest = withApk[0];
+      const apk = latest.rel.assets.find((a) => /\.apk$/i.test(a.name));
+      // Newest first, without repeating a line that appears in more than one version.
+      const notes = [...new Set(newer.flatMap((r) => releaseNotes(r.rel.body)))].slice(0, 30);
+      return { status: 'available', code: latest.code, version: latest.rel.name || latest.rel.tag_name, url: apk.browser_download_url, size: apk.size || 0, notes, behind: newer.length };
+    } catch {
+      return { status: 'error' };
+    }
+  }
+
+  // Runs as soon as the app opens, and again when it comes back to the front after a while.
+  async function autoCheckForUpdate() {
+    if (!nativeApp?.getVersionCode || updates.checking) return;
+    updates.lastCheck = Date.now();
+    await refreshAppConfig();
+    if (updates.checking) return;
+    updates.checking = checkForUpdate();
+    const result = await updates.checking;
+    updates.checking = null;
+    // Remember how far behind this device is, so the lock still applies when GitHub can't be reached.
+    if (result.status === 'available') store.set('ef.updateBehind', JSON.stringify(result));
+    else if (result.status === 'current') store.del('ef.updateBehind');
+    if (applyRequiredUpdate()) return;
+    if (result.status !== 'available' || result.code === updates.dismissedCode) return;
+    if (!$('#modal').classList.contains('hidden') && $('#modal .update-body')) return; // already asking
+    // Don't interrupt a video; ask as soon as the player closes.
+    if (isPlayerOpen()) { updates.waiting = result; return; }
+    showUpdatePrompt(result);
+  }
+
+  // Too many releases behind: lock the app behind the update prompt. Returns true if it did.
+  function applyRequiredUpdate() {
+    if (!nativeApp?.getVersionCode) return false;
+    let u = null;
+    try { u = JSON.parse(store.get('ef.updateBehind') || 'null'); } catch { /* none */ }
+    const locked = !!forceUpdateAfter && !!u && u.code > nativeApp.getVersionCode() && (u.behind || 0) >= forceUpdateAfter;
+    if (!locked) {
+      // The limit was raised or turned off since the lock went up: let the viewer back in.
+      if (updateRequiredOpen()) {
+        $('#modal-content .update-body').classList.remove('required');
+        $('#modal').classList.remove('update-required');
+        closeModal();
+      }
+      return false;
+    }
+    if (updateRequiredOpen()) return true;
+    if (isPlayerOpen()) closePlayer();
+    showUpdatePrompt(u, { required: true });
+    return true;
+  }
+
+  function showWaitingUpdate() {
+    const result = updates.waiting;
+    updates.waiting = null;
+    if (result && result.code !== updates.dismissedCode && !($('#modal .update-body') && !$('#modal').classList.contains('hidden'))) showUpdatePrompt(result);
+  }
+
+  function showUpdatePrompt(update, { required = false } = {}) {
+    if (firstRun) { firstRun.closing = true; firstRun = null; applySubtitleStyle(); } // the update comes first; the setup returns next launch
+    const modal = $('#modal'), content = $('#modal-content');
+    modalToken++;
+    if (modal.classList.contains('hidden')) rememberFocus('modal');
+    modal.classList.toggle('update-required', required);
+    // "New: …", "Fixed: …", "New in Live TV: …" become a coloured label, an optional small tag and the text.
+    const noteParts = (n) => {
+      const m = String(n).match(/^(New|Fixed|Improved|Changed)(?:\s+(?:in|for|on)\s+([^:]+))?:\s*([\s\S]*)$/i);
+      return m ? { kind: m[1].toLowerCase(), tag: m[2] || '', text: m[3].charAt(0).toUpperCase() + m[3].slice(1) } : { kind: 'info', tag: '', text: String(n) };
+    };
+    const kindIcon = { new: '✦', fixed: '✔', improved: '↑', changed: '↻', info: '•' };
+    const kindLabel = { new: 'New', fixed: 'Fixed', improved: 'Improved', changed: 'Changed', info: 'Update' };
+    $('#modal .modal-box')?.classList.add('upd-box');
+    content.innerHTML = `
+      <div class="m-body update-body upd${required ? ' required' : ''}">
+        <div class="upd-aur" aria-hidden="true"></div><div class="upd-grab" aria-hidden="true"></div>
+        <div class="upd-hero">
+          <div class="upd-emb" aria-hidden="true"><i class="halo"></i><i class="ring"></i><span class="core"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M5 14v3.2A2.8 2.8 0 0 0 7.8 20h8.4a2.8 2.8 0 0 0 2.8-2.8V14"/></svg></span><i class="spark s1"></i><i class="spark s2"></i><i class="spark s3"></i></div>
+          <span class="upd-tag">${required ? 'Update required' : 'Update available'}</span>
+          <h2>${esc(update.version)}</h2>
+          ${nativeApp?.getVersionName?.() ? `<div class="upd-path"><b>V${esc(nativeApp.getVersionName())}</b><svg width="16" height="10" viewBox="0 0 16 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M1 5h13M10 1l4 4-4 4"/></svg><b>${esc(String(update.version).replace(/^Aurora\s+/i, ''))}</b></div>` : ''}
+          <p>${required
+            ? `This version is ${update.behind} updates behind and has stopped working. Install it to keep watching.`
+            : 'Ready to install. You stay signed in.'}</p>
+          ${update.size ? `<div class="upd-meta"><span>About ${Math.max(1, Math.round(update.size / 1048576))} MB</span></div>` : ''}
+        </div>
+        ${update.notes?.length ? `<div class="upd-notes-title">What's new <small>${update.notes.length} ${update.notes.length === 1 ? 'change' : 'changes'}</small></div>
+        <ul class="update-notes upd-list">${update.notes.map((n) => { const x = noteParts(n);
+          return `<li><span class="upd-ic ${x.kind}" aria-hidden="true">${kindIcon[x.kind]}</span><span class="upd-text"><b class="upd-kind ${x.kind}">${kindLabel[x.kind]}</b>${x.tag ? `<em>${esc(x.tag)}</em> ` : ''}${esc(x.text)}</span></li>`; }).join('')}</ul>` : ''}
+        <div class="update-progress hidden"><div class="update-bar"><span></span></div><p class="update-msg"></p></div>
+        <div class="m-actions update-actions">
+          <button class="btn btn-red" data-act="install" data-autofocus><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>Update now</button>
+          ${required ? '' : '<button class="btn btn-gray" data-act="later">Later</button>'}
+        </div>
+      </div>`;
+    modal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    const msg = $('.update-msg', content), bar = $('.update-bar span', content), progress = $('.update-progress', content);
+    // "Later" skips this version until the app is next opened.
+    $('[data-act="later"]', content)?.addEventListener('click', () => {
+      updates.dismissedCode = update.code;
+      closeModal();
+    });
+    $('[data-act="install"]', content).addEventListener('click', (e) => {
+      e.target.disabled = true;
+      progress.classList.remove('hidden');
+      msg.textContent = 'Downloading…';
+      appLog.add('info', `Installing update ${update.version}`);
+      nativeApp.installUpdate(update.url);
+    });
+    // Progress and results reported by the Android app.
+    window.auroraUpdate = (u) => {
+      if (u.state === 'progress') { bar.style.width = u.pct + '%'; msg.textContent = `Downloading… ${u.pct}%`; }
+      else if (u.state === 'permission') msg.textContent = 'Allow Aurora to install apps in the screen that just opened, then come back. The update continues by itself.';
+      else if (u.state === 'installing') {
+        bar.style.width = '100%';
+        msg.textContent = 'Opening the installer… choose Install (or Update).';
+        // Some TV boxes don't show the installer the first time: offer another way after a few seconds.
+        clearTimeout(retryTimer);
+        if (nativeApp?.openInstaller) retryTimer = setTimeout(showRetry, 8000);
+      } else if (u.state === 'cancelled') {
+        clearTimeout(retryTimer);
+        msg.textContent = 'The update was cancelled. Press Update now to try again.';
+        $('[data-act="install"]', content).disabled = false;
+      } else if (u.state === 'error') {
+        clearTimeout(retryTimer);
+        appLog.add('error', `Update failed: ${u.message || 'unknown error'}`);
+        msg.textContent = /installer/.test(u.message || '')
+          ? `The update couldn't be installed (${u.message}). Press Update now to try again.`
+          : `The download failed (${u.message || 'unknown error'}). Check the internet connection and try again.`;
+        $('[data-act="install"]', content).disabled = false;
+      }
+    };
+    let retryTimer = null;
+    const showRetry = () => {
+      if (!content.isConnected || $('[data-act="open-installer"]', content)) return;
+      msg.textContent = "Didn't see the installer? Press Open installer.";
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-white';
+      btn.dataset.act = 'open-installer';
+      btn.textContent = 'Open installer';
+      btn.addEventListener('click', () => {
+        appLog.add('info', 'Opening the installer again');
+        msg.textContent = 'Opening the installer… choose Install (or Update).';
+        nativeApp.openInstaller();
+      });
+      $('.update-actions', content).prepend(btn);
+      focusEl(btn);
+    };
+    autoFocus($('[data-act="install"]', content));
+  }
+
+  // ---------- Player ----------
+  const QUALITY_OPTIONS = [
+    { label: 'Auto (best)', bitrate: 120000000 },
+    { label: '1080p (20 Mbps)', bitrate: 20000000 },
+    { label: '1080p (10 Mbps)', bitrate: 10000000 },
+    { label: '720p (4 Mbps)', bitrate: 4000000 },
+    { label: '480p (1.5 Mbps)', bitrate: 1500000 },
+    { label: '360p (0.7 Mbps)', bitrate: 720000 },
+  ];
+  const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+  const speedLabel = (r) => (r === 1 ? 'Normal' : `${r}x`);
+  const ownBitrate = () => Number(store.get('ef.maxBitrate')) || QUALITY_OPTIONS[0].bitrate;
+  const qualityCap = () => (Number(playbackCfg.maxQuality) || 0); // set in Admin → Playback; 0 = no cap
+  const maxBitrate = () => (qualityCap() ? Math.min(ownBitrate(), qualityCap()) : ownBitrate());
+  // "Auto" stays (it measures, within the cap); fixed choices above the cap are hidden.
+  const qualityChoices = () => QUALITY_OPTIONS.filter((q, i) => i === 0 || !qualityCap() || q.bitrate <= qualityCap());
+  const shownQuality = () => (autoQuality() || !qualityCap() ? ownBitrate() : Math.min(ownBitrate(), qualityCap()));
+  const autoQuality = () => ownBitrate() === QUALITY_OPTIONS[0].bitrate;
+
+  // "Auto" quality: measure the connection to the Emby server (as Emby's own apps do) so a film that's bigger
+  // than the connection can carry gets sized down by Emby instead of stopping to buffer every few seconds.
+  let measuredBitrate = null;
+  // Downloads up to `size` bytes from Emby and returns the speed in bits per second. If the line is too slow to
+  // finish in time, the bytes that did arrive still give the speed (a timeout means slow, never "fast").
+  async function measureBitrate(size, limitMs = 4500) {
+    const started = performance.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), limitMs);
+    let bytes = 0;
+    try {
+      const res = await fetch(apiUrl('/Playback/BitrateTest', { Size: size }), { cache: 'no-store', signal: ctrl.signal });
+      if (!res.ok) { const e = new Error('status ' + res.status); e.unavailable = true; throw e; }
+      const reader = res.body?.getReader?.();
+      if (reader) {
+        for (;;) { const { done, value } = await reader.read(); if (done) break; bytes += value.byteLength; }
+      } else bytes = (await res.arrayBuffer()).byteLength;
+    } catch (e) {
+      if (e.unavailable) throw e;
+      // Timed out or dropped: judge by what arrived (nothing at all counts as very slow).
+    } finally {
+      clearTimeout(timer);
+    }
+    return { bps: (bytes * 8) / Math.max(0.05, (performance.now() - started) / 1000), complete: bytes >= size };
+  }
+  async function playbackBitrate() {
+    if (!autoQuality()) return maxBitrate();
+    const capped = (v) => (qualityCap() ? Math.min(v, qualityCap()) : v);
+    if (measuredBitrate && Date.now() - measuredBitrate.t < 20 * 60000) return capped(measuredBitrate.bps);
+    try {
+      let r = await measureBitrate(1000000);
+      // A quick first test on a fast line mostly measures the delay; a bigger one gives the real speed.
+      if (r.complete && r.bps > 10000000) { const r2 = await measureBitrate(6000000); r = { bps: Math.max(r.bps, r2.bps), complete: r2.complete }; }
+      const use = Math.round(Math.min(QUALITY_OPTIONS[0].bitrate, Math.max(700000, r.bps * 0.7)));
+      // A slow answer is kept only briefly: it may have been a hiccup, and a stricter limit costs picture quality.
+      measuredBitrate = { bps: use, t: Date.now() - (r.complete ? 0 : 15 * 60000) };
+      appLog.add(r.bps < 4000000 ? 'warn' : 'info', `Connection to the server: ${(r.bps / 1e6).toFixed(1)} Mbps${r.complete ? '' : ' (slow: the test did not finish)'}; streaming up to ${(use / 1e6).toFixed(1)} Mbps`);
+      return capped(use);
+    } catch (e) {
+      // This Emby has no speed test: keep the old behaviour (no limit beyond the Streaming quality setting).
+      return maxBitrate();
+    }
+  }
+
+  // Movies and episodes play in the Android app's own player (ExoPlayer) unless the viewer picked the old one.
+  const useNativePlayer = () => !!nativeApp?.playVod && getPref('player') !== 'web';
+  let nativeCodecs = null;
+  function deviceCodecs() {
+    if (nativeCodecs) return nativeCodecs;
+    try { nativeCodecs = JSON.parse(nativeApp?.getCodecs?.() || 'null'); } catch { /* use the defaults */ }
+    if (!nativeCodecs?.video?.length) nativeCodecs = { video: ['h264'], audio: ['aac', 'mp3'], hevc10: false, maxWidth: 1920 };
+    return nativeCodecs;
+  }
+
+  // What the native player handles: nearly every film as it is, so Emby just sends the file.
+  function nativeDeviceProfile(bitrate) {
+    const c = deviceCodecs();
+    const video = c.video.filter((v) => ['h264', 'hevc', 'vp9', 'av1', 'vp8', 'mpeg2video', 'mpeg4'].includes(v));
+    const audio = c.audio.filter((a) => ['aac', 'mp3', 'ac3', 'eac3', 'opus', 'flac', 'vorbis', 'dts', 'truehd', 'mp2', 'pcm_s16le'].includes(a));
+    if (!audio.includes('aac')) audio.unshift('aac');
+    if (!audio.includes('mp3')) audio.push('mp3');
+    const surround = audio.includes('ac3');
+    // When Emby has to convert, it copies the picture if the device takes it and only redoes what's needed.
+    const hlsVideo = ['h264', ...(video.includes('hevc') ? ['hevc'] : [])].join(',');
+    const hlsAudio = ['aac', ...(surround ? ['ac3'] : []), ...(audio.includes('eac3') ? ['eac3'] : [])].join(',');
+    const codecProfiles = [
+      { Type: 'Video', Codec: 'h264', Conditions: [{ Condition: 'LessThanEqual', Property: 'VideoLevel', Value: '52', IsRequired: false }] },
+      { Type: 'Video', Conditions: [{ Condition: 'LessThanEqual', Property: 'Width', Value: String(c.maxWidth || 1920), IsRequired: false }] },
+    ];
+    if (video.includes('hevc') && !c.hevc10) {
+      codecProfiles.push({ Type: 'Video', Codec: 'hevc', Conditions: [{ Condition: 'LessThanEqual', Property: 'VideoBitDepth', Value: '8', IsRequired: false }] });
+    }
+    const embed = ['srt', 'subrip', 'ass', 'ssa', 'pgssub', 'pgs', 'dvdsub', 'dvbsub', 'vtt', 'webvtt'];
+    return {
+      Name: 'Aurora (Android)',
+      MaxStreamingBitrate: bitrate,
+      MaxStaticBitrate: bitrate,
+      MusicStreamingTranscodingBitrate: 192000,
+      DirectPlayProfiles: [
+        { Container: 'mkv,webm,mp4,m4v,mov,ts,m2ts,mpegts,mts', Type: 'Video', VideoCodec: video.join(','), AudioCodec: audio.join(',') },
+        { Container: 'mp3,aac,m4a,flac,webma,ogg,opus,wav', Type: 'Audio' },
+      ],
+      TranscodingProfiles: [
+        { Container: 'ts', Type: 'Video', VideoCodec: hlsVideo, AudioCodec: hlsAudio, Context: 'Streaming', Protocol: 'hls',
+          MaxAudioChannels: surround ? '6' : '2', MinSegments: '1', BreakOnNonKeyFrames: false },
+        { Container: 'mp4', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Context: 'Static', Protocol: 'http' },
+        { Container: 'mp3', Type: 'Audio', AudioCodec: 'mp3', Context: 'Streaming', Protocol: 'http' },
+      ],
+      ContainerProfiles: [],
+      CodecProfiles: codecProfiles,
+      // Subtitles inside the file are shown by the player itself; separate files are fetched alongside.
+      SubtitleProfiles: [
+        ...embed.map((f) => ({ Format: f, Method: 'Embed' })),
+        ...['srt', 'vtt', 'ass', 'ssa'].map((f) => ({ Format: f, Method: 'External' })),
+        ...['pgssub', 'dvdsub', 'dvbsub'].map((f) => ({ Format: f, Method: 'Encode' })),
+      ],
+      ResponseProfiles: [{ Type: 'Video', Container: 'm4v', MimeType: 'video/mp4' }],
+    };
+  }
+
+  const player = {
+    item: null, hls: null, playSessionId: null, mediaSourceId: null, playMethod: null, source: null,
+    audioIndex: null, subtitleIndex: -1, forceTranscode: false, speed: 1, intro: null, isLive: false, liveStreamId: null,
+    progressTimer: null, idleTimer: null, nextEpisode: null, startSeconds: 0, dragging: false,
+    token: 0, // bumped on every playItem so a slower, older request can't take over
+    creditsAt: null, upNextTimer: null, upNextShown: false, upNextDismissed: false,
+    autoCount: 0, // episodes started automatically in a row with nobody touching the controls
+    lastInput: 0, liveIdleTimer: null,
+  };
+
+  // Tells Emby what this browser can play directly; anything else is transcoded to HLS H.264/AAC.
+  function deviceProfile(bitrate = maxBitrate()) {
+    const v = document.createElement('video');
+    const can = (t) => !!v.canPlayType(t).replace('no', '');
+    const mp4Video = ['h264'];
+    if (can('video/mp4; codecs="hvc1.1.6.L93.B0"')) mp4Video.push('hevc');
+    if (can('video/mp4; codecs="av01.0.05M.08"')) mp4Video.push('av1');
+    const webmVideo = ['vp8', 'vp9'];
+    if (can('video/webm; codecs="av01.0.05M.08"')) webmVideo.push('av1');
+    const mp4Audio = ['aac', 'mp3'];
+    if (can('audio/mp4; codecs="ac-3"')) mp4Audio.push('ac3');
+    if (can('audio/mp4; codecs="ec-3"')) mp4Audio.push('eac3');
+    if (can('audio/mp4; codecs="flac"')) mp4Audio.push('flac');
+    if (can('audio/mp4; codecs="opus"')) mp4Audio.push('opus');
+
+    return {
+      Name: 'Aurora',
+      MaxStreamingBitrate: bitrate,
+      MaxStaticBitrate: bitrate,
+      MusicStreamingTranscodingBitrate: 192000,
+      DirectPlayProfiles: [
+        { Container: 'mp4,m4v', Type: 'Video', VideoCodec: mp4Video.join(','), AudioCodec: mp4Audio.join(',') },
+        { Container: 'webm', Type: 'Video', VideoCodec: webmVideo.join(','), AudioCodec: 'vorbis,opus' },
+        { Container: 'mp3,aac,m4a,flac,webma,ogg', Type: 'Audio' },
+      ],
+      TranscodingProfiles: [
+        { Container: 'ts', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac,mp3', Context: 'Streaming', Protocol: 'hls', MaxAudioChannels: '2', MinSegments: '1', BreakOnNonKeyFrames: true },
+        { Container: 'mp4', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Context: 'Static', Protocol: 'http' },
+        { Container: 'mp3', Type: 'Audio', AudioCodec: 'mp3', Context: 'Streaming', Protocol: 'http' },
+      ],
+      ContainerProfiles: [],
+      CodecProfiles: [
+        { Type: 'Video', Codec: 'h264', Conditions: [{ Condition: 'LessThanEqual', Property: 'VideoLevel', Value: '52', IsRequired: false }] },
+      ],
+      // Text subtitles are converted to WebVTT and shown by the browser; picture-based ones are burned in.
+      SubtitleProfiles: [
+        { Format: 'vtt', Method: 'External' },
+        { Format: 'pgssub', Method: 'Encode' },
+        { Format: 'dvdsub', Method: 'Encode' },
+        { Format: 'dvbsub', Method: 'Encode' },
+      ],
+      ResponseProfiles: [{ Type: 'Video', Container: 'm4v', MimeType: 'video/mp4' }],
+    };
+  }
+
+  async function resolvePlayable(item) {
+    if (item.Type === 'Series' || item.Type === 'Season') {
+      const seriesId = item.Type === 'Series' ? item.Id : item.SeriesId;
+      const next = await api('/Shows/NextUp', { params: { SeriesId: seriesId, UserId: state.userId, Limit: 1, Fields: ITEM_FIELDS } });
+      if (next?.Items?.[0]) return next.Items[0];
+      const eps = await api(`/Shows/${seriesId}/Episodes`, { params: { UserId: state.userId, SeasonId: item.Type === 'Season' ? item.Id : undefined, Limit: 1, Fields: ITEM_FIELDS } });
+      if (eps?.Items?.[0]) return eps.Items[0];
+      throw new Error('No episodes found');
+    }
+    return item;
+  }
+
+  function withApiKey(path) {
+    let url = state.server + (path.startsWith('/') ? '' : '/') + path;
+    if (!/[?&]api_key=/i.test(url)) url += (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(state.apiKey);
+    return url;
+  }
+
+  // audioIndex / subtitleIndex / forceTranscode are passed when the viewer changes tracks or quality.
+  async function playItem(rawItem, opts = {}) {
+    const mk = maintKeyOfItem(rawItem);
+    if (mk && maintOn(mk)) { toast(maintText(mk), 8000); return; }
+    // Changing tracks or quality, or the next episode on the same device, isn't a new device starting to play.
+    if (opts.audioIndex != null || opts.subtitleIndex != null || opts.forceTranscode || opts.auto) return startPlayItem(rawItem, opts);
+    return whenAllowed(() => startPlayItem(rawItem, opts));
+  }
+
+  async function startPlayItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode = false, auto = false, noCap = false } = {}) {
+    if (!auto) noteInput();
+    const isReload = player.item && rawItem.Id === player.item.Id;
+    if (!isReload && $('#player').classList.contains('hidden')) rememberFocus('player');
+    const token = ++player.token;
+    player.noCap = noCap;
+    const stale = () => token !== player.token;
+    live.tunedId = rawItem.Type === 'TvChannel' ? rawItem.Id : null;
+    await stopPlayback();
+    if (stale()) return;
+    const el = $('#player'), video = $('#video'), status = $('#player-status');
+    el.classList.remove('hidden');
+    nativeApp?.setPlayerMode(true);
+    status.innerHTML = auroraLoaderHtml('Starting…');
+    delete status.dataset.buf;
+    status.classList.remove('hidden');
+    // A bare spinner for a long time looks like a hang: after a while say what it is waiting for.
+    clearTimeout(player.slowTimer);
+    player.slowTimer = setTimeout(() => {
+      if (stale() || vodSession || status.classList.contains('hidden') || !status.querySelector('.al')) return;
+      status.innerHTML = auroraLoaderHtml('This is taking longer than usual…', 'Slow internet or a busy server. If this keeps going, check your connection, or tell the admin.');
+    }, 10000);
+    $('#player-next').classList.add('hidden');
+    $('#skip-intro').classList.add('hidden');
+    hideUpNext();
+    hideStillWatching();
+    closeTracks();
+    document.body.style.overflow = 'hidden';
+    updateOsd();
+    wakeOsd();
+    // The Android app goes full screen natively via setPlayerMode.
+    if (!nativeApp && !document.fullscreenElement) { try { await el.requestFullscreen?.(); } catch { /* not allowed, fine */ } }
+
+    try {
+      const item = await resolvePlayable(rawItem);
+      if (stale()) return;
+      const isLive = item.Type === 'TvChannel';
+      // Refresh to get accurate resume position, user data and intro markers (or the channel's current program).
+      const full = isLive
+        ? await api(`/LiveTv/Channels/${item.Id}`, { params: { UserId: state.userId } })
+        : await api(userPath(`/Items/${item.Id}`), { params: { Fields: ITEM_FIELDS + ',Chapters' } });
+      if (stale()) return;
+      player.item = full;
+      player.isLive = isLive;
+      el.classList.toggle('live', isLive);
+      const start = isLive ? 0 : (startTicks ?? full.UserData?.PlaybackPositionTicks ?? 0);
+      player.startSeconds = start / TICKS_PER_SECOND;
+      player.intro = isLive ? null : findIntro(full.Chapters);
+      // No intro marker from the server: for episodes, offer a rough "skip ahead" for the first minutes instead.
+      player.fallbackSkip = !isLive && !player.intro && full.Type === 'Episode' && getPref('skipGuess') !== 'off';
+      player.fallbackDone = false;
+      player.creditsAt = isLive ? null : findCreditsStart(full.Chapters);
+      player.upNextShown = false;
+      player.upNextDismissed = false;
+
+      $('#player-title').innerHTML = isLive
+        ? `${esc(channelLabel(full))}<span class="sub">${esc(full.CurrentProgram?.Name || '')}</span>`
+        : full.Type === 'Episode'
+          ? `${esc(full.SeriesName)}<span class="sub">${esc(episodeLabel(full))}</span>`
+          : esc(full.Name);
+
+      const native = useNativePlayer() && !isLive;
+      // TV shows play as they are (Aurora's own player, quality on Auto): no speed test and no limit, so Emby sends the file
+      // itself instead of converting it. Converting is the slow, failure-prone part (it needs the server's ffmpeg to start in
+      // time). A quality the viewer picked by hand, and an admin's limit, still apply. Setting: Settings -> Play shows as they are.
+      const asIs = native && !forceTranscode && autoQuality() && playAsIs(full);
+      player.asIs = asIs;
+      // noCap: Emby's conversion failed at the measured limit, so this time let the file play as it is (an admin's limit still holds).
+      const bitrate = noCap || asIs ? (qualityCap() || QUALITY_OPTIONS[0].bitrate) : await playbackBitrate();
+      if (stale()) return;
+      player.bitrate = bitrate;
+      const params = { UserId: state.userId, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: bitrate };
+      if (audioIndex != null) params.AudioStreamIndex = audioIndex;
+      if (subtitleIndex != null) params.SubtitleStreamIndex = subtitleIndex;
+      // Browsers can't switch audio tracks in a file, so a non-default track needs Emby to remux it.
+      if (forceTranscode) { params.EnableDirectPlay = false; params.EnableDirectStream = false; }
+      const info = await api(`/Items/${full.Id}/PlaybackInfo`, { method: 'POST', params, body: { DeviceProfile: native ? nativeDeviceProfile(bitrate) : deviceProfile(bitrate) } });
+      const source = info?.MediaSources?.[0];
+      if (stale()) {
+        // A newer request took over; release the tuner this one may have opened.
+        if (source?.LiveStreamId) api('/LiveTv/LiveStreams/Close', { method: 'POST', params: { LiveStreamId: source.LiveStreamId } }).catch(() => {});
+        return;
+      }
+      if (!source) throw new Error(info?.ErrorCode || 'No playable media source');
+      player.playSessionId = info.PlaySessionId;
+      player.mediaSourceId = source.Id;
+      player.source = source;
+      player.liveStreamId = source.LiveStreamId || null;
+      player.forceTranscode = forceTranscode;
+      player.audioIndex = audioIndex ?? source.DefaultAudioStreamIndex ?? null;
+      player.subtitleIndex = subtitleIndex ?? source.DefaultSubtitleStreamIndex ?? -1;
+
+      let url, isHls = false;
+      if (source.TranscodingUrl) {
+        url = withApiKey(source.TranscodingUrl);
+        isHls = source.TranscodingSubProtocol === 'hls' || /\.m3u8/i.test(url);
+        player.playMethod = 'Transcode';
+      } else {
+        const container = (source.Container || 'mp4').split(',')[0];
+        url = apiUrl(`/Videos/${full.Id}/stream.${container}`, {
+          Static: true, MediaSourceId: source.Id, PlaySessionId: info.PlaySessionId, DeviceId: state.deviceId,
+        });
+        player.playMethod = source.SupportsDirectPlay ? 'DirectPlay' : 'DirectStream';
+      }
+      appLog.add('info', `Playing ${full.Name} (${player.playMethod}${native ? ', Aurora player' : ''})`);
+
+      if (native) {
+        await playNative(full, source, url, isHls, forceTranscode, stale);
+        return;
+      }
+
+      // Text subtitles come as a separate WebVTT file; burned-in ones are already in the video.
+      $$('track', video).forEach((t) => t.remove());
+      const sub = (source.MediaStreams || []).find((s) => s.Type === 'Subtitle' && s.Index === player.subtitleIndex);
+      if (sub && sub.DeliveryMethod === 'External' && sub.DeliveryUrl) {
+        const track = document.createElement('track');
+        track.kind = 'subtitles';
+        track.label = sub.DisplayTitle || sub.Language || 'Subtitles';
+        track.srclang = sub.Language || 'und';
+        track.src = withApiKey(sub.DeliveryUrl);
+        track.default = true;
+        video.appendChild(track);
+        track.addEventListener('load', () => { track.track.mode = 'showing'; });
+      }
+
+      await attachSource(video, url, isHls, player.startSeconds);
+      if (stale()) return;
+      status.classList.add('hidden');
+      reportPlayback('/Sessions/Playing');
+      player.progressTimer = setInterval(() => reportPlayback('/Sessions/Playing/Progress', 'TimeUpdate'), 10000);
+      if (full.Type === 'Episode') findNextEpisode(full);
+      wakeOsd();
+    } catch (e) {
+      if (stale()) return;
+      console.error(e);
+      const same = player.item?.Id === rawItem.Id;
+      playLog.add({ kind: rawItem.Type === 'TvChannel' ? 'live-failed' : 'failed', title: itemTitle(same ? player.item : rawItem), itemId: rawItem.Id, method: same ? player.playMethod || '' : '', error: String(e.message || e).slice(0, 200) });
+      status.innerHTML = `<p>Playback failed: ${esc(e.message)}</p><button class="btn btn-white" id="player-err-back">Go Back</button>`;
+      $('#player-err-back').addEventListener('click', closePlayer);
+      if (nav.on) focusEl($('#player-err-back'));
+    }
+  }
+
+  function findCreditsStart(chapters) {
+    const ticks = (chapters || []).find((c) => c.MarkerType === 'CreditsStart')?.StartPositionTicks;
+    return ticks ? ticks / TICKS_PER_SECOND : null;
+  }
+
+  // Episodes the server has no intro markers for get a "Skip 90 seconds" button for the first few minutes.
+  // It can't know whether this episode has an intro, so it only shows as a short prompt at the very start.
+  const FALLBACK_SKIP_S = 90, FALLBACK_SKIP_FROM = 3, FALLBACK_SKIP_UNTIL = 33;
+
+  function findIntro(chapters) {
+    const ticks = (type) => (chapters || []).find((c) => c.MarkerType === type)?.StartPositionTicks;
+    const start = ticks('IntroStart'), end = ticks('IntroEnd');
+    return start != null && end != null && end > start ? { start: start / TICKS_PER_SECOND, end: end / TICKS_PER_SECOND } : null;
+  }
+
+  function attachSource(video, url, isHls, startSeconds) {
+    return new Promise((resolve, reject) => {
+      const onReady = () => {
+        if (startSeconds > 0 && Math.abs(video.currentTime - startSeconds) > 2) video.currentTime = startSeconds;
+        video.play().catch(() => { /* autoplay may need a click */ });
+        resolve();
+      };
+      // hls.js plays Emby's stream more smoothly than Android's built-in HLS; Apple's own is best on Apple devices.
+      const apple = /Apple/.test(navigator.vendor || '');
+      if (isHls && (!apple || !video.canPlayType('application/vnd.apple.mpegurl')) && window.Hls?.isSupported()) {
+        const hls = new window.Hls({ startPosition: startSeconds || -1, maxBufferLength: 60, maxMaxBufferLength: 120, backBufferLength: 30,
+          // Emby live channels: play a little further behind live, so there's more in hand when the stream hiccups.
+          ...(player.isLive ? { liveSyncDurationCount: 4, liveMaxLatencyDurationCount: 12 } : {}) });
+        player.hls = hls;
+        hls.on(window.Hls.Events.MANIFEST_PARSED, () => { video.play().catch(() => {}); resolve(); });
+        hls.on(window.Hls.Events.ERROR, (_, data) => {
+          if (!data.fatal) return;
+          if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+          else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+          else reject(new Error('Streaming error: ' + data.details));
+        });
+        hls.loadSource(url);
+        hls.attachMedia(video);
+      } else if (isHls && !video.canPlayType('application/vnd.apple.mpegurl')) {
+        reject(new Error('This browser cannot play HLS streams (hls.js failed to load).'));
+      } else {
+        video.src = url;
+        video.addEventListener('loadedmetadata', onReady, { once: true });
+        video.addEventListener('error', () => reject(new Error('The browser could not play this file.')), { once: true });
+        video.load();
+      }
+    });
+  }
+
+  // Emby only ticks an item off when playback stops past its own threshold, and not always (skipping to the
+  // next episode in the credits, a stream that ends a little early). So when the viewer got to the end, say so.
+  async function markFinished(item, posSec, durSec, ended) {
+    if (!item || item.Type === 'TvChannel' || item.Type === 'Program') return;
+    const dur = durSec || (item.RunTimeTicks || 0) / TICKS_PER_SECOND;
+    const done = ended || (dur > 0 && (posSec >= dur * 0.9 || (dur > 600 && posSec >= dur - 120)));
+    rowCache.clear();
+    if (!done) return;
+    try {
+      await api(userPath(`/PlayedItems/${item.Id}`), { method: 'POST' });
+    } catch (e) { appLog.add('warn', `Could not mark "${item.Name}" as watched (${e.message})`); }
+  }
+
+  // Emby saves the resume point (and Continue Watching) from these reports.
+  function reportPlayback(path, eventName, { keepalive = false } = {}) {
+    if (!player.item) return Promise.resolve();
+    const stopped = path.endsWith('/Stopped');
+    // After the app went to the background we told Emby playback stopped; don't revive the old session.
+    if (player.suspended && !stopped) return Promise.resolve();
+    const video = $('#video');
+    const body = {
+      ItemId: player.item.Id,
+      MediaSourceId: player.mediaSourceId,
+      PlaySessionId: player.playSessionId,
+      PositionTicks: Math.floor((video.currentTime || 0) * TICKS_PER_SECOND),
+      IsPaused: video.paused,
+      IsMuted: video.muted,
+      VolumeLevel: Math.round(video.volume * 100),
+      PlayMethod: player.playMethod,
+      LiveStreamId: player.liveStreamId || undefined,
+      AudioStreamIndex: player.audioIndex ?? undefined,
+      SubtitleStreamIndex: player.subtitleIndex,
+      CanSeek: true,
+      EventName: eventName,
+    };
+    const send = () => api(path, { method: 'POST', body, keepalive });
+    // The final position matters most: retry it once if the network blips.
+    return send().catch(() => (stopped ? new Promise((r) => setTimeout(r, 1500)).then(send) : null))
+      .catch((e) => console.warn('report failed', e));
+  }
+
+  // The app is going to the background (Home button, screen off, box turned off): save the position now
+  // as a finished session, because the app may never get the chance later.
+  function suspendPlayback() {
+    if (!player.item || player.suspended || player.isLive) return;
+    $('#video').pause();
+    reportPlayback('/Sessions/Playing/Stopped', null, { keepalive: true });
+    player.suspended = true;
+  }
+
+  // Back in the app and playing again: start a fresh session from the current position.
+  function resumeSuspended() {
+    if (!player.suspended || !player.item) return;
+    player.suspended = false;
+    reportPlayback('/Sessions/Playing');
+  }
+
+  async function nextEpisodeOf(ep) {
+    const res = await api(`/Shows/${ep.SeriesId}/Episodes`, { params: { UserId: state.userId, StartItemId: ep.Id, Limit: 2, Fields: ITEM_FIELDS } });
+    return res?.Items?.find((i) => i.Id !== ep.Id) || null;
+  }
+
+  // ----- Playing things as they are (no converting by the server) -----
+  // Converting needs the server's ffmpeg to start in time. When it doesn't ("never started: the server sent nothing"), the video
+  // can't play at all, so: shows always play as they are (a setting per device), the admin can say movies too (Admin -> Playback),
+  // and a device whose conversions keep failing stops asking for them for a while.
+  const asIsMode = () => (['all', 'off'].includes(playbackCfg.asIs) ? playbackCfg.asIs : '');
+  const CONVERT_FAILS = 'ef.convertFails';
+  const recentConvertFails = () => { try { return JSON.parse(store.get(CONVERT_FAILS) || '[]').filter((t) => Date.now() - t < 6 * 3600000); } catch { return []; } };
+  const serverConvertsBadly = () => recentConvertFails().length >= 2;
+  function noteConvertFailure() { store.set(CONVERT_FAILS, JSON.stringify([...recentConvertFails(), Date.now()].slice(-5))); }
+  function playAsIs(item) {
+    const mode = asIsMode();
+    if (mode === 'off') return false;
+    if (mode === 'all') return true;
+    return (item.Type === 'Episode' && getPref('showsAsIs') === 'on') || serverConvertsBadly();
+  }
+
+  // ----- Aurora's native player (Android app) -----
+  // The page picks what to play; the native screen plays it, keeps Emby up to date, and reports back here.
+  let vodSession = null;
+  async function playNative(full, source, url, isHls, forceTranscode, stale) {
+    // The next episode (for the Next button and auto-play) is worth a moment, not a wait: a slow server must not hold the film up.
+    const next = full.Type === 'Episode'
+      ? await Promise.race([nextEpisodeOf(full).catch(() => null), new Promise((r) => setTimeout(() => r(null), 2500))])
+      : null;
+    if (stale()) return;
+    const subs = (source.MediaStreams || [])
+      .filter((s) => s.Type === 'Subtitle' && s.DeliveryMethod === 'External' && s.DeliveryUrl)
+      .map((s) => ({
+        url: withApiKey(s.DeliveryUrl),
+        lang: s.Language || '',
+        label: s.DisplayTitle || s.Language || 'Subtitles',
+        format: (s.DeliveryUrl.match(/\.(\w+)(?:\?|$)/) || [])[1] || s.Codec || 'vtt',
+        selected: s.Index === player.subtitleIndex,
+      }));
+    const cfg = state.user?.Configuration || {};
+    const ms = (sec) => (sec == null ? -1 : Math.round(sec * 1000));
+    const spec = {
+      url, hls: isHls,
+      startMs: Math.round(player.startSeconds * 1000),
+      title: full.Type === 'Episode' ? full.SeriesName : full.Name,
+      subtitle: full.Type === 'Episode' ? episodeLabel(full) : (full.ProductionYear ? String(full.ProductionYear) : ''),
+      subs,
+      introStartMs: ms(player.intro?.start), introEndMs: ms(player.intro?.end), creditsMs: ms(player.creditsAt),
+      fallbackSkipMs: player.fallbackSkip ? FALLBACK_SKIP_S * 1000 : 0, fallbackFromMs: FALLBACK_SKIP_FROM * 1000, fallbackUntilMs: FALLBACK_SKIP_UNTIL * 1000,
+      nextTitle: next ? episodeLabel(next) : '',
+      audioLang: cfg.AudioLanguagePreference || '', subLang: cfg.SubtitleLanguagePreference || '', subMode: cfg.SubtitleMode || 'Default',
+      report: {
+        base: state.server + '/emby', apiKey: state.apiKey, auth: authHeader(), deviceId: state.deviceId,
+        itemId: full.Id, mediaSourceId: source.Id, playSessionId: player.playSessionId, playMethod: player.playMethod,
+        audioIndex: player.audioIndex ?? undefined, subtitleIndex: player.subtitleIndex,
+      },
+      stallSeconds: stallSeconds() || undefined,
+      softwareDecoders: getPref('ffmpeg') !== 'off',
+      // If Emby's conversion never starts, hand back at once (no "press OK" screen) so Aurora can try playing the file as it is.
+      canFallback: player.playMethod === 'Transcode' && !player.noCap && !forceTranscode && autoQuality() && (player.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate),
+    };
+    vodSession = { item: full, next, forceTranscode, startMs: spec.startMs, playMethod: player.playMethod, bitrate: player.bitrate, noCap: !!player.noCap, asIs: !!player.asIs };
+    // The native screen reports to Emby from here on.
+    player.item = null;
+    player.playSessionId = null;
+    store.set('ef.liveReturn', JSON.stringify({ hash: location.hash || '#/home', t: Date.now() }));
+    nativeApp.playVod(JSON.stringify(spec));
+  }
+
+  // How a viewing went (the Aurora player counts the stalls). A rough session goes into the app log as a warning,
+  // so it reaches the admins with the automatic reports, and lowers the quality used for the next few plays.
+  // Tell the guard how a viewing went (a few numbers, no titles), so an admin can see which customers buffer and why.
+  function reportQuality(payload) {
+    if (!guardEnabled || !state.userId) return;
+    const app = `${nav.tv ? 'TV · ' : ''}${/Android/i.test(navigator.userAgent) ? 'Android' : /iPhone|iPad/i.test(navigator.userAgent) ? 'iPhone' : 'Web'}`;
+    guard('/quality', { method: 'POST', body: { ...payload, app }, params: { userId: state.userId } }).catch(() => { /* best effort */ });
+  }
+  function noteStreamHealth(s, r) {
+    const watched = r.watchedMs || 0, stalledMs = r.stalledMs || 0, stalls = r.stalls || 0;
+    if (watched >= 30000) reportQuality({ kind: 'vod', watchMin: Math.round(watched / 60000), stalls, stallSec: Math.round(stalledMs / 1000) });
+    const pct = watched ? Math.round((stalledMs / watched) * 1000) / 10 : 0;
+    const rough = stalls >= 3 || pct >= 3;
+    if (rough) playLog.add({ kind: 'stalling', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, stalls, stalledSec: Math.round(stalledMs / 1000), pct, watchedMin: Math.round(watched / 60000), bitrate: s.bitrate || 0 });
+    appLog.add(rough ? 'warn' : 'info',
+      `Watched ${s.item.Name} (${s.playMethod}${s.bitrate ? ', limit ' + (s.bitrate / 1e6).toFixed(0) + ' Mbps' : ''}): ${Math.round(watched / 60000)} min, ${stalls} ${stalls === 1 ? 'stall' : 'stalls'}, ${Math.round(stalledMs / 1000)} s buffering (${pct}%)`);
+    if (rough && s.asIs && !store.get('ef.showsBufferTip')) {
+      // Shows play untouched, so a slow connection shows up as buffering. Say how to let Aurora lower the quality instead.
+      store.set('ef.showsBufferTip', '1');
+      toast('That show kept stopping to buffer. If it keeps happening, turn off "Play shows as they are" in Settings.', 9000);
+    } else if (rough && !s.asIs && autoQuality() && s.bitrate) {
+      measuredBitrate = { bps: Math.max(700000, Math.round(s.bitrate * 0.6)), t: Date.now() };
+      if (!store.get('ef.vodBufferTip')) {
+        store.set('ef.vodBufferTip', '1');
+        toast('That video kept stopping to buffer, so Aurora will use a lower quality next time. You can set it in Settings → Playback → Streaming quality.', 8000);
+      }
+    }
+  }
+
+  // Lines the Android side writes to the app log (a request it ignored, a screen it couldn't open).
+  window.auroraNativeLog = (m) => appLog.add('info', String(m).slice(0, 300));
+
+  window.auroraVodClosed = async (r) => {
+    store.del('ef.liveReturn');
+    if (offlinePlaying) { // a saved download: remember where they stopped; there is no server to tell
+      const id = offlinePlaying; offlinePlaying = null;
+      if (r && r.ended) store.del('ef.dl.pos.' + id); else if (r && r.positionMs > 5000) store.set('ef.dl.pos.' + id, String(Math.round(r.positionMs)));
+      if (!offlineMode && location.hash.startsWith('#/downloads')) route();
+      return;
+    }
+    appLog.add('info', 'Aurora player closed: ' + (!r ? 'no answer from the player screen (it closed or crashed at once)'
+      : r.error ? `${r.error} (${r.ready ? 'played, then stopped' : 'never started'})` : r.ready ? `played ${Math.round((r.watchedMs || 0) / 1000)} s` : 'never started'));
+    const s = vodSession;
+    vodSession = null;
+    r = r || {};
+    if (s?.item && r.ready) await markFinished(s.item, (r.positionMs || 0) / 1000, (r.durationMs || 0) / 1000, !!r.ended);
+    if (s && r.watchedMs > 60000) noteStreamHealth(s, r);
+    if (!s || !isPlayerOpen()) {
+      if (isPlayerOpen()) closePlayer(); else route();
+      return;
+    }
+    if (r.touched) noteInput();
+    if (r.error) {
+      const converting = r.error.startsWith('unplayable') && !s.forceTranscode;
+      playLog.add({ kind: converting ? 'converted' : 'failed', title: itemTitle(s.item), itemId: s.item.Id, method: s.playMethod, error: r.error,
+        atSec: Math.round((r.positionMs || 0) / 1000), bitrate: s.bitrate || 0 });
+    }
+    if (r.error) appLog.add('warn', `Aurora player: ${s.item.Name} stopped (${r.error}, ${s.playMethod}, at ${Math.round((r.positionMs || 0) / 1000)}s of ${Math.round((r.durationMs || 0) / 1000)}s)`);
+    // The device couldn't play the file as it is: ask Emby to convert it, from the same spot.
+    if (r.error?.startsWith('unplayable') && !s.forceTranscode) {
+      toast('Converting this video so it plays on this device…');
+      const pos = r.ready ? r.positionMs : s.startMs;
+      playItem(s.item, { startTicks: Math.round(pos * 10000), forceTranscode: true, auto: true });
+      return;
+    }
+    // A conversion that never started: remember it. After two in a few hours this device stops asking for conversions.
+    if (!r.ready && s?.playMethod === 'Transcode' && /^failed/.test(r.error || '')) {
+      noteConvertFailure();
+      if (recentConvertFails().length === 2) appLog.add('warn', 'The server could not start converting videos twice: Aurora will now play videos as they are on this device for a while');
+    }
+    // Emby's own conversion failed before anything played (it refused, or its converter broke): try once more without
+    // the measured quality limit, which lets a file the device can play as it is play directly instead of converting.
+    if (r.autoFallback && r.error?.startsWith('failed') && !r.ready && s.playMethod === 'Transcode' && !s.noCap && !s.forceTranscode && autoQuality() && (s.bitrate || 0) < (qualityCap() || QUALITY_OPTIONS[0].bitrate)) {
+      toast('Trying another way to play this…');
+      measuredBitrate = null;
+      playItem(s.item, { startTicks: Math.round((s.startMs || 0) * 10000), auto: true, noCap: true });
+      return;
+    }
+    if (r.next && s.next && (!r.ended || getPref('autoplay') === 'on')) {
+      player.nextEpisode = s.next;
+      startNextEpisode(!!r.ended);
+      return;
+    }
+    if (r.error) toast("This video couldn't be played. Try again, or pick a lower Streaming quality in Settings.", 6000);
+    closePlayer();
+  };
+
+  async function findNextEpisode(ep) {
+    player.nextEpisode = null;
+    try {
+      const next = await nextEpisodeOf(ep);
+      if (next && player.item?.Id === ep.Id) {
+        player.nextEpisode = next;
+        const btn = $('#player-next');
+        btn.title = episodeLabel(next);
+        btn.classList.remove('hidden');
+      }
+    } catch { /* ignore */ }
+  }
+
+  function playNextEpisode() {
+    startNextEpisode(false);
+  }
+
+  // auto: started by the countdown or the end of an episode rather than by the viewer.
+  function startNextEpisode(auto) {
+    const next = player.nextEpisode;
+    if (!next) return;
+    hideUpNext();
+    if (auto) {
+      player.autoCount++;
+      // Three episodes in a row with no one touching the remote: check before streaming more.
+      if (getPref('stillWatching') === 'on' && player.autoCount >= 3) {
+        showStillWatching(() => playItem(next, { startTicks: 0 }));
+        return;
+      }
+      playItem(next, { startTicks: 0, auto: true });
+    } else {
+      playItem(next, { startTicks: 0 });
+    }
+  }
+
+  // Called for any viewer input in the player (keys, clicks, taps).
+  function noteInput() {
+    player.autoCount = 0;
+    player.lastInput = Date.now();
+  }
+
+  // ----- Next-episode countdown -----
+  const upNextVisible = () => !$('#up-next').classList.contains('hidden');
+
+  // When the credits start (Emby's credits marker, or the last 20 seconds of a longer episode).
+  function creditsTime() {
+    if (player.creditsAt) return player.creditsAt;
+    const dur = mediaDuration();
+    return dur > 300 ? dur - 20 : null;
+  }
+
+  function showUpNext() {
+    const next = player.nextEpisode, card = $('#up-next');
+    if (!next) return;
+    player.upNextShown = true;
+    const img = landscapeImage(next, 400);
+    const autoplay = getPref('autoplay') === 'on';
+    card.innerHTML = `
+      <div class="up-next-img">${img ? `<img src="${esc(img)}" alt="">` : ''}</div>
+      <div class="up-next-text">
+        <span class="up-next-label">Next Episode</span>
+        <strong>${esc(episodeLabel(next))}</strong>
+        ${autoplay ? '<span class="up-next-count">Playing in <b>10</b></span>' : ''}
+        <div class="up-next-actions">
+          <button class="btn btn-white" data-act="now" data-autofocus>${ICONS.play} Play Now</button>
+          <button class="btn btn-gray" data-act="credits">Watch Credits</button>
+        </div>
+      </div>`;
+    card.classList.remove('hidden');
+    $('[data-act="now"]', card).addEventListener('click', () => startNextEpisode(false));
+    $('[data-act="credits"]', card).addEventListener('click', () => { player.upNextDismissed = true; hideUpNext(); wakeOsd(); });
+    if (nav.on) focusEl($('[data-act="now"]', card));
+    if (autoplay) {
+      let left = 10;
+      player.upNextTimer = setInterval(() => {
+        left--;
+        const n = $('.up-next-count b', card);
+        if (n) n.textContent = left;
+        if (left <= 0) startNextEpisode(true);
+      }, 1000);
+    }
+  }
+
+  function hideUpNext() {
+    clearInterval(player.upNextTimer);
+    player.upNextTimer = null;
+    const card = $('#up-next');
+    if (card.classList.contains('hidden')) return;
+    const hadFocus = card.contains(document.activeElement);
+    card.classList.add('hidden');
+    card.innerHTML = '';
+    if (hadFocus && nav.on && isPlayerOpen()) focusEl($('#osd-play'));
+  }
+
+  function checkUpNext(cur) {
+    if (player.isLive || !player.nextEpisode || player.upNextDismissed) return;
+    const at = creditsTime();
+    if (at == null) return;
+    if (cur >= at && !player.upNextShown) showUpNext();
+    // Seeking back before the credits takes the card away again.
+    else if (cur < at - 1 && player.upNextShown) { player.upNextShown = false; hideUpNext(); }
+  }
+
+  // ----- "Are you still watching?" -----
+  const stillWatchingVisible = () => !$('#still-watching').classList.contains('hidden');
+
+  async function showStillWatching(onContinue) {
+    const name = player.item?.SeriesName || (player.isLive ? channelLabel(player.item || {}) : player.item?.Name) || '';
+    // Stop streaming (and free any Live TV tuner) while we wait for an answer.
+    player.token++;
+    await stopPlayback();
+    hideUpNext();
+    const box = $('#still-watching');
+    box.innerHTML = `
+      <div class="still-box">
+        <h2>Are you still watching${name ? ` <span>${esc(name)}</span>` : ''}?</h2>
+        <div class="still-actions">
+          <button class="btn btn-white" data-act="continue" data-autofocus>Continue Watching</button>
+          <button class="btn btn-gray" data-act="exit">Back to Browse</button>
+        </div>
+      </div>`;
+    box.classList.remove('hidden');
+    $('#player').classList.remove('idle');
+    $('[data-act="continue"]', box).addEventListener('click', () => { noteInput(); hideStillWatching(); onContinue(); });
+    $('[data-act="exit"]', box).addEventListener('click', () => { hideStillWatching(); closePlayer(); });
+    focusEl($('[data-act="continue"]', box));
+  }
+
+  function hideStillWatching() {
+    const box = $('#still-watching');
+    box.classList.add('hidden');
+    box.innerHTML = '';
+  }
+
+  async function stopPlayback() {
+    clearInterval(player.progressTimer);
+    const video = $('#video');
+    if (player.item) {
+      const playSessionId = player.playSessionId;
+      const wasTranscoding = player.playMethod === 'Transcode';
+      const liveStreamId = player.liveStreamId;
+      const item = player.item, pos = video.currentTime || 0, ended = video.ended;
+      if (!player.suspended) await reportPlayback('/Sessions/Playing/Stopped');
+      if (!player.isLive) await markFinished(item, pos, Number.isFinite(video.duration) ? video.duration : 0, ended);
+      // Free the tuner.
+      if (liveStreamId) api('/LiveTv/LiveStreams/Close', { method: 'POST', params: { LiveStreamId: liveStreamId } }).catch(() => {});
+      if (wasTranscoding) {
+        api('/Videos/ActiveEncodings', { method: 'DELETE', params: { DeviceId: state.deviceId, PlaySessionId: playSessionId } }).catch(() => {});
+      }
+    }
+    if (player.hls) { player.hls.destroy(); player.hls = null; }
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    player.item = null;
+    player.nextEpisode = null;
+    player.intro = null;
+    player.liveStreamId = null;
+    player.suspended = false;
+  }
+
+  async function closePlayer() {
+    player.token++;
+    await stopPlayback();
+    hideUpNext();
+    hideStillWatching();
+    closeTracks();
+    player.speed = 1; // each new title starts at normal speed
+    $('#player').classList.add('hidden');
+    nativeApp?.setPlayerMode(false);
+    if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+    const modalOpen = !$('#modal').classList.contains('hidden');
+    document.body.style.overflow = modalOpen ? 'hidden' : '';
+    // Refresh what's on screen so "Continue Watching" and progress bars update.
+    if (!modalOpen) route();
+    else $('[data-episodes]')?.__reload?.();
+    restoreFocus('player');
+    showWaitingUpdate();
+  }
+
+  // ----- On-screen controls -----
+  const isPlayerOpen = () => !$('#player').classList.contains('hidden');
+  const tracksOpen = () => !$('#tracks-panel').classList.contains('hidden');
+  const osdVisible = () => !$('#player').classList.contains('idle');
+
+  function formatClock(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + ':' + String(s).padStart(2, '0');
+  }
+
+  function mediaDuration() {
+    const d = $('#video').duration;
+    if (Number.isFinite(d) && d > 0) return d;
+    return (player.item?.RunTimeTicks || 0) / TICKS_PER_SECOND;
+  }
+
+  function seekTo(sec) {
+    const video = $('#video'), dur = mediaDuration();
+    video.currentTime = Math.max(0, dur ? Math.min(sec, dur - 1) : sec);
+    updateOsd();
+  }
+  const seekBy = (delta) => seekTo(($('#video').currentTime || 0) + delta);
+
+  function togglePlay() {
+    const video = $('#video');
+    if (video.paused) video.play().catch(() => {});
+    else video.pause();
+  }
+
+  function updateOsd() {
+    const video = $('#video'), dur = mediaDuration(), cur = video.currentTime || 0;
+    if (player.isLive) {
+      const prog = player.item?.CurrentProgram;
+      $('#osd-time').textContent = prog ? `${prog.Name} · ${timeRange(prog)}` : '';
+    } else if (!player.dragging) $('#osd-seek').value = dur ? Math.round((cur / dur) * 1000) : 0;
+    if (!player.isLive) {
+      $('#osd-time').textContent = `${formatClock(cur)} / ${formatClock(dur)}`;
+      $('#osd-remaining').textContent = '-' + formatClock(dur - cur);
+    }
+    $('#osd-play').innerHTML = video.paused ? ICONS.play : ICONS.pause;
+    $('#osd-play').setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
+    $('#osd-mute').innerHTML = video.muted ? ICONS.muted : ICONS.volume;
+    const inIntro = player.intro && cur >= player.intro.start && cur < player.intro.end - 1;
+    const guessIntro = !inIntro && player.fallbackSkip && !player.fallbackDone && cur >= FALLBACK_SKIP_FROM && cur < FALLBACK_SKIP_UNTIL;
+    $('#skip-intro').classList.toggle('hidden', !(inIntro || guessIntro));
+    $('#skip-intro').textContent = guessIntro ? `Skip ${FALLBACK_SKIP_S} seconds` : 'Skip Intro';
+    checkUpNext(cur);
+  }
+
+  function wakeOsd() {
+    const el = $('#player'), video = $('#video');
+    el.classList.remove('idle');
+    clearTimeout(player.idleTimer);
+    player.idleTimer = setTimeout(() => {
+      if (video.paused || tracksOpen() || player.dragging) return;
+      el.classList.add('idle');
+      // Hidden controls shouldn't keep remote focus.
+      const keep = document.activeElement === $('#skip-intro') || $('#up-next').contains(document.activeElement);
+      if (el.contains(document.activeElement) && !keep) document.activeElement.blur();
+    }, 4000);
+  }
+
+  function openTracks() {
+    const panel = $('#tracks-panel'), streams = player.source?.MediaStreams || [], video = $('#video');
+    const audio = streams.filter((s) => s.Type === 'Audio');
+    const subs = streams.filter((s) => s.Type === 'Subtitle');
+    const opt = (attr, value, label, selected) =>
+      `<button class="track-opt${selected ? ' selected' : ''}" data-${attr}="${value}">${selected ? '&#10003; ' : ''}${esc(label)}</button>`;
+    const nowPlaying = video.videoHeight ? `<p class="tracks-now">Now playing ${video.videoHeight >= 2000 ? '4K' : video.videoHeight + 'p'}</p>` : '';
+    panel.innerHTML = `
+      <h3 class="tracks-title">Playback settings</h3>
+      <div class="tracks-cols">
+        <div class="tracks-col"><h4>Language</h4>
+          ${audio.length ? audio.map((s) => opt('audio', s.Index, s.DisplayTitle || s.Language || `Track ${s.Index}`, s.Index === player.audioIndex)).join('') : '<p>Default</p>'}
+        </div>
+        <div class="tracks-col"><h4>Subtitles</h4>
+          ${opt('sub', -1, 'Off', player.subtitleIndex == null || player.subtitleIndex < 0)}
+          ${subs.map((s) => opt('sub', s.Index, s.DisplayTitle || s.Language || `Subtitle ${s.Index}`, s.Index === player.subtitleIndex)).join('')}
+        </div>
+        ${player.isLive ? '' : `<div class="tracks-col"><h4>Speed</h4>
+          ${SPEED_OPTIONS.map((r) => opt('speed', r, speedLabel(r), r === player.speed)).join('')}
+        </div>`}
+        <div class="tracks-col"><h4>Resolution</h4>
+          ${qualityChoices().map((q) => opt('quality', q.bitrate, q.label, q.bitrate === shownQuality())).join('')}
+          ${nowPlaying}
+        </div>
+      </div>`;
+    panel.classList.remove('hidden');
+    $('#player').classList.remove('idle');
+    clearTimeout(player.idleTimer);
+    focusEl($('.track-opt.selected', panel) || $('.track-opt', panel));
+  }
+
+  // Speed resets when a new video loads, so it's put back every time.
+  function applySpeed() {
+    const video = $('#video');
+    video.defaultPlaybackRate = player.speed;
+    video.playbackRate = player.speed;
+  }
+
+  function closeTracks() {
+    const panel = $('#tracks-panel');
+    if (panel.classList.contains('hidden')) return;
+    panel.classList.add('hidden');
+    wakeOsd();
+    if (nav.on) focusEl($('#osd-tracks'));
+  }
+
+  function onTrackChoice(btn) {
+    const video = $('#video'), item = player.item, source = player.source;
+    if (!item) return;
+    const startTicks = Math.floor((video.currentTime || 0) * TICKS_PER_SECOND);
+    let { audioIndex, subtitleIndex, forceTranscode } = player;
+    // Picking what's already chosen just closes the panel.
+    if (btn.classList.contains('selected')) { closeTracks(); return; }
+    if (btn.dataset.speed != null) {
+      // Speed changes on the spot; no need to restart the stream.
+      player.speed = Number(btn.dataset.speed);
+      applySpeed();
+      closeTracks();
+      toast(`Speed: ${speedLabel(player.speed)}`, 1500);
+      return;
+    }
+    if (btn.dataset.audio != null) {
+      audioIndex = Number(btn.dataset.audio);
+      forceTranscode = audioIndex !== source?.DefaultAudioStreamIndex;
+    } else if (btn.dataset.sub != null) {
+      subtitleIndex = Number(btn.dataset.sub);
+    } else if (btn.dataset.quality != null) {
+      store.set('ef.maxBitrate', btn.dataset.quality);
+    }
+    closeTracks();
+    playItem(item, { startTicks, audioIndex: audioIndex ?? undefined, subtitleIndex, forceTranscode });
+  }
+
+  // Remote / keyboard handling while the player is open. Returns true when handled.
+  function handlePlayerKey(action) {
+    const video = $('#video');
+    noteInput();
+    if (stillWatchingVisible()) {
+      if (action === 'back') { hideStillWatching(); closePlayer(); return true; }
+      return false; // move between the two buttons
+    }
+    if (upNextVisible() && $('#up-next').contains(document.activeElement)) {
+      // Arrows move between Play Now and Watch Credits; OK presses the focused one.
+      if (['left', 'right', 'select'].includes(action)) return false;
+      if (action === 'up') { wakeOsd(); focusEl($('#osd-play')); return true; }
+    }
+    if (tracksOpen()) {
+      if (action === 'back') { closeTracks(); return true; }
+      return false;
+    }
+    switch (action) {
+      case 'playpause': togglePlay(); wakeOsd(); return true;
+      case 'play': video.play().catch(() => {}); wakeOsd(); return true;
+      case 'pause': video.pause(); wakeOsd(); return true;
+      case 'ff': if (!player.isLive) seekBy(30); wakeOsd(); return true;
+      case 'rw': if (!player.isLive) seekBy(-10); wakeOsd(); return true;
+      case 'next': playNextEpisode(); return true;
+      case 'chup': if (player.isLive) changeChannel(1); return true;
+      case 'chdown': if (player.isLive) changeChannel(-1); return true;
+      default: break;
+    }
+    if (player.isLive && (!osdVisible() || !$('#player').contains(document.activeElement))) {
+      // Live TV: up/down changes channel and left/right moves into the controls (there's nothing to seek).
+      if (action === 'up' || action === 'down') { changeChannel(action === 'up' ? 1 : -1); return true; }
+      if (action === 'left' || action === 'right') { wakeOsd(); focusEl($('#osd-play')); return true; }
+    }
+    if (!osdVisible()) {
+      // OK skips only a real intro. The rough "skip 90 seconds" prompt must not take over OK, or pausing in the first seconds would skip ahead.
+      const skipVisible = !$('#skip-intro').classList.contains('hidden') && !!player.intro;
+      if (action === 'select') {
+        if (skipVisible) $('#skip-intro').click();
+        else togglePlay();
+        wakeOsd();
+        return true;
+      }
+      if (action === 'left' || action === 'right') { seekBy(action === 'left' ? -10 : 10); wakeOsd(); return true; }
+      if (action === 'up' || action === 'down') { wakeOsd(); focusEl($('#osd-play')); return true; }
+      return false;
+    }
+    wakeOsd();
+    const focused = document.activeElement;
+    if (focused === $('#osd-seek') && (action === 'left' || action === 'right')) {
+      seekBy(action === 'left' ? -10 : 10);
+      return true;
+    }
+    if (!$('#player').contains(focused) && ['up', 'down', 'left', 'right', 'select'].includes(action)) {
+      focusEl($('#osd-play'));
+      return true;
+    }
+    return false;
+  }
+
+  function setupPlayer() {
+    const el = $('#player'), video = $('#video'), seek = $('#osd-seek');
+    $('#player-back').addEventListener('click', closePlayer);
+    $('#player-next').addEventListener('click', playNextEpisode);
+    $('#osd-play').addEventListener('click', togglePlay);
+    $('#osd-back10').innerHTML = ICONS.back10;
+    $('#osd-fwd10').innerHTML = ICONS.fwd10;
+    $('#osd-back10').addEventListener('click', () => seekBy(-10));
+    $('#osd-fwd10').addEventListener('click', () => seekBy(10));
+    $('#osd-mute').addEventListener('click', () => { video.muted = !video.muted; updateOsd(); });
+    $('#osd-tracks').addEventListener('click', openTracks);
+    $('#skip-intro').addEventListener('click', () => {
+      if (player.intro) seekTo(player.intro.end);
+      else if (player.fallbackSkip) { player.fallbackDone = true; seekTo(Math.min($('#video').currentTime + FALLBACK_SKIP_S, ($('#video').duration || Infinity) - 5)); $('#skip-intro').classList.add('hidden'); }
+    });
+    $('#osd-fullscreen').addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
+      else el.requestFullscreen?.().catch(() => {});
+    });
+    $('#tracks-panel').addEventListener('click', (e) => {
+      const btn = e.target.closest('.track-opt');
+      if (btn) onTrackChoice(btn);
+    });
+    seek.addEventListener('input', () => {
+      player.dragging = true;
+      const dur = mediaDuration();
+      $('#osd-time').textContent = `${formatClock((seek.value / 1000) * dur)} / ${formatClock(dur)}`;
+    });
+    seek.addEventListener('change', () => {
+      player.dragging = false;
+      seekTo((seek.value / 1000) * mediaDuration());
+    });
+    video.addEventListener('click', () => { if (osdVisible()) togglePlay(); wakeOsd(); });
+    video.addEventListener('dblclick', () => $('#osd-fullscreen').click());
+    ['timeupdate', 'play', 'pause', 'durationchange', 'volumechange'].forEach((ev) => video.addEventListener(ev, updateOsd));
+    video.addEventListener('loadedmetadata', () => { if (video.playbackRate !== player.speed) applySpeed(); });
+    video.addEventListener('playing', () => { if (video.playbackRate !== player.speed) applySpeed(); });
+    // A running video that stalls shows the same loading screen (after a moment, so a quick hiccup doesn't flash it).
+    let bufTimer = null;
+    const bufStatus = $('#player-status');
+    const endBuffering = () => { clearTimeout(bufTimer); if (bufStatus.dataset.buf) { delete bufStatus.dataset.buf; bufStatus.classList.add('hidden'); } };
+    video.addEventListener('waiting', () => {
+      clearTimeout(bufTimer);
+      bufTimer = setTimeout(() => {
+        if (!bufStatus.classList.contains('hidden') || video.paused || video.ended || video.readyState >= 3 || !$('#player') || $('#player').classList.contains('hidden')) return;
+        bufStatus.dataset.buf = '1';
+        bufStatus.innerHTML = auroraLoaderHtml('Buffering…');
+        bufStatus.classList.remove('hidden');
+      }, 700);
+    });
+    ['playing', 'canplay', 'seeked', 'pause', 'ended', 'emptied'].forEach((ev) => video.addEventListener(ev, endBuffering));
+    video.addEventListener('pause', () => { reportPlayback('/Sessions/Playing/Progress', 'Pause'); wakeOsd(); });
+    video.addEventListener('play', () => {
+      if (player.suspended) resumeSuspended();
+      else reportPlayback('/Sessions/Playing/Progress', 'Unpause');
+      wakeOsd();
+    });
+    video.addEventListener('ended', () => {
+      if (player.nextEpisode && getPref('autoplay') === 'on') startNextEpisode(true);
+      else closePlayer();
+    });
+    el.addEventListener('click', noteInput, true);
+    el.addEventListener('touchstart', noteInput, { capture: true, passive: true });
+    // Live TV left on for 4 hours with no input: ask, and free the tuner meanwhile.
+    setInterval(() => {
+      if (!isPlayerOpen() || !player.isLive || stillWatchingVisible() || getPref('stillWatching') !== 'on') return;
+      if (Date.now() - player.lastInput < 4 * 3600000) return;
+      const channel = player.item;
+      showStillWatching(() => playItem(channel));
+    }, 60000);
+    el.addEventListener('mousemove', wakeOsd);
+    el.addEventListener('touchstart', wakeOsd, { passive: true });
+    window.addEventListener('pagehide', () => { if (player.item && !player.suspended) reportPlayback('/Sessions/Playing/Stopped', null, { keepalive: true }); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) suspendPlayback(); });
+    // The Android app calls this from onPause, before the WebView is paused.
+    window.auroraPause = suspendPlayback;
+    $('#osd-fullscreen').classList.toggle('hidden', !!nativeApp || !document.fullscreenEnabled);
+  }
+
+  // ---------- Icons ----------
+  const ICONS = {
+    download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>',
+    play: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4v16a1 1 0 0 0 1.52.85l13-8a1 1 0 0 0 0-1.7l-13-8A1 1 0 0 0 6 4Z"/></svg>',
+    info: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm1 6v8h-2v-8h2Zm0-4v2h-2V6h2Z"/></svg>',
+    film: '<svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Zm1 2v2h2V6H5Zm12 0v2h2V6h-2ZM5 10v4h2v-4H5Zm12 0v4h2v-4h-2ZM5 16v2h2v-2H5Zm12 0v2h2v-2h-2ZM9 6v12h6V6H9Z"/></svg>',
+    pause: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>',
+    back10: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V1L7 6l5 5V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8Z"/><text x="12" y="16.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>',
+    fwd10: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 5V1l5 5-5 5V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8Z"/><text x="12" y="16.5" font-size="7" font-weight="700" text-anchor="middle" fill="currentColor">10</text></svg>',
+    volume: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3Zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4ZM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>',
+    muted: '<svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 9v6h4l5 5V4L7 9H3Zm13.6 3 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4-2.7-2.7Z"/></svg>',
+    eye: '<svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17Z"/></svg>',
+  };
+
+  // ---------- Global UI wiring ----------
+  function toggleProfileDropdown(e) {
+    e.stopPropagation();
+    $('#profile-dropdown').classList.toggle('hidden');
+  }
+
+  function setupUi() {
+    $('#setup-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = $('button[type="submit"]', e.target);
+      btn.disabled = true; btn.textContent = 'Connecting…';
+      try {
+        const user = await signIn($('#setup-username').value.trim(), $('#setup-password').value);
+        await selectUser(user, { fresh: true });
+      } catch (err) {
+        showSetup(connectionErrorMessage(err));
+      } finally {
+        btn.disabled = false; btn.textContent = 'Sign In';
+      }
+    });
+
+    $('#profile-btn').addEventListener('click', toggleProfileDropdown);
+    document.addEventListener('click', () => $('#profile-dropdown').classList.add('hidden'));
+    $('#profile-dropdown').addEventListener('click', (e) => {
+      const act = e.target.dataset.action;
+      if (act === 'settings') location.hash = '#/settings';
+      if (act === 'admin') location.hash = '#/admin';
+      if (act === 'reseller') location.hash = '#/reseller';
+      if (act === 'switch') switchUser();
+      if (act === 'signout') signOut();
+    });
+
+    // Search
+    const box = $('#search-box'), input = $('#search-input');
+    let searchTimer;
+    // The magnifier only ever opens the box and puts the cursor in it. Pressing it must not blur the box
+    // first, or the box would close on blur and then reopen on click.
+    $('#search-toggle').addEventListener('mousedown', (e) => e.preventDefault());
+    $('#search-toggle').addEventListener('click', () => {
+      if (nav.tv) { location.hash = '#/search'; return; } // TV: on-screen keyboard page
+      box.classList.add('open');
+      input.focus();
+      showDeviceKeyboard();
+    });
+    input.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => {
+        // Clearing the text stays on the search page (it used to jump to Home and hide the box mid-typing).
+        const q = input.value.trim();
+        const target = q ? '#/search?q=' + encodeURIComponent(q) : '#/search';
+        if (location.hash !== target) location.hash = target;
+      }, 350);
+    });
+    input.addEventListener('blur', () => {
+      if (!input.value && !/^#\/search/.test(location.hash)) box.classList.remove('open');
+    });
+
+    // Modal
+    $$('[data-close]').forEach((el) => el.addEventListener('click', closeModal));
+
+    // Solid nav on scroll
+    window.addEventListener('scroll', () => $('#nav').classList.toggle('solid', window.scrollY > 40), { passive: true });
+    // A page change closes a details pop-up, but not the update prompt (the first screen loading right after
+    // sign-in would otherwise close it as soon as it appeared).
+    window.addEventListener('hashchange', () => { if (!$('#modal-content .update-body')) closeModal(); route(); });
+
+    setupPlayer();
+    setupKeys();
+  }
+
+  // Settings → Clear cache: only what can be fetched again. Sign-in, settings, favorites and watch history are not touched.
+  async function clearAppCache() {
+    rowCache.clear();
+    resetIptvCaches();
+    shortGuide.clear(); imgCache.clear(); seerrDetails.clear();
+    store.del('ef.iptv.sync'); store.del('ef.updateBehind');
+    let freed = 0;
+    try { freed = Number(JSON.parse(nativeApp?.clearCache?.() || '{}').freedBytes) || 0; } catch { /* the web app has none of the native files */ }
+    try { if (window.caches) for (const k of await caches.keys()) await caches.delete(k); } catch { /* not available here */ }
+    appLog.add('info', `Cache cleared${freed ? ` (${Math.round(freed / 1048576)} MB of files)` : ''}`);
+    toast('Cache cleared', 2000);
+    return freed;
+  }
+
+  // ---------- Remote control & keyboard navigation ----------
+  // Arrow keys move focus to the nearest item in that direction (TV remotes send arrow keys),
+  // OK/Enter activates it and Back closes the top layer.
+  const nav = { on: false, tv: false, returnFocus: {}, last: null };
+  const FOCUSABLE = 'a[href], button:not([disabled]), input:not([type="hidden"]), select, textarea, [tabindex]';
+
+  function enableNav() {
+    if (nav.on) return;
+    nav.on = true;
+    document.documentElement.classList.add('kbd-nav');
+  }
+
+  function activeLayer() {
+    if (ownKbOpen()) return $('#own-kb');
+    if (isPlayerOpen()) {
+      if (stillWatchingVisible()) return $('#still-watching');
+      return tracksOpen() ? $('#tracks-panel') : $('#player');
+    }
+    if (trailerOpen()) return $('#trailer');
+    if (!$('#modal').classList.contains('hidden')) return $('#modal');
+    if (!$('#setup').classList.contains('hidden')) return $('#setup');
+    return $('#main');
+  }
+
+  function focusables(layer) {
+    return $$(FOCUSABLE, layer).filter((el) => {
+      if (el.tabIndex < 0 || el.disabled) return false;
+      const r = el.getBoundingClientRect();
+      return r.width > 1 && r.height > 1 && getComputedStyle(el).visibility !== 'hidden';
+    });
+  }
+
+  function focusEl(el) {
+    if (!el) return;
+    el.focus({ preventScroll: true });
+    // Instant scrolling keeps positions settled for the next remote press.
+    if (el.closest('#nav')) window.scrollTo({ top: 0 });
+    else if (el.closest('[data-nav-zone]')) el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); // scroll the side list, not the page
+    else if (!el.closest('#player')) el.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+
+  function focusInitial(layer = activeLayer()) {
+    const items = focusables(layer);
+    focusEl(items.find((el) => el.hasAttribute('data-autofocus')) || items[0]);
+  }
+
+  function autoFocus(el) {
+    if (nav.on && el && activeLayer().contains(el)) focusEl(el);
+  }
+
+  function rememberFocus(key) { nav.returnFocus[key] = document.activeElement; }
+  function restoreFocus(key) {
+    const el = nav.returnFocus[key];
+    nav.returnFocus[key] = null;
+    if (!nav.on) return;
+    if (el && document.contains(el) && activeLayer().contains(el)) focusEl(el);
+  }
+
+  // Left/Right inside a row of cards goes to the next card; Up/Down goes to the card in the next row that is most
+  // in line with this one. Null when it isn't that simple (the end of a row, the top or bottom of the page, a grid),
+  // and then moveFocus works it out the long way.
+  function quickMove(cur, dir) {
+    const track = cur.parentElement;
+    if (!track || !track.classList.contains('row-track') || !cur.classList.contains('card')) return null;
+    const usable = (el) => el.classList.contains('card') && el.tabIndex >= 0;
+    if (dir === 'left' || dir === 'right') {
+      let n = dir === 'right' ? cur.nextElementSibling : cur.previousElementSibling;
+      while (n && !usable(n)) n = dir === 'right' ? n.nextElementSibling : n.previousElementSibling;
+      return n;
+    }
+    let row = track.closest('.row');
+    if (!row) return null;
+    for (;;) {
+      row = dir === 'down' ? row.nextElementSibling : row.previousElementSibling;
+      if (!row) return null;
+      if (!row.classList.contains('row')) return null;
+      if (!row.querySelector('.row-track')) continue; // still loading: nothing to land on yet
+      const cards = $$('.row-track > .card', row).filter(usable);
+      if (!cards.length) return null; // some other kind of tile: let the long way decide
+      const r = cur.getBoundingClientRect(), cx = r.left + r.width / 2;
+      let best = null, bestD = Infinity;
+      for (const c of cards) {
+        const b = c.getBoundingClientRect();
+        const d = Math.abs(b.left + b.width / 2 - cx);
+        if (d < bestD) { best = c; bestD = d; }
+      }
+      return best;
+    }
+  }
+
+  function moveFocus(dir) {
+    const layer = activeLayer();
+    const cur = document.activeElement;
+    if (!cur || cur === document.body || !layer.contains(cur)) {
+      const back = nav.last;
+      if (back && back.isConnected && layer.contains(back) && !back.disabled && back.getBoundingClientRect().width > 1) focusEl(back);
+      else focusInitial(layer);
+      return;
+    }
+    // The usual case (a row of cards on Home): go straight to the neighbour without looking at the whole page.
+    const quick = quickMove(cur, dir);
+    if (quick) { focusEl(quick); if (document.activeElement === quick) return; }
+    const r = cur.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const vertical = dir === 'up' || dir === 'down';
+    const cands = [];
+    // Only items near the current one are worth checking: a long grid or guide has thousands, and asking the
+    // style of each one on every press made the remote lag on TV boxes.
+    const W = window.innerWidth, H = window.innerHeight;
+    for (const el of $$(FOCUSABLE, layer)) {
+      // A disabled control (a setting the admin locked) reports tabIndex 0 but can't take focus: trying it left the remote stuck.
+      if (el.tabIndex < 0 || el.disabled || el === cur || el.contains(cur) || cur.contains(el)) continue;
+      const b = el.getBoundingClientRect();
+      if (b.width <= 1 || b.height <= 1) continue;
+      if (b.bottom < r.top - 1.5 * H || b.top > r.bottom + 1.5 * H || b.right < r.left - 1.5 * W || b.left > r.right + 1.5 * W) continue;
+      const bx = b.left + b.width / 2, by = b.top + b.height / 2;
+      let primary, cross, overlap;
+      if (dir === 'down') { if (b.top < cy) continue; primary = by - cy; }
+      else if (dir === 'up') { if (b.bottom > cy) continue; primary = cy - by; }
+      else if (dir === 'right') { if (b.left < cx) continue; primary = bx - cx; }
+      else { if (b.right > cx) continue; primary = cx - bx; }
+      if (vertical) {
+        cross = Math.max(0, b.left - r.right, r.left - b.right) + Math.abs(bx - cx) * 0.1;
+      } else {
+        overlap = b.top < r.bottom && b.bottom > r.top;
+        cross = Math.abs(by - cy);
+      }
+      cands.push({ el, primary, cross, overlap });
+    }
+    for (let i = cands.length - 1; i >= 0; i--) if (getComputedStyle(cands[i].el).visibility === 'hidden') cands.splice(i, 1);
+    // The fixed top bar is only reached when nothing else lies in that direction (like Netflix).
+    const inPage = cands.filter((c) => !c.el.closest('#nav'));
+    if (inPage.length && !cur.closest('#nav')) cands.splice(0, cands.length, ...inPage);
+    // A side list (data-nav-zone, like the live TV categories) keeps up/down to itself, and up/down in the
+    // grid beside it never lands in it: otherwise Down from a channel picks the nearer category.
+    if (vertical) {
+      const zone = cur.closest('[data-nav-zone]');
+      const same = cands.filter((c) => c.el.closest('[data-nav-zone]') === zone);
+      if (same.length || (!zone && cur.closest('.card'))) cands.splice(0, cands.length, ...same);
+    }
+    let best = null;
+    if (vertical) {
+      // Go to the nearest line of items first, then the one most in line with the current item.
+      const nearest = Math.min(...cands.map((c) => c.primary));
+      // Coming down out of the top bar, start at the left of the line (like Netflix) rather than under the button.
+      // The same on the Settings page (its controls sit on the right, its buttons start on the left), so Down
+      // reaches the first button of a line rather than the one nearest the control above.
+      const fromNav = dir === 'down' && (cur.closest('#nav') || cur.closest('.settings-page'));
+      for (const c of cands) {
+        if (c.primary > nearest + 40) continue;
+        const score = fromNav ? c.el.getBoundingClientRect().left : c.cross;
+        if (!best || score < best.score) best = { ...c, score };
+      }
+    } else {
+      // Sideways moves stay on the same row.
+      for (const c of cands) {
+        if (!c.overlap) continue;
+        if (!best || c.primary + c.cross * 2 < best.primary + best.cross * 2) best = c;
+      }
+    }
+    // Stepping sideways into a side list lands on its selected item (the category being shown).
+    if (best && !vertical) {
+      const zone = best.el.closest('[data-nav-zone]');
+      if (zone && !zone.contains(cur)) best = { el: zone.querySelector('.active') || best.el };
+    }
+    // Some items do something when there's nowhere further to go (the guide's channel column opens the groups).
+    if (!best && dir === 'left' && cur.__onLeftEdge) { cur.__onLeftEdge(); return; }
+    if (dir === 'right' && cur.__onRightEdge && (!best || !best.el.closest('[data-nav-zone]'))) { cur.__onRightEdge(); return; }
+    if (best) {
+      focusEl(best.el);
+      if (document.activeElement !== best.el) {
+        // It wouldn't take the focus (hidden, or not focusable after all): never leave the remote stuck, try the next one.
+        const rest = cands.filter((c) => c.el !== best.el).sort((a, b) => (a.primary + a.cross * 2) - (b.primary + b.cross * 2));
+        for (const c of rest.slice(0, 8)) { focusEl(c.el); if (document.activeElement === c.el) break; }
+      }
+    }
+  }
+
+
+  // ----- Aurora's own on-screen keyboard (TV) -----
+  // Fire TV never opens the system keyboard for the app, so a text box could not be typed in. On those boxes Aurora draws its
+  // own keyboard (the remote's arrows and OK move over the keys). Other TVs keep their system keyboard; turn this on for one
+  // with localStorage 'ef.ownKeyboard' = '1' (off with '0').
+  const ownKbWanted = () => {
+    const forced = store.get('ef.ownKeyboard');
+    if (forced === '0') return false;
+    return forced === '1' || /\bAFT[A-Za-z0-9]*\b/.test(navigator.userAgent || '');
+  };
+  const ownKbOpen = () => !!document.getElementById('own-kb');
+  // Asks for the keyboard for the text box that has the focus: Aurora's own on a Fire TV, otherwise the device's.
+  function showDeviceKeyboard() {
+    const el = document.activeElement;
+    if (ownKbWanted() && isTextInput(el)) { openOwnKb(el); return; }
+    nativeApp?.showKeyboard?.();
+  }
+  const OWN_KB_ROWS = {
+    lower: ['1234567890'.split(''), 'qwertyuiop'.split(''), 'asdfghjkl'.split(''), ['shift', ...'zxcvbnm'.split(''), 'del'], ['sym', '@', '.', 'space', '_', '-', 'show']],
+    upper: ['1234567890'.split(''), 'QWERTYUIOP'.split(''), 'ASDFGHJKL'.split(''), ['shift', ...'ZXCVBNM'.split(''), 'del'], ['sym', '@', '.', 'space', '_', '-', 'show']],
+    sym: ['!@#$%^&*()'.split(''), ['-', '_', '=', '+', ';', ':', "'", '"', '/', '\\'], ['[', ']', '{', '}', '<', '>', '?', '|', '~', '`'], ['abc', ',', '.', '@', '#', '%', '&', '*', 'del'], ['abc', '@', '.', 'space', '_', '-', 'show']],
+  };
+  const OWN_KB_LABELS = { shift: '⇧', del: '⌫', sym: '?123', abc: 'abc', space: 'Space' };
+  let ownKbState = null;
+  function openOwnKb(target) {
+    if (ownKbOpen()) closeOwnKb(false);
+    const form = target.form;
+    const inputs = form ? [...form.querySelectorAll('input, textarea')].filter((i) => isTextInput(i)) : [];
+    const next = inputs[inputs.indexOf(target) + 1] || null;
+    const isPassword = target.type === 'password';
+    const label = ((target.labels && target.labels[0] ? [...target.labels[0].childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join(' ') : '') || target.getAttribute('aria-label') || target.placeholder || 'Type here').trim();
+    const st = ownKbState = { target, original: target.value, layout: 'lower', shown: !isPassword, isPassword, next, max: target.maxLength > 0 ? target.maxLength : 200 };
+    try { target.scrollIntoView({ block: 'center' }); } catch { /* an old WebView */ }
+    const wrap = document.createElement('div');
+    wrap.id = 'own-kb';
+    wrap.className = 'okb-wrap';
+    wrap.setAttribute('role', 'dialog');
+    wrap.setAttribute('aria-modal', 'true');
+    wrap.setAttribute('aria-label', label);
+    wrap.innerHTML = `<div class="okb">
+      <div class="okb-top"><span class="okb-label">${esc(label)}</span><div class="okb-val" data-okb-val></div></div>
+      <div class="okb-rows" data-okb-rows></div>
+      <div class="okb-actions"><span class="okb-hint">Arrows and OK on the remote. Back closes the keyboard.</span>
+        <button type="button" class="btn btn-gray" data-ok-cancel>Cancel</button>
+        <button type="button" class="btn btn-red" data-ok-done>${next ? 'Next' : 'Done'}</button></div></div>`;
+    document.body.appendChild(wrap);
+    const valEl = $('[data-okb-val]', wrap), rowsEl = $('[data-okb-rows]', wrap);
+    const paintValue = () => {
+      const v = st.target.value;
+      valEl.innerHTML = `<span>${esc(st.shown ? v : '•'.repeat(v.length))}</span><i class="okb-caret"></i>`;
+    };
+    const set = (v) => {
+      st.target.value = v.slice(0, st.max);
+      st.target.dispatchEvent(new Event('input', { bubbles: true }));
+      paintValue();
+    };
+    const paintKeys = (focusKey) => {
+      rowsEl.innerHTML = OWN_KB_ROWS[st.layout].map((row) => `<div class="okb-row">${row.map((k) => {
+        const fn = k.length > 1;
+        const text = k === 'show' ? (st.shown ? 'Hide' : 'Show') : (OWN_KB_LABELS[k] || k);
+        return `<button type="button" class="okb-key${fn ? ' fn' : ''}${k === 'space' ? ' space' : ''}${k === 'shift' && st.layout === 'upper' ? ' on' : ''}${k === 'show' && !st.isPassword ? ' hidden' : ''}" data-k="${esc(k)}">${esc(text)}</button>`;
+      }).join('')}</div>`).join('');
+      if (focusKey) focusEl($(`[data-k="${CSS.escape(focusKey)}"]`, rowsEl) || $('.okb-key', rowsEl));
+    };
+    const press = (k) => {
+      const v = st.target.value;
+      if (k === 'del') set(v.slice(0, -1));
+      else if (k === 'space') set(v + ' ');
+      else if (k === 'shift') { st.layout = st.layout === 'upper' ? 'lower' : 'upper'; paintKeys('shift'); }
+      else if (k === 'sym') { st.layout = 'sym'; paintKeys('abc'); }
+      else if (k === 'abc') { st.layout = 'lower'; paintKeys('sym'); }
+      else if (k === 'show') { st.shown = !st.shown; paintKeys('show'); paintValue(); }
+      else {
+        set(v + k);
+        // One capital after Shift, then back to small letters (like a phone).
+        if (st.layout === 'upper') { st.layout = 'lower'; paintKeys(k.toLowerCase()); }
+      }
+    };
+    rowsEl.addEventListener('click', (e) => { const b = e.target.closest('[data-k]'); if (b) press(b.dataset.k); });
+    $('[data-ok-cancel]', wrap).addEventListener('click', () => { set(st.original); closeOwnKb(true); });
+    $('[data-ok-done]', wrap).addEventListener('click', () => {
+      const nextEl = st.next;
+      closeOwnKb(!nextEl);
+      if (nextEl) { focusEl(nextEl); openOwnKb(nextEl); }
+    });
+    // A keyboard plugged into the box, or a remote with one, types straight in.
+    st.onKey = (e) => {
+      if (!ownKbOpen() || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'Backspace') { press('del'); e.preventDefault(); e.stopPropagation(); }
+      else if (e.key.length === 1) { set(st.target.value + e.key); e.preventDefault(); e.stopPropagation(); }
+    };
+    document.addEventListener('keydown', st.onKey, true);
+    paintValue();
+    paintKeys('g');
+  }
+  function closeOwnKb(refocus) {
+    const st = ownKbState;
+    ownKbState = null;
+    document.getElementById('own-kb')?.remove();
+    if (!st) return;
+    document.removeEventListener('keydown', st.onKey, true);
+    if (refocus && document.contains(st.target)) { if (st.target.tabIndex < 0) st.target.tabIndex = 0; focusEl(st.target); }
+  }
+
+  const isTextInput = (el) => el && ((el.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit'].includes(el.type)) || el.tagName === 'TEXTAREA');
+
+  function activate(el) {
+    const layer = activeLayer();
+    if (!el || el === document.body || !layer.contains(el)) { focusInitial(layer); return; }
+    if (isTextInput(el)) { el.focus(); showDeviceKeyboard(); return; }
+    if (el.tagName === 'SELECT') {
+      try { el.showPicker(); } catch {
+        // Older WebViews: step through the options instead.
+        el.selectedIndex = (el.selectedIndex + 1) % el.options.length;
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      return;
+    }
+    if (el.type === 'range') { if (isPlayerOpen()) togglePlay(); return; }
+    el.click();
+  }
+
+  // action: up/down/left/right/select/back or a media key. fromNative: sent by the Android app.
+  let selHold = null;
+  function handleKey(action, fromNative = false) {
+    if (tour) return tourKey(action); // the guided tour has the remote while it is up
+    const el = document.activeElement;
+    if (action !== 'back') enableNav();
+    // OK held down on a TV remote (the Android app sends selectdown, selecthold, selectup). On something with an options
+    // menu (a channel, a movie or show) a quick press still acts when OK is let go, and holding opens the menu
+    // (add to Favorites...). Everywhere else OK acts the moment it's pressed, as before.
+    if (action === 'selectdown') {
+      selHold = null;
+      if (!isPlayerOpen() && !isTextInput(el) && holdTarget(el)) { selHold = { el, held: false }; return true; }
+      return handleKey('select', true);
+    }
+    if (action === 'selecthold') {
+      if (selHold && !selHold.held && document.activeElement === selHold.el) { selHold.held = true; holdTarget(selHold.el)?.(); }
+      return true;
+    }
+    if (action === 'selectup') {
+      const h = selHold;
+      selHold = null;
+      if (h && !h.held) return handleKey('select', true);
+      return true;
+    }
+    if (action === 'guide' && isPlayerOpen()) closePlayer();
+    else if (isPlayerOpen() && handlePlayerKey(action)) return true;
+    if (['up', 'down', 'left', 'right'].includes(action)) {
+      if (isTextInput(el) && (action === 'left' || action === 'right')) {
+        const atStart = el.selectionStart === 0 && el.selectionEnd === 0;
+        const atEnd = el.selectionEnd === el.value.length;
+        if (action === 'left' ? !atStart : !atEnd) return false; // move the text cursor
+      }
+      moveFocus(action);
+      return true;
+    }
+    if (action === 'select') {
+      if (isTextInput(el) && !fromNative) {
+        // Keyboard Enter submits; an empty field on a TV opens the on-screen keyboard instead.
+        if (nav.tv && !el.value) { showDeviceKeyboard(); return true; }
+        return false;
+      }
+      activate(el);
+      return true;
+    }
+    if (action === 'back') return window.embyflixBack();
+    if (action === 'guide' && showLiveLink()) {
+      closeModal();
+      location.hash = iptvOn() ? '#/livetv' : '#/livetv?tab=guide';
+      return true;
+    }
+    return false;
+  }
+
+  function setupKeys() {
+    const keys = {
+      ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'select', Escape: 'back',
+      MediaPlayPause: 'playpause', MediaPlay: 'play', MediaPause: 'pause',
+      MediaFastForward: 'ff', MediaRewind: 'rw', MediaTrackNext: 'next',
+      ChannelUp: 'chup', ChannelDown: 'chdown', PageUp: 'chup', PageDown: 'chdown', Guide: 'guide',
+    };
+    document.addEventListener('keydown', (e) => {
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
+      let action = keys[e.key];
+      if (e.key === ' ' && isPlayerOpen() && !isTextInput(document.activeElement)) action = 'playpause';
+      if (!action) return;
+      if (handleKey(action)) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+    // Mouse or touch use turns the focus highlight off again.
+    const pointer = () => { if (!nav.tv && nav.on) { nav.on = false; document.documentElement.classList.remove('kbd-nav'); } };
+    document.addEventListener('mousedown', pointer, true);
+    document.addEventListener('touchstart', pointer, { capture: true, passive: true });
+    document.addEventListener('focusin', (e) => {
+      if (e.target.closest?.('#page')) nav.last = e.target; // where the remote was, if the focus is ever lost
+      if (!tour && !e.target.closest('.profile-menu')) $('#profile-dropdown').classList.add('hidden');
+    });
+    if (nativeApp?.isTv?.()) {
+      // Lay out on a 1280x720 canvas that the WebView scales to fill the TV, so every box looks the same.
+      document.querySelector('meta[name="viewport"]').setAttribute('content', 'width=1280, user-scalable=no');
+      nav.tv = true;
+      document.documentElement.classList.add('tv');
+      enableNav();
+    }
+  }
+
+  // ---------- Android app bridge ----------
+  // Called by the Android back button. Returns true when the app handled it.
+  window.embyflixBack = () => {
+    if (ownKbOpen()) { closeOwnKb(true); return true; }
+    if (tour) { tourEnd('skip'); return true; }
+    // Leaving a text box that the remote can't otherwise get out of (Settings → Write a note on a TV).
+    const typing = document.activeElement;
+    if (typing?.__onBack && isTextInput(typing)) { typing.__onBack(); return true; }
+    if (isPlayerOpen()) {
+      if (tracksOpen()) closeTracks();
+      else { hideStillWatching(); closePlayer(); }
+      return true;
+    }
+    if (trailerOpen()) { closeTrailerWindow(); return true; }
+    if ($('#page .tm-guide')?.__closeGroups?.()) return true;
+    if (adminMenuOpen()) { setAdminMenu(false); focusEl($('[data-admin-menu]')); return true; }
+    if (updateRequiredOpen()) return false; // Back leaves the app instead
+    if (firstRun) { if (document.activeElement?.__onBack && isTextInput(document.activeElement)) { document.activeElement.__onBack(); return true; } firstRun.back(); return true; }
+    if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
+    if (!$('#profile-dropdown').classList.contains('hidden')) { $('#profile-dropdown').classList.add('hidden'); return true; }
+    if (!$('#main').classList.contains('hidden') && location.hash && !/^#\/?(home)?$/.test(location.hash)) {
+      location.hash = '#/home';
+      return true;
+    }
+    return false;
+  };
+
+  // Called by the Android app for the remote's OK button and media keys.
+  window.embyflixKey = (action) => handleKey(action, true);
+
+  // ---------- Guided tour ----------
+  // A first-run walkthrough on the real screens: the screen dims, the thing being explained is lit up and an arrow,
+  // drawn in code, points at it from a tooltip. The steps and every word are in tour-config.js. Where the tooltip
+  // and arrow go is worked out from the target's real position, again each time it moves or the screen changes.
+  const TOUR_SEEN = 'ef.tourSeen';
+  const tourConfig = () => window.AURORA_TOUR || null;
+  const tourSeen = () => !tourConfig() || Number(store.get(TOUR_SEEN) || 0) >= (tourConfig().version || 1);
+  let tour = null; // the tour that is on screen, if any
+
+  // Pure geometry (no DOM, so it can be tested on its own). `r` is the lit-up box, tw x th the tooltip and
+  // W x H the screen. Picks the side of the target the tooltip sits on (below a target near the top, above one
+  // near the bottom, beside one near an edge), keeps the tooltip on screen and returns where the arrow starts
+  // (on the tooltip's edge) and ends (its tip, on the target's edge). A target too big to leave room is lit only
+  // as far as there is room, so the arrow always has an edge to touch.
+  function tourLayout(r, tw, th, W, H, { margin = 12, arrow = 56, minArrow = 26, prefer = 'auto' } = {}) {
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const horizontal = (s) => s === 'left' || s === 'right';
+    const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+    const space = { top: r.top, bottom: H - r.bottom, left: r.left, right: W - r.right };
+    const size = (s) => (horizontal(s) ? tw : th);
+    const sides = space.left > space.right ? ['left', 'right'] : ['right', 'left'];
+    const verts = cy < H / 2 ? ['bottom', 'top'] : ['top', 'bottom'];
+    // Near the top or bottom: above or below it. Level with the middle of the screen: beside it.
+    let order = cy < H * 0.34 || cy > H * 0.66 ? [...verts, ...sides] : [...sides, ...verts];
+    if (['top', 'bottom', 'left', 'right'].includes(prefer)) order = [prefer, ...order.filter((s) => s !== prefer)];
+    let side = order.find((s) => space[s] >= size(s) + arrow + margin);
+    let len = arrow, lit = { ...r };
+    if (!side) {
+      side = order.find((s) => space[s] >= size(s) + minArrow + margin);
+      if (side) len = Math.max(minArrow, Math.min(arrow, space[side] - size(side) - margin));
+    }
+    if (!side) {
+      // No room around it: light up only the part that leaves room for the tooltip and arrow.
+      side = verts[0];
+      len = minArrow;
+      if (side === 'bottom') lit.bottom = Math.max(lit.top + 24, H - th - len - margin);
+      else lit.top = Math.min(lit.bottom - 24, th + len + margin);
+    }
+    const litCx = (lit.left + lit.right) / 2, litCy = (lit.top + lit.bottom) / 2;
+    let x, y, from, tip, axis;
+    if (!horizontal(side)) {
+      x = clamp(litCx - tw / 2, margin, Math.max(margin, W - tw - margin));
+      y = side === 'bottom' ? lit.bottom + len : lit.top - len - th;
+      const reach = Math.min(14, (lit.right - lit.left) / 2);
+      const px = clamp(clamp(litCx, x + 28, x + tw - 28), lit.left + reach, lit.right - reach);
+      tip = { x: px, y: side === 'bottom' ? lit.bottom : lit.top };
+      from = { x: clamp(px, x + 24, x + tw - 24), y: side === 'bottom' ? y : y + th };
+      axis = { x: 0, y: side === 'bottom' ? -1 : 1 }; // the way the arrow points
+    } else {
+      y = clamp(litCy - th / 2, margin, Math.max(margin, H - th - margin));
+      x = side === 'right' ? lit.right + len : lit.left - len - tw;
+      const reach = Math.min(14, (lit.bottom - lit.top) / 2);
+      const py = clamp(clamp(litCy, y + 24, y + th - 24), lit.top + reach, lit.bottom - reach);
+      tip = { x: side === 'right' ? lit.right : lit.left, y: py };
+      from = { x: side === 'right' ? x : x + tw, y: clamp(py, y + 20, y + th - 20) };
+      axis = { x: side === 'right' ? -1 : 1, y: 0 };
+    }
+    return { side, x, y, from, tip, axis, lit };
+  }
+
+  const tourPlatform = () => (nav.tv ? 'tv' : nativeApp ? 'phone' : 'web');
+  const tourPage = () => location.hash.replace(/^#\/?/, '').split('?')[0] || 'home';
+  const tourSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // The steps for this platform, with this platform's changes laid over the shared definitions.
+  function tourSteps() {
+    const cfg = tourConfig(), plat = cfg?.platforms?.[tourPlatform()];
+    if (!plat) return [];
+    return (plat.order || []).map((id) => cfg.steps?.[id] && { id, ...cfg.steps[id], ...(plat.overrides?.[id] || {}) }).filter(Boolean);
+  }
+
+  // Looks the step's targets up now (by selector, never by position). Null when one is missing or not showing.
+  function tourFind(step) {
+    const boxes = [];
+    for (const group of step.targets || []) {
+      const el = [].concat(group).map((sel) => $(sel)).find((e) => {
+        if (!e || e.closest('.hidden')) return false;
+        const b = e.getBoundingClientRect();
+        return b.width > 1 && b.height > 1 && getComputedStyle(e).visibility !== 'hidden';
+      });
+      if (el) boxes.push(el.getBoundingClientRect());
+      else if (!step.any) return null;
+    }
+    if (!boxes.length) return null;
+    return {
+      left: Math.min(...boxes.map((b) => b.left)), top: Math.min(...boxes.map((b) => b.top)),
+      right: Math.max(...boxes.map((b) => b.right)), bottom: Math.max(...boxes.map((b) => b.bottom)),
+    };
+  }
+
+  function tourBuild() {
+    const NS = 'http://www.w3.org/2000/svg';
+    const root = document.createElement('div');
+    root.id = 'tour';
+    root.className = 'tour';
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-modal', 'true');
+    root.setAttribute('aria-labelledby', 'tour-title');
+    root.innerHTML = `
+      <svg class="tour-svg" xmlns="${NS}" aria-hidden="true">
+        <defs>
+          <mask id="tour-mask" maskUnits="userSpaceOnUse"><rect class="tour-mask-all" fill="#fff"/><rect class="tour-hole" fill="#000"/></mask>
+          <linearGradient id="tour-grad" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#18b6d6"/><stop offset=".55" stop-color="#4f7bff"/><stop offset="1" stop-color="#7a5cff"/>
+          </linearGradient>
+        </defs>
+        <rect class="tour-dim" mask="url(#tour-mask)"/>
+        <rect class="tour-ring" fill="none" stroke="url(#tour-grad)"/>
+        <g class="tour-arrow"><path class="tour-shaft" fill="none" stroke="url(#tour-grad)" stroke-linecap="round"/><path class="tour-head" fill="url(#tour-grad)"/></g>
+      </svg>
+      <div class="tour-tip">
+        <h2 id="tour-title" class="tour-title"></h2>
+        <p class="tour-text"></p>
+        <div class="tour-foot">
+          <div class="tour-dots" aria-hidden="true"></div>
+          <div class="tour-btns">
+            <button type="button" class="tour-skip" data-tour="skip">Skip</button>
+            <button type="button" class="btn btn-gray" data-tour="back">Back</button>
+            <button type="button" class="btn btn-red" data-tour="next">Next</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(root);
+    return root;
+  }
+
+  // Draws the spotlight, arrow and tooltip for the current step. Cheap to call often: it does nothing unless
+  // the target, the screen or the tooltip changed.
+  function tourPlace() {
+    const T = tour;
+    if (!T?.step) return;
+    const W = window.innerWidth, H = window.innerHeight, step = T.step;
+    const tip = T.tip, tw = tip.offsetWidth, th = tip.offsetHeight;
+    const box = step.centered ? null : tourFind(step);
+    if (!step.centered && !box) {
+      // The target went away (the page redrew, a row emptied). Give it a moment, then move on.
+      T.lostAt = T.lostAt || Date.now();
+      if (Date.now() - T.lostAt > 1500 && !T.busy) { step.skip = true; tourGo(T.index + 1, 1); }
+      return;
+    }
+    T.lostAt = 0;
+    const tv = nav.tv, pad = step.padding ?? 6;
+    let lit = null;
+    if (box) lit = { left: Math.max(4, box.left - pad), top: Math.max(4, box.top - pad), right: Math.min(W - 4, box.right + pad), bottom: Math.min(H - 4, box.bottom + pad) };
+    const sig = [W, H, tw, th, lit && [lit.left, lit.top, lit.right, lit.bottom].map(Math.round).join(',')].join('|');
+    if (sig === T.sig) return;
+    T.sig = sig;
+    const svg = T.svg;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    for (const el of $$('.tour-dim, .tour-mask-all', svg)) { el.setAttribute('width', W); el.setAttribute('height', H); }
+    const ring = $('.tour-ring', svg), hole = $('.tour-hole', svg), arrow = $('.tour-arrow', svg);
+    if (!lit) {
+      // The welcome card: dimmed screen, a card in the middle, no spotlight and no arrow.
+      ring.style.display = hole.style.display = arrow.style.display = 'none';
+      tip.style.transform = `translate(${Math.round((W - tw) / 2)}px, ${Math.round((H - th) / 2)}px)`;
+      tip.classList.add('on');
+      return;
+    }
+    const L = tourLayout(lit, Math.min(tw, W - 24), th, W, H, { arrow: tv ? 72 : 56, minArrow: tv ? 34 : 26, margin: tv ? 24 : 12, prefer: step.placement });
+    const g = L.lit, rad = Math.min(14, (g.right - g.left) / 2, (g.bottom - g.top) / 2);
+    for (const el of [ring, hole]) {
+      el.style.display = '';
+      el.setAttribute('x', g.left); el.setAttribute('y', g.top);
+      el.setAttribute('width', g.right - g.left); el.setAttribute('height', g.bottom - g.top);
+      el.setAttribute('rx', rad); el.setAttribute('ry', rad);
+    }
+    tip.style.transform = `translate(${Math.round(L.x)}px, ${Math.round(L.y)}px)`;
+    // The arrow: a curved shaft from the tooltip's edge, ending in a head whose tip touches the target's edge.
+    const { from, tip: end, axis: a } = L, p = { x: -a.y, y: a.x };
+    const head = tv ? 26 : 18, half = tv ? 15 : 11;
+    const base = { x: end.x - a.x * head, y: end.y - a.y * head };
+    const reach = Math.hypot(base.x - from.x, base.y - from.y), k = Math.max(8, reach * 0.4);
+    // The curve leaves the tooltip straight out of its edge and arrives straight into the target, so the head is square on.
+    $('.tour-shaft', svg).setAttribute('d',
+      `M${from.x - a.x * 3},${from.y - a.y * 3} C${from.x + a.x * k},${from.y + a.y * k} ${base.x - a.x * k},${base.y - a.y * k} ${base.x + a.x * 2},${base.y + a.y * 2}`);
+    $('.tour-head', svg).setAttribute('d',
+      `M${end.x},${end.y} L${base.x + p.x * half},${base.y + p.y * half} L${base.x - p.x * half},${base.y - p.y * half} Z`);
+    const grad = $('#tour-grad', svg);
+    grad.setAttribute('x1', from.x); grad.setAttribute('y1', from.y); grad.setAttribute('x2', end.x); grad.setAttribute('y2', end.y);
+    // The bounce moves the arrow back away from the target and returns, so its tip rests on the target's edge.
+    arrow.style.display = '';
+    arrow.style.setProperty('--bx', `${a.x * -9}px`);
+    arrow.style.setProperty('--by', `${a.y * -9}px`);
+    tip.classList.add('on');
+  }
+
+  function tourDots() {
+    const T = tour, live = T.steps.filter((s) => !s.skip);
+    const at = live.indexOf(T.step);
+    $('.tour-dots', T.root).innerHTML = live.map((s, i) => `<span class="tour-dot${i === at ? ' on' : ''}"></span>`).join('');
+    T.root.querySelector('.tour-dots').setAttribute('data-count', `${at + 1} of ${live.length}`);
+    const last = at === live.length - 1;
+    $('[data-tour="back"]', T.root).classList.toggle('hidden', at <= 0);
+    $('[data-tour="skip"]', T.root).classList.toggle('hidden', last);
+    $('[data-tour="next"]', T.root).textContent = last ? (T.step.nextLabel || 'Start watching') : 'Next';
+  }
+
+  function tourShow(step, index) {
+    const T = tour;
+    T.step = step; T.index = index; T.sig = ''; T.lostAt = 0;
+    T.root.classList.toggle('welcome', !!step.centered);
+    $('.tour-title', T.root).textContent = step.title || '';
+    $('.tour-text', T.root).textContent = step.text || '';
+    tourDots();
+    T.tip.classList.remove('on');
+    void T.tip.offsetWidth; // restart the fade-in
+    tourPlace();
+    // Remote and keyboard: Next is ready under the thumb.
+    if (nav.on || nav.tv) $('[data-tour="next"]', T.root).focus({ preventScroll: true });
+  }
+
+  // Gets the page ready for a step (goes to its page, opens the menu it lives in) and waits for its target.
+  // False when the target never shows up, so the step is skipped.
+  async function tourPrepare(step, token) {
+    if (step.route && tourPage() !== step.route) location.hash = '#/' + step.route;
+    if (step.centered) return true;
+    if (step.prepare === 'profileMenu') $('#profile-dropdown').classList.remove('hidden');
+    const until = Date.now() + (step.wait ?? 1500);
+    for (;;) {
+      if (!tour || tour.token !== token) return false;
+      const box = tourFind(step);
+      if (box) {
+        // Bring it into view (not for the fixed bars, which are always there).
+        const fixed = (step.targets || []).flat().some((sel) => /^(#nav|\.mobile-tabs|#profile-dropdown)/.test(sel));
+        const H = window.innerHeight;
+        if (!fixed && (box.top < 90 || box.bottom > H - 80)) {
+          const want = box.bottom - box.top > H * 0.6 ? 100 : Math.max(100, (H - (box.bottom - box.top)) / 2);
+          window.scrollTo({ top: window.scrollY + box.top - want, behavior: 'instant' });
+          await tourSleep(60);
+        }
+        return true;
+      }
+      // The page the step lives on has finished drawing and the target still isn't there (a section that
+      // doesn't apply to this account is left out): no point waiting longer.
+      if (step.loaded && $(step.loaded) && Date.now() > until - (step.wait ?? 1500) + 400) return false;
+      if (Date.now() > until) return false;
+      await tourSleep(100);
+    }
+  }
+
+  // Moves to the next (dir 1) or previous (dir -1) step that has a target, skipping the ones that don't.
+  async function tourGo(from, dir) {
+    const T = tour;
+    if (!T) return;
+    const token = ++T.token;
+    T.busy = true;
+    $('#profile-dropdown').classList.add('hidden');
+    for (let i = from; i >= 0 && i < T.steps.length; i += dir) {
+      const step = T.steps[i];
+      if (step.skip) continue;
+      const ok = await tourPrepare(step, token);
+      if (!tour || tour.token !== token) return;
+      if (ok) { T.busy = false; tourShow(step, i); return; }
+      step.skip = true;
+      appLog.add('info', `Tour: skipped "${step.id}" (nothing to point at)`);
+      if (T.step) tourDots();
+    }
+    T.busy = false;
+    if (dir > 0) tourEnd('done');
+    else if (T.step) tourShow(T.step, T.index);
+  }
+
+  function tourEnd(how) {
+    const T = tour;
+    if (!T) return;
+    tour = null;
+    T.token = -1;
+    clearInterval(T.timer);
+    document.removeEventListener('keydown', T.onTab, true);
+    window.removeEventListener('resize', T.onChange);
+    window.removeEventListener('orientationchange', T.onChange);
+    window.removeEventListener('scroll', T.onChange, true);
+    T.root.remove();
+    $('#profile-dropdown').classList.add('hidden');
+    // Finishing or skipping both mean "seen". Being interrupted (an update prompt, the player) means "ask again next time".
+    if (how !== 'abort') store.set(TOUR_SEEN, String(tourConfig()?.version || 1));
+    if (how !== 'abort' && tourPage() !== 'home') location.hash = '#/home';
+    if (nav.on && how !== 'abort') setTimeout(() => focusInitial(), 150);
+  }
+
+  // The remote and keyboard while the tour is up. Everything else is swallowed so it can't reach the screen behind.
+  function tourKey(action) {
+    const T = tour;
+    if (action === 'back') { tourEnd('skip'); return true; }
+    const btns = $$('.tour-skip, .tour-btns .btn', T.root).filter((b) => !b.classList.contains('hidden'));
+    const at = btns.indexOf(document.activeElement);
+    if (action === 'left' || action === 'up') btns[Math.max(0, at - 1)]?.focus({ preventScroll: true });
+    else if (action === 'right' || action === 'down') btns[Math.min(btns.length - 1, at + 1)]?.focus({ preventScroll: true });
+    else if (action === 'select' || action === 'selectdown') (at >= 0 ? btns[at] : $('[data-tour="next"]', T.root)).click();
+    return true;
+  }
+
+  function tourStart() {
+    const steps = tourSteps();
+    if (tour || !steps.length) return false;
+    const root = tourBuild();
+    const T = tour = { root, svg: $('.tour-svg', root), tip: $('.tour-tip', root), steps: steps.map((s) => ({ ...s })), token: 0, busy: false, step: null, index: 0, sig: '', lostAt: 0 };
+    T.onChange = () => tourPlace();
+    T.onTab = (e) => {
+      if (e.key !== 'Tab') return;
+      const btns = $$('.tour-skip, .tour-btns .btn', root).filter((b) => !b.classList.contains('hidden'));
+      const at = btns.indexOf(document.activeElement), next = btns[(at + (e.shiftKey ? -1 : 1) + btns.length) % btns.length];
+      e.preventDefault(); e.stopPropagation();
+      next?.focus({ preventScroll: true });
+    };
+    document.addEventListener('keydown', T.onTab, true);
+    window.addEventListener('resize', T.onChange);
+    window.addEventListener('orientationchange', T.onChange);
+    window.addEventListener('scroll', T.onChange, true);
+    // Follows the target when it moves, resizes or turns (rotating the phone swaps the top bar for the bottom bar).
+    T.timer = setInterval(() => {
+      if (!tour) return;
+      // Something else needs the screen (an update prompt, a video): step aside and ask again another time.
+      if (isPlayerOpen() || !$('#modal').classList.contains('hidden') || trailerOpen()) return tourEnd('abort');
+      if (tour.step?.prepare === 'profileMenu' && !T.busy) $('#profile-dropdown').classList.remove('hidden');
+      if (nav.on && !root.contains(document.activeElement) && !T.busy) $('[data-tour="next"]', root).focus({ preventScroll: true });
+      tourPlace();
+    }, 80);
+    root.addEventListener('click', (e) => {
+      e.stopPropagation(); // the screen behind never sees these taps (a tap there would close menus or open things)
+      const b = e.target.closest('[data-tour]');
+      if (!b) { if (!T.busy && !e.target.closest('.tour-tip') && T.step && !nav.tv) tourGo(T.index + 1, 1); return; }
+      if (b.dataset.tour === 'skip') tourEnd('skip');
+      else if (!T.busy && b.dataset.tour === 'next') tourGo(T.index + 1, 1);
+      else if (!T.busy && b.dataset.tour === 'back') tourGo(T.index - 1, -1);
+    });
+    root.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+    // The welcome card shows at once; the rest of the steps are checked in the background so the dots count only
+    // the steps that have something to point at (no "Continue watching" yet means no step for it).
+    tourGo(0, 1);
+    const probes = T.steps.map(async (s) => {
+      if (s.centered || s.prepare || (s.route && s.route !== 'home')) return;
+      const until = Date.now() + Math.min(s.wait ?? 1500, 1500);
+      while (tour === T && !tourFind(s) && Date.now() < until) await tourSleep(120);
+      if (tour === T && !tourFind(s) && s.id !== T.step?.id) s.skip = true;
+    });
+    Promise.all(probes).then(() => { if (tour === T && T.step) tourDots(); });
+    return true;
+  }
+
+  // Shows the tour by itself, once per device, as soon as Home is up after sign-in.
+  let tourWatching = false;
+  function maybeStartTour() {
+    if (tourSeen() || tourWatching || tour || kidsOn() || firstRun) return;
+    tourWatching = true;
+    const t0 = Date.now();
+    const check = () => {
+      if (tourSeen() || tour || Date.now() - t0 > 120000) { tourWatching = false; return; }
+      const ready = splashDone && state.userId && !$('#main').classList.contains('hidden') && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && !updateRequiredOpen() && !trailerOpen()
+        && $('.hero-content, .hero.empty, .row-track .card, #page .empty-msg');
+      if (ready) { tourWatching = false; tourStart(); } else setTimeout(check, 400);
+    };
+    setTimeout(check, 800);
+  }
+
+  // ---------- Boot ----------
+  async function boot() {
+    setTimeout(hideSplash, SPLASH_MAX); // never leave anyone stuck on the splash
+    if ($('#splash')) playSplashSound();
+    if (liveReturn?.hash?.startsWith('#/') && (!location.hash || location.hash === '#' || location.hash === '#/')) history.replaceState(null, '', liveReturn.hash);
+    loadConfig();
+    autoCheckForUpdate();
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) takeLaunchHash();
+      if (!document.hidden && Date.now() - updates.lastCheck > RECHECK_AFTER) autoCheckForUpdate();
+      // A TV left on the home screen for hours shows lists from when it was opened. Coming back after a long
+      // time, load them again (the titles may have been removed or replaced meanwhile).
+      if (!document.hidden && state.userId && Date.now() - lastRouteAt > 20 * 60000 && !isPlayerOpen()
+        && $('#modal').classList.contains('hidden') && /^#\/(home|movies|tv|tvshows|series|)?$/.test(location.hash || '#/home')) {
+        rowCache.clear();
+        route();
+      }
+    });
+    loadRemoteConfig();
+    applySubtitleStyle();
+    setupUi();
+    applyRequiredUpdate(); // locked already (known from an earlier check), even without internet
+    $('#setup-username').value = store.get('ef.username') || '';
+    if (!state.apiKey || !state.userId) return showSetup();
+    try {
+      const user = await api(`/Users/${state.userId}`);
+      upsertAccount(user, state.apiKey);
+      await selectUser(user);
+      hideSplashWhenHomeReady();
+    } catch (e) {
+      if (e.status === 401 || e.status === 403) {
+        removeAccount(state.userId);
+        state.apiKey = ''; store.del('ef.apiKey');
+        showSetup('Your sign-in has expired. Please sign in again.');
+      } else { showSetup(connectionErrorMessage(e)); offerOfflineDownloads(); }
+    }
+  }
+
+  boot();
+})();
