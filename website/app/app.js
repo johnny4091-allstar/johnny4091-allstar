@@ -2180,10 +2180,50 @@
       if (r.status >= 400) { const e = new Error(`The TV provider answered ${r.status}.`); e.status = r.status; throw e; }
       return r.body || '';
     }
+    // A web browser (and the Windows app) can't read a provider's answer itself: Aurora Guard fetches it (guard 1.52.0).
+    if (!nativeApp && guardEnabled) {
+      const res = await relayFetch(url, 'list', cfg?.userAgent, timeoutMs);
+      return res.text();
+    }
     const res = await fetch(url, { signal: timeoutSignal(timeoutMs) });
     if (!res.ok) throw new Error(`The TV provider answered ${res.status}.`);
     return res.text();
   }
+
+  // ----- Live TV in a web browser or the Windows app: Aurora Guard fetches the provider's list, pictures and streams (guard 1.52.0) -----
+  let relayKnown = { at: 0, ok: false };
+  async function relayReady() {
+    if (nativeApp || !guardEnabled) return false;
+    if (Date.now() - relayKnown.at < 5 * 60000) return relayKnown.ok;
+    let ok = false;
+    try { const r = await fetch(guardUrl.replace(/\/+$/, '') + '/relay/info', { cache: 'no-store', signal: timeoutSignal(5000) }); ok = r.ok && (await r.json()).enabled === true; } catch { ok = false; }
+    relayKnown = { at: Date.now(), ok };
+    return ok;
+  }
+  const relayAddress = (target, kind, ua, extra = {}) => {
+    const u = new URL(guardUrl.replace(/\/+$/, '') + '/relay');
+    u.searchParams.set('userId', state.userId); u.searchParams.set('u', target);
+    if (kind && kind !== 'stream') u.searchParams.set('kind', kind);
+    if (ua) u.searchParams.set('ua', ua);
+    for (const [k, v] of Object.entries(extra)) u.searchParams.set(k, v);
+    return u.toString();
+  };
+  async function relayFetch(target, kind, ua, timeoutMs = 60000) {
+    let res;
+    try { res = await fetch(relayAddress(target, kind, ua), { headers: { 'X-Emby-Token': state.apiKey }, signal: timeoutSignal(timeoutMs) }); }
+    catch { throw new Error("Couldn't reach Aurora Guard, which this browser needs for Live TV. Check that the PC running it is on."); }
+    if (res.status === 404) throw new Error('Live TV in a browser needs Aurora Guard 1.52.0 or newer. Ask the administrator to update it (Admin, Server).');
+    if (!res.ok) { const j = await res.json().catch(() => ({})); const e = new Error(j.error || `Aurora Guard answered ${res.status}.`); e.status = res.status; throw e; }
+    return res;
+  }
+  // Provider pictures are plain http: a secure page can't show them. If one fails to load, it is loaded again through the Guard.
+  document.addEventListener('error', (e) => {
+    const img = e.target;
+    if (nativeApp || !guardEnabled || !relayKnown.ok || !(img instanceof HTMLImageElement) || img.dataset.relayed || !/^https?:\/\//i.test(img.getAttribute('src') || '')) return;
+    if (img.src.startsWith(guardUrl)) return;
+    img.dataset.relayed = '1';
+    img.src = relayAddress(img.getAttribute('src'), 'img', iptv.config?.userAgent, { token: state.apiKey });
+  }, true);
 
   // Xtream Codes player API.
   function xtUrl(cfg, params = {}) {
@@ -2707,12 +2747,86 @@
     if (maintOn('livetv')) { toast(maintText('livetv'), 8000); return; }
     whenAllowed(() => startIptv(list, index, groupName));
   }
+  // A provider channel in a web browser or the Windows app. HLS channels play with hls.js, raw MPEG-TS ones with mpegts.js. Whatever the
+  // browser's own player can't decode (some providers send AC-3 sound or MPEG-2 video) has no picture or sound: Android plays those.
+  async function startIptvWeb(list, index) {
+    const ch = list[index];
+    if (!ch) return;
+    if (!(await relayReady())) { toast('Live TV in a browser needs Aurora Guard 1.52.0 or newer. Ask the administrator to update it (Admin, Server).', 7000); return; }
+    const token = ++player.token, stale = () => token !== player.token;
+    if ($('#player').classList.contains('hidden')) rememberFocus('player');
+    live.tunedId = null;
+    await stopPlayback();
+    if (stale()) return;
+    const el = $('#player'), video = $('#video'), status = $('#player-status');
+    el.classList.remove('hidden'); el.classList.add('live', 'iptv-web');
+    player.isLive = true; player.item = null; player.iptvWeb = { list, index };
+    $('#player-title').innerHTML = `${esc(ch.num ? ch.num + ' · ' : '')}${esc(ch.name)}<span class="sub">Live</span>`;
+    status.innerHTML = auroraLoaderHtml('Starting…'); status.classList.remove('hidden');
+    if (!document.fullscreenElement) { try { await el.requestFullscreen?.(); } catch { /* not allowed, fine */ } }
+    const ua = iptv.config?.userAgent || '';
+    // An Xtream channel is asked for as HLS first (the browser's friendliest format), then as raw MPEG-TS.
+    const tries = [];
+    const xt = String(ch.url).match(/^(.*\/live\/[^/]+\/[^/]+\/\d+)\.(ts|m3u8)$/);
+    if (xt) tries.push(`${xt[1]}.m3u8`, `${xt[1]}.ts`); else tries.push(ch.url);
+    for (const alt of ch.alts || []) tries.push(alt);
+    let lastErr = null;
+    for (const target of tries) {
+      if (stale()) return;
+      try { await attachLive(video, target, ua, stale); lastErr = null; break; }
+      catch (e) { if (stale()) return; lastErr = e; killLiveEngines(); }
+    }
+    if (stale()) return;
+    if (lastErr) {
+      playLog.add({ kind: 'live-failed', title: ch.name, method: 'Browser', error: String(lastErr.message || lastErr).slice(0, 200) });
+      status.innerHTML = `<p>This channel would not play in a browser${lastErr.message ? `: ${esc(lastErr.message)}` : ''}</p><p class="muted">Some channels use sound or video a browser cannot play. The Aurora app for Android plays them.</p><button class="btn btn-white" id="player-err-back">Go Back</button>`;
+      $('#player-err-back').addEventListener('click', closePlayer);
+      if (nav.on) focusEl($('#player-err-back'));
+      return;
+    }
+    status.classList.add('hidden');
+    wakeOsd();
+  }
+  function killLiveEngines() {
+    if (player.hls) { try { player.hls.destroy(); } catch { /* gone */ } player.hls = null; }
+    if (player.mpegts) { try { player.mpegts.destroy(); } catch { /* gone */ } player.mpegts = null; }
+  }
+  function attachLive(video, target, ua, stale) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (err) => { if (done) return; done = true; clearTimeout(timer); video.removeEventListener('playing', onPlaying); err ? reject(err) : resolve(); };
+      const onPlaying = () => finish();
+      const timer = setTimeout(() => finish(new Error('it did not start in time')), 15000);
+      video.addEventListener('playing', onPlaying);
+      const hlsFile = /\.m3u8$/i.test(new URL(target).pathname);
+      const src = relayAddress(target, 'stream', ua);
+      try {
+        if (hlsFile) {
+          if (!window.Hls?.isSupported()) return finish(new Error('this browser cannot play HLS'));
+          const hls = new window.Hls({ liveSyncDurationCount: 4, liveMaxLatencyDurationCount: 12, maxBufferLength: 30, xhrSetup: (xhr) => xhr.setRequestHeader('X-Emby-Token', state.apiKey) });
+          player.hls = hls;
+          hls.on(window.Hls.Events.ERROR, (_, data) => { if (data.fatal) { if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && !hls.__recovered) { hls.__recovered = true; hls.recoverMediaError(); } else finish(new Error(data.response?.code === 403 ? 'the provider refused it' : 'the stream stopped')); } });
+          hls.loadSource(src); hls.attachMedia(video);
+          video.play().catch(() => {});
+        } else {
+          if (!window.mpegts?.isSupported()) return finish(new Error('this browser cannot play live streams'));
+          const mp = window.mpegts.createPlayer({ type: 'mpegts', isLive: true, url: src, hasAudio: true, hasVideo: true }, { enableWorker: true, enableStashBuffer: true, stashInitialSize: 384, liveBufferLatencyChasing: true, liveBufferLatencyMaxLatency: 20, liveBufferLatencyMinRemain: 3, headers: { 'X-Emby-Token': state.apiKey } });
+          player.mpegts = mp;
+          mp.on(window.mpegts.Events.ERROR, (type, detail) => finish(new Error(detail === 'HttpStatusCodeInvalid' ? 'the provider refused it' : 'the stream could not be read')));
+          mp.attachMediaElement(video); mp.load();
+          Promise.resolve(mp.play()).catch(() => {});
+        }
+      } catch (e) { finish(e); }
+      // A change of channel while this one is still starting ends this attempt quietly.
+      const watch = setInterval(() => { if (done) clearInterval(watch); else if (stale()) { clearInterval(watch); finish(new Error('stopped')); } }, 400);
+    });
+  }
   const nowNextFields = (c) => { const n = nowNext(c); return n ? { nowStart: n.start || 0, nowEnd: n.end || 0, next: n.next || '' } : {}; };
   function startIptv(list, index, groupName) {
     const ch = list[index];
     if (!ch) return;
     rememberChannel(ch);
-    if (!nativeApp?.playLive) { toast('Live TV channels play in the Aurora app for Android and Android TV.'); return; }
+    if (!nativeApp?.playLive) { if (guardEnabled) startIptvWeb(list, index); else toast('Live TV channels play in the Aurora app for Android and Android TV.'); return; }
     // Keep the hand-over a sensible size for very long lists.
     let from = 0, to = list.length;
     if (list.length > 3000) { from = Math.max(0, index - 1500); to = Math.min(list.length, from + 3000); }
@@ -4375,6 +4489,7 @@
   }
 
   async function changeChannel(delta) {
+    if (player.iptvWeb) { const { list, index } = player.iptvWeb; return startIptvWeb(list, (index + delta + list.length) % list.length); }
     const ids = await ensureChannelList();
     if (!ids.length || !live.tunedId) return;
     const i = ids.indexOf(live.tunedId);
@@ -11669,6 +11784,9 @@
       }
     }
     if (player.hls) { player.hls.destroy(); player.hls = null; }
+    if (player.mpegts) { try { player.mpegts.destroy(); } catch { /* gone */ } player.mpegts = null; }
+    player.iptvWeb = null;
+    $('#player').classList.remove('iptv-web');
     video.pause();
     video.removeAttribute('src');
     video.load();

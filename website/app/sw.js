@@ -2,7 +2,7 @@
 // It keeps the app's own files so Aurora opens even with a slow or no connection, and always asks the network first so an
 // update shows up straight away. It never touches your server, the Guard, pictures from other sites or any video.
 const CACHE = 'aurora-shell-v1';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'splash.js', 'tour-config.js', 'vendor/hls.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'splash.js', 'tour-config.js', 'vendor/hls.min.js', 'vendor/mpegts.min.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()).catch(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {
