@@ -7590,7 +7590,7 @@
     queueMicrotask(pinHandlers);
     const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
     const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
-        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>${r.warnings ? ` <span class="pill bad">${r.warnings} ${r.warnings === 1 ? 'warning' : 'warnings'}</span>` : ''}${r.rulesOk === false ? ' <span class="pill warn">Rules not agreed</span>' : ''}
+        <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>${r.trialsUnlimited ? ' <span class="pill good">Unlimited trials</span>' : ''}${r.warnings ? ` <span class="pill bad">${r.warnings} ${r.warnings === 1 ? 'warning' : 'warnings'}</span>` : ''}${r.rulesOk === false ? ' <span class="pill warn">Rules not agreed</span>' : ''}
         <div class="muted">${esc(r.userName)}${r.contact ? ' · ' + esc(r.contact) : ''}${r.parentName ? ' · sub-reseller of ' + esc(r.parentName) : ''} · ${r.customers} ${r.customers === 1 ? 'customer' : 'customers'}${r.subs ? ` · ${r.subs} sub-${r.subs === 1 ? 'reseller' : 'resellers'}` : ''}${r.status === 'active' && r.low ? ' · low on credits' : ''}</div></div>
         <div class="plan-actions"><button class="btn btn-gray" data-cr>Credits</button><button class="btn btn-gray" data-ed>Edit</button><button class="btn btn-gray" data-pw>New password</button><button class="btn btn-gray" data-wn>Warnings</button><button class="btn btn-gray" data-su>${r.status === 'active' ? 'Suspend' : 'Restore'}</button></div></div>`;
     const logRow = (e) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(e.resellerName || '')}</strong> · ${esc(e.why)}${e.customer ? ' · ' + esc(e.customer) : ''}
@@ -7677,10 +7677,11 @@
         <label class="admin-field"><span>Business or name</span><input type="text" data-f="name" maxlength="60" value="${esc(r.name)}"></label>
         <label class="admin-field"><span>Contact</span><input type="text" data-f="contact" maxlength="100" value="${esc(r.contact)}"></label>
         <div class="admin-field"><span>Plans they can sell</span>${planChecks(r.plans)}</div>
+        <label class="admin-check"><input type="checkbox" data-f="trialsfree"${r.trialsUnlimited ? ' checked' : ''}> No daily limit on free trials for this reseller <span class="muted">(everyone else has a daily limit)</span></label>
         <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
       $('[data-cancel]', form).addEventListener('click', () => { form.classList.add('hidden'); form.innerHTML = ''; });
       $('[data-save]', form).addEventListener('click', async () => {
-        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { name: $('[data-f="name"]', form).value.trim(), contact: $('[data-f="contact"]', form).value.trim(), plans: chosenPlans() } }); toast('Saved', 2000); reload(); }
+        try { await guard(`/resellers/${encodeURIComponent(r.id)}`, { method: 'PUT', body: { name: $('[data-f="name"]', form).value.trim(), contact: $('[data-f="contact"]', form).value.trim(), plans: chosenPlans(), trialsUnlimited: $('[data-f="trialsfree"]', form).checked } }); toast('Saved', 2000); reload(); }
         catch (e) { say(esc(e.message), 'bad'); }
       });
       form.scrollIntoView({ block: 'center' });
@@ -8533,7 +8534,7 @@
           <label class="admin-field"><span>Phone</span><input type="text" data-f="phone" maxlength="30" placeholder="optional"></label>
         </div>
         <label class="admin-field"><span>Plan *</span><select data-f="plan">${planOpts('')}</select></label>
-        <label class="admin-check"><input type="checkbox" data-f="trial"> Free 2-day trial instead (${d.trialsLeft} left today)</label>
+        <label class="admin-check"><input type="checkbox" data-f="trial"> Free 2-day trial instead (${d.trialsUnlimited ? 'no daily limit' : d.trialsLeft + ' left today'})</label>
         <label class="admin-field"><span>Note (only you and the admin see this)</span><input type="text" data-f="note" maxlength="300" placeholder="e.g. Pays on the 1st"></label>
         <p class="muted" data-sum></p>
         <div class="m-actions"><button class="btn btn-red" data-save>Create customer</button><button class="btn btn-gray" data-cancel>Cancel</button></div><div class="live-result" data-result></div>`;
@@ -8941,9 +8942,9 @@
       loadCoupons();
       const tl = d.trialLink || {}, pr = d.prices || {}, tp = d.templates || {}, url = tl.code ? `${SITE}trial/?r=${tl.code}` : '';
       $('[data-s-tl]', root).innerHTML = `<h2>Your free-trial link <span class="pill ${tl.on ? 'good' : ''}">${tl.on ? 'On' : 'Off'}</span></h2>
-        <p class="muted">Share this link. Anyone who opens it can start a free trial that lands in your customer list. Each trial uses one of your ${tl.limit || 5} free trials a day, and one email can only be used once.</p>
+        <p class="muted">Share this link. Anyone who opens it can start a free trial that lands in your customer list. ${tl.unlimited ? 'You have no daily limit on free trials.' : `Each trial uses one of your ${tl.limit || 5} free trials a day.`} One email can only be used once.</p>
         ${url ? `<input type="text" class="st-note-input" data-s-url readonly value="${esc(url)}" aria-label="Your trial link"><div class="m-actions"><button class="btn btn-white" data-s-urlcopy>Copy link</button></div>` : ''}
-        <p class="muted">${tl.made || 0} trials started with your link · ${tl.today || 0} of ${tl.limit || 5} daily trials used today</p>
+        <p class="muted">${tl.made || 0} trials started with your link · ${tl.today || 0} ${tl.unlimited ? 'started today' : `of ${tl.limit || 5} daily trials used today`}</p>
         <div class="m-actions"><button class="btn ${tl.on ? 'btn-gray' : 'btn-red'}" data-s-tlon>${tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')}</button>${tl.code ? '<button class="btn btn-gray" data-s-tlnew>Make a new link</button>' : ''}</div><div class="live-result" data-s-tlmsg></div>`;
       $('[data-s-pr]', root).innerHTML = `<h2>Your prices</h2><p class="muted">What you charge your customers. Private, only you see it. It powers your income report and price list.</p>
         ${d.plans.length ? d.plans.map((p) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(p.name)}</strong><div class="muted">You pay ${esc(creditsWord(p.credits))} <span data-s-m="${esc(p.id)}"></span></div></div><div class="plan-actions"><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" placeholder="Price" data-s-price="${esc(p.id)}" value="${pr[p.id] != null ? pr[p.id] : ''}" aria-label="Price for ${esc(p.name)}" style="width:7rem"></div></div>`).join('') : '<p class="muted">You have no plans to sell yet.</p>'}

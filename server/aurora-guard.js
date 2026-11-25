@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.52.0';
+const VERSION = '1.53.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -601,7 +601,9 @@ const couponProblem = (c, planId) => {
 const couponPrice = (r, c, planId) => { const base = Number((r.prices || {})[planId]); if (!(base > 0)) return null; const v = c.type === 'percent' ? base * (1 - c.value / 100) : base - c.value; return Math.max(0, Math.round(v * 100) / 100); };
 const slugName = (full) => { const t = String(full || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 24); return t.length >= 3 ? t : 'customer'; };
 const trialsTodayOf = (r) => { const today = localDay(new Date()); return Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length; };
-const trialLinkState = (r) => { const t = r.trialLink || {}; return { on: !!t.on, code: t.code || '', made: t.made || 0, today: trialsTodayOf(r), limit: cfg.resellerTrialsPerDay }; };
+// How many free trials a reseller may start in a day: the Guard's number, or no limit when the administrator switched it off for that reseller (guard 1.53.0).
+const trialCapOf = (r) => (r && r.trialsUnlimited ? Infinity : cfg.resellerTrialsPerDay);
+const trialLinkState = (r) => { const t = r.trialLink || {}; return { on: !!t.on, code: t.code || '', made: t.made || 0, today: trialsTodayOf(r), limit: r.trialsUnlimited ? null : cfg.resellerTrialsPerDay, unlimited: !!r.trialsUnlimited }; };
 const trialResellerByCode = (code) => { const c = String(code || '').trim().toUpperCase(); if (!/^[A-Z2-9]{8}$/.test(c)) return null; return Object.values(resellerList()).find((r) => r.status === 'active' && r.trialLink && r.trialLink.on && r.trialLink.code === c && (cfg.resellerRulesRequired === false || rulesOk(r))) || null; };
 const newTrialCode = () => { const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let c = ''; const b = crypto.randomBytes(8); for (let i = 0; i < 8; i++) c += A[b[i] % A.length]; return c; };
 const monthKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
@@ -611,7 +613,7 @@ function publicReseller(r) {
   const customers = Object.values(store.users).filter((u) => u.reseller === r.id).length;
   const up = r.parent ? resellerList()[r.parent] : null;
   return { id: r.id, name: r.name, userId: r.userId, userName: r.userName, contact: r.contact || '', rulesOk: rulesOk(r), rulesAt: r.rules ? r.rules.at : 0, warnings: warnActive(r).length, credits: r.credits, status: r.status, plans: r.plans || [], customers, created: r.created, low: r.credits <= cfg.resellerLowCredits,
-    parent: up ? up.id : '', parentName: up ? up.name : '', subs: subsOf(r).length };
+    parent: up ? up.id : '', parentName: up ? up.name : '', subs: subsOf(r).length, trialsUnlimited: !!r.trialsUnlimited };
 }
 // The contact details a reseller shows their own customers under Help (guard 1.33.0). A sub-reseller without any shows the one above them.
 const phoneOk = (v) => /^[\d+\-() .]{3,30}$/.test(v);
@@ -3261,7 +3263,7 @@ async function handle(req, res) {
     if (overLimit('trial-info', ip, 60, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
     const r = trialResellerByCode(url.searchParams.get('code'));
     if (!r) return send(res, 200, { valid: false });
-    return send(res, 200, { valid: true, name: (r.support && r.support.name) || r.name, days: cfg.signupTrialDays, connections: cfg.signupTrialConnections, open: trialsTodayOf(r) < cfg.resellerTrialsPerDay });
+    return send(res, 200, { valid: true, name: (r.support && r.support.name) || r.name, days: cfg.signupTrialDays, connections: cfg.signupTrialConnections, open: trialsTodayOf(r) < trialCapOf(r) });
   }
   if (url.pathname === '/trial' && req.method === 'POST') {
     let body;
@@ -3276,7 +3278,7 @@ async function handle(req, res) {
     if (password.length < 8 || password.length > 64) return send(res, 400, { error: 'Your password needs 8 to 64 characters.' });
     if (body.agree !== true) return send(res, 400, { error: 'Please agree to not share your login.' });
     return serialSignup(async () => {
-      if (trialsTodayOf(r) >= cfg.resellerTrialsPerDay) return send(res, 429, { error: 'This trial link is full for today. Please try again tomorrow.' });
+      if (trialsTodayOf(r) >= trialCapOf(r)) return send(res, 429, { error: 'This trial link is full for today. Please try again tomorrow.' });
       const made = smallLimit.get('trialip|' + ip);
       if (made && Date.now() - made.since <= 86400000 && made.n >= cfg.resellerTrialLinkPerIpPerDay) return send(res, 429, { error: 'Too many trials were started from this connection today. Please try again tomorrow.' });
       if (Object.values(store.users).some((u) => (u.contact?.email || '').toLowerCase() === email)) return send(res, 409, { error: 'That email address already has an account.' });
@@ -3397,7 +3399,7 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: Math.max(0, cfg.resellerTrialsPerDay - trialsToday),
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
@@ -3669,7 +3671,7 @@ async function handle(req, res) {
         const trial = !!body.trial, cost = trial ? 0 : planCredits(plan);
         if (r.credits < cost) return send(res, 402, { error: `Not enough credits: this costs ${cost} and you have ${r.credits}.` });
         const today = localDay(new Date());
-        if (trial && Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length >= cfg.resellerTrialsPerDay) return send(res, 429, { error: `You can start ${cfg.resellerTrialsPerDay} free trials a day. Try again tomorrow.` });
+        if (trial && Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length >= trialCapOf(r)) return send(res, 429, { error: `You can start ${cfg.resellerTrialsPerDay} free trials a day. Try again tomorrow.` });
         const existing = await emby('GET', '/Users');
         if ((existing || []).some((u) => String(u.Name).toLowerCase() === username.toLowerCase())) return send(res, 409, { error: 'That username is taken. Try another.' });
         let user;
@@ -4639,6 +4641,7 @@ async function handle(req, res) {
       if (body.contact !== undefined) r.contact = cleanText(body.contact, 100);
       if (Array.isArray(body.plans)) r.plans = body.plans.filter((id) => (store.plans || []).some((p) => p.id === id));
       if (body.status === 'active' || body.status === 'suspended') r.status = body.status;
+      if (typeof body.trialsUnlimited === 'boolean') { if (!!r.trialsUnlimited !== body.trialsUnlimited) recordAudit(auditBy, `${body.trialsUnlimited ? 'Removed' : 'Restored'} the daily free trial limit for the reseller ${r.name}`); r.trialsUnlimited = body.trialsUnlimited; }
       saveStore();
       return send(res, 200, { ok: true, reseller: publicReseller(r) });
     }

@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.53.0
+
+- **No daily free trial limit for chosen resellers.** `PUT /resellers/:id` accepts `trialsUnlimited: true|false`. A reseller with it on is not held to `resellerTrialsPerDay` (5) for new trials, nor for their trial link. The reseller's `/reseller/me` then has `trialsUnlimited: true` and `trialsLeft: null`. The limit of trial sign-ups from one internet address a day (`resellerTrialLinkPerIpPerDay`) still applies to trial links. Changes are written to the audit log. In the app: Admin → Resellers → Edit → "No daily limit on free trials".
+
 ## 1.52.0
 
 - **Live TV in a web browser and in the Windows app.** `GET /relay` lets Aurora fetch a TV provider's channel list (`kind=list`), pictures (`kind=img`, the token may be in the address because an image tag cannot send headers) and streams (the default) through the Guard, because a secure page cannot use a provider's plain `http` streams or read what it sends. It is not an open proxy: it needs a signed-in, unexpired account, and only reaches addresses of the main provider, the other providers, the administrator's own channels, this person's own Live TV provider, addresses inside a provider's own channel list (kept for 6 hours) and parts of an HLS playlist (every address in a playlist is rewritten to a signed `/relay` address). Redirects are followed, but a redirect to a private network address, and any address that is not one of the providers' own, is refused. Each person keeps at most 3 streams open (the oldest closes when a 4th opens), there are 60 in all, and a stream that stops sending for 45 seconds is closed. Settings in `config.json`: `liveRelay` (true), `liveRelayPerUser` (3), `liveRelayMax` (60). `GET /relay/info` says whether it is on. Video passes through the Guard PC's internet connection, and every viewer uses one of the provider's connections, like on Android.
