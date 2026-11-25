@@ -140,6 +140,9 @@ details.card[open] > summary { margin-bottom:12px; }
         <div class="plans" id="plans" role="radiogroup" aria-label="Choose a plan"></div>
         <input type="hidden" id="plan" value="">
         <div class="preview" id="preview" hidden></div>
+        <label class="f" for="coupon">Have a coupon code? (optional)</label>
+        <div style="display:flex;gap:8px"><input class="txt" id="coupon" maxlength="20" autocapitalize="characters" autocomplete="off" placeholder="Enter code"><button class="btn line" id="cpcheck" type="button" style="width:auto;margin:0;padding:12px 18px">Check</button></div>
+        <p class="hint" id="cpmsg" role="status" hidden></p>
         <label class="f" for="note">A note for your provider (optional)</label>
         <input class="txt" id="note" maxlength="200" placeholder="For example: I would like to pay by...">
         <button class="btn block" id="ask" type="button" style="margin-top:14px;padding:16px;font-size:1.05rem">Request renewal</button>
@@ -413,12 +416,20 @@ details.card[open] > summary { margin-bottom:12px; }
   $('plans').addEventListener('click', function (e) { var b = e.target.closest('.pl'); if (b) selectPlan(b.getAttribute('data-id')); });
   $('herocta').addEventListener('click', function (e) { e.preventDefault(); $('renew').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
   $('stickgo').addEventListener('click', function (e) { e.preventDefault(); $('renew').scrollIntoView({ behavior: 'smooth', block: 'start' }); });
+  $('cpcheck').onclick = function () {
+    var code = $('coupon').value.trim(), m = $('cpmsg'); if (!code) { m.hidden = true; return; }
+    api('GET', '/coupon/check?code=' + encodeURIComponent(code) + '&userId=' + encodeURIComponent(session.userId) + ($('plan').value ? '&planId=' + encodeURIComponent($('plan').value) : '')).then(function (j) {
+      m.hidden = false;
+      if (j.__status === 200 && j.valid) { m.style.color = 'var(--green)'; m.textContent = 'Code accepted: ' + j.label + (j.price != null ? '. Your price: $' + j.price + (j.original ? ' instead of $' + j.original : '') + '.' : '.'); }
+      else { m.style.color = '#ff8d9b'; m.textContent = (j && (j.message || j.error)) || 'That code did not work.'; }
+    }).catch(function () { m.hidden = false; m.style.color = '#ff8d9b'; m.textContent = 'Could not check the code.'; });
+  };
   $('ask').onclick = function () {
     var b = $('ask'); b.disabled = true; say('renewerr', ''); say('renewok', '');
-    api('POST', '/extension', { userId: session.userId, note: $('note').value.trim(), planId: $('plan').value || undefined }).then(function (j) {
+    api('POST', '/extension', { userId: session.userId, note: $('note').value.trim(), planId: $('plan').value || undefined, coupon: $('coupon').value.trim() || undefined }).then(function (j) {
       b.disabled = false;
       if (j.__status !== 200) { say('renewerr', j.error || 'Could not send the request.'); return; }
-      say('renewok', 'Request sent. You will see the answer here.'); $('note').value = '';
+      say('renewok', 'Request sent. You will see the answer here.'); $('note').value = ''; $('coupon').value = ''; $('cpmsg').hidden = true;
       api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintStatus(); paintRenew(); } });
     });
   };
