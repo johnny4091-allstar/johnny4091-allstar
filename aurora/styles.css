@@ -2114,3 +2114,16 @@ html.tv .tm-preview { width: 320px; }
 .res-rules { border-color: #8a6a1f; background: linear-gradient(180deg, rgba(255,212,121,.1), transparent 70%); }
 .res-warn { border-color: #8a3b48; background: linear-gradient(180deg, rgba(255,141,155,.1), transparent 70%); }
 .res-warn h2 { color: #ffb4bf; } .res-warn ul { margin: .4rem 0 0; padding-left: 1.1rem; line-height: 1.5; }
+
+/* Reseller tools in the app (release 2) */
+[data-rp][hidden] { display: none !important; }
+.res-tabs { position: sticky; top: .3rem; z-index: 5; flex-wrap: nowrap; overflow-x: auto; margin: .2rem 0 1rem; padding: .35rem; border-radius: 14px; background: rgba(14,21,48,.94); border: 1px solid rgba(255,255,255,.08); backdrop-filter: blur(8px); scrollbar-width: none; }
+.res-tabs::-webkit-scrollbar { display: none; } .res-tabs .chip { flex: none; }
+.res-tk .res-thread { display: grid; gap: .5rem; margin: .6rem 0; max-height: 260px; overflow: auto; }
+.res-bub { max-width: 90%; padding: .55rem .75rem; border-radius: 12px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); font-size: .9rem; overflow-wrap: anywhere; } .res-bub.me { justify-self: end; background: rgba(79,123,255,.18); border-color: rgba(79,123,255,.4); } .res-bub small { display: block; opacity: .6; font-size: .72rem; margin-top: .2rem; }
+.res-reply { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; } .res-reply input { flex: 1; min-width: 9rem; }
+.res-bars { display: flex; align-items: flex-end; gap: .6rem; height: 190px; margin: 1rem 0 .4rem; }
+.res-bcol { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: .25rem; }
+.res-bstack { width: 100%; max-width: 48px; display: flex; flex-direction: column; justify-content: flex-end; border-radius: 8px 8px 3px 3px; overflow: hidden; min-height: 2px; background: rgba(255,255,255,.06); } .res-bstack .seg { display: block; } .res-bstack .seg.a { background: linear-gradient(180deg,#7a5cff,#4f7bff); } .res-bstack .seg.r { background: linear-gradient(180deg,#2ad4d0,#18b6d6); }
+.res-bval { font-weight: 800; font-size: .85rem; min-height: 1.1em; } .res-blab { opacity: .65; font-size: .74rem; } .res-bmoney { color: #7ee2a8; font-size: .7rem; font-weight: 700; }
+.res-legend { display: flex; gap: 1rem; flex-wrap: wrap; opacity: .75; font-size: .8rem; } .res-legend .lg { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: .4rem; } .res-legend .lg.a { background: #6f6bff; } .res-legend .lg.r { background: #2ad4d0; }
