@@ -60,7 +60,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.50.0';
+const VERSION = '1.51.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -586,6 +586,18 @@ const remindDaysOf = (rec) => cleanDays(rec && rec.remind) || remindDefault();
 const RESELLER_RULES_VERSION = '2026-11-24';
 const rulesOk = (r) => !!(r.rules && r.rules.v === RESELLER_RULES_VERSION);
 // Reseller tools (guard 1.50.0)
+// Reseller tools, part 2 (guard 1.51.0): labels, payments, coupons, messages
+const cleanLabels = (v) => [...new Set((Array.isArray(v) ? v : []).map((x) => cleanText(x, 20)).filter(Boolean))].slice(0, 5);
+const couponLabel = (c) => (c.type === 'percent' ? `${c.value}% off` : `$${c.value} off`);
+const couponProblem = (c, planId) => {
+  if (!c || c.on === false) return 'That code is not valid.';
+  if (c.expires && c.expires < localDay(new Date())) return 'That code has expired.';
+  if (c.max && (c.used || 0) >= c.max) return 'That code has been used up.';
+  if (Array.isArray(c.planIds) && c.planIds.length && planId && !c.planIds.includes(planId)) return 'That code does not apply to this plan.';
+  return '';
+};
+const couponPrice = (r, c, planId) => { const base = Number((r.prices || {})[planId]); if (!(base > 0)) return null; const v = c.type === 'percent' ? base * (1 - c.value / 100) : base - c.value; return Math.max(0, Math.round(v * 100) / 100); };
+const slugName = (full) => { const t = String(full || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 24); return t.length >= 3 ? t : 'customer'; };
 const trialsTodayOf = (r) => { const today = localDay(new Date()); return Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length; };
 const trialLinkState = (r) => { const t = r.trialLink || {}; return { on: !!t.on, code: t.code || '', made: t.made || 0, today: trialsTodayOf(r), limit: cfg.resellerTrialsPerDay }; };
 const trialResellerByCode = (code) => { const c = String(code || '').trim().toUpperCase(); if (!/^[A-Z2-9]{8}$/.test(c)) return null; return Object.values(resellerList()).find((r) => r.status === 'active' && r.trialLink && r.trialLink.on && r.trialLink.code === c && (cfg.resellerRulesRequired === false || rulesOk(r))) || null; };
@@ -617,7 +629,7 @@ function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
     trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, cats: Array.isArray(rec.categories) ? rec.categories.length : null, catsCustom: !!rec.catsCustom, packs: Array.isArray(rec.packs) ? rec.packs : [], hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
-    remind: cleanDays(rec.remind), remindDefault: remindDefault(),
+    labels: cleanLabels(rec.labels), remind: cleanDays(rec.remind), remindDefault: remindDefault(),
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
 // New accounts start with the same Aurora settings the first administrator has (Live TV source, Requests, update lock, playback).
@@ -780,6 +792,7 @@ async function inboxFor(me) {
     if (!audienceOk(a, me.Id)) continue;
     items.push({ id: 'ann:' + a.id, type: 'announcement', level: a.level, title: a.text, text: 'From your provider', at: a.at });
   }
+  for (const m of (store.directMsgs || []).filter((x) => x.userId === me.Id && now - x.at < 30 * 86400000).slice(0, 5)) items.push({ id: 'dm:' + m.id, type: 'message', level: 'info', title: m.text, text: 'From ' + (m.from || 'your provider'), at: m.at });
   const rec = store.users[me.Id];
   if (rec?.expires && !me.Policy?.IsAdministrator) {
     const d = daysUntil(rec.expires), end = new Date(rec.expires + 'T23:59:59').getTime();
@@ -931,7 +944,7 @@ const MAX_REQUESTS_PER_MONTH = 4;
 const needsAdmin = (x) => !x.reseller || !resellerList()[x.reseller] || resellerList()[x.reseller].status !== 'active';
 function publicRequest(r) {
   return r && { id: r.id, status: r.status, at: r.at, note: r.note, decidedAt: r.decidedAt || null, days: r.days || null, message: r.message || '', newExpires: r.newExpires || null,
-    wantedPlan: r.wantedPlanName || null, to: r.reseller && resellerList()[r.reseller] ? 'reseller' : 'admin' };
+    wantedPlan: r.wantedPlanName || null, coupon: r.coupon ? { code: r.coupon.code, label: r.coupon.label, price: r.coupon.price } : null, to: r.reseller && resellerList()[r.reseller] ? 'reseller' : 'admin' };
 }
 
 // ---------- Subscription plans ----------
@@ -3115,6 +3128,17 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, username, days, expires: store.users[user.Id].expires, connections: conns });
     });
   }
+  // A customer checks a coupon from their reseller before asking for a renewal (guard 1.51.0).
+  if (url.pathname === '/coupon/check' && req.method === 'GET') {
+    const me = await userOfToken(token, url.searchParams.get('userId'));
+    if (!me) return send(res, 401, { error: 'Not signed in' });
+    if (overLimit('coupon-check', me.Id, 40, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+    const rec = store.users[me.Id], r = rec && rec.reseller ? resellerList()[rec.reseller] : null, code = String(url.searchParams.get('code') || '').trim().toUpperCase().slice(0, 20);
+    const pid = String(url.searchParams.get('planId') || '') || (rec && rec.plan && rec.plan.id) || '';
+    const cp = r && r.status === 'active' ? (r.coupons || []).find((c) => c.code === code) : null, prob = cp ? couponProblem(cp, pid) : 'That code is not valid.';
+    if (prob) return send(res, 200, { valid: false, message: prob });
+    return send(res, 200, { valid: true, label: couponLabel(cp), price: couponPrice(r, cp, pid), original: Number((r.prices || {})[pid]) || null });
+  }
   if (url.pathname === '/plans/public' && req.method === 'GET') {
     const me = await userOfToken(token, url.searchParams.get('userId'));
     if (!me) return send(res, 401, { error: 'Not signed in' });
@@ -3134,9 +3158,18 @@ async function handle(req, res) {
     const wanted = body.planId ? (store.plans || []).find((x) => x.id === body.planId && x.active) : null;
     const mine0 = rec.reseller ? resellerList()[rec.reseller] : null;
     const toReseller = mine0 && mine0.status === 'active' ? mine0 : null;
-    const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires,
+    let coupon = null;
+    const couponCode = String(body.coupon || '').trim().toUpperCase().slice(0, 20);
+    if (couponCode) {
+      const cp = toReseller && (toReseller.coupons || []).find((c) => c.code === couponCode), pid = wanted ? wanted.id : rec.plan && rec.plan.id;
+      const prob = cp ? couponProblem(cp, pid) : 'That code is not valid.';
+      if (prob) return send(res, 400, { error: prob });
+      coupon = { id: cp.id, code: cp.code, label: couponLabel(cp), price: couponPrice(toReseller, cp, pid), original: Number((toReseller.prices || {})[pid]) || null };
+    }
+    const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires, coupon,
       wantedPlanId: wanted ? wanted.id : null, wantedPlanName: wanted ? `${wanted.name} ($${wanted.price})` : null, reseller: toReseller ? toReseller.id : null };
     store.extensions = [entry, ...(store.extensions || [])].slice(0, 500);
+    if (coupon) entry.note = (entry.note ? entry.note + ' · ' : '') + `Coupon ${coupon.code} (${coupon.label})`;
     recordAction({ type: 'extensionRequested', userId: me.Id, name: me.Name, why: `asked for an extension (expires ${rec.expires})` });
     saveStore();
     log('Extension requested by', me.Name, `(expires ${rec.expires})`);
@@ -3198,7 +3231,7 @@ async function handle(req, res) {
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
-          const row = (x) => { const c = store.users[x.userId]; return { id: x.id, name: x.name, full: (c && c.contact && c.contact.full) || '', at: x.at, note: x.note || '', wantedPlanId: x.wantedPlanId || null, wantedPlan: planName(x.wantedPlanId),
+          const row = (x) => { const c = store.users[x.userId]; return { id: x.id, coupon: x.coupon ? { code: x.coupon.code, label: x.coupon.label, price: x.coupon.price, original: x.coupon.original } : null, name: x.name, full: (c && c.contact && c.contact.full) || '', at: x.at, note: x.note || '', wantedPlanId: x.wantedPlanId || null, wantedPlan: planName(x.wantedPlanId),
             expires: c ? c.expires || null : null, daysLeft: c && c.expires ? daysUntil(c.expires) : null, expired: c ? isExpired(c) : false, gone: !c, status: x.status, decidedAt: x.decidedAt || null, message: x.message || '', planName: x.planName || '', newExpires: x.newExpires || null }; };
           const mineX = (store.extensions || []).filter((x) => x.reseller === r.id);
           return { pending: mineX.filter((x) => x.status === 'pending').map(row).reverse(), decided: mineX.filter((x) => x.status !== 'pending').slice(0, 20).map(row) };
@@ -3247,8 +3280,9 @@ async function handle(req, res) {
         if (r.credits < cost) return send(res, 402, { error: `Not enough credits: this costs ${cost} and you have ${r.credits}.` });
         applyPlan(x.userId, rec.name, plan, 'extend');
         rec.trial = false;
-        creditEntry(r, -cost, 'Renewed ' + plan.name, by, { customer: rec.name });
+        creditEntry(r, -cost, 'Renewed ' + plan.name, by, { customer: rec.name, plan: plan.id });
         x.status = 'approved'; x.decidedAt = Date.now(); x.days = null; x.message = message; x.newExpires = rec.expires; x.planName = plan.name; x.decidedBy = r.name;
+        if (x.coupon) { const cp = (r.coupons || []).find((c) => c.id === x.coupon.id); if (cp) cp.used = (cp.used || 0) + 1; }
         recordAction({ type: 'extended', userId: x.userId, name: x.name, why: `renewed by ${r.name} on ${plan.name}, now ends ${rec.expires}` });
         recordAudit(by, `Approved an extension request from ${rec.name}: renewed on ${plan.name} (${cost} credits)`);
         saveStore();
@@ -3517,6 +3551,152 @@ async function handle(req, res) {
         for (const { id } of plans) { try { await enforce(id); } catch (e) { log('Applying', id, 'failed:', e.message); } }
         return send(res, 200, { ok: true, renewed: ids.length, spent: total, credits: r.credits });
       }
+      // ===== Reseller tools, part 2 (guard 1.51.0): labels, timeline, payments, coupons, inactive customers, import, messages =====
+      const lm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})\/(labels|timeline|payments)$/);
+      if (lm) {
+        const cid = lm[1];
+        if (!owns(cid)) return send(res, 404, { error: 'No such customer.' });
+        const crec = store.users[cid];
+        let cbody = {};
+        if (req.method !== 'GET') { try { cbody = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } }
+        if (lm[2] === 'labels' && req.method === 'PUT') {
+          crec.labels = cleanLabels(cbody.labels); crec.updated = Date.now(); saveStore();
+          return send(res, 200, { ok: true, labels: crec.labels });
+        }
+        if (lm[2] === 'timeline' && req.method === 'GET') {
+          const events = [];
+          if (crec.created) events.push({ at: crec.created, text: 'Customer created' + (crec.trial ? ' on a free trial' : '') });
+          for (const e of store.creditLog || []) if (e.reseller === r.id && e.customer === crec.name) events.push({ at: e.at, text: e.delta < 0 ? `${e.why} (${-e.delta} credits)` : e.why });
+          const nameRe = new RegExp('\\b' + crec.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i'), me2 = `${r.name} (reseller)`.slice(0, 40);
+          for (const a of store.audit || []) if (a.by === me2 && nameRe.test(a.text) && !/^Created the customer|^Renewed .* on /.test(a.text)) events.push({ at: a.at, text: a.text });
+          for (const pm of store.payments || []) if (pm.reseller === r.id && pm.userId === cid) events.push({ at: pm.at, text: `${pm.paid ? 'Payment received' : 'Payment due'}: $${pm.amount}${pm.method ? ' by ' + pm.method : ''}${pm.note ? ' (' + pm.note + ')' : ''}` });
+          events.sort((a, b) => b.at - a.at);
+          return send(res, 200, { events: events.slice(0, 60) });
+        }
+        if (lm[2] === 'payments' && req.method === 'POST') {
+          const amount = Math.round(Number(cbody.amount) * 100) / 100;
+          if (!Number.isFinite(amount) || amount <= 0 || amount > 100000) return send(res, 400, { error: 'Enter the amount as a number above 0.' });
+          const at = /^\d{4}-\d{2}-\d{2}$/.test(String(cbody.date || '')) && String(cbody.date) <= localDay(new Date()) ? new Date(cbody.date + 'T12:00:00').getTime() : Date.now();
+          const entry = { id: crypto.randomBytes(5).toString('hex'), reseller: r.id, userId: cid, name: crec.name, at, amount, paid: cbody.paid !== false, method: cleanText(cbody.method, 20), note: cleanText(cbody.note, 80), plan: (crec.plan && crec.plan.name) || '' };
+          store.payments = [entry, ...(store.payments || [])].slice(0, 5000);
+          recordAudit(by, `Recorded ${entry.paid ? 'a payment' : 'an amount due'} of $${amount} for ${crec.name}`); saveStore();
+          return send(res, 200, { ok: true, payment: entry });
+        }
+      }
+      if (url.pathname === '/reseller/payments' && req.method === 'GET') {
+        const nm = Math.min(12, Math.max(1, Number(url.searchParams.get('months')) || 3)), since = new Date(new Date().getFullYear(), new Date().getMonth() - (nm - 1), 1).getTime();
+        const mine = (store.payments || []).filter((x) => x.reseller === r.id);
+        const list = mine.filter((x) => x.at >= since).slice(0, 300);
+        const byMonth = new Map();
+        for (const x of list) { const k = monthKey(x.at), m = byMonth.get(k) || { key: k, paid: 0, unpaid: 0 }; if (x.paid) m.paid += x.amount; else m.unpaid += x.amount; byMonth.set(k, m); }
+        const owed = new Map();
+        for (const x of mine) if (!x.paid) { const o = owed.get(x.userId) || { userId: x.userId, name: x.name, amount: 0, since: x.at, count: 0 }; o.amount += x.amount; o.count++; o.since = Math.min(o.since, x.at); owed.set(x.userId, o); }
+        const names = new Map(Object.entries(store.users).map(([id, u]) => [id, (u.contact && u.contact.full) || '']));
+        return send(res, 200, { payments: list, months: [...byMonth.values()].sort((a, b) => a.key.localeCompare(b.key)), owed: [...owed.values()].map((o) => ({ ...o, full: names.get(o.userId) || '' })).sort((a, b) => a.since - b.since), owedTotal: [...owed.values()].reduce((n, o) => n + o.amount, 0) });
+      }
+      const pmm = url.pathname.match(/^\/reseller\/payments\/([0-9a-f]{10})(?:\/(paid))?$/);
+      if (pmm) {
+        const pm = (store.payments || []).find((x) => x.id === pmm[1] && x.reseller === r.id);
+        if (!pm) return send(res, 404, { error: 'No such payment.' });
+        if (pmm[2] === 'paid' && req.method === 'POST') { let b2 = {}; try { b2 = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); } pm.paid = b2.paid !== false; saveStore(); return send(res, 200, { ok: true, payment: pm }); }
+        if (!pmm[2] && req.method === 'DELETE') { store.payments = store.payments.filter((x) => x.id !== pm.id); recordAudit(by, `Removed a recorded payment for ${pm.name}`); saveStore(); return send(res, 200, { ok: true }); }
+      }
+      if (url.pathname === '/reseller/coupons' && req.method === 'GET') return send(res, 200, { coupons: r.coupons || [] });
+      if (url.pathname === '/reseller/coupons' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        if ((r.coupons || []).length >= 20) return send(res, 400, { error: 'You can keep up to 20 coupons. Delete one first.' });
+        const type = body.type === 'amount' ? 'amount' : 'percent', value = Math.round(Number(body.value) * 100) / 100;
+        if (!Number.isFinite(value) || value <= 0 || (type === 'percent' ? value > 90 : value > 1000)) return send(res, 400, { error: type === 'percent' ? 'A percent discount is from 1 to 90.' : 'A money discount is from 0.01 to 1000.' });
+        let code = String(body.code || '').trim().toUpperCase();
+        if (!code) code = 'SAVE' + crypto.randomBytes(2).toString('hex').toUpperCase();
+        if (!/^[A-Z0-9]{3,20}$/.test(code)) return send(res, 400, { error: 'A code is 3 to 20 letters and numbers.' });
+        if ((r.coupons || []).some((c) => c.code === code)) return send(res, 409, { error: 'You already have a coupon with that code.' });
+        const expires = /^\d{4}-\d{2}-\d{2}$/.test(String(body.expires || '')) ? String(body.expires) : null;
+        if (expires && expires < localDay(new Date())) return send(res, 400, { error: 'The end date has already passed.' });
+        const max = Number(body.max) > 0 ? Math.min(10000, Math.round(Number(body.max))) : 0;
+        const planIds = (Array.isArray(body.planIds) ? body.planIds : []).filter((id) => resellerPlanIds(r).includes(id));
+        const c = { id: crypto.randomBytes(5).toString('hex'), code, type, value, expires, max, used: 0, planIds, on: true, at: Date.now() };
+        r.coupons = [c, ...(r.coupons || [])];
+        recordAudit(by, `Made the coupon ${code} (${couponLabel(c)})`); saveStore();
+        return send(res, 200, { ok: true, coupon: c, coupons: r.coupons });
+      }
+      const cpm = url.pathname.match(/^\/reseller\/coupons\/([0-9a-f]{10})(?:\/(toggle))?$/);
+      if (cpm) {
+        const c = (r.coupons || []).find((x) => x.id === cpm[1]);
+        if (!c) return send(res, 404, { error: 'No such coupon.' });
+        if (cpm[2] === 'toggle' && req.method === 'POST') { c.on = c.on === false; saveStore(); return send(res, 200, { ok: true, coupons: r.coupons }); }
+        if (!cpm[2] && req.method === 'DELETE') { r.coupons = r.coupons.filter((x) => x.id !== c.id); recordAudit(by, `Deleted the coupon ${c.code}`); saveStore(); return send(res, 200, { ok: true, coupons: r.coupons }); }
+      }
+      if (url.pathname === '/reseller/inactive' && req.method === 'GET') {
+        const days = Math.min(180, Math.max(1, Math.round(Number(url.searchParams.get('days')) || 14)));
+        let users;
+        try { users = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: "Can't reach Emby: " + e.message }); }
+        const byId = new Map((Array.isArray(users) ? users : []).map((u) => [u.Id, u]));
+        const rows = Object.entries(store.users).filter(([, u]) => u.reseller === r.id && !u.hold && !isExpired(u)).map(([id, u]) => {
+          const t = Date.parse((byId.get(id) || {}).LastActivityDate || '') || 0;
+          return { id, name: u.name, full: (u.contact && u.contact.full) || '', lastActive: t ? new Date(t).toISOString() : null, daysSince: t ? Math.floor((Date.now() - t) / 86400000) : null, expires: u.expires || null, daysLeft: u.expires ? daysUntil(u.expires) : null };
+        }).filter((x) => x.daysSince == null || x.daysSince >= days).sort((a, b) => (b.daysSince == null ? 9999 : b.daysSince) - (a.daysSince == null ? 9999 : a.daysSince));
+        return send(res, 200, { days, customers: rows.slice(0, 200) });
+      }
+      if (url.pathname === '/reseller/import' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req, 200000); } catch (e) { return send(res, 400, { error: e.message }); }
+        const rows = (Array.isArray(body.rows) ? body.rows : []).slice(0, 50);
+        if (!rows.length) return send(res, 400, { error: 'Add at least one customer to import.' });
+        const plan = sellable(body.planId);
+        if (!plan) return send(res, 400, { error: 'Choose one of your plans.' });
+        const cost = planCredits(plan);
+        let existing;
+        try { existing = await emby('GET', '/Users'); } catch (e) { return send(res, 502, { error: "Can't reach Emby: " + e.message }); }
+        const taken = new Set((existing || []).map((u) => String(u.Name).toLowerCase()));
+        const cands = rows.map((row, i) => {
+          const full = cleanText(row && row.full, 60), email = cleanText(row && row.email, 80), phone = cleanText(row && row.phone, 30), note = cleanText(row && row.note, 300);
+          let username = cleanUserName(row && row.username);
+          if (!username) { const base = slugName(full || (row && row.username) || email.split('@')[0]); username = base; for (let n = 2; taken.has(username.toLowerCase()) && n < 100; n++) username = (base + n).slice(0, 32); }
+          const bad = !cleanUserName(username) ? 'That username is not valid.' : taken.has(username.toLowerCase()) ? 'That username is taken.' : email && !emailOk(email) ? 'That email does not look right.' : phone && !phoneOk(phone) ? 'That phone number does not look right.' : '';
+          if (!bad) taken.add(username.toLowerCase());
+          return { i, full, email, phone, note, username, error: bad };
+        });
+        const good = cands.filter((c) => !c.error);
+        if (!good.length) return send(res, 400, { error: 'None of those rows can be imported.', results: cands.map((c) => ({ row: c.i, username: c.username, ok: false, error: c.error })) });
+        if (r.credits < cost * good.length) return send(res, 402, { error: `Not enough credits: ${good.length} customers cost ${cost * good.length} and you have ${r.credits}.` });
+        const results = [];
+        for (const c of cands) {
+          if (c.error) { results.push({ row: c.i, username: c.username, ok: false, error: c.error }); continue; }
+          try {
+            const pw = genPassword(), user = await newEmbyAccount(c.username, pw);
+            applyPlan(user.Id, c.username, plan, 'today');
+            const rec = store.users[user.Id];
+            rec.reseller = r.id; rec.trial = false; rec.created = Date.now(); if (plan.vod) rec.vod = true;
+            rec.contact = { full: c.full, email: c.email, phone: c.phone, note: c.note };
+            creditEntry(r, -cost, plan.name, by, { customer: c.username, plan: plan.id });
+            copyAppDefaults(user.Id).catch(() => {});
+            try { await enforce(user.Id); } catch (e) { log('Applying', c.username, 'failed:', e.message); }
+            results.push({ row: c.i, username: c.username, ok: true, password: pw, full: c.full, plan: plan.name });
+          } catch (e) { results.push({ row: c.i, username: c.username, ok: false, error: e.message }); }
+        }
+        const made = results.filter((x) => x.ok).length;
+        recordAudit(by, `Imported ${made} customers on ${plan.name} (${made * cost} credits)`); saveStore();
+        return send(res, 200, { ok: true, created: made, failed: results.length - made, results, credits: r.credits });
+      }
+      if (url.pathname === '/reseller/messages' && req.method === 'GET') {
+        const groups = new Map();
+        for (const m of store.directMsgs || []) if (m.reseller === r.id) { const g = groups.get(m.batch) || { id: m.batch, at: m.at, text: m.text, count: 0 }; g.count++; groups.set(m.batch, g); }
+        return send(res, 200, { sent: [...groups.values()].sort((a, b) => b.at - a.at).slice(0, 30) });
+      }
+      if (url.pathname === '/reseller/messages' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const ids = [...new Set(Array.isArray(body.ids) ? body.ids.map(String) : [])].filter((id) => owns(id)).slice(0, 40), text = cleanText(body.text, 300);
+        if (!ids.length) return send(res, 400, { error: 'Choose at least one of your customers.' });
+        if (!text) return send(res, 400, { error: 'Write the message first.' });
+        if (overLimit('rmsg', r.id, 10, 3600000)) return send(res, 429, { error: 'That is a lot of messages. Please wait a little before sending more.' });
+        const batch = crypto.randomBytes(5).toString('hex'), now = Date.now();
+        store.directMsgs = [...ids.map((userId) => ({ id: crypto.randomBytes(5).toString('hex'), batch, reseller: r.id, userId, from: r.name, text, at: now })), ...(store.directMsgs || [])].slice(0, 3000);
+        recordAudit(by, `Sent a message to ${ids.length} customer${ids.length === 1 ? '' : 's'}`); saveStore();
+        return send(res, 200, { ok: true, sent: ids.length });
+      }
       // ===== Reseller tools (guard 1.50.0): support inbox, problems, reports, prices, templates, activity, ledger, trial link =====
       const myTickets = () => (store.tickets || []).filter((t) => store.users[t.userId] && store.users[t.userId].reseller === r.id);
       if (url.pathname === '/reseller/tickets' && req.method === 'GET') {
@@ -3552,7 +3732,7 @@ async function handle(req, res) {
       if (url.pathname === '/reseller/reports' && req.method === 'GET') {
         const nm = Math.min(12, Math.max(1, Number(url.searchParams.get('months')) || 6)), planById = new Map((store.plans || []).map((p) => [p.id, p])), prices = r.prices || {}, cc = Number(r.creditCost) || 0;
         const now = new Date(), months = [];
-        for (let i = nm - 1; i >= 0; i--) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); months.push({ key: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), label: d.toLocaleString('en-US', { month: 'short', year: 'numeric' }), added: 0, trials: 0, renewed: 0, used: 0, revenue: 0, cost: 0, newCustomers: 0, unpriced: 0 }); }
+        for (let i = nm - 1; i >= 0; i--) { const d = new Date(now.getFullYear(), now.getMonth() - i, 1); months.push({ key: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), label: d.toLocaleString('en-US', { month: 'short', year: 'numeric' }), added: 0, trials: 0, renewed: 0, used: 0, revenue: 0, cost: 0, cash: 0, newCustomers: 0, unpriced: 0 }); }
         const byKey = new Map(months.map((m) => [m.key, m]));
         for (const e of store.creditLog || []) {
           if (e.reseller !== r.id || !e.customer) continue;
@@ -3565,8 +3745,9 @@ async function handle(req, res) {
           const planId = e.plan || ((store.plans || []).find((p) => p.name === String(e.why || '').replace(/^Renewed /, '')) || {}).id;
           if (prices[planId] > 0) { m.revenue += Number(prices[planId]); m.cost += used * cc; } else m.unpriced++;
         }
+        for (const pm of store.payments || []) { if (pm.reseller !== r.id || !pm.paid) continue; const m = byKey.get(monthKey(pm.at)); if (m) m.cash += pm.amount; }
         for (const u of Object.values(store.users)) { if (u.reseller !== r.id || !u.created) continue; const m = byKey.get(monthKey(u.created)); if (m) m.newCustomers++; }
-        const total = months.reduce((t, m) => ({ added: t.added + m.added, renewed: t.renewed + m.renewed, trials: t.trials + m.trials, used: t.used + m.used, revenue: t.revenue + m.revenue, cost: t.cost + m.cost }), { added: 0, renewed: 0, trials: 0, used: 0, revenue: 0, cost: 0 });
+        const total = months.reduce((t, m) => ({ added: t.added + m.added, renewed: t.renewed + m.renewed, trials: t.trials + m.trials, used: t.used + m.used, revenue: t.revenue + m.revenue, cost: t.cost + m.cost, cash: t.cash + m.cash }), { added: 0, renewed: 0, trials: 0, used: 0, revenue: 0, cost: 0, cash: 0 });
         const mine = Object.values(store.users).filter((u) => u.reseller === r.id);
         return send(res, 200, { months, total, customers: mine.length, activeNow: mine.filter((u) => !isExpired(u) && !u.hold).length, pricesSet: Object.values(prices).some((v) => v > 0), creditCost: cc, estimate: true });
       }
