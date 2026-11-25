@@ -537,7 +537,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     renderExt(); if (!$('nfields').children.length || !$('nchan').__painted) { $('nchan').__painted = true; paintNotify(); } else { $('ntest').disabled = !(me.notify && me.notify.type); $('noff').hidden = !(me.notify && me.notify.type); }
     if (me.parent) $('who').textContent = me.name + ' (sub-reseller of ' + me.parent + ')';
     if (me.canAddSubs) { $('scmax').textContent = me.credits; renderSubs(); }
-    $('trialnote').textContent = 'A free trial costs nothing (you have ' + me.trialsLeft + ' left today).';
+    $('trialnote').textContent = 'A free trial costs nothing (' + (me.trialsUnlimited ? 'no daily limit for you' : 'you have ' + me.trialsLeft + ' left today') + ').';
     var keepPlan = $('plan').value; $('plan').innerHTML = planOptions(); if (keepPlan) $('plan').value = keepPlan;
     if (me.request) { $('askmsg').hidden = false; $('askmsg').className = 'msg ok'; $('askmsg').textContent = 'Your request for ' + me.request.amount + ' credits is waiting.'; $('askbtn').disabled = true; } else { $('askbtn').disabled = false; }
     chips(); lblChips();
@@ -1128,9 +1128,9 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     loadCoupons();
     var tl = me.trialLink || {}, plans = me.plans || [], pr = me.prices || {}, tp = me.templates || {};
     $('tl-card').innerHTML = '<div class="sec-h"><h2>Your free-trial link</h2><span class="tag ' + (tl.on ? 'on' : 'hold') + '">' + (tl.on ? 'On' : 'Off') + '</span></div>' +
-      '<p class="sub">Share this link. Anyone who opens it can start a free trial that lands in your customer list, with no work from you. Each trial uses one of your ' + (tl.limit || 5) + ' free trials a day, and the same person can not use one email twice.</p>' +
+      '<p class="sub">Share this link. Anyone who opens it can start a free trial that lands in your customer list, with no work from you. ' + (tl.unlimited ? 'You have no daily limit on free trials' : 'Each trial uses one of your ' + (tl.limit || 5) + ' free trials a day') + ', and the same person can not use one email twice.</p>' +
       (tl.code ? '<div class="code"><input id="tl-url" readonly value="' + esc(trialUrl(tl.code)) + '" aria-label="Your trial link"><button class="btn gray sm" id="tl-copy" type="button">Copy</button></div>' : '') +
-      '<p class="meta" style="margin:8px 0 12px">' + (tl.made || 0) + ' trials started with your link · ' + (tl.today || 0) + ' of ' + (tl.limit || 5) + ' daily trials used today</p>' +
+      '<p class="meta" style="margin:8px 0 12px">' + (tl.made || 0) + ' trials started with your link · ' + (tl.today || 0) + (tl.unlimited ? ' started today' : ' of ' + (tl.limit || 5) + ' daily trials used today') + '</p>' +
       '<div class="row" style="flex-wrap:wrap"><button class="btn ' + (tl.on ? 'line' : 'red') + '" id="tl-on" type="button">' + (tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')) + '</button>' + (tl.code ? '<button class="btn line" id="tl-new" type="button">Make a new link</button>' : '') + '</div><p class="msg" id="tl-msg" role="status" hidden></p>';
     $('pr-card').innerHTML = '<div class="sec-h"><h2>Your prices</h2></div><p class="sub">What you charge your customers. This is private, only you see it. It powers your income report and price list.</p>' +
       (plans.length ? '<div class="scroll"><table class="tbl"><tr><th>Plan</th><th>You pay</th><th>You charge</th><th>Margin</th></tr>' + plans.map(function (p) { return '<tr><td><b>' + esc(p.name) + '</b></td><td>' + p.credits + (p.credits === 1 ? ' credit' : ' credits') + '</td><td><input class="pr-in" data-id="' + esc(p.id) + '" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="' + (pr[p.id] != null ? pr[p.id] : '') + '" aria-label="Price for ' + esc(p.name) + '"></td><td class="pr-m" data-id="' + esc(p.id) + '"></td></tr>'; }).join('') + '</table></div>' : '<p class="sub">You have no plans to sell yet.</p>') +

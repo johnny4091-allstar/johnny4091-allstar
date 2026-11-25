@@ -1,3 +1,4 @@
+- New: administrators can lift the daily free trial limit for chosen resellers (Admin, Resellers, Edit). Needs Aurora Guard 1.53.0.
 - New: provider Live TV channels now play in a web browser and in the Windows app (needs Aurora Guard 1.52.0). Some channels use sound or video a browser cannot play; Android plays those.
 - New: Aurora for Windows laptops and PCs (download from the Aurora website), and Aurora can now be installed from a web browser too. Resellers have setup guides for both.
 - The Admin PIN now also locks Admin → Users, next to Resellers and credit requests. Needs Aurora Guard 1.36.0.
