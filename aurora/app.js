@@ -8230,7 +8230,14 @@
     if (!isCurrent()) return;
     if (!d.reseller) { location.replace('#/home'); return; }
     if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
-    const welcomeText = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
+    const fillTpl = (t, c, extra = {}) => {
+      const nm = (c.full || c.name || '').trim(), first = nm.split(/\s+/)[0] || 'there';
+      const date = c.expires ? new Date(c.expires + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+      const vals = { name: first, username: c.name || '', date, days: c.daysLeft == null ? '' : String(Math.max(0, c.daysLeft)), plan: c.planName || extra.plan || '', password: extra.password || '' };
+      return String(t).replace(/\{(name|username|date|days|plan|password)\}/g, (_, k) => vals[k]);
+    };
+    const welcomeText = (c, pw) => (d.templates && d.templates.welcome ? fillTpl(d.templates.welcome, c, { password: pw }) : welcomeTextDefault(c, pw));
+    const welcomeTextDefault = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
     // One clear status for each customer.
     const statusOf = (c) => (c.hold ? { k: 'hold', label: 'On hold', cls: 'bad' } : c.expired ? { k: 'expired', label: 'Expired', cls: 'bad' } : c.trial ? { k: 'trial', label: 'Trial', cls: '' }
       : c.daysLeft != null && c.daysLeft <= 7 ? { k: 'soon', label: 'Ending soon', cls: 'warn' } : { k: 'active', label: 'Active', cls: 'good' });
@@ -8239,7 +8246,8 @@
     const cnt = (k) => d.customers.filter((c) => statusOf(c).k === k).length;
     const soon = cnt('soon'), gone = cnt('expired'), held = cnt('hold');
     const need = d.customers.filter((c) => !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)));
-    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold']];
+    const FILTERS = [['all', 'All'], ['active', 'Active'], ['soon', 'Ending soon'], ['expired', 'Expired'], ['trial', 'Trial'], ['hold', 'On hold'], ['due14', 'Due in 14 days'], ['due30', 'Due in 30 days']];
+    const dueCount = (k) => d.customers.filter((c) => !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(k.slice(3))).length;
     const savedView = (() => { try { return JSON.parse(store.get('ef.resView') || '{}') || {}; } catch { return {}; } })();
     const view = { q: '', filter: savedView.filter || 'all', sort: savedView.sort || 'days', shown: 25 };
     const RULES_URL = 'https://aurora-streaming.org/rules/';
@@ -8262,28 +8270,36 @@
     });
     root.innerHTML = `${head}
       ${rulesHtml}
-      <section class="res-hero"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
+      <div class="res-chips res-tabs" role="tablist" aria-label="Reseller panel sections" data-rtabs>
+        <button class="chip on" role="tab" data-rtab="overview">Overview</button>
+        <button class="chip" role="tab" data-rtab="customers">Customers</button>
+        <button class="chip" role="tab" data-rtab="support">Support <span class="pill bad${d.ticketsOpen ? '' : ' hidden'}" data-tkbadge>${d.ticketsOpen || ''}</span></button>
+        <button class="chip" role="tab" data-rtab="reports">Reports</button>
+        <button class="chip" role="tab" data-rtab="sales">Sales tools</button>
+        <button class="chip" role="tab" data-rtab="settings">Settings</button>
+      </div>
+      <div class="plan-form hidden" data-form></div>
+      <section class="res-hero" data-rp="overview"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
         <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
-      <div class="plan-form hidden" data-askform></div>
-      ${d.report ? '' : '<section class="admin-card"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
-      <div class="stat-grid">
+      <div class="plan-form hidden" data-askform data-rp="overview"></div>
+      ${d.report ? '' : '<section class="admin-card" data-rp="overview"><p class="muted">Update Aurora Guard to 1.11.0 for the monthly report, bulk renewals and credit requests.</p></section>'}
+      <div class="stat-grid" data-rp="overview">
         ${statTile('Customers', d.customers.length, 'you created')}
         ${statTile('Active', d.customers.filter((c) => ['active', 'trial'].includes(statusOf(c).k)).length, 'signed up and running')}
         ${statTile('Ending within 7 days', soon, '')}
         ${statTile('Expired', gone, held ? `${held} on hold` : '')}
       </div>
-      <div class="plan-form hidden" data-form></div>
-      ${need.length ? `<section class="admin-card"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
+      ${need.length ? `<section class="admin-card" data-rp="overview"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
         <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
         <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
-      <section class="admin-card"><h2>Notice for your customers</h2>
+      <section class="admin-card" data-rp="settings"><h2>Notice for your customers</h2>
         <p class="muted">It shows at the top of the app for your customers only, for as long as you choose. Good for maintenance, price changes or new channels.</p>
         <label class="admin-field"><span>Message (200 characters)</span><input type="text" data-nt-text maxlength="200" placeholder="e.g. Aurora will restart tonight at 10pm. Back in 10 minutes."></label>
         <div class="plan-grid"><label class="admin-field"><span>Look</span><select data-nt-level><option value="info">Information</option><option value="warn">Heads up</option><option value="bad">Problem</option></select></label>
           <label class="admin-field"><span>Show it for</span><select data-nt-hours><option value="6">6 hours</option><option value="24" selected>1 day</option><option value="72">3 days</option><option value="168">1 week</option><option value="336">2 weeks</option></select></label></div>
         <div class="m-actions"><button class="btn btn-white" data-nt-send>Send</button></div><div class="live-result" data-nt-result></div>
         <h3 class="users-sub">Showing now</h3><div class="admin-list" data-nt-list><p class="muted">Nothing showing.</p></div></section>
-      <section class="admin-card"><h2>Your contact details</h2>
+      <section class="admin-card" data-rp="settings"><h2>Your contact details</h2>
         <p class="muted">Your customers see these under Help &amp; support, so they reach you with questions. Leave a box empty to hide it.</p>
         <div class="plan-grid"><label class="admin-field"><span>Name</span><input type="text" data-sp="name" maxlength="40" value="${esc(d.support?.name || '')}" placeholder="e.g. Alpha Support"></label>
           <label class="admin-field"><span>Phone</span><input type="text" data-sp="phone" maxlength="30" inputmode="tel" value="${esc(d.support?.phone || '')}" placeholder="+1 555 123 4567"></label>
@@ -8291,19 +8307,36 @@
           <label class="admin-field"><span>Email</span><input type="text" data-sp="email" maxlength="80" inputmode="email" value="${esc(d.support?.email || '')}" placeholder="help@example.com"></label></div>
         <label class="admin-field"><span>A short note</span><input type="text" data-sp="note" maxlength="120" value="${esc(d.support?.note || '')}" placeholder="e.g. Replies 9am to 9pm"></label>
         <div class="m-actions"><button class="btn btn-white" data-sp-save>Save</button></div><div class="live-result" data-sp-result></div></section>
-      <section class="admin-card"><h2>Watching now <small data-wcount>0</small></h2>
+      <section class="admin-card" data-rp="overview"><h2>Watching now <small data-wcount>0</small></h2>
         <p class="muted">What your customers are playing right now. It updates by itself every 20 seconds.</p>
         <div class="admin-list" data-watchlist><p class="muted">Nobody is watching right now.</p></div></section>
-      <section class="admin-card"><h2>My customers <small data-count></small></h2>
+      <section class="admin-card" data-rp="customers"><h2>My customers <small data-count></small></h2>
         <div class="res-tools"><input type="search" class="st-note-input" data-search placeholder="Search name, username, email, phone, note" autocomplete="off">
           <select class="st-note-input" data-sort aria-label="Sort"><option value="days">Ending soonest first</option><option value="name">Name A–Z</option><option value="new">Newest first</option><option value="plan">Plan</option></select></div>
         <div class="res-chips" data-chips>${FILTERS.map(([k, l]) => `<button class="chip${view.filter === k ? ' on' : ''}" data-filter="${k}">${l} <span data-n-${k}></span></button>`).join('')}</div>
+        <div class="m-actions"><button class="btn btn-gray" data-renewshown>Renew everyone shown</button></div>
         <div class="admin-list res-list" data-list></div>
         <div class="m-actions"><button class="btn btn-gray hidden" data-more>Show more</button></div>
         <div class="res-export"><span class="muted">Export this list:</span><button class="btn btn-gray" data-copycsv>Copy</button><button class="btn btn-gray" data-dlcsv>Download .csv</button></div></section>
-      <details class="admin-card res-fold"><summary>This month${d.report ? ' · ' + esc(d.report.month) : ''}</summary>
+      <details class="admin-card res-fold" data-rp="reports"><summary>This month${d.report ? ' · ' + esc(d.report.month) : ''}</summary>
         <div class="stat-grid">${statTile('Customers added', d.report?.added ?? 0, 'this month')}${statTile('Renewals', d.report?.renewed ?? 0, 'this month')}${statTile('Credits used', d.report?.used ?? 0, 'this month')}${statTile('Credits received', d.report?.received ?? 0, 'this month')}</div></details>
-      <details class="admin-card res-fold"><summary>Credit history · ${d.ledger.length}</summary><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></details>`;
+      <details class="admin-card res-fold" data-rp="reports"><summary>Credit history · ${d.ledger.length}</summary><div class="admin-list">${d.ledger.map(lRow).join('') || '<p class="muted">Nothing yet.</p>'}</div></details>
+      <section class="admin-card" data-rp="support" hidden><h2>Support inbox <small data-tk-open></small></h2>
+        <p class="muted">Messages from your own customers. Your provider can see and answer them too, so you both work from one thread.</p>
+        <div class="admin-list" data-tk-list><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="support" hidden><h2>Channel problems <small>last 7 days</small></h2><div data-prob-list><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="reports" hidden><h2>Sales and income</h2>
+        <div class="res-tools"><select class="st-note-input" data-rp-months aria-label="Period"><option value="3">Last 3 months</option><option value="6" selected>Last 6 months</option><option value="12">Last 12 months</option></select></div>
+        <div class="stat-grid" data-rp-kpis></div>
+        <div class="res-bars" data-rp-bars role="img" aria-label="Customers added and renewed each month"></div>
+        <div class="res-legend"><span><i class="lg a"></i>New customers</span><span><i class="lg r"></i>Renewals</span></div>
+        <p class="muted" data-rp-note></p>
+        <div class="m-actions"><button class="btn btn-gray" data-st-copy>Copy credit statement</button><button class="btn btn-gray" data-st-dl>Download .csv</button></div></section>
+      <section class="admin-card" data-rp="reports" hidden><h2>Your activity <small>newest first</small></h2><div class="admin-list" data-rp-activity><div class="spinner"></div></div></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-tl></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-pr></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-pl></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-tp></section>`;
     const form = $('[data-form]', root);
     const reload = () => { if (isCurrent()) renderReseller(page, isCurrent); };
     const say = (html, cls = '') => { const r = $('[data-result]', form); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
@@ -8516,6 +8549,8 @@
     });
     $('[data-msgs]', root)?.addEventListener('click', () => {
       const lines = chosenIds().map((id) => d.customers.find((x) => x.id === id)).filter(Boolean).map((c) => {
+        const tpl = c.expired ? d.templates?.expired : (c.daysLeft != null && c.daysLeft <= 3 ? (d.templates?.ending || d.templates?.reminder) : d.templates?.reminder);
+        if (tpl) return fillTpl(tpl, c);
         const first = (c.full || c.name).split(' ')[0];
         return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
       }).join('\n\n');
@@ -8530,6 +8565,7 @@
       const t = view.q.trim().toLowerCase();
       if (t && ![c.name, c.full, c.email, c.phone, c.note, c.planName].some((x) => String(x || '').toLowerCase().includes(t))) return false;
       const k = statusOf(c).k;
+      if (/^due/.test(view.filter)) return !c.hold && !c.expired && c.daysLeft != null && c.daysLeft <= Number(view.filter.slice(3));
       return view.filter === 'all' || k === view.filter || (view.filter === 'active' && k === 'soon') ;
     };
     const sorters = { days: (a, b) => (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999), name: (a, b) => (a.full || a.name).localeCompare(b.full || b.name), new: (a, b) => (b.created || 0) - (a.created || 0), plan: (a, b) => (a.planName || '').localeCompare(b.planName || '') || (a.daysLeft ?? 99999) - (b.daysLeft ?? 99999) };
@@ -8567,7 +8603,7 @@
       $('[data-count]', root).textContent = all.length === d.customers.length ? `${d.customers.length}` : `${all.length} of ${d.customers.length}`;
       moreBtn.classList.toggle('hidden', all.length <= shown.length);
       moreBtn.textContent = `Show more (${all.length - shown.length} left)`;
-      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : cnt(k); });
+      FILTERS.forEach(([k]) => { const n = $(`[data-n-${k}]`, root); if (n) n.textContent = k === 'all' ? d.customers.length : k === 'active' ? d.customers.filter((c) => ['active', 'soon'].includes(statusOf(c).k)).length : /^due/.test(k) ? dueCount(k) : cnt(k); });
     };
     $('[data-sort]', root).value = view.sort;
     $('[data-search]', root).addEventListener('input', (e) => { view.q = e.target.value; view.shown = 25; paintList(); });
@@ -8601,6 +8637,150 @@
       } catch { copyText(csvText()); }
     });
     paintList();
+    // ===== Reseller tools (guard 1.50.0): tabs, support inbox, reports, sales tools, renew everyone shown =====
+    const SITE = 'https://aurora-streaming.org/';
+    const money = (n) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.50.0 to use ${what}.` : esc(e.message));
+    const setRp = (name) => {
+      try { store.set('ef.resTab', name); } catch { /* ignore */ }
+      $$('[data-rp]', root).forEach((el) => { el.hidden = el.dataset.rp !== name; });
+      $$('[data-rtab]', root).forEach((b) => b.classList.toggle('on', b.dataset.rtab === name));
+      if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales();
+    };
+    $$('[data-rtab]', root).forEach((b) => b.addEventListener('click', () => { setRp(b.dataset.rtab); root.scrollIntoView({ block: 'start' }); }));
+
+    // ----- renew everyone shown
+    $('[data-renewshown]', root).addEventListener('click', async () => {
+      const list = visible().filter((c) => !c.hold);
+      if (!list.length) { toast('Nobody to renew in this list', 2500); return; }
+      if (list.length > 50) { toast('That is more than 50 customers. Narrow the list first, for example to Ending soon.', 5000); return; }
+      const cost = list.reduce((n, c) => n + ((d.plans.find((p) => p.id === c.planId) || d.plans[0])?.credits || 0), 0);
+      if (!(await confirmAction(`Renew ${list.length} ${list.length === 1 ? 'customer' : 'customers'}?`, `Each on their own plan. This uses ${creditsWord(cost)}. You have ${d.credits}.`, 'Renew all'))) return;
+      try { const r = await guard('/reseller/renew-many', { method: 'POST', params: { userId: state.userId }, body: { ids: list.map((c) => c.id) } }); toast(`Renewed ${r.renewed} · ${creditsWord(r.spent)} used`, 3500); reload(); }
+      catch (e) { toast(e.message, 5000); }
+    });
+
+    // ----- support inbox and channel problems
+    const loadSupport = async () => {
+      const list = $('[data-tk-list]', root), prob = $('[data-prob-list]', root);
+      try {
+        const r = await guard('/reseller/tickets', { params: { userId: state.userId } });
+        const b = $('[data-tkbadge]', root); if (b) { b.textContent = r.open || ''; b.classList.toggle('hidden', !r.open); }
+        $('[data-tk-open]', root).textContent = r.open ? `${r.open} open` : '';
+        list.innerHTML = r.tickets.length ? r.tickets.map((t) => {
+          const open = t.status === 'open', who = t.full || t.name;
+          return `<div class="admin-row res-tk" data-tk="${esc(t.id)}"><div class="admin-row-main"><strong>${esc(who)}</strong> <span class="pill ${open ? 'warn' : 'good'}">${open ? 'Open' : 'Solved'}</span> <span class="muted">${esc(timeAgo(t.updated || t.at))}</span>
+            <div class="res-thread">${(t.messages || []).slice(-8).map((m) => `<div class="res-bub${m.from === 'user' ? '' : ' me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(who) : esc(m.by || 'Support')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
+            <div class="res-reply"><input type="text" class="st-note-input" data-tk-text maxlength="1000" placeholder="Write a reply..." aria-label="Reply to ${esc(who)}"><button class="btn btn-white" data-tk-send>Send</button><button class="btn btn-gray" data-tk-state>${open ? 'Mark solved' : 'Reopen'}</button></div><div class="live-result" data-tk-msg></div></div></div>`;
+        }).join('') : '<p class="muted">No messages from your customers yet. When one writes to support, it shows up here.</p>';
+      } catch (e) { list.innerHTML = `<p class="muted">${oldGuard(e, 'the support inbox')}</p>`; }
+      try {
+        const r = await guard('/reseller/problems', { params: { userId: state.userId } });
+        prob.innerHTML = r.problems.length ? `<div class="admin-list">${r.problems.map((x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.channel)}</strong> <span class="pill warn">${esc(x.reason)}</span><div class="muted">${esc(x.customers.join(', '))}</div></div><div class="admin-row-time">${x.count} ${x.count === 1 ? 'report' : 'reports'} · ${esc(timeAgo(x.last))}</div></div>`).join('')}</div><p class="muted">Several customers on one channel usually means the channel is down. One customer usually means their own connection or device.</p>`
+          : '<p class="muted">No problems reported. None of your customers reported a channel problem in the last 7 days.</p>';
+      } catch (e) { prob.innerHTML = `<p class="muted">${oldGuard(e, 'channel problems')}</p>`; }
+    };
+    $('[data-tk-list]', root).addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      const card = b.closest('[data-tk]'), id = card.dataset.tk, msg = $('[data-tk-msg]', card);
+      const bad = (t) => { msg.className = 'live-result bad'; msg.textContent = t; };
+      if (b.matches('[data-tk-send]')) {
+        const text = $('[data-tk-text]', card).value.trim(); if (!text) return bad('Write a reply first.');
+        b.disabled = true;
+        try { await guard(`/reseller/tickets/${encodeURIComponent(id)}/reply`, { method: 'POST', params: { userId: state.userId }, body: { text } }); loadSupport(); } catch (err) { b.disabled = false; bad(err.message); }
+      } else if (b.matches('[data-tk-state]')) {
+        const solve = /solved/i.test(b.textContent); b.disabled = true;
+        try { await guard(`/reseller/tickets/${encodeURIComponent(id)}/${solve ? 'solve' : 'reopen'}`, { method: 'POST', params: { userId: state.userId }, body: {} }); loadSupport(); } catch (err) { b.disabled = false; bad(err.message); }
+      }
+    });
+
+    // ----- reports
+    const loadReports = async () => {
+      const n = $('[data-rp-months]', root).value;
+      try {
+        const j = await guard('/reseller/reports', { params: { userId: state.userId, months: n } });
+        const t = j.total, sales = t.added + t.renewed;
+        $('[data-rp-kpis]', root).innerHTML = statTile('Customers', j.customers, `${j.activeNow} active now`) + statTile('Sales', sales, `${t.added} new · ${t.renewed} renewals`) + statTile('Credits used', t.used, 'in this period')
+          + statTile('Estimated income', j.pricesSet ? money(t.revenue) : '–', j.pricesSet ? `profit about ${money(t.revenue - t.cost)}` : 'set prices in Sales tools');
+        const max = Math.max(1, ...j.months.map((m) => m.added + m.renewed));
+        $('[data-rp-bars]', root).innerHTML = j.months.map((m) => { const tot = m.added + m.renewed; return `<div class="res-bcol"><span class="res-bval">${tot || ''}</span><div class="res-bstack" style="height:${Math.round(tot / max * 100)}%" title="${esc(m.label)}: ${m.added} new, ${m.renewed} renewals"><i class="seg a" style="flex:${m.added}"></i><i class="seg r" style="flex:${m.renewed}"></i></div><span class="res-blab">${esc(m.label.replace(/ \d{4}$/, ''))}</span>${j.pricesSet && m.revenue ? `<span class="res-bmoney">${money(m.revenue)}</span>` : ''}</div>`; }).join('');
+        $('[data-rp-note]', root).textContent = j.pricesSet ? 'Income is an estimate from the prices you entered.' : 'Enter your prices in Sales tools to see income.';
+      } catch (e) { $('[data-rp-kpis]', root).innerHTML = ''; $('[data-rp-bars]', root).innerHTML = `<p class="muted">${oldGuard(e, 'reports')}</p>`; }
+      try {
+        const a = await guard('/reseller/activity', { params: { userId: state.userId } });
+        $('[data-rp-activity]', root).innerHTML = a.activity.length ? a.activity.slice(0, 40).map((x) => `<div class="admin-row"><div class="admin-row-main">${esc(x.text)}</div><div class="admin-row-time">${esc(timeAgo(x.at))}</div></div>`).join('') : '<p class="muted">Nothing yet.</p>';
+      } catch (e) { $('[data-rp-activity]', root).innerHTML = `<p class="muted">${oldGuard(e, 'the activity list')}</p>`; }
+    };
+    $('[data-rp-months]', root).addEventListener('change', loadReports);
+    const statementCsv = async () => {
+      const r = await guard('/reseller/ledger', { params: { userId: state.userId } });
+      const cell = (v) => `"${String(v ?? '').replace(/"/g, '""').replace(/^([=+\-@])/, "'$1")}"`;
+      return [['Date', 'Description', 'Customer', 'Credits', 'Balance', 'By'], ...r.ledger.map((e) => [new Date(e.at).toISOString().slice(0, 16).replace('T', ' '), e.why, e.customer || '', e.delta, e.balance, e.by])].map((row) => row.map(cell).join(',')).join('\r\n');
+    };
+    $('[data-st-copy]', root).addEventListener('click', async () => { try { copyText(await statementCsv()); } catch (e) { toast(e.message, 4000); } });
+    $('[data-st-dl]', root).addEventListener('click', async () => {
+      try {
+        const text = await statementCsv();
+        try { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob(['﻿' + text], { type: 'text/csv' })); a.download = 'aurora-credit-statement.csv'; document.body.appendChild(a); a.click(); a.remove(); toast('Downloading…', 2000); } catch { copyText(text); }
+      } catch (e) { toast(e.message, 4000); }
+    });
+
+    // ----- sales tools: trial link, prices, price list, message templates
+    const TPL_DEFAULTS = { welcome: 'Welcome to Aurora, {name}!\nUsername: {username}\nPassword: {password}\nPlan: {plan}', reminder: 'Hi {name}, your Aurora plan ends on {date} (in {days} days). Reply here to renew.', ending: 'Hi {name}, your Aurora plan ends on {date}, very soon. Reply here to renew and keep watching.', expired: 'Hi {name}, your Aurora plan ended on {date}. Reply here to renew and get back to watching.' };
+    const priceListText = () => {
+      const pr = d.prices || {}, rows = d.plans.filter((p) => pr[p.id] > 0); if (!rows.length) return '';
+      return `${d.name || 'Aurora'} · Aurora plans\n\n` + rows.map((p) => `• ${p.name} — ${p.length} ${p.unit}${p.length === 1 ? '' : 's'} · ${p.connections} ${p.connections === 1 ? 'device' : 'devices'} — ${money(pr[p.id])}`).join('\n') + '\n\nMessage me to get started.';
+    };
+    const paintMargins = () => {
+      const cc = Number($('[data-s-cc]', root)?.value) || 0;
+      $$('[data-s-m]', root).forEach((td) => { const inp = $(`[data-s-price="${td.dataset.sM}"]`, root), price = Number(inp?.value), plan = d.plans.find((p) => p.id === td.dataset.sM); td.textContent = price > 0 && cc > 0 && plan ? `margin ${money(price - plan.credits * cc)}` : ''; });
+    };
+    const paintPriceList = () => {
+      const t = priceListText();
+      $('[data-s-pl]', root).innerHTML = `<h2>Your price list</h2><p class="muted">A ready-to-send list of your plans and prices. Copy it into a text, WhatsApp or Messenger.</p>` +
+        (t ? `<textarea class="st-note-input" data-s-pltext rows="${Math.min(12, t.split('\n').length + 1)}" readonly>${esc(t)}</textarea><div class="m-actions"><button class="btn btn-white" data-s-plcopy>Copy price list</button></div>` : '<p class="muted">Enter your prices above and your price list appears here.</p>');
+    };
+    const paintSales = () => {
+      const tl = d.trialLink || {}, pr = d.prices || {}, tp = d.templates || {}, url = tl.code ? `${SITE}trial/?r=${tl.code}` : '';
+      $('[data-s-tl]', root).innerHTML = `<h2>Your free-trial link <span class="pill ${tl.on ? 'good' : ''}">${tl.on ? 'On' : 'Off'}</span></h2>
+        <p class="muted">Share this link. Anyone who opens it can start a free trial that lands in your customer list. Each trial uses one of your ${tl.limit || 5} free trials a day, and one email can only be used once.</p>
+        ${url ? `<input type="text" class="st-note-input" data-s-url readonly value="${esc(url)}" aria-label="Your trial link"><div class="m-actions"><button class="btn btn-white" data-s-urlcopy>Copy link</button></div>` : ''}
+        <p class="muted">${tl.made || 0} trials started with your link · ${tl.today || 0} of ${tl.limit || 5} daily trials used today</p>
+        <div class="m-actions"><button class="btn ${tl.on ? 'btn-gray' : 'btn-red'}" data-s-tlon>${tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')}</button>${tl.code ? '<button class="btn btn-gray" data-s-tlnew>Make a new link</button>' : ''}</div><div class="live-result" data-s-tlmsg></div>`;
+      $('[data-s-pr]', root).innerHTML = `<h2>Your prices</h2><p class="muted">What you charge your customers. Private, only you see it. It powers your income report and price list.</p>
+        ${d.plans.length ? d.plans.map((p) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(p.name)}</strong><div class="muted">You pay ${esc(creditsWord(p.credits))} <span data-s-m="${esc(p.id)}"></span></div></div><div class="plan-actions"><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" placeholder="Price" data-s-price="${esc(p.id)}" value="${pr[p.id] != null ? pr[p.id] : ''}" aria-label="Price for ${esc(p.name)}" style="width:7rem"></div></div>`).join('') : '<p class="muted">You have no plans to sell yet.</p>'}
+        <label class="admin-field"><span>What you pay for one credit (optional, to see profit)</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-s-cc placeholder="e.g. 8.00" value="${d.creditCost || ''}"></label>
+        <div class="m-actions"><button class="btn btn-red" data-s-prsave>Save prices</button></div><div class="live-result" data-s-prmsg></div>`;
+      paintMargins(); paintPriceList();
+      $('[data-s-tp]', root).innerHTML = `<h2>Your messages</h2><p class="muted">Write the messages you send to customers once, then copy them in one tap. Leave a box empty for the standard wording. You can use {name} {username} {password} {plan} {date} {days}.</p>` +
+        [['welcome', 'Welcome message (after you create a customer)'], ['reminder', 'Renewal reminder'], ['ending', 'Ending very soon (3 days or less)'], ['expired', 'Expired']].map(([k, l]) => `<label class="admin-field"><span>${l}</span><textarea class="st-note-input" rows="3" maxlength="600" data-s-tpl="${k}" placeholder="${esc(TPL_DEFAULTS[k])}">${esc(tp[k] || '')}</textarea></label>`).join('') +
+        '<div class="m-actions"><button class="btn btn-red" data-s-tpsave>Save messages</button></div><div class="live-result" data-s-tpmsg></div>';
+    };
+    const say2 = (sel, html, cls = '') => { const r = $(sel, root); if (r) { r.className = 'live-result' + (cls ? ' ' + cls : ''); r.innerHTML = html; } };
+    root.addEventListener('input', (e) => { if (e.target.matches('[data-s-price], [data-s-cc]')) paintMargins(); });
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b || !b.closest('[data-rp="sales"]')) return;
+      if (b.matches('[data-s-urlcopy]')) copyText($('[data-s-url]', root).value, $('[data-s-url]', root));
+      else if (b.matches('[data-s-plcopy]')) copyText($('[data-s-pltext]', root).value, $('[data-s-pltext]', root));
+      else if (b.matches('[data-s-tlon], [data-s-tlnew]')) {
+        const neu = b.matches('[data-s-tlnew]');
+        if (neu && !(await confirmAction('Make a new link?', 'The old link stops working straight away.', 'Make a new link'))) return;
+        b.disabled = true;
+        try { const r = await guard('/reseller/trial-link', { method: 'POST', params: { userId: state.userId }, body: neu ? { regenerate: true, on: true } : { on: !(d.trialLink || {}).on } }); d.trialLink = r.trialLink; paintSales(); }
+        catch (err) { b.disabled = false; say2('[data-s-tlmsg]', oldGuard(err, 'the trial link'), 'bad'); }
+      } else if (b.matches('[data-s-prsave]')) {
+        const prices = {}; $$('[data-s-price]', root).forEach((i) => { if (i.value !== '') prices[i.dataset.sPrice] = Number(i.value); });
+        b.disabled = true;
+        try { const r = await guard('/reseller/prices', { method: 'PUT', params: { userId: state.userId }, body: { prices, creditCost: $('[data-s-cc]', root).value } }); d.prices = r.prices; d.creditCost = r.creditCost; b.disabled = false; say2('[data-s-prmsg]', 'Saved.', 'good'); paintPriceList(); }
+        catch (err) { b.disabled = false; say2('[data-s-prmsg]', oldGuard(err, 'prices'), 'bad'); }
+      } else if (b.matches('[data-s-tpsave]')) {
+        const body = {}; $$('[data-s-tpl]', root).forEach((i) => { body[i.dataset.sTpl] = i.value.trim(); });
+        b.disabled = true;
+        try { const r = await guard('/reseller/templates', { method: 'PUT', params: { userId: state.userId }, body }); d.templates = r.templates; b.disabled = false; say2('[data-s-tpmsg]', 'Saved. Your messages are used when you copy a reminder or a welcome message.', 'good'); }
+        catch (err) { b.disabled = false; say2('[data-s-tpmsg]', oldGuard(err, 'message templates'), 'bad'); }
+      }
+    });
+    setRp((() => { try { return store.get('ef.resTab') || 'overview'; } catch { return 'overview'; } })());
   }
 
   // ----- Extension requests (Admin -> Users) -----
