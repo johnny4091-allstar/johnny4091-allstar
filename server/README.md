@@ -402,6 +402,12 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.58.0
+
+A reseller can keep chosen Live TV groups (for example pay-per-view) off their free trials. Settings, "Keep channels off free trials", on the reseller website and in the app. It applies to new trials (made by the reseller, a helper or the trial link) and to the reseller's running trials. A trial that buys a plan gets what the plan includes. Needs an Xtream provider.
+
+- `PUT /reseller/trial-hide` with `{ hide: [group ids] }` (at least one group must stay visible); `GET /reseller/me` returns `trialHide`.
+
 ## 1.57.0
 
 The reseller panel now keeps its sections in a menu (a hamburger button at the top that shows where you are and how many things are waiting), on the website and in the app. When a new version of the panel is released, each reseller sees a "What's new" pop-up once, listing in plain words what changed (up to the last three releases they have not seen). It waits until they have agreed to the current rules. "What's new" in the menu shows recent changes again.

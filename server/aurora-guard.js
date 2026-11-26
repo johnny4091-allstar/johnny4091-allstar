@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.57.0';
+const VERSION = '1.58.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -599,6 +599,8 @@ const RESELLER_RULES_DATE = '2026-11-26';
 // What is new in the reseller panel (guard 1.57.0). Newest first. A reseller sees a pop-up once for the releases they have not seen yet (up to 3),
 // and can open the recent list again from the menu. Add a new entry on top (a new id, in date order) with every release that changes the panel.
 const RESELLER_NEWS = [
+  { id: '2026-11-27', date: '2026-11-27', title: 'Keep channels off free trials', items: [
+    { title: 'Hide channel groups from trials', text: 'In Settings, pick the Live TV groups (like pay-per-view) that your free trials should not see. They apply to new trials and the trials running now, and go away when the customer buys a plan.' } ] },
   { id: '2026-11-26b', date: '2026-11-26', title: 'A tidier panel and this pop-up', items: [
     { title: 'One menu for all sections', text: 'The tabs are now in a menu button at the top, so everything fits on a phone and in the app. It shows where you are and how many things are waiting.' },
     { title: 'What is new pop-up', text: 'When the panel gets an update, you see what changed, once. You can open the latest changes again any time from the menu.' } ] },
@@ -1582,6 +1584,17 @@ async function assignableCategories() {
   const out = [...by.values()].filter((e) => !(explicit ? explicit.has(e.id) : ADULT_CAT_NAME.test(e.name)));
   out.sort((x, y) => x.name.localeCompare(y.name));
   return { supported: true, categories: out };
+}
+// Channel groups a reseller keeps off their free trials, such as pay-per-view (guard 1.58.0). Returns the groups a trial may see, or null (all).
+async function trialCategoriesFor(r) {
+  const hide = r && Array.isArray(r.trialHide) ? r.trialHide : [];
+  if (!hide.length) return null;
+  try {
+    const a = await assignableCategories();
+    if (!a.supported) return null;
+    const show = a.categories.map((x) => x.id).filter((id) => !hide.includes(id));
+    return show.length ? show : null;
+  } catch { return null; }
 }
 // Named packages (guard 1.41.0): an administrator groups Live TV categories under a name (Sports, Kids, 24/7). A reseller gives a customer
 // one or more packages; the customer then sees the categories of those packages. Changing a package updates everyone who has it.
@@ -3520,6 +3533,7 @@ async function handle(req, res) {
       const day = localDay(new Date()), days = cfg.signupTrialDays, conns = cfg.signupTrialConnections;
       store.users[user.Id] = { limit: conns, expires: addDays(day, days), categories: null, name: username, updated: Date.now(), trial: true, created: Date.now(), site: true, reseller: r.id, trialLink: true,
         contact: { full: '', email, phone: '', note: 'Trial link' }, plan: { id: 'trial', name: 'Free trial', price: 0, connections: conns, length: days, unit: 'day', categories: null, since: day } };
+      { const tc = await trialCategoriesFor(r); if (tc) store.users[user.Id].categories = tc; }
       r.trialLink.made = (r.trialLink.made || 0) + 1;
       recordAudit('Website', `Trial link of ${r.name}: ${username}`);
       try { saveStore(); } catch (e) { log('Could not save after a trial link sign-up:', e.message); }
@@ -3640,7 +3654,7 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), whatsNew: newsFor(r), opts: optsView(r), brand: r.brand || { name: '', welcome: '' }, helpers: (r.staff || []).map(staffPublic), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), whatsNew: newsFor(r), opts: optsView(r), brand: r.brand || { name: '', welcome: '' }, trialHide: Array.isArray(r.trialHide) ? r.trialHide : [], helpers: (r.staff || []).map(staffPublic), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
@@ -3827,6 +3841,21 @@ async function handle(req, res) {
           recordAudit(by, `Gave ${days} free days to ${done} customers`); saveStore();
         } else return send(res, 400, { error: 'Choose what to do.' });
         return send(res, 200, { ok: true, done, failed });
+      }
+      if (url.pathname === '/reseller/trial-hide' && req.method === 'PUT') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        if (!Array.isArray(body.hide) || body.hide.length > 500) return send(res, 400, { error: 'The groups are not valid.' });
+        let allowed;
+        try { allowed = await assignableCategories(); } catch (e) { return send(res, 502, { error: e.message }); }
+        if (!allowed.supported) return send(res, 400, { error: 'Your TV provider does not support choosing channel groups.' });
+        const ok = new Set(allowed.categories.map((x) => x.id)), hide = [...new Set(body.hide.map(String))].filter((x) => ok.has(x));
+        if (hide.length >= ok.size && ok.size) return send(res, 400, { error: 'Leave at least one group for free trials.' });
+        r.trialHide = hide;
+        const tc = await trialCategoriesFor(r); let n = 0;
+        for (const [id, rec] of Object.entries(store.users)) { if (rec.reseller === r.id && rec.trial && !rec.catsCustom) { const base = rec.plan && Array.isArray(rec.plan.categories) ? [...rec.plan.categories] : null; rec.categories = tc ? (base ? base.filter((x) => tc.includes(x)) : tc) : base; rec.updated = Date.now(); n++; } }
+        recordAudit(by, hide.length ? `Kept ${hide.length} channel group${hide.length === 1 ? '' : 's'} off free trials (${n} running trials updated)` : 'Showed all channel groups on free trials again'); saveStore();
+        return send(res, 200, { ok: true, trialHide: r.trialHide, updated: n });
       }
       if (url.pathname === '/reseller/brand' && req.method === 'PUT') {
         if (!optOf(r, 'branding')) return featureOff(res, 'Branding');
@@ -4113,6 +4142,7 @@ async function handle(req, res) {
           store.users[user.Id] = { limit: plan.connections, expires: addDays(today, 2), categories: plan.categories ? [...plan.categories] : null, name: username, updated: Date.now(), plan: { id: plan.id, name: plan.name, price: 0, connections: plan.connections, length: 2, unit: 'day', categories: plan.categories || null, since: today } };
         } else applyPlan(user.Id, username, plan, 'today');
         const rec = store.users[user.Id];
+        if (trial && !rec.catsCustom) { const tc = await trialCategoriesFor(r); if (tc) rec.categories = Array.isArray(rec.categories) ? rec.categories.filter((x) => tc.includes(x)) : tc; }
         rec.reseller = r.id; rec.trial = trial; rec.created = Date.now(); if (body.vod === true || plan.vod) rec.vod = true;
         rec.contact = { full: cleanText(body.fullName, 60), email: cleanText(body.email, 80), phone: cleanText(body.phone, 30), note: cleanText(body.note, 300) };
         creditEntry(r, -cost, trial ? 'Free trial' : plan.name, by, { customer: username, plan: plan.id });

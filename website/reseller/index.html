@@ -417,6 +417,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     <div class="card" id="tm-card"></div>
     <div class="card" id="br-card"></div>
     <div class="card" id="ot-card"></div>
+    <div class="card" id="th-card" hidden></div>
     <div class="card" id="rm-card"></div>
     <div class="card" id="pay-card"></div>
     <div class="tools"><h2>Notifications</h2></div>
@@ -1637,6 +1638,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     $('ot-card').innerHTML = '<h2>Optional tools</h2><p class="sub">Switch off the tools you do not want. Your provider sets what is on to start with.</p>' +
       [['health', 'Customer health list on the Overview'], ['scheduling', 'Scheduling, pausing and bulk actions'], ['staff', 'Helpers'], ['branding', 'Your name and welcome text on customer pages']].map(function (t) { return '<label class="mrow" style="border:0;padding:6px 0"><input type="checkbox" class="ot" data-k="' + t[0] + '"' + (o[t[0]] !== false ? ' checked' : '') + '><span>' + t[1] + '</span></label>'; }).join('') +
       '<div class="row" style="margin-top:10px"><button class="btn red" id="ot-save" type="button">Save</button></div><p class="msg" id="ot-msg" role="status" hidden></p>';
+    paintTrialHide();
     paintStaff();
     if (o.staff !== false) api('GET', '/reseller/staff').then(function (j) { if (j.__status === 409) { setTimeout(paintGrowthSettings2, 800); return; } if (j.__status === 200) { staffData = j; paintStaff(); } }).catch(function () { /* old guard */ });
   }
@@ -1652,10 +1654,26 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       '<h3 style="margin:18px 0 8px;font-size:1rem">Add a helper</h3><div class="grid"><div><label for="tm-name">Name</label><input id="tm-name" maxlength="60" placeholder="Hana"></div><div><label for="tm-user">Login name</label><input id="tm-user" maxlength="32" autocomplete="off" placeholder="hana_helper"></div></div>' +
       '<div style="margin-top:8px">' + permBoxes({ view: true, tickets: true }, 'tm-np') + '</div><div class="row" style="margin-top:10px"><button class="btn red" id="tm-add" type="button">Add helper</button></div><p class="msg" id="tm-msg" role="status" hidden></p>';
   }
+  // Channel groups kept off free trials (guard 1.58.0), for example pay-per-view.
+  var thCats = null;
+  function paintTrialHide() {
+    var c = $('th-card'); if (!c || !me || me.staff) return;
+    function draw() {
+      if (!thCats || !thCats.supported) { c.hidden = true; return; }
+      var hid = me.trialHide || [];
+      c.hidden = false;
+      c.innerHTML = '<h2>Keep channels off free trials</h2><p class="sub">Tick the Live TV groups your free trials should not see, such as pay-per-view. It applies to new trials and the trials running now. A customer who buys a plan gets everything the plan includes.</p>' +
+        '<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:12px;padding:8px 12px">' + thCats.categories.map(function (g) { return '<label class="chk" style="display:flex;gap:10px;align-items:center;padding:5px 0"><input type="checkbox" class="th" value="' + esc(g.id) + '"' + (hid.indexOf(g.id) >= 0 ? ' checked' : '') + '> <span>' + esc(g.name) + ' <span class="meta">' + g.count + '</span></span></label>'; }).join('') + '</div>' +
+        '<div class="row" style="margin-top:12px"><button class="btn red" id="th-save" type="button">Save</button></div><p class="msg" id="th-msg" role="status" hidden></p>';
+    }
+    if (thCats) return draw();
+    api('GET', '/reseller/categories').then(function (j) { if (j.__status === 200) { thCats = j; draw(); } }).catch(function () {});
+  }
   function permsOf(root, cls) { var o = {}; [].forEach.call(root.querySelectorAll('.' + cls), function (c) { o[c.getAttribute('data-p')] = c.checked; }); return o; }
   document.addEventListener('click', function (e) {
     var b = e.target.closest('button'); if (!b) return;
-    if (b.id === 'br-save') { var m = $('br-msg'); b.disabled = true; api('PUT', '/reseller/brand', { name: $('br-name').value.trim(), welcome: $('br-welcome').value.trim() }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, oldH(j), 'err'); me.brand = j.brand; msg(m, 'Saved.', 'ok'); }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); }); }
+    if (b.id === 'th-save') { var tm = $('th-msg'); b.disabled = true; api('PUT', '/reseller/trial-hide', { hide: [].map.call(document.querySelectorAll('.th:checked'), function (x) { return x.value; }) }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(tm, oldH(j), 'err'); me.trialHide = j.trialHide; msg(tm, 'Saved. ' + j.updated + ' running trial' + (j.updated === 1 ? '' : 's') + ' updated.', 'ok'); }).catch(function () { b.disabled = false; msg(tm, 'Could not save. Try again.', 'err'); }); }
+    else if (b.id === 'br-save') { var m = $('br-msg'); b.disabled = true; api('PUT', '/reseller/brand', { name: $('br-name').value.trim(), welcome: $('br-welcome').value.trim() }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, oldH(j), 'err'); me.brand = j.brand; msg(m, 'Saved.', 'ok'); }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); }); }
     else if (b.id === 'ot-save') {
       var om = $('ot-msg'), body = {}; [].forEach.call(document.querySelectorAll('.ot'), function (c) { body[c.getAttribute('data-k')] = c.checked; }); b.disabled = true;
       api('PUT', '/reseller/options', body).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(om, oldH(j), 'err'); me.opts = j; paintGrowthSettings2(); msg($('ot-msg'), 'Saved.', 'ok'); loadHealth(); }).catch(function () { b.disabled = false; msg(om, 'Could not reach Aurora.', 'err'); });

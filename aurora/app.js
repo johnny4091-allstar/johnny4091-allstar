@@ -8584,6 +8584,7 @@
       <section class="admin-card" data-rp="settings" data-gw-tm></section>
       <section class="admin-card" data-rp="settings" data-gw-br></section>
       <section class="admin-card" data-rp="settings" data-gw-ot></section>
+      <section class="admin-card" data-rp="settings" data-gw-th hidden></section>
       <section class="admin-card" data-rp="money" hidden data-mfc></section>
       <div class="stat-grid" data-rp="money" hidden data-mkpis></div>
       <section class="admin-card" data-rp="money" hidden><h2>Record a payment</h2>
@@ -9455,6 +9456,17 @@
         <h3 class="users-sub">Add a helper</h3><div class="plan-grid"><label class="admin-field"><span>Name</span><input type="text" class="st-note-input" data-tm-name maxlength="60"></label><label class="admin-field"><span>Login name</span><input type="text" class="st-note-input" data-tm-user maxlength="32" autocapitalize="none" autocomplete="off"></label></div>
         <div data-tm-newperms>${permBoxes({ view: true, tickets: true }, 'tm-np')}</div><div class="m-actions"><button class="btn btn-red" data-tm-add>Add helper</button></div><div class="live-result" data-tm-msg></div>`;
     };
+    // Channel groups kept off free trials (guard 1.58.0), for example pay-per-view.
+    let thCats = null;
+    const paintTrialHide = async () => {
+      const c = $('[data-gw-th]', root); if (!c) return;
+      if (!thCats) { try { thCats = await retry409(() => gq('/reseller/categories')); } catch { thCats = { supported: false }; } }
+      if (!thCats.supported) { c.hidden = true; return; }
+      const hid = (d.trialHide || []).map(String); c.hidden = false;
+      c.innerHTML = `<h2>Keep channels off free trials</h2><p class="muted">Tick the Live TV groups your free trials should not see, such as pay-per-view. It applies to new trials and the trials running now. A customer who buys a plan gets everything the plan includes.</p>
+        <div class="res-th-list">${thCats.categories.map((g) => `<label class="admin-check"><input type="checkbox" data-th value="${esc(g.id)}"${hid.includes(g.id) ? ' checked' : ''}> ${esc(g.name)} <span class="muted">${g.count}</span></label>`).join('')}</div>
+        <div class="m-actions"><button class="btn btn-red" data-th-save>Save</button></div><div class="live-result" data-th-msg></div>`;
+    };
     const paintGw2 = async () => {
       const br = d.brand || {};
       $('[data-gw-br]', root).hidden = !gwOn('branding');
@@ -9465,13 +9477,15 @@
       $('[data-gw-ot]', root).innerHTML = `<h2>Optional tools</h2><p class="muted">Switch off the tools you do not want. Your provider sets what is on to start with.</p>
         ${[['health', 'Customer health list on the Overview'], ['scheduling', 'Scheduling, pausing and bulk actions'], ['staff', 'Helpers'], ['branding', 'Your name and welcome text on customer pages']].map(([k, l]) => `<label class="admin-check"><input type="checkbox" data-ot="${k}"${gwOn(k) ? ' checked' : ''}> ${l}</label>`).join('')}
         <div class="m-actions"><button class="btn btn-red" data-ot-save>Save</button></div><div class="live-result" data-ot-msg></div>`;
+      paintTrialHide();
       paintHelpers();
       if (gwOn('staff')) { try { staffData = await retry409(() => gq('/reseller/staff')); paintHelpers(); } catch { /* an older Guard */ } }
     };
     root.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b) return;
       try {
-        if (b.matches('[data-br-save]')) { const r = await gq('/reseller/brand', { method: 'PUT', body: { name: $('[data-br-name]', root).value.trim(), welcome: $('[data-br-welcome]', root).value.trim() } }); d.brand = r.brand; say2('[data-br-msg]', 'Saved.', 'good'); }
+        if (b.matches('[data-th-save]')) { const r = await gq('/reseller/trial-hide', { method: 'PUT', body: { hide: $$('[data-th]:checked', root).map((x) => x.value) } }); d.trialHide = r.trialHide; say2('[data-th-msg]', `Saved. ${r.updated} running trial${r.updated === 1 ? '' : 's'} updated.`, 'good'); }
+        else if (b.matches('[data-br-save]')) { const r = await gq('/reseller/brand', { method: 'PUT', body: { name: $('[data-br-name]', root).value.trim(), welcome: $('[data-br-welcome]', root).value.trim() } }); d.brand = r.brand; say2('[data-br-msg]', 'Saved.', 'good'); }
         else if (b.matches('[data-ot-save]')) { const body = {}; $$('[data-ot]', root).forEach((c) => { body[c.dataset.ot] = c.checked; }); d.opts = await gq('/reseller/options', { method: 'PUT', body }); paintGw2(); say2('[data-ot-msg]', 'Saved.', 'good'); loadHealth(); }
         else if (b.matches('[data-tm-add]')) {
           const name = $('[data-tm-name]', root).value.trim(), user = $('[data-tm-user]', root).value.trim(); b.disabled = true;
