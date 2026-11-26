@@ -1,3 +1,4 @@
+- Fixed: on a computer (the Windows app and desktop browsers) Aurora now shows a slim scroll bar on the right, so you can see there is more below and drag it. Phones, tablets and TVs are unchanged.
 - Resellers: choose Live TV groups (like pay-per-view) to keep off your free trials, in Settings. Needs Aurora Guard 1.58.0.
 - Resellers: the Reseller panel sections are now in a menu button, and a "What's new" pop-up tells you once what changed after each update. Needs Aurora Guard 1.57.0.
 - New for resellers: a customer health list (who is buffering, quiet, owing or just ended), helpers with their own limited logins, pausing a customer until a date, scheduled renewals and messages, bulk actions, and their own business name and welcome text for their customers. Administrators choose what is on in Admin, Resellers. Needs Aurora Guard 1.56.0.

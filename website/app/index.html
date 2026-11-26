@@ -11,9 +11,17 @@
   <link rel="stylesheet" href="styles.css">
   <!-- Splash styles are inline so it shows on the very first frame. -->
   <style>
-    /* No page scroll bars: none while the opening screen is up, and none along the edges afterwards. */
-    html { scrollbar-width: none; background: #070c1c; }
-    html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    /* Page scroll bar: none on phones, tablets and TVs (you swipe or use the remote), and a slim one on a computer (the Windows app and
+       desktop browsers), so people can see there is more below and drag it. None while the opening screen is up. */
+    html { background: #070c1c; }
+    @media (hover: none), (pointer: coarse) {
+      html { scrollbar-width: none; }
+      html::-webkit-scrollbar, body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+    }
+    @media (hover: hover) and (pointer: fine) {
+      html { scrollbar-width: thin; scrollbar-color: #4a5a9a #0b1230; }
+    }
+    html:has(#splash) { scrollbar-width: none; }
     html:has(#splash), html:has(#splash) body { overflow: hidden; }
     #splash { position: fixed; inset: 0; z-index: 10000; background: #02030a; overflow: hidden; transition: opacity .55s ease; }
     #splash.out { opacity: 0; pointer-events: none; }
