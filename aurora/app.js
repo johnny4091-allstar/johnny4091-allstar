@@ -3594,6 +3594,7 @@
   // Customers can pick favourite teams and leagues (first-time setup or Settings), hide scores (spoiler-free), and ask for a
   // reminder before a game (a notification from the Android app; a toast while Aurora is open).
   const SPORT_CATS = /sport|nfl|nba|mlb|nhl|nascar|soccer|football|futbol|ufc|mma|fight|wwe|boxing|golf|tennis|racing|f1\b|formula|espn|dazn|bein|premier|liga|olympic|ppv|rugby|cricket|hockey|baseball|basketball/i;
+  const SPORT_NETS = /\b(espn\d?|espnu|espn ?news|fs1|fs2|fox sports|fox|abc|cbs|cbssn|nbc|nbcsn|golf|tennis channel|tnt|tbs|trutv|usa network|nfl|nba|mlb|nhl|big ten|btn|sec network|acc network|dazn|bein|sky sports|bt sport|tsn|sportsnet|bally|msg|nesn|yes network|marquee|univision|telemundo|unimas|peacock|prime video|paramount|cw|fanduel|root sports|altitude|stadium|redzone|ppv|ufc|wwe|premier|laliga|bundesliga)\b/i;
   const SPORT_LEAGUES = [
     ['NFL', /\bnfl\b|redzone|sunday night football|monday night football|thursday night football/i],
     ['NBA', /\bnba\b|\bwnba\b/i],
@@ -3740,6 +3741,15 @@
       }
     };
     await Promise.all([0, 1, 2, 3].map(worker));
+    // Sports channels are not always in a group with a sports name: a provider may keep ESPN, FS1, TNT or the local ABC, CBS, NBC and FOX in
+    // "USA", "Entertainment" or "Locals". Channels whose own name is a well-known sports broadcaster are added from the whole lineup too.
+    try {
+      for (const ch of await iptvAllChannels()) {
+        const k = ch.id || ch.name;
+        if (channels.length >= 1200) break;
+        if (!seen.has(k) && SPORT_NETS.test(ch.name || '')) { seen.add(k); channels.push({ ch, cat: iptv.catNames?.get(String(ch.group)) || 'Sports' }); }
+      }
+    } catch { /* the sports groups alone */ }
     const [guide, feed, al] = await Promise.all([
       loadIptvGuide().catch(() => null),
       guardEnabled ? guard('/sports/games', { params: { userId: state.userId }, quick: true }).catch(() => null) : null,
