@@ -402,6 +402,14 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.57.0
+
+The reseller panel now keeps its sections in a menu (a hamburger button at the top that shows where you are and how many things are waiting), on the website and in the app. When a new version of the panel is released, each reseller sees a "What's new" pop-up once, listing in plain words what changed (up to the last three releases they have not seen). It waits until they have agreed to the current rules. "What's new" in the menu shows recent changes again.
+
+- `GET /reseller/me` now includes `whatsNew: { unseen, recent }`.
+- `POST /reseller/whats-new/seen` marks the newest release as seen for that reseller (not blocked by the rules gate).
+- To announce a future release, add an entry at the top of `RESELLER_NEWS` in `aurora-guard.js`.
+
 ## 1.56.0
 
 - **More tools for resellers** (each can be switched off for everyone by the administrator, `GET`/`PUT /reseller-defaults`, and per reseller, `PUT /reseller/options`, with the keys `health`, `staff`, `scheduling`, `branding`). **Customer health:** `GET /reseller/health` lists customers worth a look: owing money, plans that ended in the last 7 days, buffering or failing channels (from the playback numbers the apps report), and no sign-in or watching for 14 days. **Helpers:** `GET`/`POST /reseller/staff`, `PUT`/`DELETE /reseller/staff/:id`, `POST /reseller/staff/:id/password` (up to 5). A helper is an Emby login that acts for one reseller: they get a smaller `/reseller/me` (no credits, prices, payments, settings or customer notes) and only the routes their rights allow (`view`, `tickets`, `passwords`, `trials`); anything else is refused, a trial they add is always free, and their actions are logged as "Name (helper of Reseller)". **Scheduling:** `POST /reseller/customers/:id/hold` takes `until` (a date within 120 days) and `keepTime` to pause a customer and let them back by themselves, adding the paused days back to the end date; `GET`/`POST`/`DELETE /reseller/schedule` schedules a renewal (uses the credits that day; skipped and the reseller told if short) or a message for a date and hour; `POST /reseller/bulk` puts up to 50 customers on hold, releases them, adds or removes a label, or gives 1 to 31 free days. The Guard checks every minute. **Branding:** `PUT /reseller/brand` (`name`, `welcome`); customers get `brand` on `/account` and the trial page gets the name and `welcome`.

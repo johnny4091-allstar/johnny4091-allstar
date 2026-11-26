@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.56.0';
+const VERSION = '1.57.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -596,6 +596,31 @@ const RESELLER_RULES_CHANGES = [
   { title: 'Changed: customer details', text: 'Labels, notes and timelines are private working notes. Keep them factual and polite.', section: 'customers' },
 ];
 const RESELLER_RULES_DATE = '2026-11-26';
+// What is new in the reseller panel (guard 1.57.0). Newest first. A reseller sees a pop-up once for the releases they have not seen yet (up to 3),
+// and can open the recent list again from the menu. Add a new entry on top (a new id, in date order) with every release that changes the panel.
+const RESELLER_NEWS = [
+  { id: '2026-11-26b', date: '2026-11-26', title: 'A tidier panel and this pop-up', items: [
+    { title: 'One menu for all sections', text: 'The tabs are now in a menu button at the top, so everything fits on a phone and in the app. It shows where you are and how many things are waiting.' },
+    { title: 'What is new pop-up', text: 'When the panel gets an update, you see what changed, once. You can open the latest changes again any time from the menu.' } ] },
+  { id: '2026-11-26', date: '2026-11-26', title: 'Health, helpers, scheduling and your own name', items: [
+    { title: 'Customer health', text: 'The Overview lists customers worth a look: owing money, just ended, buffering, or quiet for two weeks, with a message ready to send.' },
+    { title: 'Helpers', text: 'Give a helper their own login to answer support, reset passwords or add free trials. They never see your money.' },
+    { title: 'Pause and schedule', text: 'Pause a customer until a date, schedule a renewal or a message, and change many customers at once with Bulk actions.' },
+    { title: 'Your name and welcome text', text: 'Customers see your business name and welcome text on your trial page and their account page.' } ] },
+  { id: '2026-11-25', date: '2026-11-25', title: 'Reminders, payment instructions, offers and referral rewards', items: [
+    { title: 'Renewal reminders', text: 'Choose the days your customers are reminded before their plan ends, or switch reminders off.' },
+    { title: 'How customers pay you', text: 'Write your payment instructions. Customers see them when they renew and can tell you they paid.' },
+    { title: 'Offers and referral rewards', text: 'Sell 6 or 12 months at a better price, and reward customers who bring friends with one tap.' } ] },
+  { id: '2026-11-24', date: '2026-11-24', title: 'Money, messages, coupons and more', items: [
+    { title: 'Money', text: 'Track who paid and who owes, and see a forecast of the credits your renewals will need.' },
+    { title: 'Messages, coupons and imports', text: 'Message chosen customers, make discount coupons, import customers from a spreadsheet and send setup guides.' } ] },
+];
+const newsFor = (r) => {
+  const seen = r.newsSeen || '', since = localDay(new Date(r.created || Date.now()));
+  const unseen = RESELLER_NEWS.filter((n) => n.id > seen && n.date >= since).slice(0, 3);
+  return { unseen, recent: RESELLER_NEWS.slice(0, 5), latest: RESELLER_NEWS[0].id };
+};
+
 // When the rules change, every reseller gets one note in their Aurora inbox (guard 1.55.0), so they know to open the panel, read what is new and agree.
 function noticeRulesChanged() {
   if (store.rulesNoticeFor === RESELLER_RULES_VERSION) return;
@@ -3615,7 +3640,7 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), opts: optsView(r), brand: r.brand || { name: '', welcome: '' }, helpers: (r.staff || []).map(staffPublic), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), whatsNew: newsFor(r), opts: optsView(r), brand: r.brand || { name: '', welcome: '' }, helpers: (r.staff || []).map(staffPublic), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
@@ -3635,6 +3660,11 @@ async function handle(req, res) {
     if (url.pathname === '/reseller/rules/accept' && req.method === 'POST') {
       r.rules = { v: RESELLER_RULES_VERSION, at: Date.now() };
       recordAudit(`${r.name} (reseller)`, `Agreed to the reseller rules and regulations (${RESELLER_RULES_VERSION})`); saveStore();
+      return send(res, 200, { ok: true });
+    }
+    if (url.pathname === '/reseller/whats-new/seen' && req.method === 'POST') {
+      if (staffRec) return send(res, 403, { error: 'Helpers do not see this.' });
+      r.newsSeen = RESELLER_NEWS[0].id; saveStore();
       return send(res, 200, { ok: true });
     }
     if (req.method !== 'GET' && cfg.resellerRulesRequired !== false && !rulesOk(r)) return send(res, 403, { error: 'Please read and agree to the reseller rules and regulations first (the Rules card on your panel).', rulesRequired: true });

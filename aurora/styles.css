@@ -2135,3 +2135,20 @@ html.tv .tm-preview { width: 320px; }
 
 /* Provider Live TV in a web browser: no quality or track settings, the Guard picks the stream */
 .player.iptv-web #osd-tracks { display: none; }
+
+/* Reseller panel: the sections in a menu, and the what's new pop-up */
+.res-menuwrap { position: sticky; top: .3rem; z-index: 6; margin: .2rem 0 1rem; }
+.res-menubtn { display: flex; align-items: center; gap: .75rem; width: 100%; padding: .7rem 1rem; border-radius: 14px; border: 1px solid rgba(255,255,255,.12); background: rgba(14,21,48,.96); color: #fff; font: 800 1rem inherit; cursor: pointer; text-align: left; backdrop-filter: blur(8px); }
+.res-burger { display: inline-flex; flex-direction: column; gap: 4px; } .res-burger i { display: block; width: 20px; height: 2.5px; border-radius: 2px; background: #fff; transition: transform .18s, opacity .18s; }
+.res-menuwrap.open .res-burger i:nth-child(1) { transform: translateY(6.5px) rotate(45deg); } .res-menuwrap.open .res-burger i:nth-child(2) { opacity: 0; } .res-menuwrap.open .res-burger i:nth-child(3) { transform: translateY(-6.5px) rotate(-45deg); }
+.res-menulabel { flex: 1; } .res-chev { width: 9px; height: 9px; border-right: 2.5px solid #b9c3ea; border-bottom: 2.5px solid #b9c3ea; transform: rotate(45deg) translate(-2px,-2px); transition: transform .18s; } .res-menuwrap.open .res-chev { transform: rotate(225deg); }
+.res-menuwrap .res-tabs { display: none; position: absolute; left: 0; right: 0; top: calc(100% + .4rem); flex-direction: column; gap: 2px; margin: 0; padding: .5rem; max-height: 70vh; overflow-y: auto; border-radius: 16px; background: #0e1530; border: 1px solid #3b4a85; box-shadow: 0 24px 60px rgba(0,0,0,.55); }
+.res-menuwrap.open .res-tabs { display: flex; }
+.res-menuwrap .res-tabs .chip { width: 100%; justify-content: space-between; text-align: left; padding: .8rem .9rem; border-radius: 11px; background: none; border: 0; font-size: 1rem; }
+.res-menuwrap .res-tabs .chip.on { background: linear-gradient(100deg,#18b6d6,#4f7bff 55%,#7a5cff); color: #fff; }
+.res-menuextra { width: 100%; text-align: left; margin-top: .3rem; padding: .8rem .9rem; border: 0; border-top: 1px solid rgba(255,255,255,.1); background: none; color: #9fe8e5; font: 700 1rem inherit; cursor: pointer; border-radius: 0 0 11px 11px; }
+.res-news { position: fixed; inset: 0; z-index: 9000; display: grid; place-items: center; padding: 1rem; background: rgba(3,6,18,.74); }
+.res-news-card { position: relative; width: min(560px, 100%); max-height: calc(100vh - 2rem); overflow: auto; background: linear-gradient(180deg,#121c42,#0e1530); border: 1px solid #3b4a85; border-radius: 18px; padding: 1.5rem; }
+.res-news-card h2 { margin: 0 0 .25rem; } .res-news-card section { margin-top: 1rem; padding-top: .9rem; border-top: 1px solid rgba(255,255,255,.1); } .res-news-card h3 { margin: 0; font-size: 1.05rem; } .res-news-card ul { margin: .4rem 0 0; padding-left: 1.2rem; display: grid; gap: .45rem; } .res-news-card .btn { width: 100%; margin-top: 1.2rem; }
+.res-news-x { position: absolute; top: .6rem; right: .8rem; width: 2.2rem; height: 2.2rem; border-radius: 50%; border: 0; background: rgba(255,255,255,.08); color: #fff; font-size: 1.3rem; cursor: pointer; }
+@media (prefers-reduced-motion: reduce) { .res-burger i, .res-chev { transition: none; } }

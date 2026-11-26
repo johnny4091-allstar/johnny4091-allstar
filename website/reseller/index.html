@@ -32,7 +32,7 @@ h1,h2,h3 { margin:0; line-height:1.15; }
 label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
 input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; } input::placeholder { color:#6d78a6; }
 .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 16px; } .full { grid-column:1/-1; }
-.row { display:flex; gap:8px; } .row input { min-width:0; } .row .btn { flex:none; }
+.row { display:flex; gap:8px; flex-wrap:wrap; } .row input { min-width:0; } .row .btn { flex:none; }
 .hero { display:grid; grid-template-columns:1.3fr 1fr; gap:16px; margin-bottom:16px; }
 .credits { background:radial-gradient(70% 140% at 8% 0%,rgba(42,212,208,.2),transparent 70%),radial-gradient(60% 140% at 100% 0%,rgba(122,92,255,.3),transparent 70%),var(--bg-2); }
 .credits .n { font-size:3.4rem; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; } .credits small { color:var(--muted); }
@@ -113,10 +113,18 @@ h1 { margin:0; line-height:1.12; font-weight:800; text-wrap:balance; }
 .login-wrap .login h2 { font-size:1.5rem; }
 
 /* tabs */
-.tabs { position:sticky; top:62px; z-index:25; display:flex; gap:6px; overflow-x:auto; padding:8px; margin:0 0 20px; border-radius:16px; background:rgba(14,21,48,.92); border:1px solid var(--line); backdrop-filter:blur(10px); scrollbar-width:none; }
+.menuwrap { position:sticky; top:62px; z-index:30; margin:0 0 20px; }
+.menubtn { display:flex; align-items:center; gap:12px; width:100%; max-width:420px; padding:11px 16px; border-radius:14px; border:1px solid var(--line); background:rgba(14,21,48,.94); backdrop-filter:blur(10px); color:#fff; font:800 1rem var(--font); cursor:pointer; text-align:left; }
+.menubtn:hover { border-color:#3b4a85; } .menubtn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.burger { display:inline-flex; flex-direction:column; gap:4px; } .burger i { display:block; width:20px; height:2.5px; border-radius:2px; background:#fff; transition:transform .18s, opacity .18s; }
+.menuwrap.open .burger i:nth-child(1) { transform:translateY(6.5px) rotate(45deg); } .menuwrap.open .burger i:nth-child(2) { opacity:0; } .menuwrap.open .burger i:nth-child(3) { transform:translateY(-6.5px) rotate(-45deg); }
+.menulabel { flex:1; } .chev { width:9px; height:9px; border-right:2.5px solid #b9c3ea; border-bottom:2.5px solid #b9c3ea; transform:rotate(45deg) translate(-2px,-2px); transition:transform .18s; } .menuwrap.open .chev { transform:rotate(225deg); }
+.tabs { display:none; position:absolute; left:0; top:calc(100% + 8px); width:min(340px,100%); max-height:calc(100vh - 140px); overflow:auto; padding:8px; border-radius:16px; background:#0e1530; border:1px solid #3b4a85; box-shadow:0 24px 60px rgba(0,0,0,.55); flex-direction:column; gap:2px; }
+.menuwrap.open .tabs { display:flex; }
 .tabs::-webkit-scrollbar { display:none; }
-.tabbtn { flex:none; font:700 .92rem var(--font); color:#b9c3ea; background:none; border:0; padding:10px 16px; border-radius:11px; cursor:pointer; white-space:nowrap; transition:background .15s,color .15s; }
-.tabbtn:hover { background:rgba(255,255,255,.06); color:#fff; }
+.tabbtn, .menuextra { flex:none; display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; text-align:left; font:700 .98rem var(--font); color:#b9c3ea; background:none; border:0; padding:12px 14px; border-radius:11px; cursor:pointer; white-space:nowrap; transition:background .15s,color .15s; }
+.menuextra { margin-top:6px; border-top:1px solid var(--line); border-radius:0 0 11px 11px; color:#9fe8e5; } .menuextra:hover, .menuextra:focus-visible { background:rgba(255,255,255,.06); color:#fff; outline:none; }
+.tabbtn:hover, .tabbtn:focus-visible { background:rgba(255,255,255,.06); color:#fff; outline:none; }
 .tabbtn[aria-selected="true"] { background:var(--accent-grad); color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.3); box-shadow:0 6px 18px rgba(79,123,255,.3); }
 .tcount { display:inline-block; min-width:20px; padding:1px 7px; margin-left:6px; border-radius:999px; background:rgba(255,255,255,.14); font-size:.72rem; font-weight:800; text-align:center; }
 .tcount.hot { background:#ff5470; color:#fff; }
@@ -153,12 +161,12 @@ input,select { border-radius:10px; padding:12px 13px; }
 @media (max-width:860px) { .login-wrap { grid-template-columns:1fr; gap:22px; min-height:0; } .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .split { grid-template-columns:1fr; } }
 @media (max-width:560px) {
   .credchip, #out { white-space:nowrap; } .credchip { padding:6px 11px; font-size:.8rem; } .top-bar .pill { padding:.4rem .8rem; } .top-bar .pill svg { height:17px; }
-  .top-bar { padding:10px 0; } .tabs { top:56px; padding:6px; } .tabbtn { padding:9px 13px; font-size:.86rem; }
+  .top-bar { padding:10px 0; } .menuwrap { top:56px; } .menubtn { max-width:none; } .tabs { width:100%; }
   .arow { flex-wrap:wrap; } .aact { width:100%; justify-content:flex-start; padding-left:50px; }
   .cust .top { flex-wrap:wrap; } .cust .top > div:last-child { width:100%; padding-left:50px; text-align:left !important; }
   .credits .n { font-size:3.2rem; } .grid { grid-template-columns:1fr; }
 }
-@media (prefers-reduced-motion: reduce) { .btn, .tabbtn, .cust, .chip { transition:none; } }
+@media (prefers-reduced-motion: reduce) { .btn, .tabbtn, .cust, .chip, .burger i, .chev { transition:none; } }
 
 /* ---- Reseller tools ---- */
 .bulkbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:12px 14px; margin:0 0 12px; border-radius:12px; background:rgba(79,123,255,.12); border:1px solid #2f4a8f; }
@@ -181,6 +189,13 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 .toast { position:fixed; left:50%; bottom:max(20px,env(safe-area-inset-bottom,0px)); transform:translateX(-50%); z-index:60; padding:12px 18px; border-radius:12px; background:#14264f; border:1px solid #2f4a8f; color:#fff; box-shadow:0 14px 40px rgba(0,0,0,.5); max-width:min(92vw,460px); }
 @media (max-width:560px) { .bars { gap:6px; height:180px; } .pr-in { width:92px; } }
 
+
+/* ---- What's new pop-up ---- */
+.newsback { position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:16px; background:rgba(3,6,18,.72); backdrop-filter:blur(4px); }
+.newscard { position:relative; width:min(560px,100%); max-height:calc(100vh - 32px); overflow:auto; background:linear-gradient(180deg,#121c42,#0e1530); border:1px solid #3b4a85; border-radius:18px; padding:24px; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+.newscard h2 { margin:0 0 4px; font-size:1.4rem; } .newscard .eyebrow { margin:0 0 6px; } .newsx { position:absolute; top:10px; right:12px; width:36px; height:36px; border-radius:50%; border:0; background:rgba(255,255,255,.08); color:#fff; font-size:1.3rem; cursor:pointer; } .newsx:hover { background:rgba(255,255,255,.16); }
+.newscard section { margin:16px 0 0; padding-top:14px; border-top:1px solid var(--line); } .newscard section:first-of-type { border-top:0; padding-top:0; } .newscard h3 { margin:0 0 2px; font-size:1.05rem; } .newscard .when { color:var(--dim); font-size:.8rem; margin:0 0 8px; }
+.newscard ul { margin:0; padding-left:1.2rem; display:grid; gap:8px; color:#dfe4fa; } .newscard li b { color:#fff; } .newscard .btn { margin-top:20px; width:100%; }
 /* ---- More tools (guard 1.56.0) ---- */
 .arow { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:10px 0; border-top:1px solid var(--line); } .arow:first-of-type { border-top:0; }
 .staffmode .cust .act > :not(.pw):not(.so):not(.say):not(.pbox) { display:none !important; }
@@ -225,20 +240,24 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 
   <div id="app" hidden>
     <div id="rulesbox"></div>
-    <nav class="tabs" id="tabs" role="tablist" aria-label="Reseller panel sections">
-      <button class="tabbtn" role="tab" type="button" data-pane="overview" aria-selected="true">Overview</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="add" aria-selected="false">Add customer</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="money" aria-selected="false">Money <span class="tcount hot" id="tc-money" hidden>0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="messages" aria-selected="false">Messages</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="support" aria-selected="false">Support <span class="tcount hot" id="tc-support" hidden>0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="reports" aria-selected="false">Reports</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="sales" aria-selected="false">Sales tools</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="guides" aria-selected="false">Guides</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="settings" aria-selected="false">Settings</button>
+    <div class="menuwrap" id="menuwrap">
+    <button class="menubtn" id="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="tabs"><span class="burger" aria-hidden="true"><i></i><i></i><i></i></span><span class="menulabel" id="menulabel">Overview</span><span class="tcount hot" id="menucount" hidden>0</span><span class="chev" aria-hidden="true"></span></button>
+    <nav class="tabs" id="tabs" aria-label="Reseller panel sections">
+      <button class="tabbtn" type="button" data-pane="overview" aria-selected="true">Overview</button>
+      <button class="tabbtn" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
+      <button class="tabbtn" type="button" data-pane="add" aria-selected="false">Add customer</button>
+      <button class="tabbtn" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
+      <button class="tabbtn" type="button" data-pane="money" aria-selected="false">Money <span class="tcount hot" id="tc-money" hidden>0</span></button>
+      <button class="tabbtn" type="button" data-pane="messages" aria-selected="false">Messages</button>
+      <button class="tabbtn" type="button" data-pane="support" aria-selected="false">Support <span class="tcount hot" id="tc-support" hidden>0</span></button>
+      <button class="tabbtn" type="button" data-pane="reports" aria-selected="false">Reports</button>
+      <button class="tabbtn" type="button" data-pane="sales" aria-selected="false">Sales tools</button>
+      <button class="tabbtn" type="button" data-pane="guides" aria-selected="false">Guides</button>
+      <button class="tabbtn" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
+      <button class="tabbtn" type="button" data-pane="settings" aria-selected="false">Settings</button>
+          <button class="menuextra" type="button" id="menu-news">What's new <span class="tcount hot" id="news-dot" hidden>New</span></button>
     </nav>
+    </div>
 
     <section class="pane" data-pane="overview" id="pane-overview">
       <div class="welcome"><div><p class="eyebrow">Reseller panel</p><h1 id="welcome">Welcome back</h1><p class="sub" style="margin:4px 0 0" id="welcomesub"></p></div>
@@ -507,12 +526,34 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     $('chips').innerHTML = Object.keys(names).map(function (k) { return '<button class="chip" type="button" data-k="' + k + '" aria-pressed="' + (filter === k) + '">' + names[k] + ' ' + counts[k] + '</button>'; }).join('');
   }
   var PANES = ['overview', 'customers', 'add', 'requests', 'money', 'messages', 'support', 'reports', 'sales', 'guides', 'team', 'settings'], pane = 'overview';
+  // ----- the section menu
+  function menuOpen(on) {
+    $('menuwrap').classList.toggle('open', on); $('menubtn').setAttribute('aria-expanded', on ? 'true' : 'false');
+    if (on) { var cur = $('tabs').querySelector('[aria-current="page"]') || $('tabs').querySelector('.tabbtn:not([hidden])'); if (cur) cur.focus(); }
+  }
+  function menuSync() {
+    var cur = $('tabs').querySelector('[aria-current="page"]');
+    if (cur) { var c = cur.cloneNode(true); [].forEach.call(c.querySelectorAll('.tcount'), function (x) { x.remove(); }); $('menulabel').textContent = c.textContent.trim(); }
+    var n = 0; [].forEach.call($('tabs').querySelectorAll('.tcount.hot'), function (x) { if (!x.hidden && x.id !== 'news-dot' && /^\d+$/.test(x.textContent.trim())) n += Number(x.textContent); });
+    $('menucount').hidden = !n; $('menucount').textContent = n;
+  }
+  $('menubtn').addEventListener('click', function () { menuOpen(!$('menuwrap').classList.contains('open')); });
+  document.addEventListener('click', function (e) { if (!$('menuwrap').classList.contains('open')) return; if (!$('menuwrap').contains(e.target) || e.target.closest('.tabbtn, .menuextra')) menuOpen(false); });
+  $('menuwrap').addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && $('menuwrap').classList.contains('open')) { menuOpen(false); $('menubtn').focus(); return; }
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && $('menuwrap').classList.contains('open')) {
+      var items = [].slice.call($('tabs').querySelectorAll('.tabbtn, .menuextra')).filter(function (x) { return !x.hidden && x.offsetParent !== null; }), i = items.indexOf(document.activeElement);
+      e.preventDefault(); (items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length] || items[0]).focus();
+    }
+  });
+  new MutationObserver(menuSync).observe($('tabs'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'aria-current'] });
   function setPane(name, quiet) {
     if (PANES.indexOf(name) < 0 || (name === 'team' && me && !me.canAddSubs)) name = 'overview';
     if (me && me.staff && staffPanes().indexOf(name) < 0) name = staffPanes()[0];
     pane = name;
     [].forEach.call(document.querySelectorAll('.pane'), function (el) { el.hidden = el.getAttribute('data-pane') !== name; });
-    [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { b.setAttribute('aria-selected', b.getAttribute('data-pane') === name ? 'true' : 'false'); });
+    [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { var on = b.getAttribute('data-pane') === name; b.setAttribute('aria-selected', on ? 'true' : 'false'); if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+    menuSync(); menuOpen(false);
     if (!quiet) { try { history.replaceState(null, '', '#' + name); } catch (e) { /* ignore */ } window.scrollTo(0, 0); }
     if (me) onPane(name);
   }
@@ -932,12 +973,33 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       api('POST', '/reseller/rules/accept').then(function (j) { if (j.__status === 200) reload(); else { go.disabled = false; msg($('rulesmsg'), j.error || 'That did not work.', 'err'); } });
     };
   }
+
+  // ----- What's new pop-up (guard 1.57.0)
+  var newsShown = false;
+  function newsHtml(list) { return list.map(function (n) { return '<section><h3>' + esc(n.title) + '</h3><p class="when">' + esc(new Date(n.date + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })) + '</p><ul>' + n.items.map(function (i) { return '<li><b>' + esc(i.title) + '.</b> ' + esc(i.text) + '</li>'; }).join('') + '</ul></section>'; }).join(''); }
+  function showNews(list, mark) {
+    if (!list || !list.length || $('newsback')) return;
+    var back = document.createElement('div'); back.className = 'newsback'; back.id = 'newsback'; back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-labelledby', 'newstitle');
+    back.innerHTML = '<div class="newscard"><button class="newsx" type="button" aria-label="Close">&times;</button><p class="eyebrow">' + (mark ? 'Updated' : 'Recent changes') + '</p><h2 id="newstitle">' + (mark ? 'What\'s new in your panel' : 'What changed lately') + '</h2>' + newsHtml(list) + '<button class="btn red" type="button" id="newsgo">' + (mark ? 'Got it' : 'Close') + '</button></div>';
+    document.body.appendChild(back);
+    var prev = document.activeElement;
+    function done() { back.remove(); document.removeEventListener('keydown', key); if (prev && prev.focus) try { prev.focus(); } catch (e) { /* ignore */ } if (mark) { api('POST', '/reseller/whats-new/seen', {}).then(function () { if (me && me.whatsNew) me.whatsNew.unseen = []; $('news-dot').hidden = true; }); } }
+    function key(e) { if (e.key === 'Escape') done(); else if (e.key === 'Tab') { var f = [].slice.call(back.querySelectorAll('button')); var i = f.indexOf(document.activeElement); if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); } } }
+    document.addEventListener('keydown', key); back.querySelector('.newsx').onclick = done; $('newsgo').onclick = done; back.addEventListener('click', function (e) { if (e.target === back) done(); });
+    $('newsgo').focus();
+  }
+  $('menu-news').addEventListener('click', function () { if (me && me.whatsNew) showNews(me.whatsNew.recent, false); });
+  function maybeNews() {
+    if (!me || me.staff || !me.whatsNew) return;
+    $('news-dot').hidden = !me.whatsNew.unseen.length;
+    if (!newsShown && me.whatsNew.unseen.length && me.rules && me.rules.accepted) { newsShown = true; showNews(me.whatsNew.unseen, true); }
+  }
   function reload() {
     return api('GET', '/reseller/me').then(function (j) {
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
+      var first = !watchTimer; me = j; if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); maybeNews(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
     }).catch(function (err) { try { console.error(err); } catch (x) { /* ignore */ } $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 

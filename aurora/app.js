@@ -8496,17 +8496,20 @@
     const planOpts = (sel) => d.plans.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)} · ${esc(creditsWord(p.credits))}</option>`).join('');
     root.innerHTML = `${head}
       ${rulesHtml}
-      <div class="res-chips res-tabs" role="tablist" aria-label="Reseller panel sections" data-rtabs>
-        <button class="chip on" role="tab" data-rtab="overview">Overview</button>
-        <button class="chip" role="tab" data-rtab="customers">Customers</button>
-        <button class="chip" role="tab" data-rtab="money">Money <span class="pill bad hidden" data-moneybadge></span></button>
-        <button class="chip" role="tab" data-rtab="messages">Messages</button>
-        <button class="chip" role="tab" data-rtab="support">Support <span class="pill bad${d.ticketsOpen ? '' : ' hidden'}" data-tkbadge>${d.ticketsOpen || ''}</span></button>
-        <button class="chip" role="tab" data-rtab="reports">Reports</button>
-        <button class="chip" role="tab" data-rtab="sales">Sales tools</button>
-        <button class="chip" role="tab" data-rtab="guides">Guides</button>
-        <button class="chip" role="tab" data-rtab="settings">Settings</button>
-      </div>
+      <div class="res-menuwrap" data-rtabs>
+      <button class="res-menubtn" type="button" data-rmenu aria-haspopup="true" aria-expanded="false"><span class="res-burger" aria-hidden="true"><i></i><i></i><i></i></span><span class="res-menulabel" data-rmenu-label>Overview</span><span class="pill bad hidden" data-rmenu-count></span><span class="res-chev" aria-hidden="true"></span></button>
+      <div class="res-tabs" role="menu" aria-label="Reseller panel sections" data-rpanel>
+        <button class="chip on" role="menuitem" data-rtab="overview">Overview</button>
+        <button class="chip" role="menuitem" data-rtab="customers">Customers</button>
+        <button class="chip" role="menuitem" data-rtab="money">Money <span class="pill bad hidden" data-moneybadge></span></button>
+        <button class="chip" role="menuitem" data-rtab="messages">Messages</button>
+        <button class="chip" role="menuitem" data-rtab="support">Support <span class="pill bad${d.ticketsOpen ? '' : ' hidden'}" data-tkbadge>${d.ticketsOpen || ''}</span></button>
+        <button class="chip" role="menuitem" data-rtab="reports">Reports</button>
+        <button class="chip" role="menuitem" data-rtab="sales">Sales tools</button>
+        <button class="chip" role="menuitem" data-rtab="guides">Guides</button>
+        <button class="chip" role="menuitem" data-rtab="settings">Settings</button>
+        <button class="res-menuextra" role="menuitem" data-rnews>What's new <span class="pill hidden" data-rnews-dot>New</span></button>
+      </div></div>
       <div class="plan-form hidden" data-form></div>
       <section class="res-hero" data-rp="overview"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
         <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
@@ -8965,10 +8968,22 @@
     const SITE = 'https://aurora-streaming.org/';
     const money = (n) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
     const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.56.0 to use ${what}.` : esc(e.message));
+    // The sections live in a menu (a button at the top), so everything fits on a phone.
+    const menuOpen = (on) => { const w = $('[data-rtabs]', root); w.classList.toggle('open', on); $('[data-rmenu]', root).setAttribute('aria-expanded', on ? 'true' : 'false'); if (on) ($('[data-rtab].on', root) || $('[data-rtab]', root)).focus(); };
+    const menuSync = () => { let n = 0; $$('[data-rpanel] .pill.bad', root).forEach((x) => { if (!x.classList.contains('hidden') && /^\d+$/.test(x.textContent.trim())) n += Number(x.textContent); }); const c = $('[data-rmenu-count]', root); c.textContent = n; c.classList.toggle('hidden', !n); };
+    $('[data-rmenu]', root).addEventListener('click', () => menuOpen(!$('[data-rtabs]', root).classList.contains('open')));
+    root.addEventListener('click', (e) => { const w = $('[data-rtabs]', root); if (w.classList.contains('open') && (!w.contains(e.target) || e.target.closest('[data-rtab], [data-rnews]'))) menuOpen(false); });
+    $('[data-rtabs]', root).addEventListener('keydown', (e) => {
+      const w = $('[data-rtabs]', root); if (!w.classList.contains('open')) return;
+      if (e.key === 'Escape') { menuOpen(false); $('[data-rmenu]', root).focus(); return; }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { const items = $$('[data-rpanel] button', root); const i = items.indexOf(document.activeElement); e.preventDefault(); items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus(); }
+    });
+    new MutationObserver(() => menuSync()).observe($('[data-rpanel]', root), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['class'] });
     const setRp = (name) => {
       try { store.set('ef.resTab', name); } catch { /* ignore */ }
       $$('[data-rp]', root).forEach((el) => { el.hidden = el.dataset.rp !== name; });
-      $$('[data-rtab]', root).forEach((b) => b.classList.toggle('on', b.dataset.rtab === name));
+      $$('[data-rtab]', root).forEach((b) => { b.classList.toggle('on', b.dataset.rtab === name); if (b.dataset.rtab === name) { const c = b.cloneNode(true); $$('.pill', c).forEach((x) => x.remove()); $('[data-rmenu-label]', root).textContent = c.textContent.trim(); } });
+      menuSync(); menuOpen(false);
       if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMsgs(); else if (name === 'guides') paintGuides();
       if (name === 'sales') { paintGwSales(); loadGwReferrals(); } if (name === 'settings') { paintGwSettings(); paintGw2(); } if (name === 'messages') loadGwSchedule(); if (name === 'customers') paintBulkCard();
     };
@@ -9469,6 +9484,21 @@
         }
       } catch (err) { b.disabled = false; const m = b.closest('section')?.querySelector('.live-result'); if (m) { m.className = 'live-result bad'; m.textContent = oldGuard(err, 'this'); } else toast(err.message, 4000); }
     });
+
+    // ===== What's new pop-up (guard 1.57.0) =====
+    const newsHtml = (list) => list.map((n) => `<section><h3>${esc(n.title)}</h3><p class="muted">${esc(fmtDay(n.date))}</p><ul>${n.items.map((i) => `<li><strong>${esc(i.title)}.</strong> ${esc(i.text)}</li>`).join('')}</ul></section>`).join('');
+    const showNews = (list, mark) => {
+      if (!list?.length || document.querySelector('.res-news')) return;
+      const back = document.createElement('div'); back.className = 'res-news'; back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-labelledby', 'res-news-t');
+      back.innerHTML = `<div class="res-news-card"><button class="res-news-x" type="button" aria-label="Close">&times;</button><p class="muted">${mark ? 'Updated' : 'Recent changes'}</p><h2 id="res-news-t">${mark ? "What's new in your panel" : 'What changed lately'}</h2>${newsHtml(list)}<button class="btn btn-red" type="button" data-news-go>${mark ? 'Got it' : 'Close'}</button></div>`;
+      document.body.appendChild(back); const prev = document.activeElement;
+      const done = () => { back.remove(); document.removeEventListener('keydown', key, true); try { prev?.focus?.(); } catch { /* gone */ } if (mark) gq('/reseller/whats-new/seen', { method: 'POST', body: {} }).then(() => { if (d.whatsNew) d.whatsNew.unseen = []; $('[data-rnews-dot]', root)?.classList.add('hidden'); }).catch(() => {}); };
+      const key = (e) => { if (e.key === 'Escape') done(); else if (e.key === 'Tab') { const f = $$('button', back); const i = f.indexOf(document.activeElement); if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); } } };
+      document.addEventListener('keydown', key, true); $('.res-news-x', back).onclick = done; $('[data-news-go]', back).onclick = done; back.addEventListener('click', (e) => { if (e.target === back) done(); });
+      $('[data-news-go]', back).focus();
+    };
+    $('[data-rnews]', root).addEventListener('click', () => { if (d.whatsNew) showNews(d.whatsNew.recent, false); });
+    if (d.whatsNew) { $('[data-rnews-dot]', root).classList.toggle('hidden', !d.whatsNew.unseen.length); if (d.whatsNew.unseen.length && d.rules?.accepted) setTimeout(() => showNews(d.whatsNew.unseen, true), 400); }
     setRp((() => { try { return store.get('ef.resTab') || 'overview'; } catch { return 'overview'; } })());
   }
 
@@ -12917,6 +12947,8 @@
     if (trailerOpen()) { closeTrailerWindow(); return true; }
     if ($('#page .tm-guide')?.__closeGroups?.()) return true;
     if (adminMenuOpen()) { setAdminMenu(false); focusEl($('[data-admin-menu]')); return true; }
+    if ($('.res-news')) return true; // the What's new pop-up closes itself on Back
+    const resMenu = $('[data-rtabs].open'); if (resMenu) { $('[data-rmenu]', resMenu).click(); focusEl($('[data-rmenu]', resMenu)); return true; } // the reseller sections menu
     if (updateRequiredOpen()) return false; // Back leaves the app instead
     if (firstRun) { if (document.activeElement?.__onBack && isTextInput(document.activeElement)) { document.activeElement.__onBack(); return true; } firstRun.back(); return true; }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
