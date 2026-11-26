@@ -83,7 +83,7 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
   else j('GET', '/trial/info?code=' + encodeURIComponent(code)).then(function (i) {
     if (!i.valid) return showOnly('bad');
     if (!i.open) return showOnly('full');
-    $('from').textContent = 'A free trial from ' + i.name; $('p-days').textContent = i.days + '-day free trial'; $('p-dev').textContent = i.connections + (i.connections === 1 ? ' device' : ' devices'); showOnly('form');
+    $('from').textContent = 'A free trial from ' + i.name; if (i.welcome) { var w = document.createElement('p'); w.className = 'lead'; w.id = 'welcome'; w.textContent = i.welcome; $('from').insertAdjacentElement('afterend', w); } $('p-days').textContent = i.days + '-day free trial'; $('p-dev').textContent = i.connections + (i.connections === 1 ? ' device' : ' devices'); showOnly('form');
   }).catch(function () { showOnly('bad'); });
   $('go').onclick = function () {
     var u = $('u').value.trim(), e = $('e').value.trim(), p = $('p').value, err = $('err');

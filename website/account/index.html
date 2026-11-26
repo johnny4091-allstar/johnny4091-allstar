@@ -114,6 +114,8 @@ details.card[open] > summary { margin-bottom:12px; }
   </section>
 
   <section id="app" hidden>
+    <div class="card" id="brandcard" hidden><h2 id="brandname" style="margin:0 0 6px"></h2><p class="hint" id="brandwelcome" style="margin:0"></p></div>
+    <div class="note" id="pausednote" hidden style="margin-bottom:14px"></div>
     <section class="hero" id="hero" aria-live="polite">
       <div class="hero-in">
         <div class="ring" id="ring" aria-hidden="true">
@@ -246,6 +248,8 @@ details.card[open] > summary { margin-bottom:12px; }
   var picked = '';
   function paintStatus() {
     var a = acct, n = a.limit || 1, hero = $('hero');
+    $('brandcard').hidden = !a.brand; if (a.brand) { $('brandname').textContent = a.brand.name; $('brandwelcome').textContent = a.brand.welcome || ''; $('brandwelcome').hidden = !a.brand.welcome; }
+    $('pausednote').hidden = !a.paused; if (a.paused) $('pausednote').textContent = 'Your account is paused until ' + fmt(a.paused) + '. It switches on again by itself that day.';
     var cls = a.expired ? 'exp' : (a.expires && a.daysLeft != null && a.daysLeft <= 14) ? 'soon' : 'on';
     hero.className = 'hero ' + cls;
     var total = a.plan && a.plan.length ? a.plan.length * unitDays(a.plan.unit) : 30;
