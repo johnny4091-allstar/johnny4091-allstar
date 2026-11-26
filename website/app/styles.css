@@ -2153,3 +2153,4 @@ html.tv .tm-preview { width: 320px; }
 .res-news-x { position: absolute; top: .6rem; right: .8rem; width: 2.2rem; height: 2.2rem; border-radius: 50%; border: 0; background: rgba(255,255,255,.08); color: #fff; font-size: 1.3rem; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .res-burger i, .res-chev { transition: none; } }
 .admin-field > .st-note-input { flex: none; width: 100%; }
+.res-th-list { max-height: 260px; overflow: auto; border: 1px solid rgba(255,255,255,.12); border-radius: 12px; padding: .4rem .8rem; margin-bottom: .6rem; }
