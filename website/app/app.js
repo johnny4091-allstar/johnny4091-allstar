@@ -9393,6 +9393,8 @@
     if (guardEnabled) { try { g = await guard('/limits'); } catch (e) { if (e.status === 423) { if (isCurrent()) showPinPad(body, isCurrent, 'Users', () => adminUsers(body, isCurrent)); return; } guardError = e; } }
     const ext = g ? await guard('/extensions').catch(() => null) : null;
     const planList = g ? (await guard('/plans').catch(() => null))?.plans || [] : [];
+    // Resellers (names), to tell the administrator's own customers from the resellers' ones. A Guard without resellers, or one locked behind the PIN, just shows everyone together.
+    const resList = g ? (await guard('/resellers').catch(() => null))?.resellers || [] : [];
     if (!isCurrent()) return;
     // Once only (the guard remembers): any account can write its own display preferences, so values found
     // there later must not be trusted.
@@ -9418,7 +9420,10 @@
     const liveOf = (data, id) => (data ? (data.users || []).find((x) => x.userId === id) || { activeDevices: 0, over: false, devices: [], limit: undefined } : null);
     const rows = users.map((u) => {
       const lim = limits.get(u.Id), st = userStatus(u, lim), exempt = exemptFromLimits(u);
-      return { u, lim, st, exempt, devices: inUse.get(u.Id)?.size || 0, live: exempt ? null : liveOf(live, u.Id), search: (u.Name || '').toLowerCase() };
+      const resId = lim?.reseller || '', resAcct = resList.find((x) => x.userId === u.Id);
+      const group = exempt || lim?.mod || resAcct ? 'staff' : resId ? 'reseller' : 'mine';
+      const resName = resId ? (resList.find((x) => x.id === resId)?.name || 'a reseller') : '';
+      return { u, lim, st, exempt, group, resId, resName, resAcct: !!resAcct, devices: inUse.get(u.Id)?.size || 0, live: exempt ? null : liveOf(live, u.Id), search: ((u.Name || '') + ' ' + resName).toLowerCase() };
     }).sort((a, b) => (a.u.Name || '').localeCompare(b.u.Name || ''));
     // What a row says about devices. With the guard's live data: "2 of 2 devices in use · Pixel, TV", and a red
     // "Over limit" when there are more than allowed.
@@ -9440,6 +9445,13 @@
     const filters = guardEnabled ? ['all', 'active', 'disabled', 'expired'] : ['all', 'active', 'disabled'];
     let filter = store.get('ef.usersFilter') || 'all', query = '';
     if (!filters.includes(filter)) filter = 'all';
+    // Groups: the administrator's own customers, the resellers' customers, and staff (administrators, moderators and the resellers themselves).
+    const GROUPS = [['all', 'Everyone'], ['mine', 'My customers'], ['reseller', 'Reseller customers'], ['staff', 'Staff and resellers']];
+    const grouped = guardEnabled && !guardError && resList.length > 0;
+    let group = grouped ? store.get('ef.usersGroup') || 'all' : 'all', resPick = '';
+    if (!GROUPS.some(([k]) => k === group)) group = 'all';
+    const inGroup = (r) => group === 'all' || (r.group === group && (group !== 'reseller' || !resPick || r.resId === resPick));
+    const inView = (r) => inGroup(r) && (filter === 'all' || r.st === filter) && (!query || r.search.includes(query));
     body.innerHTML = `
       ${extensionsCardHtml(ext, planList)}
       ${guardEnabled && !guardError ? staffCardHtml(rows) : ''}
@@ -9458,9 +9470,11 @@
         </div>
         ${moved.length ? `<p class="live-result good">Moved the limits saved by the older version into Aurora Guard (once only) for: ${esc(moved.join(', '))}. Check they look right: any account could edit its own old copy.</p>` : ''}
         ${g?.dryRun ? '<p class="live-result bad">Aurora Guard is in dry-run mode: it only logs what it would do. Set "dryRun": false in its config.json to enforce.</p>' : ''}
+        ${grouped ? `<div class="chip-row users-groups" role="tablist" aria-label="Groups of users">${GROUPS.map(([k, l]) => `<button class="chip${k === group ? ' active' : ''}" role="tab" data-group="${k}">${l} <span data-gcount="${k}"></span></button>`).join('')}</div>
+        <div class="users-tools${group === 'reseller' ? '' : ' hidden'}" data-respick-row><label class="muted" for="users-respick">Reseller</label><select id="users-respick" class="st-note-input" data-respick><option value="">All resellers</option>${resList.filter((x) => rows.some((r) => r.resId === x.id)).map((x) => `<option value="${esc(x.id)}">${esc(x.name)} · ${rows.filter((r) => r.resId === x.id).length}</option>`).join('')}</select></div>` : ''}
         <div class="users-tools">
           <input type="search" class="users-search" placeholder="Search users" autocomplete="off" spellcheck="false">
-          <div class="chip-row">${filters.map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · ${counts[f]}</button>`).join('')}</div>
+          <div class="chip-row">${filters.map((f) => `<button class="chip${f === filter ? ' active' : ''}" data-filter="${f}">${f[0].toUpperCase() + f.slice(1)} · <span data-fcount="${f}">${counts[f]}</span></button>`).join('')}</div>
         </div>
         <p class="muted users-live" data-live-summary>${esc(summaryText(live))}</p>
         <div class="bulk-bar hidden" data-bulk></div>
@@ -9497,10 +9511,14 @@
     let selecting = false;
     const picked = new Set();
     const draw = () => {
-      const shown = rows.filter((r) => (filter === 'all' || r.st === filter) && (!query || r.search.includes(query)));
+      // The counts on the chips follow the group that is open.
+      const ofGroup = rows.filter(inGroup);
+      for (const f of filters) { const el = $(`[data-fcount="${f}"]`, body); if (el) el.textContent = f === 'all' ? ofGroup.length : ofGroup.filter((r) => r.st === f).length; }
+      for (const [k] of GROUPS) { const el = $(`[data-gcount="${k}"]`, body); if (el) el.textContent = k === 'all' ? rows.length : rows.filter((r) => r.group === k).length; }
+      const shown = rows.filter(inView);
       list.innerHTML = shown.map((r) => `<a class="admin-row user-row${r.st !== 'active' ? ' dim' : ''}${selecting && picked.has(r.u.Id) ? ' picked' : ''}" href="#/admin?tab=users&user=${esc(r.u.Id)}" data-uid="${esc(r.u.Id)}"${selecting && r.exempt ? ' data-exempt' : ''}>
         ${selecting ? `<span class="sel-box${picked.has(r.u.Id) ? ' on' : ''}${r.exempt ? ' off' : ''}" aria-hidden="true"></span>` : ''}
-        <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}
+        <div class="admin-row-main"><strong>${esc(r.u.Name)}</strong> ${statusPill(r.st)}${r.exempt ? ' <span class="pill">Admin</span>' : ''}${r.resAcct ? ' <span class="pill">Reseller</span>' : ''}${r.lim?.mod && !r.exempt ? ' <span class="pill">Moderator</span>' : ''}${r.resName && grouped ? ` <span class="pill">via ${esc(r.resName)}</span>` : ''}
           <div class="muted"><span data-live="${esc(r.u.Id)}">${liveHtml(r)}</span>
             ${guardEnabled ? `· ${r.lim?.expires ? `${isExpired(r.lim) ? 'expired' : 'expires'} ${esc(fmtDay(r.lim.expires))}` : 'no expiration'}${r.lim?.plan ? ` · ${esc(r.lim.plan.name)}` : ''}` : ''}</div></div>
         <div class="admin-row-time">${r.u.LastActivityDate ? esc(timeAgo(r.u.LastActivityDate)) : 'never'}</div></a>`).join('') || '<p class="muted">No users match.</p>';
@@ -9627,11 +9645,19 @@
     bulkBox.addEventListener('click', (e) => {
       if (e.target.closest('[data-bulk-all]')) {
         const q = query;
-        rows.filter((r) => !r.exempt && (filter === 'all' || r.st === filter) && (!q || r.search.includes(q))).forEach((r) => picked.add(r.u.Id));
+        rows.filter((r) => !r.exempt && inView(r) && (!q || r.search.includes(q))).forEach((r) => picked.add(r.u.Id));
         draw(); drawBulk();
       } else if (e.target.closest('[data-bulk-none]')) { picked.clear(); draw(); drawBulk(); }
     });
     $('.users-search', body).addEventListener('input', (e) => { query = e.target.value.trim().toLowerCase(); draw(); });
+    $$('[data-group]', body).forEach((b) => b.addEventListener('click', () => {
+      group = b.dataset.group; resPick = ''; store.set('ef.usersGroup', group);
+      $$('[data-group]', body).forEach((x) => x.classList.toggle('active', x === b));
+      $('[data-respick-row]', body)?.classList.toggle('hidden', group !== 'reseller');
+      const rp = $('[data-respick]', body); if (rp) rp.value = '';
+      draw();
+    }));
+    $('[data-respick]', body)?.addEventListener('change', (e) => { resPick = e.target.value; draw(); });
     $$('[data-filter]', body).forEach((b) => b.addEventListener('click', () => {
       filter = b.dataset.filter;
       store.set('ef.usersFilter', filter);
