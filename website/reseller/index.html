@@ -900,7 +900,11 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
         w.map(function (x) { return '<li>' + esc(x.reason) + ' <span style="color:var(--dim)">(' + esc(new Date(x.at).toLocaleDateString()) + ')</span></li>'; }).join('') + '</ul></div>';
     }
     if (r.required && !r.accepted) {
-      html += '<div class="card rules-card" role="alert"><h2>Please read and agree to the reseller rules</h2><p class="sub" style="margin:0">Until you agree, you can look around but you cannot add, renew or change anything.</p>' +
+      var upd = r.previous && (r.changes || []).length;
+      html += '<div class="card rules-card" role="alert"><h2>' + (upd ? 'We updated the reseller rules' : 'Please read and agree to the reseller rules') + '</h2>' +
+        (upd ? '<p class="sub" style="margin:0 0 6px">Updated ' + esc(new Date((r.updated || '') + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })) + '. You have to agree again. Here is what is new, so you do not have to read everything again:</p><ul style="margin:8px 0 12px;padding-left:1.2rem;display:grid;gap:8px">' +
+          r.changes.map(function (c) { return '<li><b>' + esc(c.title) + '.</b> ' + esc(c.text) + ' <a href="../rules/#' + esc(c.section) + '" target="_blank" rel="noopener" style="color:var(--accent)">Read it</a></li>'; }).join('') + '</ul>' : '') +
+        '<p class="sub" style="margin:0">Until you agree, you can look around but you cannot add, renew or change anything.</p>' +
         '<p style="margin:10px 0 0"><a class="btn line" href="../rules/" target="_blank" rel="noopener">Read the rules and regulations</a></p>' +
         '<label><input type="checkbox" id="rulesck"> I have read the rules and regulations (version ' + esc(r.version) + ') and I agree to follow them.</label>' +
         '<button class="btn red" type="button" id="rulesgo" disabled>I have read and agree</button><p class="msg err" id="rulesmsg" hidden></p></div>';

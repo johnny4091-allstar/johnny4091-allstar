@@ -8406,7 +8406,9 @@
     const rulesHtml = `${warns.length ? `<section class="admin-card res-warn" role="alert"><h2>${warns.length >= (d.warningsMax || 3) ? 'Final warning' : 'Warning'}: ${warns.length} of ${d.warningsMax || 3} active</h2>
         <p class="muted">${warns.length >= (d.warningsMax || 3) ? 'One more warning suspends your reseller account. ' : ''}Warnings expire after 90 days.</p>
         <ul>${warns.map((x) => `<li>${esc(x.reason)} <span class="muted">(${esc(fmtDay(new Date(x.at).toISOString().slice(0, 10)))})</span></li>`).join('')}</ul></section>` : ''}
-      ${rules.required && !rules.accepted ? `<section class="admin-card res-rules" role="alert"><h2>Please read and agree to the reseller rules</h2>
+      ${rules.required && !rules.accepted ? `<section class="admin-card res-rules" role="alert"><h2>${rules.previous && (rules.changes || []).length ? 'We updated the reseller rules' : 'Please read and agree to the reseller rules'}</h2>
+        ${rules.previous && (rules.changes || []).length ? `<p class="muted">Updated ${esc(fmtDay(rules.updated))}. You have to agree again. Here is what is new, so you do not have to read everything again:</p>
+        <ul>${rules.changes.map((c) => `<li><strong>${esc(c.title)}.</strong> ${esc(c.text)} <a href="${RULES_URL}#${esc(c.section)}" target="_blank" rel="noopener">Read it</a></li>`).join('')}</ul>` : ''}
         <p class="muted">Until you agree you can look around, but you cannot add, renew or change anything.</p>
         <p><a class="btn btn-gray" href="${RULES_URL}" target="_blank" rel="noopener">Read the rules and regulations</a></p>
         <label class="admin-check"><input type="checkbox" data-rules-ck> I have read the rules and regulations (version ${esc(rules.version)}) and I agree to follow them.</label>

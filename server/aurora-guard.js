@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.54.0';
+const VERSION = '1.55.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -586,7 +586,26 @@ const remindDefault = () => cleanDays(store.remindDefault) || REMIND_FALLBACK;
 const remindDaysOf = (rec) => { const own = cleanDays(rec && rec.remind); if (own) return own; const r = rec && rec.reseller ? resellerList()[rec.reseller] : null; return r ? remindDaysOfReseller(r) : remindDefault(); };
 
 // The reseller rules and regulations (guard 1.49.0). Change this date when the rules page changes: every reseller then agrees again.
-const RESELLER_RULES_VERSION = '2026-11-24';
+const RESELLER_RULES_VERSION = '2026-11-26';
+// What changed in this version of the rules, in plain words. Resellers who agreed to an older version see this when they sign in, so they do not have to read the whole page.
+const RESELLER_RULES_CHANGES = [
+  { title: 'New: getting paid', text: 'If you show customers how to pay, the details must be yours and correct. Never take card numbers or passwords through Aurora. Check a customer\'s "I have paid" before you approve it.', section: 'payments' },
+  { title: 'New: offers, coupons and referral rewards', text: 'Keep prices honest and honour every offer and coupon you make. Give referral rewards fairly, and no fake accounts or referring yourself.', section: 'selling' },
+  { title: 'New: messages, reminders and imports', text: 'Messages to customers are about the service only: no adverts for other services and no spam (10 messages an hour). Import only people who asked to be your customers (50 at a time).', section: 'messages' },
+  { title: 'Changed: free trials', text: 'Still 5 a day, but the owner can lift the limit for some resellers. Only share your trial link with people who asked for one (3 trials per internet connection a day).', section: 'customers' },
+  { title: 'Changed: customer details', text: 'Labels, notes and timelines are private working notes. Keep them factual and polite.', section: 'customers' },
+];
+const RESELLER_RULES_DATE = '2026-11-26';
+// When the rules change, every reseller gets one note in their Aurora inbox (guard 1.55.0), so they know to open the panel, read what is new and agree.
+function noticeRulesChanged() {
+  if (store.rulesNoticeFor === RESELLER_RULES_VERSION) return;
+  const now = Date.now(), list = Object.values(resellerList()).filter((r) => r.status === 'active' && r.userId && !rulesOk(r));
+  const text = 'We updated the reseller rules. Open the Reseller panel to read what is new (it is short) and agree to continue making changes.';
+  store.directMsgs = [...list.map((r) => ({ id: crypto.randomBytes(5).toString('hex'), batch: 'rules' + RESELLER_RULES_VERSION, reseller: '', userId: r.userId, from: 'Aurora', text, at: now })), ...(store.directMsgs || [])].slice(0, 3000);
+  store.rulesNoticeFor = RESELLER_RULES_VERSION;
+  recordAudit('Guard', `The reseller rules changed (${RESELLER_RULES_VERSION}): ${list.length} resellers were told in their inbox and must agree again`);
+  saveStore();
+}
 const rulesOk = (r) => !!(r.rules && r.rules.v === RESELLER_RULES_VERSION);
 // Reseller tools (guard 1.50.0)
 // Reseller tools, part 2 (guard 1.51.0): labels, payments, coupons, messages
@@ -3458,7 +3477,7 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), opts: optsView(r), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), opts: optsView(r), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
@@ -5356,6 +5375,7 @@ function start() {
   tick();
   setInterval(tick, cfg.intervalSeconds * 1000);
   if (cfg.updateCheck !== false) { setTimeout(() => checkForUpdate().catch(() => {}), 6000); setInterval(() => checkForUpdate().catch(() => {}), 24 * 3600000).unref(); }
+  try { noticeRulesChanged(); } catch (e) { log('Could not tell the resellers about the new rules:', e.message); }
   setTimeout(() => sweepIdleDevices().catch(() => {}), (Number(cfg.idleSweepStartSeconds) || 300) * 1000); setInterval(() => sweepIdleDevices().catch(() => {}), 6 * 3600000).unref();
   setTimeout(() => syncAllImports().catch(() => {}), 120000); setInterval(() => syncAllImports().catch(() => {}), 6 * 3600000).unref();
   setTimeout(() => maybeSendSummary().catch(() => {}), 20000); setInterval(() => maybeSendSummary().catch(() => {}), 60000);
