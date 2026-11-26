@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.58.0';
+const VERSION = '1.58.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1021,7 +1021,10 @@ async function relayRoute(req, res, url, token) {
   const target = String(url.searchParams.get('u') || '').slice(0, 4000), sig = String(url.searchParams.get('s') || '');
   if (!/^https?:\/\//i.test(target)) return send(res, 400, { error: 'No address given.' });
   const signed = !!sig && sig === relaySign(target), key = relayHostKey(target);
-  const listed = (await relayAllowedHosts()).has(key) || key === await relayUserHost(me, tok); // a provider the administrator or this person set up: may be on the home network
+  // A provider the administrator set up may be on the home network. One a customer typed into their own settings may only be on the internet: otherwise
+  // any customer could point it at the router, Emby or another device in the house and read the answer (guard 1.58.1).
+  const shared = (await relayAllowedHosts()).has(key);
+  const listed = shared || key === await relayUserHost(me, tok);
   if (!signed) {
     if (!listed && !(relay.learned.get(key) > Date.now())) return send(res, 403, { error: 'That address does not belong to one of your TV providers.' });
     if (kind === 'list' && overLimit('relay-list', me.Id, 40, 3600000)) return send(res, 429, { error: 'Too many channel list requests. Please wait a while.' });
@@ -1038,7 +1041,7 @@ async function relayRoute(req, res, url, token) {
     while (mine.size >= (Number(cfg.liveRelayPerUser) || 3)) { const old = mine.values().next().value; mine.delete(old); try { old.destroy(); } catch { /* gone */ } }
   }
   let opened;
-  try { opened = await relayOpen(target, headers, listed); }
+  try { opened = await relayOpen(target, headers, shared); }
   catch (e) { return send(res, e.relayStatus || 502, { error: e.relayStatus ? e.message : `Could not reach the TV provider (${e.message || 'no answer'}).` }); }
   const { up, rq } = opened, status = up.statusCode || 502, ctype = String(up.headers['content-type'] || '');
   const closeAll = () => { try { up.destroy(); } catch { /* gone */ } try { rq.destroy(); } catch { /* gone */ } };
