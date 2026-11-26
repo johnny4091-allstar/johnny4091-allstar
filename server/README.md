@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.58.1
+
+Security fix: the Live TV relay no longer opens addresses on your home network for a provider that a customer typed into their own settings. Before, any signed-in customer could point their own provider at the router, Emby or another device in the house and read the answer through the relay. Only providers the administrator set up (the main provider, backups and added channels) may be on a private address now; a customer's own provider must be on the internet. Update the Guard from Admin, Server.
+
 ## 1.58.0
 
 A reseller can keep chosen Live TV groups (for example pay-per-view) off their free trials. Settings, "Keep channels off free trials", on the reseller website and in the app. It applies to new trials (made by the reseller, a helper or the trial link) and to the reseller's running trials. A trial that buys a plan gets what the plan includes. Needs an Xtream provider.
