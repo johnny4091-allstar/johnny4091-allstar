@@ -5557,6 +5557,7 @@
         ${settingRow(a.plan ? 'Plan' : 'Plan', a.plan ? `${a.plan.name}. How many devices can be signed in and in use at the same time.` : 'How many devices can be signed in and in use at the same time.', `<span class="setting-value">Up to ${n} ${devWord}</span>`)}
         ${settingRow('In use right now', null, `<span class="setting-value">${a.activeDevices} of ${n}</span>`)}
         ${settingRow('Access until', soon && !a.expired ? 'Your access ends soon. You can ask for more time below.' : null, `<span class="setting-value${soon ? ' account-soon' : ''}">${esc(endText)}</span>`)}
+        ${a.brand ? `<div class="admin-card-note"><strong>${esc(a.brand.name)}</strong>${a.brand.welcome ? `<div class="muted">${esc(a.brand.welcome)}</div>` : ''}</div>` : ''}
         ${reqHtml}
         ${a.canRequest ? `<div class="account-request">
           ${offered.length || (a.bundles || []).length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}${(a.bundles || []).length ? `<optgroup label="Offers">${a.bundles.map((b) => `<option value="bundle:${esc(b.id)}">${esc(b.name)} · ${esc(money(b.price))}</option>`).join('')}</optgroup>` : ''}</select></label>` : ''}
@@ -7601,6 +7602,10 @@
         <label class="admin-check"><input type="checkbox" data-df="pay"${df.pay ? ' checked' : ''}> Payment instructions and "I have paid"</label>
         <label class="admin-check"><input type="checkbox" data-df="bundles"${df.bundles ? ' checked' : ''}> Offers for longer plans</label>
         <label class="admin-check"><input type="checkbox" data-df="referrals"${df.referrals ? ' checked' : ''}> Referral rewards chosen by the reseller</label>
+        <label class="admin-check"><input type="checkbox" data-df="health"${df.health ? ' checked' : ''}> Customer health list</label>
+        <label class="admin-check"><input type="checkbox" data-df="scheduling"${df.scheduling ? ' checked' : ''}> Scheduling, pausing and bulk actions</label>
+        <label class="admin-check"><input type="checkbox" data-df="staff"${df.staff ? ' checked' : ''}> Helpers (staff logins)</label>
+        <label class="admin-check"><input type="checkbox" data-df="branding"${df.branding ? ' checked' : ''}> Reseller name and welcome text on customer pages</label>
         <div class="plan-grid"><label class="admin-field"><span>Reminder days (like 7, 3, 1)</span><input type="text" class="st-note-input" data-df-days maxlength="30" value="${esc(df.remindDays.join(', '))}"></label>
           <label class="admin-field"><span>Referral reward</span><select data-df-type><option value="days"${df.reward.type === 'days' ? ' selected' : ''}>Free days</option><option value="coupon"${df.reward.type === 'coupon' ? ' selected' : ''}>A discount coupon</option></select></label>
           <label class="admin-field"><span>Free days</span><input type="number" class="st-note-input" data-df-rdays min="1" max="90" value="${df.reward.days}"></label>
@@ -8371,6 +8376,72 @@
   }
 
   // ----- The reseller's own panel (profile menu → Reseller panel) -----
+
+  // The panel a helper sees (guard 1.56.0): only what the reseller allowed. No credits, prices, payments or settings.
+  async function renderStaffPanel(root, isCurrent, d) {
+    const perms = d.perms || {}, g = (path, o = {}) => guard(path, { ...o, params: { userId: state.userId, ...(o.params || {}) } });
+    const tabs = [['customers', 'Customers', perms.view], ['add', 'Add a free trial', perms.trials], ['support', 'Support', perms.tickets]].filter((x) => x[2]);
+    const first = tabs[0]?.[0] || 'customers';
+    const st = (c) => (c.hold ? ['On hold', 'bad'] : c.expired ? ['Expired', 'bad'] : c.trial ? ['Trial', ''] : c.daysLeft != null && c.daysLeft <= 7 ? ['Ending soon', 'warn'] : ['Active', 'good']);
+    root.innerHTML = `<div class="page-head"><h1>Helper panel</h1></div>
+      <p class="muted">You are signed in as ${esc(d.staffName)}, helping ${esc(d.name)}. You can only do what ${esc(d.name)} allowed.</p>
+      <div class="res-chips res-tabs" role="tablist">${tabs.map(([k, l]) => `<button class="chip${k === first ? ' on' : ''}" role="tab" data-st="${k}">${l}</button>`).join('')}</div>
+      ${perms.view ? `<section class="admin-card" data-sp="customers"><h2>Customers <small>${d.customers.length}</small></h2>
+        <input type="search" class="st-note-input" data-s-search placeholder="Search" autocomplete="off"><div class="admin-list" data-s-list></div><div class="live-result" data-s-msg></div></section>` : ''}
+      ${perms.trials ? `<section class="admin-card" data-sp="add" hidden><h2>Add a free trial</h2><p class="muted">${d.trialsUnlimited ? 'No daily limit.' : `${d.trialsLeft} left today.`} Helpers can only make free trials.</p>
+        <div class="plan-grid"><label class="admin-field"><span>Full name</span><input type="text" class="st-note-input" data-n="full" maxlength="60"></label><label class="admin-field"><span>Username *</span><input type="text" class="st-note-input" data-n="user" maxlength="32" autocapitalize="none" autocomplete="off"></label>
+          <label class="admin-field"><span>Password (blank = make one)</span><input type="text" class="st-note-input" data-n="pw" maxlength="64" autocomplete="off"></label><label class="admin-field"><span>Email</span><input type="text" class="st-note-input" data-n="email" maxlength="80"></label>
+          <label class="admin-field"><span>Phone</span><input type="text" class="st-note-input" data-n="phone" maxlength="30"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-s-add>Create trial</button></div><div class="live-result" data-s-addmsg></div><textarea class="st-note-input hidden" rows="6" readonly data-s-login></textarea></section>` : ''}
+      ${perms.tickets ? `<section class="admin-card" data-sp="support" hidden><h2>Support inbox <small data-s-open></small></h2><div data-s-tk><div class="spinner"></div></div></section>` : ''}`;
+    $$('[data-st]', root).forEach((b) => b.addEventListener('click', () => { $$('[data-st]', root).forEach((x) => x.classList.toggle('on', x === b)); $$('[data-sp]', root).forEach((x) => { x.hidden = x.dataset.sp !== b.dataset.st; }); if (b.dataset.st === 'support') loadTk(); }));
+    $$('[data-sp]', root).forEach((x) => { x.hidden = x.dataset.sp !== first; });
+    const paint = () => {
+      const q = ($('[data-s-search]', root)?.value || '').trim().toLowerCase(), box = $('[data-s-list]', root); if (!box) return;
+      box.innerHTML = d.customers.filter((c) => !q || [c.name, c.full, c.email, c.phone].some((x) => String(x || '').toLowerCase().includes(q))).slice(0, 100).map((c) => { const [t, cls] = st(c); return `<div class="admin-row" data-c="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${cls}">${t}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || '')} · ${c.expires ? esc(fmtDay(c.expires)) : 'no end date'} · ${c.devices} ${c.devices === 1 ? 'device' : 'devices'} in use</div></div>${perms.passwords ? '<div class="plan-actions"><button class="btn btn-gray" data-s-pw>Reset password</button><button class="btn btn-gray" data-s-out>Sign out devices</button></div>' : ''}</div>`; }).join('') || '<p class="muted">No customers.</p>';
+    };
+    paint(); $('[data-s-search]', root)?.addEventListener('input', paint);
+    $('[data-s-list]', root)?.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return; const row = b.closest('[data-c]'), c = d.customers.find((x) => x.id === row.dataset.c), out = $('[data-s-msg]', root);
+      try {
+        if (b.matches('[data-s-pw]')) {
+          if (!(await confirmAction(`Reset the password for ${c.name}?`, 'Their old password stops working. The new one is shown once.', 'Reset password'))) return;
+          const r = await g(`/reseller/customers/${encodeURIComponent(c.id)}/password`, { method: 'POST', body: {} });
+          out.className = 'live-result good'; out.innerHTML = `New password for ${esc(c.name)}: <strong>${esc(r.password)}</strong>`; copyText(`Username: ${c.name}\nPassword: ${r.password}`);
+        } else if (b.matches('[data-s-out]')) {
+          const r = await g(`/reseller/customers/${encodeURIComponent(c.id)}/signout`, { method: 'POST', body: {} });
+          out.className = 'live-result good'; out.textContent = r.signedOut ? `Signed out of ${r.signedOut} ${r.signedOut === 1 ? 'device' : 'devices'}.` : 'Nothing was signed in.';
+        }
+      } catch (err) { out.className = 'live-result bad'; out.textContent = err.message; }
+    });
+    $('[data-s-add]', root)?.addEventListener('click', async (e) => {
+      const f = (k) => $(`[data-n="${k}"]`, root).value.trim(), out = $('[data-s-addmsg]', root), btn = e.currentTarget; btn.disabled = true;
+      try {
+        const r = await g('/reseller/customers', { method: 'POST', body: { username: f('user'), password: f('pw') || undefined, fullName: f('full'), email: f('email'), phone: f('phone'), trial: true } });
+        out.className = 'live-result good'; out.textContent = `${r.customer.full || r.customer.name} is ready. Send them the login below.`;
+        const ta = $('[data-s-login]', root); ta.classList.remove('hidden'); ta.value = `Welcome to Aurora!\nUsername: ${r.customer.name}\nPassword: ${r.password}\nA free trial of ${r.customer.daysLeft ?? 2} days.`; copyText(ta.value);
+      } catch (err) { out.className = 'live-result bad'; out.textContent = err.message; }
+      btn.disabled = false;
+    });
+    const loadTk = async () => {
+      const box = $('[data-s-tk]', root); if (!box) return;
+      try {
+        const r = await g('/reseller/tickets'); $('[data-s-open]', root).textContent = r.open ? `${r.open} open` : '';
+        box.innerHTML = r.tickets.length ? r.tickets.map((t) => { const open = t.status === 'open', who = t.full || t.name; return `<div class="admin-row res-tk" data-tk="${esc(t.id)}"><div class="admin-row-main"><strong>${esc(who)}</strong> <span class="pill ${open ? 'warn' : 'good'}">${open ? 'Open' : 'Solved'}</span>
+          <div class="res-thread">${(t.messages || []).slice(-6).map((m) => `<div class="res-bub${m.from === 'user' ? '' : ' me'}">${esc(m.text)}<small>${m.from === 'user' ? esc(who) : esc(m.by || 'Support')} · ${esc(timeAgo(m.at))}</small></div>`).join('')}</div>
+          <div class="res-reply"><input type="text" class="st-note-input" data-t-text maxlength="1000" placeholder="Write a reply..."><button class="btn btn-white" data-t-send>Send</button><button class="btn btn-gray" data-t-state>${open ? 'Mark solved' : 'Reopen'}</button></div><div class="live-result" data-t-msg></div></div></div>`; }).join('') : '<p class="muted">No messages from customers yet.</p>';
+      } catch (err) { box.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
+    };
+    $('[data-s-tk]', root)?.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return; const card = b.closest('[data-tk]'), id = card.dataset.tk, m = $('[data-t-msg]', card);
+      try {
+        if (b.matches('[data-t-send]')) { const text = $('[data-t-text]', card).value.trim(); if (!text) { m.className = 'live-result bad'; m.textContent = 'Write a reply first.'; return; } await g(`/reseller/tickets/${encodeURIComponent(id)}/reply`, { method: 'POST', body: { text } }); loadTk(); }
+        else if (b.matches('[data-t-state]')) { await g(`/reseller/tickets/${encodeURIComponent(id)}/${/solved/i.test(b.textContent) ? 'solve' : 'reopen'}`, { method: 'POST', body: {} }); loadTk(); }
+      } catch (err) { m.className = 'live-result bad'; m.textContent = err.message; }
+    });
+    if (first === 'support') loadTk();
+  }
+
   async function renderReseller(page, isCurrent) {
     page.innerHTML = '<div class="page-pad reseller-page"><div class="page-head"><h1>Reseller panel</h1></div><div class="spinner"></div></div>';
     const root = $('.reseller-page', page);
@@ -8380,6 +8451,7 @@
     if (!isCurrent()) return;
     if (!d.reseller) { location.replace('#/home'); return; }
     if (d.suspended) { root.innerHTML = `${head}<p class="empty-msg">This reseller account is suspended. Please contact your provider.</p>`; return; }
+    if (d.staff) return renderStaffPanel(root, isCurrent, d);
     const fillTpl = (t, c, extra = {}) => {
       const nm = (c.full || c.name || '').trim(), first = nm.split(/\s+/)[0] || 'there';
       const date = c.expires ? new Date(c.expires + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
@@ -8501,6 +8573,12 @@
       <section class="admin-card" data-rp="settings" data-gw-pay></section>
       <section class="admin-card" data-rp="sales" hidden data-s-tp></section>
       <section class="admin-card" data-rp="overview" data-fc></section>
+      <section class="admin-card" data-rp="overview" data-hl hidden></section>
+      <section class="admin-card" data-rp="customers" data-bulkcard hidden></section>
+      <section class="admin-card" data-rp="messages" hidden data-sc></section>
+      <section class="admin-card" data-rp="settings" data-gw-tm></section>
+      <section class="admin-card" data-rp="settings" data-gw-br></section>
+      <section class="admin-card" data-rp="settings" data-gw-ot></section>
       <section class="admin-card" data-rp="money" hidden data-mfc></section>
       <div class="stat-grid" data-rp="money" hidden data-mkpis></div>
       <section class="admin-card" data-rp="money" hidden><h2>Record a payment</h2>
@@ -8521,6 +8599,8 @@
         <div class="admin-list res-msglist" data-ms-list></div>
         <label class="admin-field"><span>Message (300 characters)</span><textarea class="st-note-input" rows="3" maxlength="300" data-ms-text placeholder="Write your message..."></textarea></label>
         <div class="chip-row" data-ms-tpl></div>
+        <label class="admin-check"><input type="checkbox" data-ms-later> Send later</label>
+        <div class="plan-grid hidden" data-ms-whenrow><label class="admin-field"><span>Date</span><input type="date" class="st-note-input" data-ms-date></label><label class="admin-field"><span>Hour</span><select data-ms-hour>${[6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22].map((h) => `<option value="${h}"${h === 9 ? ' selected' : ''}>${h % 12 || 12}:00 ${h < 12 ? 'am' : 'pm'}</option>`).join('')}</select></label></div>
         <div class="m-actions"><button class="btn btn-red" data-ms-send>Send message</button></div><div class="live-result" data-ms-msg></div></section>
       <section class="admin-card" data-rp="messages" hidden><h2>Sent</h2><div class="admin-list" data-ms-sent><p class="muted">Nothing sent yet.</p></div></section>
       <section class="admin-card" data-rp="guides" hidden><h2>Setup guides for your customers</h2>
@@ -8600,7 +8680,7 @@
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
         <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
         <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button><button class="btn btn-gray" data-cg>Channels: ${c.cats == null ? 'all' : c.cats}</button></div><div class="res-extra hidden" data-extra></div>
-        <div class="m-actions"><button class="btn btn-gray" data-lb>Labels${(c.labels || []).length ? ': ' + esc(c.labels.join(', ')) : ''}</button><button class="btn btn-gray" data-pmt>Record payment</button><button class="btn btn-gray" data-tlx>Timeline</button></div>
+        <div class="m-actions"><button class="btn btn-gray" data-lb>Labels${(c.labels || []).length ? ': ' + esc(c.labels.join(', ')) : ''}</button><button class="btn btn-gray" data-pzx>Pause until...</button><button class="btn btn-gray" data-srx>Renew on a date</button><button class="btn btn-gray" data-pmt>Record payment</button><button class="btn btn-gray" data-tlx>Timeline</button></div>
         <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
       $('[data-cancel]', form).addEventListener('click', closeForm);
       const path = (suffix = '') => `/reseller/customers/${encodeURIComponent(c.id)}${suffix}`;
@@ -8651,6 +8731,20 @@
       $('[data-dev]', form).addEventListener('click', () => {
         if (!extra.classList.contains('hidden') && extra.dataset.kind === 'd') { extra.classList.add('hidden'); return; }
         showExtra('d', '<div class="spinner"></div>'); loadDevices();
+      });
+      // Pause until a date, and a renewal on a date (guard 1.56.0).
+      const dayIn = (n) => { const x = new Date(); x.setDate(x.getDate() + n); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+      $('[data-pzx]', form).addEventListener('click', () => {
+        if (d.opts?.scheduling === false) { showExtra('x', '<p class="muted">Scheduling is switched off for your account.</p>'); return; }
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'z') { extra.classList.add('hidden'); return; }
+        showExtra('z', `<strong>Pause ${esc(c.full || c.name)}</strong><p class="muted">Their login is switched off now and comes back by itself on the date you pick.</p><label class="admin-field"><span>Back on</span><input type="date" class="st-note-input" data-z-date min="${dayIn(1)}"></label><label class="admin-check"><input type="checkbox" data-z-keep checked> Add the paused days back to their end date</label><div class="m-actions"><button class="btn btn-red" data-z-go>Pause</button></div>`);
+        $('[data-z-go]', extra).addEventListener('click', async () => { try { await guard(path('/hold'), { method: 'POST', params: { userId: state.userId }, body: { hold: true, until: $('[data-z-date]', extra).value, keepTime: $('[data-z-keep]', extra).checked } }); toast('Paused', 2500); reload(); } catch (err) { say(oldGuard(err, 'pausing'), 'bad'); } });
+      });
+      $('[data-srx]', form).addEventListener('click', () => {
+        if (d.opts?.scheduling === false) { showExtra('x', '<p class="muted">Scheduling is switched off for your account.</p>'); return; }
+        if (!extra.classList.contains('hidden') && extra.dataset.kind === 'r') { extra.classList.add('hidden'); return; }
+        showExtra('r', `<strong>Renew ${esc(c.full || c.name)} on a date</strong><p class="muted">Aurora renews them that day and uses your credits then. If you are short of credits, it skips it and tells you.</p><label class="admin-field"><span>Plan</span><select data-r-plan>${planOpts(c.planId)}</select></label><label class="admin-field"><span>Date</span><input type="date" class="st-note-input" data-r-date min="${dayIn(0)}"></label><div class="m-actions"><button class="btn btn-red" data-r-go>Schedule</button></div>`);
+        $('[data-r-go]', extra).addEventListener('click', async () => { try { await guard('/reseller/schedule', { method: 'POST', params: { userId: state.userId }, body: { type: 'renew', userId: c.id, planId: $('[data-r-plan]', extra).value, date: $('[data-r-date]', extra).value } }); toast('Renewal scheduled. See it under Messages.', 3500); extra.classList.add('hidden'); } catch (err) { say(oldGuard(err, 'scheduling'), 'bad'); } });
       });
       // Labels, payments and the timeline (guard 1.51.0).
       $('[data-lb]', form).addEventListener('click', () => {
@@ -8870,13 +8964,13 @@
     // ===== Reseller tools (guard 1.50.0): tabs, support inbox, reports, sales tools, renew everyone shown =====
     const SITE = 'https://aurora-streaming.org/';
     const money = (n) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
-    const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.51.0 to use ${what}.` : esc(e.message));
+    const oldGuard = (e, what) => (e.status === 404 ? `Update Aurora Guard to 1.56.0 to use ${what}.` : esc(e.message));
     const setRp = (name) => {
       try { store.set('ef.resTab', name); } catch { /* ignore */ }
       $$('[data-rp]', root).forEach((el) => { el.hidden = el.dataset.rp !== name; });
       $$('[data-rtab]', root).forEach((b) => b.classList.toggle('on', b.dataset.rtab === name));
       if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMsgs(); else if (name === 'guides') paintGuides();
-      if (name === 'sales') { paintGwSales(); loadGwReferrals(); } if (name === 'settings') paintGwSettings();
+      if (name === 'sales') { paintGwSales(); loadGwReferrals(); } if (name === 'settings') { paintGwSettings(); paintGw2(); } if (name === 'messages') loadGwSchedule(); if (name === 'customers') paintBulkCard();
     };
     $$('[data-rtab]', root).forEach((b) => b.addEventListener('click', () => { setRp(b.dataset.rtab); root.scrollIntoView({ block: 'start' }); }));
 
@@ -9113,7 +9207,12 @@
       if (!text) { say2('[data-ms-msg]', 'Write the message first.', 'bad'); return; }
       if (ids.length > 40) { say2('[data-ms-msg]', 'You can send to up to 40 customers at a time.', 'bad'); return; }
       btn.disabled = true;
-      try { const r = await gq('/reseller/messages', { method: 'POST', body: { ids, text } }); say2('[data-ms-msg]', `Sent to ${r.sent} ${r.sent === 1 ? 'customer' : 'customers'}.`, 'good'); $('[data-ms-text]', root).value = ''; msPick = {}; paintMsgs(); }
+      try {
+        const later = $('[data-ms-later]', root).checked;
+        if (later) { if (!$('[data-ms-date]', root).value) { say2('[data-ms-msg]', 'Pick the date to send it.', 'bad'); btn.disabled = false; return; } await gq('/reseller/schedule', { method: 'POST', body: { type: 'message', ids, text, date: $('[data-ms-date]', root).value, hour: Number($('[data-ms-hour]', root).value) } }); say2('[data-ms-msg]', 'Scheduled.', 'good'); }
+        else { const r = await gq('/reseller/messages', { method: 'POST', body: { ids, text } }); say2('[data-ms-msg]', `Sent to ${r.sent} ${r.sent === 1 ? 'customer' : 'customers'}.`, 'good'); }
+        $('[data-ms-text]', root).value = ''; msPick = {}; paintMsgs(); loadGwSchedule();
+      }
       catch (err) { say2('[data-ms-msg]', oldGuard(err, 'messages'), 'bad'); }
       btn.disabled = false;
     });
@@ -9269,6 +9368,106 @@
           await gq(`/reseller/referrals/${encodeURIComponent(row.dataset.rid)}/${give ? 'reward' : 'dismiss'}`, { method: 'POST', body: give ? { both: $('[data-rf-both]', row)?.checked !== false } : {} }); loadGwReferrals();
         }
       } catch (err) { b.disabled = false; const t = gwOld(err); const m = b.closest('section')?.querySelector('.live-result'); if (m) { m.className = 'live-result bad'; m.innerHTML = t; } else toast(err.message, 4000); }
+    });
+
+    // ===== More tools (guard 1.56.0): customer health, bulk actions, scheduled items, helpers, branding =====
+    const gwOn = (k) => d.opts?.[k] !== false;
+    const HL_TXT = { overdue: 'Hi! Your payment for Aurora is still open. Reply here if you need help paying.', expired: 'Hi! Your Aurora plan ended recently. Reply here when you want to renew.', buffering: 'Hi! I noticed Aurora has been buffering for you. Please restart the app and your router. If it keeps happening, reply and I will help.', quiet: 'Hi! We have not seen you on Aurora lately. Is everything OK? Reply if you need any help.' };
+    let hlData = null, hlAll = false;
+    const paintHealth = () => {
+      const box = $('[data-hl]', root); if (!box || !hlData) return; box.hidden = false;
+      const rows = hlAll ? hlData : hlData.slice(0, 6);
+      box.innerHTML = `<h2>Customer health <small>${hlData.length ? hlData.length + ' to look at' : 'all good'}</small></h2>` + (hlData.length ? `<div class="admin-list">${rows.map((c) => `<div class="admin-row" data-hid="${esc(c.id)}"><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> ${c.issues.map((i) => `<span class="pill ${i.kind === 'quiet' ? '' : i.sev >= 3 ? 'bad' : 'warn'}">${esc(i.text)}</span>`).join(' ')}</div><div class="plan-actions"><button class="btn btn-gray" data-hl-msg>Message</button><button class="btn btn-gray" data-hl-open>Open</button></div></div>`).join('')}</div>${hlData.length > 6 ? `<div class="m-actions"><button class="btn btn-gray" data-hl-more>${hlAll ? 'Show fewer' : 'Show all ' + hlData.length}</button></div>` : ''}` : '<p class="muted">Nobody is buffering, quiet, owing money or just ended.</p>');
+    };
+    const loadHealth = async () => { if (!gwOn('health')) return; try { hlData = (await retry409(() => gq('/reseller/health'))).customers; paintHealth(); } catch { /* an older Guard */ } };
+    root.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-hl-msg], [data-hl-open], [data-hl-more]'); if (!b) return;
+      if (b.matches('[data-hl-more]')) { hlAll = !hlAll; paintHealth(); return; }
+      const id = b.closest('[data-hid]').dataset.hid, c = hlData.find((x) => x.id === id);
+      if (b.matches('[data-hl-open]')) { setRp('customers'); const cu = d.customers.find((x) => x.id === id); if (cu) openDetails(cu); }
+      else { msPick = { [id]: true }; setRp('messages'); $('[data-ms-text]', root).value = HL_TXT[c.issues[0].kind] || ''; paintMsList(); }
+    });
+    loadHealth();
+    // bulk actions on the customers shown
+    const paintBulkCard = () => {
+      const box = $('[data-bulkcard]', root); if (!box) return; box.hidden = !gwOn('scheduling');
+      if (box.hidden) return;
+      const keep = $('[data-bk-act]', box)?.value || 'hold', arg = $('[data-bk-arg]', box)?.value || '';
+      box.innerHTML = `<h2>Bulk actions <small>on the customers shown above</small></h2><p class="muted">Use the filters and search above to pick who. Up to 50 at a time.</p>
+        <div class="plan-grid"><label class="admin-field"><span>Do this</span><select data-bk-act><option value="hold">Put on hold</option><option value="release">Release</option><option value="label">Add a label</option><option value="unlabel">Remove a label</option><option value="extend">Give free days</option></select></label>
+        <label class="admin-field"><span data-bk-lab>Value</span><input type="text" class="st-note-input" data-bk-arg maxlength="20"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-bk-go>Apply to the customers shown</button></div><div class="live-result" data-bk-msg></div>`;
+      $('[data-bk-act]', box).value = keep; $('[data-bk-arg]', box).value = arg;
+      const sync = () => { const a = $('[data-bk-act]', box).value; $('[data-bk-arg]', box).closest('label').classList.toggle('hidden', !['label', 'unlabel', 'extend'].includes(a)); $('[data-bk-lab]', box).textContent = a === 'extend' ? 'Free days (1 to 31)' : 'Label'; };
+      $('[data-bk-act]', box).addEventListener('change', sync); sync();
+    };
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('[data-bk-go]'); if (!b) return;
+      const act = $('[data-bk-act]', root).value, arg = $('[data-bk-arg]', root).value.trim(), list = visible().slice(0, 50);
+      if (!list.length) { say2('[data-bk-msg]', 'Nobody is shown.', 'bad'); return; }
+      if (!(await confirmAction(`Apply to ${list.length} ${list.length === 1 ? 'customer' : 'customers'}?`, `${{ hold: 'Put on hold', release: 'Release', label: 'Add the label ' + arg, unlabel: 'Remove the label ' + arg, extend: 'Give ' + arg + ' free days' }[act]}.`, 'Apply'))) return;
+      b.disabled = true;
+      try { const r = await gq('/reseller/bulk', { method: 'POST', body: { ids: list.map((c) => c.id), action: act, label: act === 'label' || act === 'unlabel' ? arg : undefined, days: act === 'extend' ? Number(arg) : undefined } }); toast(`Done for ${r.done}${r.failed ? ', ' + r.failed + ' could not be changed' : ''}`, 3500); reload(); }
+      catch (err) { b.disabled = false; say2('[data-bk-msg]', oldGuard(err, 'bulk actions'), 'bad'); }
+    });
+    // the scheduled list (Messages)
+    const loadGwSchedule = async () => {
+      const box = $('[data-sc]', root); if (!box) return;
+      $('[data-ms-later]', root).closest('label').classList.toggle('hidden', !gwOn('scheduling'));
+      if (!gwOn('scheduling')) { box.hidden = true; return; }
+      try {
+        const r = await retry409(() => gq('/reseller/schedule')); box.hidden = !(r.items.length || r.pauses.length);
+        const stt = { pending: 'Waiting', done: 'Done', skipped: 'Skipped' };
+        box.innerHTML = `<h2>Scheduled</h2><div class="admin-list">${r.pauses.map((x) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(x.name)}</strong> is paused<div class="muted">until ${esc(fmtDay(x.until))}${x.keepTime ? ' (paused days are added back)' : ''}</div></div></div>`).join('')}${r.items.map((x) => `<div class="admin-row" data-sid="${esc(x.id)}"><div class="admin-row-main"><strong>${x.type === 'renew' ? 'Renew ' + esc(x.customer) + ' on ' + esc(x.planName) : 'Message to ' + x.count + ' ' + (x.count === 1 ? 'customer' : 'customers')}</strong> <span class="pill ${x.status === 'pending' ? 'warn' : x.status === 'done' ? 'good' : 'bad'}">${stt[x.status]}</span><div class="muted">${esc(fmtDay(x.date))}${x.hour != null ? ' at ' + x.hour + ':00' : ''}${x.type === 'message' ? ' · ' + esc(x.text) : ''}${x.result ? ' · ' + esc(x.result) : ''}</div></div>${x.status === 'pending' ? '<div class="plan-actions"><button class="btn btn-gray" data-sc-del>Cancel</button></div>' : ''}</div>`).join('')}</div>`;
+      } catch { box.hidden = true; }
+    };
+    root.addEventListener('click', async (e) => { const b = e.target.closest('[data-sc-del]'); if (!b) return; try { await gq(`/reseller/schedule/${encodeURIComponent(b.closest('[data-sid]').dataset.sid)}`, { method: 'DELETE' }); loadGwSchedule(); } catch (err) { toast(err.message, 4000); } });
+    root.addEventListener('change', (e) => { if (e.target.matches('[data-ms-later]')) { $('[data-ms-whenrow]', root).classList.toggle('hidden', !e.target.checked); const di = $('[data-ms-date]', root); if (e.target.checked && !di.value) { const x = new Date(); x.setDate(x.getDate() + 1); di.value = `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; } } });
+    // Settings: helpers, branding, optional tools
+    let staffData = null, newStaff = null;
+    const PERMS = { view: 'See customers', tickets: 'Answer support', passwords: 'Reset passwords and sign out devices', trials: 'Add free trials' };
+    const permBoxes = (perms, cls) => Object.keys(PERMS).map((k) => `<label class="admin-check"><input type="checkbox" class="${cls}" data-p="${k}"${perms?.[k] ? ' checked' : ''}> ${PERMS[k]}</label>`).join('');
+    const permsOf = (el, cls) => Object.fromEntries($$('.' + cls, el).map((c) => [c.dataset.p, c.checked]));
+    const paintHelpers = () => {
+      const box = $('[data-gw-tm]', root); if (!box) return;
+      if (!gwOn('staff')) { box.innerHTML = '<h2>Helpers</h2><p class="muted">Helpers are switched off for your account.</p>'; return; }
+      const list = staffData?.staff || d.helpers || [];
+      box.innerHTML = `<h2>Helpers</h2><p class="muted">Give a helper their own login to answer your customers' messages, reset passwords or add free trials. They never see your credits, prices, payments or settings.</p>
+        ${newStaff ? `<div class="admin-card-note"><strong>${esc(newStaff.name)} is ready.</strong> Username: <strong>${esc(newStaff.user)}</strong> · Password: <strong>${esc(newStaff.pw)}</strong> (shown only now)<div class="m-actions"><button class="btn btn-gray" data-tm-copy>Copy</button></div></div>` : ''}
+        <div class="admin-list">${list.map((x) => `<div class="admin-row" data-xid="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.name)}</strong> <span class="muted">${esc(x.userName)}</span>${x.status === 'off' ? ' <span class="pill bad">Off</span>' : ''}<div>${permBoxes(x.perms, 'tm-p')}</div></div><div class="plan-actions"><button class="btn btn-gray" data-tm-save>Save</button><button class="btn btn-gray" data-tm-off>${x.status === 'off' ? 'Switch on' : 'Switch off'}</button><button class="btn btn-gray" data-tm-pw>New password</button><button class="btn btn-gray" data-tm-del>Remove</button></div></div>`).join('') || '<p class="muted">No helpers yet.</p>'}</div>
+        <h3 class="users-sub">Add a helper</h3><div class="plan-grid"><label class="admin-field"><span>Name</span><input type="text" class="st-note-input" data-tm-name maxlength="60"></label><label class="admin-field"><span>Login name</span><input type="text" class="st-note-input" data-tm-user maxlength="32" autocapitalize="none" autocomplete="off"></label></div>
+        <div data-tm-newperms>${permBoxes({ view: true, tickets: true }, 'tm-np')}</div><div class="m-actions"><button class="btn btn-red" data-tm-add>Add helper</button></div><div class="live-result" data-tm-msg></div>`;
+    };
+    const paintGw2 = async () => {
+      const br = d.brand || {};
+      $('[data-gw-br]', root).hidden = !gwOn('branding');
+      $('[data-gw-br]', root).innerHTML = `<h2>Your name and welcome text</h2><p class="muted">Customers see this on your trial sign-up page and on their account, instead of Aurora's.</p>
+        <label class="admin-field"><span>Business name</span><input type="text" class="st-note-input" data-br-name maxlength="40" value="${esc(br.name || '')}"></label>
+        <label class="admin-field"><span>Welcome text (optional)</span><textarea class="st-note-input" rows="3" data-br-welcome maxlength="300">${esc(br.welcome || '')}</textarea></label>
+        <div class="m-actions"><button class="btn btn-red" data-br-save>Save</button></div><div class="live-result" data-br-msg></div>`;
+      $('[data-gw-ot]', root).innerHTML = `<h2>Optional tools</h2><p class="muted">Switch off the tools you do not want. Your provider sets what is on to start with.</p>
+        ${[['health', 'Customer health list on the Overview'], ['scheduling', 'Scheduling, pausing and bulk actions'], ['staff', 'Helpers'], ['branding', 'Your name and welcome text on customer pages']].map(([k, l]) => `<label class="admin-check"><input type="checkbox" data-ot="${k}"${gwOn(k) ? ' checked' : ''}> ${l}</label>`).join('')}
+        <div class="m-actions"><button class="btn btn-red" data-ot-save>Save</button></div><div class="live-result" data-ot-msg></div>`;
+      paintHelpers();
+      if (gwOn('staff')) { try { staffData = await retry409(() => gq('/reseller/staff')); paintHelpers(); } catch { /* an older Guard */ } }
+    };
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      try {
+        if (b.matches('[data-br-save]')) { const r = await gq('/reseller/brand', { method: 'PUT', body: { name: $('[data-br-name]', root).value.trim(), welcome: $('[data-br-welcome]', root).value.trim() } }); d.brand = r.brand; say2('[data-br-msg]', 'Saved.', 'good'); }
+        else if (b.matches('[data-ot-save]')) { const body = {}; $$('[data-ot]', root).forEach((c) => { body[c.dataset.ot] = c.checked; }); d.opts = await gq('/reseller/options', { method: 'PUT', body }); paintGw2(); say2('[data-ot-msg]', 'Saved.', 'good'); loadHealth(); }
+        else if (b.matches('[data-tm-add]')) {
+          const name = $('[data-tm-name]', root).value.trim(), user = $('[data-tm-user]', root).value.trim(); b.disabled = true;
+          const r = await gq('/reseller/staff', { method: 'POST', body: { name, userName: user, perms: permsOf($('[data-gw-tm]', root), 'tm-np') } }); newStaff = { name, user, pw: r.password }; staffData = { staff: r.staff }; paintHelpers();
+        } else if (b.matches('[data-tm-copy]')) copyText(`Aurora helper login\nUsername: ${newStaff.user}\nPassword: ${newStaff.pw}`);
+        else if (b.closest('[data-xid]')) {
+          const row = b.closest('[data-xid]'), id = row.dataset.xid, x = (staffData?.staff || []).find((y) => y.id === id), url = `/reseller/staff/${encodeURIComponent(id)}`;
+          if (b.matches('[data-tm-save]')) { staffData = { staff: (await gq(url, { method: 'PUT', body: { perms: permsOf(row, 'tm-p') } })).staff }; toast('Saved', 2000); paintHelpers(); }
+          else if (b.matches('[data-tm-off]')) { staffData = { staff: (await gq(url, { method: 'PUT', body: { status: x.status === 'off' ? 'active' : 'off' } })).staff }; paintHelpers(); }
+          else if (b.matches('[data-tm-pw]')) { if (!(await confirmAction(`New password for ${x.name}?`, 'Their old password stops working.', 'New password'))) return; const r = await gq(`${url}/password`, { method: 'POST', body: {} }); newStaff = { name: x.name, user: x.userName, pw: r.password }; paintHelpers(); }
+          else if (b.matches('[data-tm-del]')) { if (!(await confirmAction(`Remove ${x.name}?`, 'Their login stops working.', 'Remove'))) return; newStaff = null; staffData = { staff: (await gq(url, { method: 'DELETE' })).staff }; paintHelpers(); }
+        }
+      } catch (err) { b.disabled = false; const m = b.closest('section')?.querySelector('.live-result'); if (m) { m.className = 'live-result bad'; m.textContent = oldGuard(err, 'this'); } else toast(err.message, 4000); }
     });
     setRp((() => { try { return store.get('ef.resTab') || 'overview'; } catch { return 'overview'; } })());
   }
