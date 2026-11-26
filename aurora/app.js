@@ -5559,18 +5559,21 @@
         ${settingRow('Access until', soon && !a.expired ? 'Your access ends soon. You can ask for more time below.' : null, `<span class="setting-value${soon ? ' account-soon' : ''}">${esc(endText)}</span>`)}
         ${reqHtml}
         ${a.canRequest ? `<div class="account-request">
-          ${offered.length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}</select></label>` : ''}
+          ${offered.length || (a.bundles || []).length ? `<label class="account-plan-pick"><span>I'd like</span><select data-ext-plan><option value="">More time on my current plan</option>${offered.map((o) => `<option value="${esc(o.id)}">${esc(o.name)} · ${esc(money(o.price))}</option>`).join('')}${(a.bundles || []).length ? `<optgroup label="Offers">${a.bundles.map((b) => `<option value="bundle:${esc(b.id)}">${esc(b.name)} · ${esc(money(b.price))}</option>`).join('')}</optgroup>` : ''}</select></label>` : ''}
+          ${a.pay ? `<div class="admin-card-note"><strong>How to pay</strong><div class="muted" style="white-space:pre-wrap">${esc(a.pay.text || '')}</div>${a.pay.url ? `<p><a class="btn btn-gray" href="${esc(a.pay.url)}" target="_blank" rel="noopener noreferrer">Open the pay link</a></p>` : ''}</div>
+            <label class="admin-check"><input type="checkbox" data-ext-paid> I have already paid</label>${nav.tv ? '' : '<input type="text" class="account-note-input hidden" data-ext-method maxlength="30" placeholder="How? (Cash App, Zelle...)" autocomplete="off">'}` : ''}
           ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-coupon maxlength="20" placeholder="Coupon code (optional)" autocomplete="off" autocapitalize="characters">'}
           ${nav.tv ? '' : '<input type="text" class="account-note-input" data-ext-note maxlength="200" placeholder="Add a note for the admin (optional)" autocomplete="off">'}
           <button class="btn btn-white" data-ext-send>Request an extension</button></div>` : ''}`;
       // While a request waits, look again every 30 s so the answer appears without leaving the page.
       if (r?.status === 'pending') setTimeout(() => { if (isCurrent() && section.isConnected) draw(); }, 30000);
+      $('[data-ext-paid]', box)?.addEventListener('change', (e) => $('[data-ext-method]', box)?.classList.toggle('hidden', !e.target.checked));
       $('[data-ext-send]', box)?.addEventListener('click', async (e) => {
         const btn = e.currentTarget;
         btn.disabled = true;
         btn.textContent = 'Sending…';
         try {
-          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: $('[data-ext-plan]', box)?.value || undefined, coupon: $('[data-ext-coupon]', box)?.value.trim() || undefined } });
+          await guard('/extension', { method: 'POST', body: { userId: state.userId, note: $('[data-ext-note]', box)?.value.trim() || '', planId: /^bundle:/.test($('[data-ext-plan]', box)?.value || '') ? undefined : ($('[data-ext-plan]', box)?.value || undefined), bundleId: /^bundle:/.test($('[data-ext-plan]', box)?.value || '') ? $('[data-ext-plan]', box).value.slice(7) : undefined, paid: $('[data-ext-paid]', box)?.checked || undefined, paidMethod: $('[data-ext-paid]', box)?.checked ? ($('[data-ext-method]', box)?.value.trim() || undefined) : undefined, coupon: $('[data-ext-coupon]', box)?.value.trim() || undefined } });
           toast('Request sent to the admin', 3000);
         } catch (err) { toast(err.message || "Couldn't send the request. Try again in a moment.", 5000); }
         draw();
@@ -7588,6 +7591,28 @@
       $('[data-pin-lock]', body)?.addEventListener('click', async () => { try { await guard('/reseller-pin/lock', { method: 'POST', body: {} }); adminResellers(body, isCurrent); } catch (e) { say(e.message, 'bad'); } });
     };
     queueMicrotask(pinHandlers);
+    // What is on for every reseller (guard 1.54.0). A reseller can still change it for their own customers.
+    const defaultsHandlers = async () => {
+      const card = $('[data-defaults]', body); if (!card) return;
+      let df;
+      try { df = await guard('/reseller-defaults'); } catch (e) { card.innerHTML = `<h2>Reseller features</h2><p class="muted">${esc(e.status === 404 ? 'Update Aurora Guard to 1.54.0 to use this.' : e.message)}</p>`; return; }
+      card.innerHTML = `<h2>Reseller features <small>on for every reseller</small></h2><p class="muted">Each reseller can change these for their own customers. A reseller's own choice wins over what you set here.</p>
+        <label class="admin-check"><input type="checkbox" data-df="reminders"${df.reminders ? ' checked' : ''}> Renewal reminders in customers' inboxes</label>
+        <label class="admin-check"><input type="checkbox" data-df="pay"${df.pay ? ' checked' : ''}> Payment instructions and "I have paid"</label>
+        <label class="admin-check"><input type="checkbox" data-df="bundles"${df.bundles ? ' checked' : ''}> Offers for longer plans</label>
+        <label class="admin-check"><input type="checkbox" data-df="referrals"${df.referrals ? ' checked' : ''}> Referral rewards chosen by the reseller</label>
+        <div class="plan-grid"><label class="admin-field"><span>Reminder days (like 7, 3, 1)</span><input type="text" class="st-note-input" data-df-days maxlength="30" value="${esc(df.remindDays.join(', '))}"></label>
+          <label class="admin-field"><span>Referral reward</span><select data-df-type><option value="days"${df.reward.type === 'days' ? ' selected' : ''}>Free days</option><option value="coupon"${df.reward.type === 'coupon' ? ' selected' : ''}>A discount coupon</option></select></label>
+          <label class="admin-field"><span>Free days</span><input type="number" class="st-note-input" data-df-rdays min="1" max="90" value="${df.reward.days}"></label>
+          <label class="admin-field"><span>Coupon percent off</span><input type="number" class="st-note-input" data-df-rpct min="1" max="90" value="${df.reward.percent}"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-df-save>Save</button></div><div class="live-result" data-df-msg></div>`;
+      $('[data-df-save]', card).addEventListener('click', async () => {
+        const out = $('[data-df-msg]', card), body = { remindDays: $('[data-df-days]', card).value.split(/[,\s]+/).filter(Boolean).map(Number), reward: { type: $('[data-df-type]', card).value, days: Number($('[data-df-rdays]', card).value), percent: Number($('[data-df-rpct]', card).value) } };
+        $$('[data-df]', card).forEach((c) => { body[c.dataset.df] = c.checked; });
+        try { await guard('/reseller-defaults', { method: 'PUT', body }); out.className = 'live-result good'; out.textContent = 'Saved.'; } catch (e) { out.className = 'live-result bad'; out.textContent = e.message; }
+      });
+    };
+    queueMicrotask(defaultsHandlers);
     const planChecks = (sel) => plans.map((p) => `<label class="admin-check"><input type="checkbox" data-plan="${esc(p.id)}"${sel.includes(p.id) ? ' checked' : ''}> ${esc(p.name)} <span class="pill">${esc(creditsWord(planCreditCost(p)))}</span>${p.active ? '' : ' <span class="pill warn">Hidden</span>'}</label>`).join('') || '<p class="muted">Add plans first (Admin → Plans).</p>';
     const row = (r) => `<div class="admin-row" data-r="${esc(r.id)}"><div class="admin-row-main"><strong>${esc(r.name)}</strong>
         <span class="pill${r.status !== 'active' ? ' bad' : r.low ? ' warn' : ''}">${r.status !== 'active' ? 'Suspended' : creditsWord(r.credits)}</span>${r.trialsUnlimited ? ' <span class="pill good">Unlimited trials</span>' : ''}${r.warnings ? ` <span class="pill bad">${r.warnings} ${r.warnings === 1 ? 'warning' : 'warnings'}</span>` : ''}${r.rulesOk === false ? ' <span class="pill warn">Rules not agreed</span>' : ''}
@@ -7603,6 +7628,7 @@
         <div class="m-actions"><button class="btn btn-white" data-pin-save>${pinState.set ? 'Change PIN' : 'Set PIN'}</button>${pinState.set ? '<button class="btn btn-gray" data-pin-off>Remove PIN</button><button class="btn btn-gray" data-pin-lock>Lock now</button>' : ''}</div>
         <div class="live-result" data-pin-set-result></div></section>` : '';
     body.innerHTML = `${pinCard}
+      <section class="admin-card" data-defaults><div class="spinner"></div></section>
       <div class="stat-grid">
         ${statTile('Resellers', d.resellers.length, `${d.resellers.filter((r) => r.status === 'active').length} active`)}
         ${statTile('Credits held', d.totalCredits, 'across all resellers')}
@@ -8220,13 +8246,13 @@
     try { d = await guard('/referral', { params: { userId: state.userId } }); } catch (e) { if (isCurrent()) root.innerHTML = `${head}<p class="empty-msg">${notReady(e, 'Refer a friend')}</p>`; return; }
     if (!isCurrent()) return;
     if (!d.enabled) { root.innerHTML = `${head}<p class="empty-msg">Referrals are not on right now.</p>`; return; }
-    const msg = `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
+    const msg = d.managed ? `Join me on Aurora! Use my code ${d.code} when you sign up.` : `Join me on Aurora! Use my code ${d.code} and we both get ${d.days} free days.`;
     root.innerHTML = `${head}
       <section class="settings-section refer-card"><p class="muted">Your code</p><div class="refer-code">${esc(d.code)}</div>
-        <p class="muted">Your friend gets <strong>${d.days} free days</strong>, and so do you when they join.</p>
+        <p class="muted">${d.managed ? `When a friend joins with your code, <strong>${esc(d.by)}</strong> thanks you with <strong>${esc(d.reward)}</strong>.` : `Your friend gets <strong>${d.days} free days</strong>, and so do you when they join.`}</p>
         <div class="m-actions"><button class="btn btn-white" data-share>Share my code</button><button class="btn btn-gray" data-copy>Copy</button></div></section>
-      <div class="stat-grid">${statTile('Friends joined', d.friends.length, '')}${statTile('Free days earned', d.earned, '')}</div>
-      ${d.friends.length ? `<section class="settings-section"><h2>Your friends</h2>${d.friends.map((f) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(f.name)}</strong><div class="muted">Joined ${esc(timeAgo(f.at))} · +${d.days} days</div></div></div>`).join('')}</section>` : ''}
+      <div class="stat-grid">${statTile('Friends joined', d.friends.length, '')}${d.managed ? '' : statTile('Free days earned', d.earned, '')}</div>
+      ${d.friends.length ? `<section class="settings-section"><h2>Your friends</h2>${d.friends.map((f) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(f.name)}</strong><div class="muted">Joined ${esc(timeAgo(f.at))}${d.managed ? '' : ' · +' + d.days + ' days'}</div></div></div>`).join('')}</section>` : ''}
       ${d.canRedeem ? `<section class="settings-section"><h2>Did a friend invite you?</h2><p class="muted">Enter their code in your first 14 days.</p>
         <div class="refer-redeem"><input type="text" class="st-note-input" data-code maxlength="20" autocapitalize="characters" autocomplete="off" placeholder="FRIEND-1AB"><button class="btn btn-white" data-redeem>Use code</button></div><div class="live-result" data-result></div></section>` : ''}`;
     const copy = () => { try { navigator.clipboard.writeText(msg).then(() => toast('Copied', 1500), () => toast(msg, 6000)); } catch { toast(msg, 6000); } };
@@ -8234,7 +8260,7 @@
     $('[data-share]', root).addEventListener('click', () => { if (navigator.share) navigator.share({ text: msg }).catch(() => {}); else copy(); });
     $('[data-redeem]', root)?.addEventListener('click', async () => {
       const r = $('[data-result]', root);
-      try { const x = await guard('/referral/redeem', { method: 'POST', body: { userId: state.userId, code: $('[data-code]', root).value } }); toast(x.days ? `You got ${x.days} free days` : 'Code accepted', 3500); renderRefer(page, isCurrent); }
+      try { const x = await guard('/referral/redeem', { method: 'POST', body: { userId: state.userId, code: $('[data-code]', root).value } }); toast(x.managed ? 'Code accepted. Your friend\'s provider will confirm the reward.' : x.days ? `You got ${x.days} free days` : 'Code accepted', 4500); renderRefer(page, isCurrent); }
       catch (e) { r.className = 'live-result bad'; r.textContent = e.message; }
     });
   }
@@ -8467,6 +8493,10 @@
       <section class="admin-card" data-rp="sales" hidden data-s-pr></section>
       <section class="admin-card" data-rp="sales" hidden data-s-pl></section>
       <section class="admin-card" data-rp="sales" hidden data-s-cp></section>
+      <section class="admin-card" data-rp="sales" hidden data-gw-bn></section>
+      <section class="admin-card" data-rp="sales" hidden data-gw-rf></section>
+      <section class="admin-card" data-rp="settings" data-gw-rm></section>
+      <section class="admin-card" data-rp="settings" data-gw-pay></section>
       <section class="admin-card" data-rp="sales" hidden data-s-tp></section>
       <section class="admin-card" data-rp="overview" data-fc></section>
       <section class="admin-card" data-rp="money" hidden data-mfc></section>
@@ -8844,6 +8874,7 @@
       $$('[data-rp]', root).forEach((el) => { el.hidden = el.dataset.rp !== name; });
       $$('[data-rtab]', root).forEach((b) => b.classList.toggle('on', b.dataset.rtab === name));
       if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMsgs(); else if (name === 'guides') paintGuides();
+      if (name === 'sales') { paintGwSales(); loadGwReferrals(); } if (name === 'settings') paintGwSettings();
     };
     $$('[data-rtab]', root).forEach((b) => b.addEventListener('click', () => { setRp(b.dataset.rtab); root.scrollIntoView({ block: 'start' }); }));
 
@@ -9166,6 +9197,76 @@
         else if (b.matches('[data-cp-tog]')) { await gq(`/reseller/coupons/${encodeURIComponent(id)}/toggle`, { method: 'POST', body: {} }); loadCoupons(); }
         else if (b.matches('[data-cp-del]')) { if (!(await confirmAction('Delete this coupon?', 'The code stops working straight away.', 'Delete'))) return; await gq(`/reseller/coupons/${encodeURIComponent(id)}`, { method: 'DELETE' }); loadCoupons(); }
       } catch (err) { b.disabled = false; say2('[data-cp-msg]', esc(err.message), 'bad'); }
+    });
+
+    // ===== Reseller growth tools (guard 1.54.0): reminders, payment instructions, offers, referral rewards =====
+    const gwOld = (e) => (e.status === 404 ? 'Update Aurora Guard to 1.54.0 to use this.' : esc(e.message));
+    const paintGwSettings = () => {
+      const o = d.opts || {}, pay = d.pay || {};
+      $('[data-gw-rm]', root).innerHTML = `<h2>Renewal reminders</h2><p class="muted">Your customers get a reminder in their Aurora inbox before their plan ends. Each reminder has a Renew button that sends you a request to approve.</p>
+        <label class="admin-check"><input type="checkbox" data-rm-on${o.reminders !== false ? ' checked' : ''}> Send renewal reminders to my customers</label>
+        <label class="admin-field"><span>Days before the plan ends (up to 6, each 1 to 60)</span><input type="text" class="st-note-input" data-rm-days maxlength="30" value="${esc((o.remindDays || [7, 3, 1]).join(', '))}"></label>
+        <p class="muted">${o.own?.remindDays ? 'These are your own days.' : 'These are the standard days.'}</p>
+        <div class="m-actions"><button class="btn btn-red" data-rm-save>Save</button><button class="btn btn-gray" data-rm-reset>Use the standard days</button></div><div class="live-result" data-rm-msg></div>`;
+      $('[data-gw-pay]', root).innerHTML = `<h2>How customers pay you</h2><p class="muted">Customers see this when they ask to renew, and can tell you they paid.</p>
+        <label class="admin-field"><span>Payment instructions</span><textarea class="st-note-input" rows="3" data-py-text maxlength="300" placeholder="Cash App $yourtag or Zelle you@example.com">${esc(pay.text || '')}</textarea></label>
+        <label class="admin-field"><span>Pay link (optional, https://)</span><input type="text" class="st-note-input" data-py-url maxlength="200" value="${esc(pay.url || '')}" placeholder="https://cash.app/$yourtag"></label>
+        <label class="admin-check"><input type="checkbox" data-py-on${o.pay !== false ? ' checked' : ''}> Show this to my customers</label>
+        <div class="m-actions"><button class="btn btn-red" data-py-save>Save</button></div><div class="live-result" data-py-msg></div>`;
+    };
+    let gwRef = null;
+    const paintGwSales = () => {
+      const o = d.opts || {}, list = d.bundles || [], rw = o.reward || { type: 'days', days: 7, percent: 10 };
+      $('[data-gw-bn]', root).innerHTML = `<h2>Offers for longer plans</h2><p class="muted">Sell several months at a better price, like 12 months for the price of 10. Customers pick an offer when they renew and you approve it. It uses the credits you set, or the plan's credits times the months.</p>
+        <div class="plan-grid"><label class="admin-field"><span>Name</span><input type="text" class="st-note-input" data-bn-name maxlength="40" placeholder="12 months"></label>
+          <label class="admin-field"><span>Based on plan</span><select data-bn-plan>${planOpts('')}</select></label>
+          <label class="admin-field"><span>Times the plan</span><input type="number" class="st-note-input" data-bn-times min="2" max="24" inputmode="numeric" placeholder="12"></label>
+          <label class="admin-field"><span>Customer pays</span><input type="number" class="st-note-input" data-bn-price min="0" step="0.01" inputmode="decimal" placeholder="350"></label>
+          <label class="admin-field"><span>Credits it uses (optional)</span><input type="number" class="st-note-input" data-bn-cr min="0" inputmode="numeric" placeholder="auto"></label></div>
+        <label class="admin-check"><input type="checkbox" data-bn-on${o.bundles !== false ? ' checked' : ''}> Show offers to my customers</label>
+        <div class="m-actions"><button class="btn btn-red" data-bn-make>Make offer</button></div><div class="live-result" data-bn-msg></div>
+        <div class="admin-list">${list.map((b) => `<div class="admin-row" data-bid="${esc(b.id)}"><div class="admin-row-main"><strong>${esc(b.name)}</strong>${b.ok ? '' : ' <span class="pill bad">Plan not available</span>'}<div class="muted">${esc(b.planName || '')} × ${b.times} · customer pays ${esc(money(b.price))} · ${b.credits == null ? '' : creditsWord(b.credits)}</div></div><div class="plan-actions"><button class="btn btn-gray" data-bn-del>Delete</button></div></div>`).join('') || '<p class="muted">No offers yet.</p>'}</div>`;
+      $('[data-gw-rf]', root).innerHTML = `<h2>Referral rewards</h2><p class="muted">When one of your customers brings a friend (the friend types their code in Aurora), you choose the reward and give it with one tap. Nothing is given until you do.</p>
+        <label class="admin-check"><input type="checkbox" data-rf-on${o.referrals !== false ? ' checked' : ''}> Reward customers who bring friends</label>
+        <div class="plan-grid"><label class="admin-field"><span>Reward</span><select data-rf-type><option value="days"${rw.type === 'days' ? ' selected' : ''}>Free days</option><option value="coupon"${rw.type === 'coupon' ? ' selected' : ''}>A discount coupon</option></select></label>
+          <label class="admin-field"><span>Free days</span><input type="number" class="st-note-input" data-rf-days min="1" max="90" value="${rw.days}"></label>
+          <label class="admin-field"><span>Coupon percent off</span><input type="number" class="st-note-input" data-rf-pct min="1" max="90" value="${rw.percent}"></label></div>
+        <div class="m-actions"><button class="btn btn-red" data-rf-save>Save</button></div><div class="live-result" data-rf-msg></div><div data-rf-list></div>`;
+      paintGwRefs();
+    };
+    const loadGwReferrals = async () => {
+      try { gwRef = await retry409(() => gq('/reseller/referrals')); } catch (e) { gwRef = { error: gwOld(e), referrals: [] }; }
+      paintGwRefs();
+    };
+    const paintGwRefs = () => {
+      const box = $('[data-rf-list]', root); if (!box || !gwRef) return;
+      if (gwRef.error) { box.innerHTML = `<p class="muted">${gwRef.error}</p>`; return; }
+      box.innerHTML = (gwRef.referrals || []).length ? `<h3 class="users-sub">Friends brought in</h3><div class="admin-list">${gwRef.referrals.map((x) => `<div class="admin-row" data-rid="${esc(x.id)}"><div class="admin-row-main"><strong>${esc(x.referrer)}</strong> brought <strong>${esc(x.friend)}</strong><div class="muted">${esc(timeAgo(x.at))}${x.status === 'given' ? ' · Rewarded: ' + (x.given?.type === 'coupon' ? x.given.percent + '% coupon' : (x.given?.days || 0) + ' free days') + ' to ' + esc((x.given?.to || []).join(' and ')) : x.status === 'dismissed' ? ' · Dismissed' : ''}</div>
+        ${x.status === 'pending' ? '<label class="admin-check"><input type="checkbox" data-rf-both checked> Reward the friend too</label>' : ''}</div>${x.status === 'pending' ? '<div class="plan-actions"><button class="btn btn-white" data-rf-give>Give reward</button><button class="btn btn-gray" data-rf-no>Dismiss</button></div>' : ''}</div>`).join('')}</div>` : '<p class="muted">Nobody has used a code yet. Customers find their code under Refer a friend.</p>';
+    };
+    root.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      try {
+        if (b.matches('[data-rm-save], [data-rm-reset]')) {
+          const body = { reminders: $('[data-rm-on]', root).checked, remindDays: b.matches('[data-rm-reset]') ? null : $('[data-rm-days]', root).value.split(/[,\s]+/).filter(Boolean).map(Number) };
+          d.opts = await gq('/reseller/options', { method: 'PUT', body }); paintGwSettings(); say2('[data-rm-msg]', 'Saved.', 'good');
+        } else if (b.matches('[data-py-save]')) {
+          const r1 = await gq('/reseller/pay', { method: 'PUT', body: { text: $('[data-py-text]', root).value.trim(), url: $('[data-py-url]', root).value.trim() } }); d.pay = r1.pay;
+          d.opts = await gq('/reseller/options', { method: 'PUT', body: { pay: $('[data-py-on]', root).checked } }); say2('[data-py-msg]', 'Saved.', 'good');
+        } else if (b.matches('[data-bn-make]')) {
+          b.disabled = true;
+          const r1 = await gq('/reseller/bundles', { method: 'POST', body: { name: $('[data-bn-name]', root).value.trim(), planId: $('[data-bn-plan]', root).value, times: Number($('[data-bn-times]', root).value), price: Number($('[data-bn-price]', root).value), credits: $('[data-bn-cr]', root).value === '' ? undefined : Number($('[data-bn-cr]', root).value) } });
+          d.bundles = r1.bundles; d.opts = await gq('/reseller/options', { method: 'PUT', body: { bundles: $('[data-bn-on]', root).checked } }); paintGwSales(); say2('[data-bn-msg]', 'Offer made.', 'good');
+        } else if (b.matches('[data-bn-del]')) {
+          if (!(await confirmAction('Delete this offer?', 'Customers will no longer see it.', 'Delete'))) return;
+          const r1 = await gq(`/reseller/bundles/${encodeURIComponent(b.closest('[data-bid]').dataset.bid)}`, { method: 'DELETE' }); d.bundles = r1.bundles; paintGwSales();
+        } else if (b.matches('[data-rf-save]')) {
+          d.opts = await gq('/reseller/options', { method: 'PUT', body: { referrals: $('[data-rf-on]', root).checked, reward: { type: $('[data-rf-type]', root).value, days: Number($('[data-rf-days]', root).value), percent: Number($('[data-rf-pct]', root).value) } } }); say2('[data-rf-msg]', 'Saved.', 'good');
+        } else if (b.matches('[data-rf-give], [data-rf-no]')) {
+          const row = b.closest('[data-rid]'), give = b.matches('[data-rf-give]'); b.disabled = true;
+          await gq(`/reseller/referrals/${encodeURIComponent(row.dataset.rid)}/${give ? 'reward' : 'dismiss'}`, { method: 'POST', body: give ? { both: $('[data-rf-both]', row)?.checked !== false } : {} }); loadGwReferrals();
+        }
+      } catch (err) { b.disabled = false; const t = gwOld(err); const m = b.closest('section')?.querySelector('.live-result'); if (m) { m.className = 'live-result bad'; m.innerHTML = t; } else toast(err.message, 4000); }
     });
     setRp((() => { try { return store.get('ef.resTab') || 'overview'; } catch { return 'overview'; } })());
   }
