@@ -3393,7 +3393,7 @@
         logoSlot.appendChild(img);
         setLogo(img, logo, (ok) => { if (!ok) img.remove(); });
       }
-      const all = guideFor(ch)?.progs || el.__shortList || [];
+      const full = guideFor(ch)?.progs, all = full?.length ? full : (el.__shortList || []);
       el.__guide.progs = all;
       const progs = all.filter((p) => p.end > start.getTime() && p.start < end.getTime());
       // Redrawing removes the show the remote is on; put it back on the one at the same spot afterwards.
@@ -3405,12 +3405,14 @@
       };
       lane.innerHTML = '';
       if (!progs.length) {
-        const waiting = guidePending; // the full guide may still have this channel
+        // The full guide may still be loading, may not exist here (the web and Windows apps can't read it) or may not
+        // have this channel: ask the provider for this channel's own listings once, so the row isn't left empty.
+        const waiting = guidePending || (el.__short && !el.__shortDone);
         lane.innerHTML = `<button class="guide-empty${waiting ? ' waiting' : ''}">${waiting ? 'Loading…' : 'No information'}</button>`;
         $('.guide-empty', lane).addEventListener('click', play);
-        if (waiting && !el.__short) {
+        if (!el.__short) {
           el.__short = true;
-          iptvShortGuide(ch).then((list) => { el.__shortList = list?.length ? list : null; if (el.isConnected) fillLane(el); });
+          iptvShortGuide(ch).then((list) => { el.__shortDone = true; el.__shortList = list?.length ? list : null; if (el.isConnected) fillLane(el); });
         }
         refocus();
         return;
