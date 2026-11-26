@@ -1,3 +1,6 @@
+- Resellers: the reseller rules were updated and every reseller has to agree again. The Reseller panel shows what is new in short, so there is no need to read the whole page. Needs Aurora Guard 1.55.0.
+- New: Admin, Users now has tabs that separate your own customers from your resellers' customers (with a picker for one reseller), and a Staff and resellers tab.
+- New for resellers: choose their own renewal reminder days, show customers how to pay (and let them say they paid), offer longer plans like 12 months at a better price, and reward customers who bring friends with free days or a coupon. Administrators set what is on for everyone in Admin, Resellers. Needs Aurora Guard 1.54.0.
 - New: administrators can lift the daily free trial limit for chosen resellers (Admin, Resellers, Edit). Needs Aurora Guard 1.53.0.
 - New: provider Live TV channels now play in a web browser and in the Windows app (needs Aurora Guard 1.52.0). Some channels use sound or video a browser cannot play; Android plays those.
 - New: Aurora for Windows laptops and PCs (download from the Aurora website), and Aurora can now be installed from a web browser too. Resellers have setup guides for both.
