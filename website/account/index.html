@@ -139,12 +139,15 @@ details.card[open] > summary { margin-bottom:12px; }
       <div id="renewform" hidden>
         <div class="plans" id="plans" role="radiogroup" aria-label="Choose a plan"></div>
         <input type="hidden" id="plan" value="">
+        <div id="bundlebox" hidden><label class="f">Or save with an offer</label><div class="plans" id="bundles" role="radiogroup" aria-label="Offers"></div></div>
         <div class="preview" id="preview" hidden></div>
+        <div class="note" id="paybox" hidden style="margin-top:14px"></div>
         <label class="f" for="coupon">Have a coupon code? (optional)</label>
         <div style="display:flex;gap:8px"><input class="txt" id="coupon" maxlength="20" autocapitalize="characters" autocomplete="off" placeholder="Enter code"><button class="btn line" id="cpcheck" type="button" style="width:auto;margin:0;padding:12px 18px">Check</button></div>
         <p class="hint" id="cpmsg" role="status" hidden></p>
         <label class="f" for="note">A note for your provider (optional)</label>
         <input class="txt" id="note" maxlength="200" placeholder="For example: I would like to pay by...">
+        <label class="chk" id="paidrow" hidden style="margin-top:14px"><input type="checkbox" id="paid"><span>I have already paid. <input class="txt" id="paidmethod" maxlength="30" placeholder="How? (Cash App, Zelle...)" style="margin-top:8px"></span></label>
         <button class="btn block" id="ask" type="button" style="margin-top:14px;padding:16px;font-size:1.05rem">Request renewal</button>
         <p class="hint" style="text-align:center">Your provider confirms the request and adds the time. You will see the answer on this page.</p>
       </div>
@@ -275,7 +278,7 @@ details.card[open] > summary { margin-bottom:12px; }
   }
   window.addEventListener('scroll', syncStick, { passive: true }); window.addEventListener('resize', syncStick);
   function selectPlan(id) {
-    picked = id; $('plan').value = id;
+    picked = id; $('plan').value = id; if (pickedBundle) { pickedBundle = ''; paintBundles(); }
     [].forEach.call(document.querySelectorAll('.pl'), function (b) { b.setAttribute('aria-checked', b.getAttribute('data-id') === id ? 'true' : 'false'); });
     var p = (acct.__plans || []).filter(function (x) { return x.id === id; })[0], len = p ? p.length * unitDays(p.unit) : (acct.plan && acct.plan.length ? acct.plan.length * unitDays(acct.plan.unit) : 30);
     var from = acct.expires && acct.expires > today() ? acct.expires : today(), to = addDays(from, len), pv = $('preview');
@@ -306,12 +309,31 @@ details.card[open] > summary { margin-bottom:12px; }
           (mo && p.length * unitDays(p.unit) > 35 ? '<div class="mo">about $' + esc(mo.toFixed(2)) + ' a month</div>' : '') + '</button>';
       }).join('');
       $('plans').innerHTML = html;
+      paintBundles();
       var cur = plans.filter(function (p) { return a.plan && a.plan.name === p.name; })[0];
       selectPlan(picked && plans.some(function (p) { return p.id === picked; }) ? picked : (cur ? cur.id : (plans[0] ? plans[0].id : '')));
       syncStick();
     });
     syncStick();
   }
+  var pickedBundle = '';
+  function paintBundles() {
+    var list = acct.bundles || [];
+    $('bundlebox').hidden = !list.length;
+    $('bundles').innerHTML = list.map(function (b) { return '<button type="button" class="pl" role="radio" data-bid="' + esc(b.id) + '" aria-checked="' + (pickedBundle === b.id) + '"><div class="nm">' + esc(b.name) + '</div><div class="pr">$' + esc(Number(b.price).toFixed(2).replace(/\.00$/, '')) + '</div><div class="ln">' + esc(b.planName) + ' × ' + b.times + '</div></button>'; }).join('');
+    var pay = acct.pay, box = $('paybox');
+    box.hidden = !pay;
+    if (pay) box.innerHTML = '<b>How to pay</b><div style="margin-top:6px;white-space:pre-wrap">' + esc(pay.text || '') + '</div>' + (pay.url ? '<p style="margin:10px 0 0"><a class="btn line" style="display:inline-block;width:auto;padding:10px 16px;text-decoration:none" href="' + esc(pay.url) + '" target="_blank" rel="noopener noreferrer">Open the pay link</a></p>' : '');
+    $('paidrow').hidden = !pay;
+  }
+  $('bundles').addEventListener('click', function (e) {
+    var b = e.target.closest('.pl'); if (!b) return;
+    pickedBundle = pickedBundle === b.getAttribute('data-bid') ? '' : b.getAttribute('data-bid'); paintBundles();
+    var bd = (acct.bundles || []).filter(function (x) { return x.id === pickedBundle; })[0];
+    [].forEach.call(document.querySelectorAll('#plans .pl'), function (x) { if (bd) x.setAttribute('aria-checked', 'false'); });
+    if (bd) { $('preview').hidden = false; $('preview').innerHTML = 'Offer: <b>' + esc(bd.name) + '</b>. Your reseller adds ' + bd.times + ' times the plan to your end date once they approve it.'; $('ask').textContent = 'Request ' + bd.name + ' · $' + Number(bd.price).toFixed(2); }
+    else selectPlan(picked);
+  });
   function paintHelp() {
     var s = acct.support, rows = [];
     if (s) {
@@ -366,10 +388,10 @@ details.card[open] > summary { margin-bottom:12px; }
     api('GET', '/referral').then(function (j) {
       if (j.__status !== 200 || !j.enabled) { $('refcard').hidden = true; return; }
       $('refcard').hidden = false;
-      $('refintro').textContent = 'Give a friend your code. When they join, you each get ' + j.days + ' free days.';
+      $('refintro').textContent = j.managed ? 'Give a friend your code. When they join, ' + j.by + ' thanks you with ' + j.reward + '.' : 'Give a friend your code. When they join, you each get ' + j.days + ' free days.';
       $('refcode').textContent = j.code || ''; $('refcode').dataset.code = j.code || '';
       var n = (j.friends || []).length;
-      $('refstats').textContent = n ? n + (n === 1 ? ' friend has' : ' friends have') + ' joined with your code. You have earned ' + j.earned + ' free days.' : 'No friends have used your code yet.';
+      $('refstats').textContent = n ? n + (n === 1 ? ' friend has' : ' friends have') + ' joined with your code.' + (j.managed ? '' : ' You have earned ' + j.earned + ' free days.') : 'No friends have used your code yet.';
       $('redeem').hidden = !j.canRedeem;
     });
   }
@@ -426,10 +448,10 @@ details.card[open] > summary { margin-bottom:12px; }
   };
   $('ask').onclick = function () {
     var b = $('ask'); b.disabled = true; say('renewerr', ''); say('renewok', '');
-    api('POST', '/extension', { userId: session.userId, note: $('note').value.trim(), planId: $('plan').value || undefined, coupon: $('coupon').value.trim() || undefined }).then(function (j) {
+    api('POST', '/extension', { userId: session.userId, note: $('note').value.trim(), planId: $('plan').value || undefined, coupon: $('coupon').value.trim() || undefined, bundleId: pickedBundle || undefined, paid: !$('paidrow').hidden && $('paid').checked ? true : undefined, paidMethod: $('paid').checked ? $('paidmethod').value.trim() : undefined }).then(function (j) {
       b.disabled = false;
       if (j.__status !== 200) { say('renewerr', j.error || 'Could not send the request.'); return; }
-      say('renewok', 'Request sent. You will see the answer here.'); $('note').value = ''; $('coupon').value = ''; $('cpmsg').hidden = true;
+      say('renewok', 'Request sent. You will see the answer here.'); $('note').value = ''; $('coupon').value = ''; $('cpmsg').hidden = true; pickedBundle = ''; $('paid').checked = false;
       api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintStatus(); paintRenew(); } });
     });
   };
@@ -445,7 +467,7 @@ details.card[open] > summary { margin-bottom:12px; }
     api('POST', '/referral/redeem', { userId: session.userId, code: code }).then(function (j) {
       $('rgo').disabled = false;
       if (j.__status !== 200) { say('rerr', j.error || 'That did not work.'); return; }
-      say('rok', 'Done. ' + (j.days ? j.days + ' free days were added.' : 'Your friend was credited.')); loadReferral();
+      say('rok', j.managed ? 'Done. Your friend\'s reseller will confirm the reward.' : 'Done. ' + (j.days ? j.days + ' free days were added.' : 'Your friend was credited.')); loadReferral();
       api('GET', '/account').then(function (a) { if (a.__status === 200) { acct = a; paintStatus(); } });
     });
   };

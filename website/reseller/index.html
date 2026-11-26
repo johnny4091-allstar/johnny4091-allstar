@@ -355,6 +355,8 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       <div class="card" id="tl-card"></div>
       <div class="card" id="pr-card"></div>
       <div class="card" id="pl-card"></div>
+      <div class="card" id="bn-card"></div>
+      <div class="card" id="rf-card"></div>
       <div class="card" id="cp-card"></div>
       <div class="card" id="tp-card"></div>
     </section>
@@ -384,6 +386,8 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     </section>
 
     <section class="pane" data-pane="settings" id="pane-settings" hidden>
+    <div class="card" id="rm-card"></div>
+    <div class="card" id="pay-card"></div>
     <div class="tools"><h2>Notifications</h2></div>
     <div class="card" id="notifycard">
       <h2>Get alerts where you already are</h2><p class="sub">Aurora messages you when a customer asks for an extension. Pick where.</p>
@@ -723,9 +727,9 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       var opts = (me.plans || []).map(function (p) { return '<option value="' + esc(p.id) + '"' + (p.id === x.wantedPlanId ? ' selected' : '') + '>' + esc(p.name) + ' (' + p.credits + ' credits)</option>'; }).join('');
       el.innerHTML = '<div class="top"><div><span class="nm">' + esc(x.full || x.name) + '</span>' + tag + '<div class="meta">' + esc(x.name) + ' · asked ' + esc(fmtAt(x.at)) + (x.wantedPlan ? ' · wants: ' + esc(x.wantedPlan) : ' · no plan chosen') + '</div></div>' +
         '<div class="meta" style="text-align:right">' + (x.expires ? (x.expired ? 'Ended ' : 'Ends ') + esc(fmt(x.expires)) : 'No end date') + '</div></div>' +
-        (x.coupon ? '<div class="quote"><b>Coupon ' + esc(x.coupon.code) + '</b> (' + esc(x.coupon.label) + ')' + (x.coupon.price != null ? '. They should pay <b>' + money(x.coupon.price) + '</b>' + (x.coupon.original ? ' instead of ' + money(x.coupon.original) : '') : '') + '</div>' : '') + (x.note ? '<div class="quote">\u201c' + esc(x.note) + '\u201d</div>' : '') +
+        (x.bundle ? '<div class="quote"><b>Offer: ' + esc(x.bundle.name) + '</b> (' + x.bundle.times + ' times the plan). They pay <b>' + money(x.bundle.price) + '</b>. Approving uses <b>' + x.bundle.credits + ' credits</b>.</div>' : '') + (x.paid ? '<div class="quote" style="border-color:var(--green)"><b>Says they paid</b>' + (x.paidMethod ? ' by ' + esc(x.paidMethod) : '') + '. Check it, then approve. It goes into your payment record.</div>' : '') + (x.coupon ? '<div class="quote"><b>Coupon ' + esc(x.coupon.code) + '</b> (' + esc(x.coupon.label) + ')' + (x.coupon.price != null ? '. They should pay <b>' + money(x.coupon.price) + '</b>' + (x.coupon.original ? ' instead of ' + money(x.coupon.original) : '') : '') + '</div>' : '') + (x.note ? '<div class="quote">\u201c' + esc(x.note) + '\u201d</div>' : '') +
         '<div class="act"><select class="xp" aria-label="Plan to renew on">' + opts + '</select><input class="msg2" maxlength="200" placeholder="Message to them (optional)" aria-label="Message to the customer">' +
-        '<button class="btn red sm ok" type="button">Approve and renew</button><button class="btn line sm danger no" type="button">Deny</button><div class="note say" style="width:100%;font-size:.85rem" aria-live="polite"></div></div>';
+        '<button class="btn red sm ok" type="button">' + (x.bundle ? 'Approve offer' : 'Approve and renew') + '</button><button class="btn line sm danger no" type="button">Deny</button><div class="note say" style="width:100%;font-size:.85rem" aria-live="polite"></div></div>';
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       function decide(btn, what, body) {
         if (busy) return; busy = true; btn.disabled = true;
@@ -736,7 +740,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
           reload();
         }).catch(function () { busy = false; btn.disabled = false; say('Could not reach Aurora. Check your connection.', true); });
       }
-      el.querySelector('.ok').onclick = function () { var v = el.querySelector('.xp').value; if (!v) return say('You have no plans to renew on. Ask your provider.', true); decide(this, 'approve', { planId: v, message: el.querySelector('.msg2').value.trim() }); };
+      el.querySelector('.ok').onclick = function () { var v = el.querySelector('.xp').value; if (!v && !x.bundle) return say('You have no plans to renew on. Ask your provider.', true); decide(this, 'approve', { planId: v, message: el.querySelector('.msg2').value.trim() }); };
       el.querySelector('.no').onclick = function () { decide(this, 'deny', { message: el.querySelector('.msg2').value.trim() }); };
       list.appendChild(el);
     });
@@ -1014,7 +1018,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   };
 
   // ===================== Reseller tools: support inbox, reports, sales tools, bulk renew =====================
-  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMessages(); else if (name === 'guides') paintGuides(); else if (name === 'add') paintImportPlans(); }
+  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMessages(); else if (name === 'guides') paintGuides(); else if (name === 'add') paintImportPlans(); if (name === 'sales') { paintGrowthSales(); loadReferrals(); } if (name === 'settings') paintGrowthSettings(); }
   function money(n) { return '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
   function ago(t) { var m = Math.round((Date.now() - t) / 60000); return m < 2 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; }
 
@@ -1362,6 +1366,91 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       if (b.classList.contains('cc')) copyText(b.closest('tr').querySelector('b').textContent).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select it'; setTimeout(function () { b.textContent = 'Copy'; }, 1400); });
       else if (b.classList.contains('ct')) api('POST', '/reseller/coupons/' + encodeURIComponent(id) + '/toggle', {}).then(loadCoupons);
       else if (b.classList.contains('cd')) { if (confirm('Delete this coupon?')) api('DELETE', '/reseller/coupons/' + encodeURIComponent(id)).then(loadCoupons); }
+    }
+  });
+
+  // ===================== Reseller growth tools (guard 1.54.0): reminders, payment instructions, offers, referral rewards =====================
+  function oldG(j) { return j.__status === 404 ? 'Update Aurora Guard to 1.54.0 to use this.' : (j.error || 'That did not work.'); }
+  function paintGrowthSettings() {
+    if (!me) return; var o = me.opts || {}, pay = me.pay || {};
+    $('rm-card').innerHTML = '<h2>Renewal reminders</h2><p class="sub">Your customers get a reminder in their Aurora inbox and on their account page before their plan ends. Each reminder has a Renew button that sends you a request to approve.</p>' +
+      '<label class="mrow" style="border:0;padding:0 0 10px"><input type="checkbox" id="rm-on"' + (o.reminders !== false ? ' checked' : '') + '><span>Send renewal reminders to my customers</span></label>' +
+      '<label for="rm-days">Days before the plan ends</label><input id="rm-days" maxlength="30" value="' + esc((o.remindDays || [7, 3, 1]).join(', ')) + '" placeholder="7, 3, 1">' +
+      '<p class="meta">Up to 6 days, each from 1 to 60. The day it ends is covered too.' + (o.own && o.own.remindDays ? '' : ' (Using the standard days.)') + '</p>' +
+      '<div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn red" id="rm-save" type="button">Save</button><button class="btn line" id="rm-reset" type="button">Use the standard days</button></div><p class="msg" id="rm-msg" role="status" hidden></p>';
+    $('pay-card').innerHTML = '<h2>How customers pay you</h2><p class="sub">Customers see this when they ask to renew, and can tell you they paid. It saves you answering "how do I pay?" again and again.</p>' +
+      '<label for="py-text">Payment instructions</label><textarea id="py-text" rows="3" maxlength="300" placeholder="Cash App $yourtag or Zelle you@example.com. Put your username in the note.">' + esc(pay.text || '') + '</textarea>' +
+      '<label for="py-url" style="margin-top:12px">Pay link <span style="font-weight:400;color:var(--dim)">(optional, starts with https://)</span></label><input id="py-url" maxlength="200" value="' + esc(pay.url || '') + '" placeholder="https://cash.app/$yourtag">' +
+      '<label class="mrow" style="border:0;padding:12px 0 0"><input type="checkbox" id="py-on"' + (o.pay !== false ? ' checked' : '') + '><span>Show this to my customers</span></label>' +
+      '<div class="row" style="margin-top:12px"><button class="btn red" id="py-save" type="button">Save</button></div><p class="msg" id="py-msg" role="status" hidden></p>';
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'rm-save' || b.id === 'rm-reset') {
+      var m = $('rm-msg'), body = { reminders: $('rm-on').checked };
+      if (b.id === 'rm-reset') body.remindDays = null; else body.remindDays = $('rm-days').value.split(/[,\s]+/).filter(Boolean).map(Number);
+      b.disabled = true;
+      api('PUT', '/reseller/options', body).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, oldG(j), 'err'); me.opts = j; paintGrowthSettings(); msg($('rm-msg'), 'Saved.', 'ok'); }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+    } else if (b.id === 'py-save') {
+      var pm = $('py-msg'); b.disabled = true;
+      api('PUT', '/reseller/pay', { text: $('py-text').value.trim(), url: $('py-url').value.trim() }).then(function (j) {
+        if (j.__status !== 200) { b.disabled = false; return msg(pm, oldG(j), 'err'); }
+        me.pay = j.pay; return api('PUT', '/reseller/options', { pay: $('py-on').checked }).then(function (o) { b.disabled = false; if (o.__status === 200) me.opts = o; msg(pm, 'Saved.', 'ok'); });
+      }).catch(function () { b.disabled = false; msg(pm, 'Could not reach Aurora.', 'err'); });
+    }
+  });
+
+  // ----- offers (bundles) and referral rewards, in Sales tools
+  var refData = null;
+  function paintGrowthSales() {
+    if (!me) return; var o = me.opts || {}, plans = me.plans || [], list = me.bundles || [];
+    $('bn-card').innerHTML = '<h2>Offers for longer plans</h2><p class="sub">Sell several months at a better price, like 12 months for the price of 10. Customers pick an offer when they renew, and you approve it. It uses the credits you set (or the plan\'s credits times the months).</p>' +
+      '<div class="grid"><div><label for="bn-name">Name</label><input id="bn-name" maxlength="40" placeholder="12 months"></div><div><label for="bn-plan">Based on plan</label><select id="bn-plan">' + plans.map(function (p) { return '<option value="' + esc(p.id) + '">' + esc(p.name) + ' (' + p.credits + ' credits)</option>'; }).join('') + '</select></div>' +
+      '<div><label for="bn-times">Times the plan</label><input id="bn-times" type="number" min="2" max="24" inputmode="numeric" placeholder="12"></div><div><label for="bn-price">Customer pays</label><input id="bn-price" type="number" min="0" step="0.01" inputmode="decimal" placeholder="350"></div>' +
+      '<div><label for="bn-cr">Credits it uses <span style="font-weight:400;color:var(--dim)">(optional)</span></label><input id="bn-cr" type="number" min="0" inputmode="numeric" placeholder="auto"></div></div>' +
+      '<div class="row" style="margin-top:12px;flex-wrap:wrap"><button class="btn red" id="bn-make" type="button">Make offer</button><label class="mrow" style="border:0;padding:0;margin-left:8px"><input type="checkbox" id="bn-on"' + (o.bundles !== false ? ' checked' : '') + '><span>Show offers to my customers</span></label></div><p class="msg" id="bn-msg" role="status" hidden></p>' +
+      (list.length ? '<div class="scroll" style="margin-top:14px"><table class="tbl"><tr><th>Offer</th><th>Plan</th><th>Customer pays</th><th>Credits</th><th></th></tr>' + list.map(function (b) { return '<tr data-bid="' + esc(b.id) + '"><td><b>' + esc(b.name) + '</b>' + (b.ok ? '' : ' <span class="tag hold">Plan not available</span>') + '</td><td>' + esc(b.planName || '-') + ' × ' + b.times + '</td><td>' + money(b.price) + '</td><td>' + (b.credits == null ? '-' : b.credits) + '</td><td><button class="btn line sm danger bn-del" type="button">Delete</button></td></tr>'; }).join('') + '</table></div>' : '<p class="meta" style="margin-top:12px">No offers yet.</p>');
+    var rw = o.reward || { type: 'days', days: 7, percent: 10 };
+    $('rf-card').innerHTML = '<h2>Referral rewards</h2><p class="sub">When one of your customers brings a friend (the friend types their code in Aurora), you choose the reward and give it with one tap. Nothing is given until you do.</p>' +
+      '<label class="mrow" style="border:0;padding:0 0 10px"><input type="checkbox" id="rf-on"' + (o.referrals !== false ? ' checked' : '') + '><span>Reward customers who bring friends</span></label>' +
+      '<div class="grid"><div><label for="rf-type">Reward</label><select id="rf-type"><option value="days"' + (rw.type === 'days' ? ' selected' : '') + '>Free days</option><option value="coupon"' + (rw.type === 'coupon' ? ' selected' : '') + '>A discount coupon</option></select></div>' +
+      '<div><label for="rf-days">Free days</label><input id="rf-days" type="number" min="1" max="90" value="' + rw.days + '"></div><div><label for="rf-pct">Coupon percent off</label><input id="rf-pct" type="number" min="1" max="90" value="' + rw.percent + '"></div></div>' +
+      '<div class="row" style="margin-top:12px"><button class="btn red" id="rf-save" type="button">Save</button></div><p class="msg" id="rf-msg" role="status" hidden></p><div id="rf-list"></div>';
+    paintReferrals();
+  }
+  function loadReferrals() {
+    api('GET', '/reseller/referrals').then(function (j) { if (j.__status === 409) { setTimeout(loadReferrals, 800); return; } refData = j.__status === 200 ? j : { error: oldG(j), referrals: [] }; paintReferrals(); }).catch(function () { /* old guard */ });
+  }
+  function paintReferrals() {
+    var box = $('rf-list'); if (!box || !refData) return;
+    if (refData.error) { box.innerHTML = '<p class="meta">' + esc(refData.error) + '</p>'; return; }
+    var rows = refData.referrals || [];
+    box.innerHTML = rows.length ? '<h3 style="margin:18px 0 6px;font-size:1rem">Friends brought in</h3>' + rows.map(function (x) {
+      return '<div class="wrow" data-rid="' + esc(x.id) + '"><b>' + esc(x.referrer) + '</b> brought <b>' + esc(x.friend) + '</b> <span class="meta">' + esc(fmtAt(x.at)) + '</span>' +
+        (x.status === 'pending' ? '<div class="row" style="margin-top:8px;flex-wrap:wrap"><label class="mrow" style="border:0;padding:0;margin:0 8px 0 0"><input type="checkbox" class="rf-both" checked><span>Reward the friend too</span></label><button class="btn red sm rf-give" type="button">Give reward</button><button class="btn line sm rf-no" type="button">Dismiss</button></div>' :
+          '<div class="meta">' + (x.status === 'given' ? 'Rewarded: ' + (x.given && x.given.type === 'coupon' ? (x.given.percent + '% coupon') : ((x.given && x.given.days) + ' free days')) + ' to ' + esc(((x.given && x.given.to) || []).join(' and ')) : 'Dismissed') + '</div>') + '</div>';
+    }).join('') : '<p class="meta" style="margin-top:12px">Nobody has used a code yet. Customers find their code on their account page under refer a friend.</p>';
+  }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'bn-make') {
+      var m = $('bn-msg'); b.disabled = true;
+      api('POST', '/reseller/bundles', { name: $('bn-name').value.trim(), planId: $('bn-plan').value, times: Number($('bn-times').value), price: Number($('bn-price').value), credits: $('bn-cr').value === '' ? undefined : Number($('bn-cr').value) }).then(function (j) {
+        if (j.__status !== 200) { b.disabled = false; return msg(m, oldG(j), 'err'); }
+        me.bundles = j.bundles; return api('PUT', '/reseller/options', { bundles: $('bn-on').checked }).then(function (o) { b.disabled = false; if (o.__status === 200) me.opts = o; paintGrowthSales(); });
+      }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
+    } else if (b.classList.contains('bn-del')) {
+      var id = b.closest('[data-bid]').getAttribute('data-bid'); if (!confirm('Delete this offer?')) return;
+      api('DELETE', '/reseller/bundles/' + encodeURIComponent(id)).then(function (j) { if (j.__status === 200) { me.bundles = j.bundles; paintGrowthSales(); } });
+    } else if (b.id === 'bn-on') { /* saved with the next offer */ }
+    else if (b.id === 'rf-save') {
+      var rm = $('rf-msg'); b.disabled = true;
+      api('PUT', '/reseller/options', { referrals: $('rf-on').checked, reward: { type: $('rf-type').value, days: Number($('rf-days').value), percent: Number($('rf-pct').value) } }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(rm, oldG(j), 'err'); me.opts = j; msg(rm, 'Saved.', 'ok'); }).catch(function () { b.disabled = false; msg(rm, 'Could not reach Aurora.', 'err'); });
+    } else if (b.classList.contains('rf-give') || b.classList.contains('rf-no')) {
+      var row = b.closest('[data-rid]'), rid = row.getAttribute('data-rid'), give = b.classList.contains('rf-give'); b.disabled = true;
+      api('POST', '/reseller/referrals/' + encodeURIComponent(rid) + '/' + (give ? 'reward' : 'dismiss'), give ? { both: row.querySelector('.rf-both').checked } : {}).then(function (j) {
+        b.disabled = false; if (j.__status !== 200) return msg($('rf-msg'), oldG(j), 'err'); loadReferrals();
+      }).catch(function () { b.disabled = false; });
     }
   });
   if (session && session.token) { show(true); reload(); } else show(false);

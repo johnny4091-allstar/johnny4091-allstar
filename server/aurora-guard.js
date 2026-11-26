@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.53.0';
+const VERSION = '1.54.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -582,7 +582,8 @@ function cleanDays(v, max = 5) {
   return out.length && out.length <= max ? out : null;
 }
 const remindDefault = () => cleanDays(store.remindDefault) || REMIND_FALLBACK;
-const remindDaysOf = (rec) => cleanDays(rec && rec.remind) || remindDefault();
+// A customer's own days win; then the reseller's (guard 1.54.0); then the one set for everyone.
+const remindDaysOf = (rec) => { const own = cleanDays(rec && rec.remind); if (own) return own; const r = rec && rec.reseller ? resellerList()[rec.reseller] : null; return r ? remindDaysOfReseller(r) : remindDefault(); };
 
 // The reseller rules and regulations (guard 1.49.0). Change this date when the rules page changes: every reseller then agrees again.
 const RESELLER_RULES_VERSION = '2026-11-24';
@@ -601,6 +602,52 @@ const couponProblem = (c, planId) => {
 const couponPrice = (r, c, planId) => { const base = Number((r.prices || {})[planId]); if (!(base > 0)) return null; const v = c.type === 'percent' ? base * (1 - c.value / 100) : base - c.value; return Math.max(0, Math.round(v * 100) / 100); };
 const slugName = (full) => { const t = String(full || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0, 24); return t.length >= 3 ? t : 'customer'; };
 const trialsTodayOf = (r) => { const today = localDay(new Date()); return Object.values(store.users).filter((u) => u.reseller === r.id && u.trial && u.created && localDay(new Date(u.created)) === today).length; };
+
+// ---------- Reseller growth tools (guard 1.54.0) ----------
+// Renewal reminders, payment instructions, bundles and referral rewards. The administrator sets what is on for everyone (Admin, Resellers);
+// each reseller may switch a part off or change it for their own customers.
+const clampInt = (v, lo, hi, d) => { const n = Math.round(Number(v)); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+const cleanReward = (v) => ({ type: v && v.type === 'coupon' ? 'coupon' : 'days', days: clampInt(v && v.days, 1, 90, 7), percent: clampInt(v && v.percent, 1, 90, 10) });
+function resDefaults() {
+  const d = store.resellerDefaults || {};
+  return { reminders: d.reminders !== false, pay: d.pay !== false, referrals: d.referrals !== false, bundles: d.bundles !== false, remindDays: cleanDays(d.remindDays) || remindDefault(), reward: cleanReward(d.reward) };
+}
+const optOf = (r, k) => { const o = (r && r.opts) || {}; return typeof o[k] === 'boolean' ? o[k] : resDefaults()[k]; };
+const rewardOf = (r) => cleanReward((r && r.opts && r.opts.reward) || resDefaults().reward);
+const remindDaysOfReseller = (r) => cleanDays(r && r.opts && r.opts.remindDays) || resDefaults().remindDays;
+const payOf = (r) => (r && optOf(r, 'pay') && r.pay && (r.pay.text || r.pay.url) ? { text: r.pay.text || '', url: r.pay.url || '' } : null);
+const optsView = (r) => ({ reminders: optOf(r, 'reminders'), pay: optOf(r, 'pay'), referrals: optOf(r, 'referrals'), bundles: optOf(r, 'bundles'), remindDays: remindDaysOfReseller(r), reward: rewardOf(r),
+  own: { reminders: typeof (r.opts || {}).reminders === 'boolean', pay: typeof (r.opts || {}).pay === 'boolean', referrals: typeof (r.opts || {}).referrals === 'boolean', bundles: typeof (r.opts || {}).bundles === 'boolean', remindDays: !!cleanDays((r.opts || {}).remindDays), reward: !!(r.opts || {}).reward }, defaults: resDefaults() });
+const bundleCreditsOf = (b, plan) => (Number.isInteger(b.credits) && b.credits >= 0 ? b.credits : planCredits(plan) * b.times);
+const bundleView = (r, b) => { const plan = (store.plans || []).find((p) => p.id === b.planId && p.active !== false && resellerPlanIds(r).includes(p.id)); return { id: b.id, name: b.name, planId: b.planId, planName: plan ? plan.name : '', times: b.times, price: b.price, credits: plan ? bundleCreditsOf(b, plan) : null, ok: !!plan }; };
+// What a customer may pick: only bundles whose plan the reseller can still sell, and only while the reseller offers them.
+const bundlesFor = (r) => (r && r.status === 'active' && optOf(r, 'bundles') ? (r.bundles || []).map((b) => bundleView(r, b)).filter((b) => b.ok) : []);
+function referralPublic(x) { return { id: x.id, referrer: x.referrerName, friend: x.friendName, at: x.at, status: x.status, decidedAt: x.decidedAt || 0, given: x.given || null }; }
+// Gives a referral reward: free days (on the end date) or a one-use discount coupon, and tells the customer in their inbox.
+async function giveReferralReward(r, ref, opt, by) {
+  const reward = cleanReward({ ...rewardOf(r), ...(opt || {}) }), both = !(opt && opt.both === false);
+  const people = [{ id: ref.referrerId, who: 'referrer' }]; if (both && store.users[ref.friendId]) people.push({ id: ref.friendId, who: 'friend' });
+  const done = [];
+  for (const t of people) {
+    const rec = store.users[t.id]; if (!rec) continue;
+    let text, code = '';
+    if (reward.type === 'days') {
+      if (!giveDays(t.id, reward.days, `referral reward from ${r.name}`)) continue; // an account with no end date has nothing to extend
+      text = t.who === 'referrer' ? `Thank you for telling a friend about Aurora! You got ${reward.days} free days.` : `Welcome! You got ${reward.days} free days for joining through a friend.`;
+    } else {
+      if ((r.coupons || []).length >= 20) { const old = r.coupons.filter((c) => /^THX/.test(c.code)).sort((a, b) => (a.at || 0) - (b.at || 0))[0]; if (old) r.coupons = r.coupons.filter((c) => c.id !== old.id); else throw new Error('You already have 20 coupons. Delete one, then try again.'); }
+      code = 'THX' + crypto.randomBytes(3).toString('hex').toUpperCase();
+      r.coupons = [{ id: crypto.randomBytes(5).toString('hex'), code, type: 'percent', value: reward.percent, expires: null, max: 1, used: 0, planIds: [], on: true, at: Date.now() }, ...(r.coupons || [])];
+      text = `${t.who === 'referrer' ? 'Thank you for telling a friend about Aurora!' : 'Welcome!'} Here is ${reward.percent}% off your next renewal: code ${code}. Type it in when you ask for more time.`;
+    }
+    store.directMsgs = [{ id: crypto.randomBytes(5).toString('hex'), batch: 'ref' + ref.id, reseller: r.id, userId: t.id, from: r.name, text, at: Date.now() }, ...(store.directMsgs || [])].slice(0, 3000);
+    done.push({ name: rec.name, who: t.who, code });
+  }
+  for (const t of people) { try { if (store.users[t.id]) await enforce(t.id); } catch { /* applied at the next check */ } }
+  ref.status = 'given'; ref.decidedAt = Date.now(); ref.given = { type: reward.type, days: reward.type === 'days' ? reward.days : 0, percent: reward.type === 'coupon' ? reward.percent : 0, to: done.map((x) => x.name), codes: done.map((x) => x.code).filter(Boolean) };
+  recordAudit(by, `Gave a referral reward (${reward.type === 'days' ? reward.days + ' free days' : reward.percent + '% coupon'}) to ${done.map((x) => x.name).join(' and ') || 'nobody (no end date)'}`);
+  return ref.given;
+}
 // How many free trials a reseller may start in a day: the Guard's number, or no limit when the administrator switched it off for that reseller (guard 1.53.0).
 const trialCapOf = (r) => (r && r.trialsUnlimited ? Infinity : cfg.resellerTrialsPerDay);
 const trialLinkState = (r) => { const t = r.trialLink || {}; return { on: !!t.on, code: t.code || '', made: t.made || 0, today: trialsTodayOf(r), limit: r.trialsUnlimited ? null : cfg.resellerTrialsPerDay, unlimited: !!r.trialsUnlimited }; };
@@ -968,7 +1015,8 @@ async function inboxFor(me) {
     if (d < 0) items.push({ id: `plan:${rec.expires}:x`, type: 'plan', level: 'bad', title: 'Your access has ended', text: 'Ask for more time to keep watching.', at: end, action: 'renew' });
     else {
       // The smallest reminder day that covers today (e.g. with 10, 5 and 2: 8 days left is the 10-day reminder, 4 days the 5-day one).
-      const days = remindDaysOf(rec).slice().sort((x, y) => x - y), n = days.find((x) => d <= x) || 0;
+      const myReseller = rec.reseller ? resellerList()[rec.reseller] : null;
+      const days = remindDaysOf(rec).slice().sort((x, y) => x - y), n = myReseller && !optOf(myReseller, 'reminders') ? 0 : (days.find((x) => d <= x) || 0);
       if (n) items.push({ id: `plan:${rec.expires}:${n}`, type: 'plan', level: n <= 3 ? 'warn' : 'info', title: d <= 1 ? 'Your plan ends today or tomorrow' : `Your plan ends in ${d} days`, text: `${rec.plan?.name ? rec.plan.name + ' \u00b7 ' : ''}ends ${rec.expires}`, at: end - n * 86400000, action: 'renew' });
     }
   }
@@ -3033,6 +3081,8 @@ async function handle(req, res) {
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
       mod: !!rec?.mod && !me.Policy?.IsAdministrator, // a moderator (guard 1.27.0)
       support: rec && rec.reseller ? supportOfReseller(rec.reseller) : null, // the reseller's contact details for Help (guard 1.33.0)
+      pay: rec && rec.reseller ? payOf(resellerList()[rec.reseller]) : null, // how to pay the reseller (guard 1.54.0)
+      bundles: rec && rec.reseller ? bundlesFor(resellerList()[rec.reseller]) : [], // the reseller's multi-month offers (guard 1.54.0)
       adult: !!rec?.adult, adultReset: rec?.adultReset || 0, // the adult Live TV categories switch (guard 1.23.0); adultReset changes whenever it is switched, which also clears the account's PIN
       request: publicRequest(latest),
       canRequest: !!expires && !(latest && latest.status === 'pending')
@@ -3330,6 +3380,12 @@ async function handle(req, res) {
     const wanted = body.planId ? (store.plans || []).find((x) => x.id === body.planId && x.active) : null;
     const mine0 = rec.reseller ? resellerList()[rec.reseller] : null;
     const toReseller = mine0 && mine0.status === 'active' ? mine0 : null;
+    let bundle = null;
+    if (body.bundleId) {
+      const b = toReseller ? bundlesFor(toReseller).find((x) => x.id === String(body.bundleId)) : null;
+      if (!b) return send(res, 400, { error: 'That offer is no longer available.' });
+      bundle = { id: b.id, name: b.name, planId: b.planId, times: b.times, price: b.price, credits: b.credits };
+    }
     let coupon = null;
     const couponCode = String(body.coupon || '').trim().toUpperCase().slice(0, 20);
     if (couponCode) {
@@ -3339,9 +3395,12 @@ async function handle(req, res) {
       coupon = { id: cp.id, code: cp.code, label: couponLabel(cp), price: couponPrice(toReseller, cp, pid), original: Number((toReseller.prices || {})[pid]) || null };
     }
     const entry = { id: crypto.randomBytes(6).toString('hex'), userId: me.Id, name: me.Name, at: Date.now(), note: String(body.note || '').slice(0, 300).trim(), status: 'pending', expiresAtRequest: rec.expires, coupon,
-      wantedPlanId: wanted ? wanted.id : null, wantedPlanName: wanted ? `${wanted.name} ($${wanted.price})` : null, reseller: toReseller ? toReseller.id : null };
+      wantedPlanId: bundle ? bundle.planId : wanted ? wanted.id : null, wantedPlanName: bundle ? `${bundle.name} ($${bundle.price})` : wanted ? `${wanted.name} ($${wanted.price})` : null, reseller: toReseller ? toReseller.id : null,
+      bundle, paid: body.paid === true, paidMethod: cleanText(body.paidMethod, 30) };
     store.extensions = [entry, ...(store.extensions || [])].slice(0, 500);
     if (coupon) entry.note = (entry.note ? entry.note + ' · ' : '') + `Coupon ${coupon.code} (${coupon.label})`;
+    if (bundle) entry.note = (entry.note ? entry.note + ' · ' : '') + `Offer: ${bundle.name}`;
+    if (entry.paid) entry.note = (entry.note ? entry.note + ' · ' : '') + `Says they paid${entry.paidMethod ? ' by ' + entry.paidMethod : ''}`;
     recordAction({ type: 'extensionRequested', userId: me.Id, name: me.Name, why: `asked for an extension (expires ${rec.expires})` });
     saveStore();
     log('Extension requested by', me.Name, `(expires ${rec.expires})`);
@@ -3399,11 +3458,11 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), opts: optsView(r), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
-          const row = (x) => { const c = store.users[x.userId]; return { id: x.id, coupon: x.coupon ? { code: x.coupon.code, label: x.coupon.label, price: x.coupon.price, original: x.coupon.original } : null, name: x.name, full: (c && c.contact && c.contact.full) || '', at: x.at, note: x.note || '', wantedPlanId: x.wantedPlanId || null, wantedPlan: planName(x.wantedPlanId),
+          const row = (x) => { const c = store.users[x.userId]; return { id: x.id, paid: !!x.paid, paidMethod: x.paidMethod || '', bundle: x.bundle ? { name: x.bundle.name, times: x.bundle.times, price: x.bundle.price, credits: x.bundle.credits } : null, coupon: x.coupon ? { code: x.coupon.code, label: x.coupon.label, price: x.coupon.price, original: x.coupon.original } : null, name: x.name, full: (c && c.contact && c.contact.full) || '', at: x.at, note: x.note || '', wantedPlanId: x.wantedPlanId || null, wantedPlan: planName(x.wantedPlanId),
             expires: c ? c.expires || null : null, daysLeft: c && c.expires ? daysUntil(c.expires) : null, expired: c ? isExpired(c) : false, gone: !c, status: x.status, decidedAt: x.decidedAt || null, message: x.message || '', planName: x.planName || '', newExpires: x.newExpires || null }; };
           const mineX = (store.extensions || []).filter((x) => x.reseller === r.id);
           return { pending: mineX.filter((x) => x.status === 'pending').map(row).reverse(), decided: mineX.filter((x) => x.status !== 'pending').slice(0, 20).map(row) };
@@ -3446,14 +3505,20 @@ async function handle(req, res) {
         }
         const rec = store.users[x.userId];
         if (!rec) { x.status = 'denied'; x.decidedAt = Date.now(); x.message = 'This account no longer exists.'; saveStore(); return send(res, 404, { error: 'That customer no longer exists. The request was closed.' }); }
-        const plan = sellable(body.planId || x.wantedPlanId || rec.plan?.id);
+        const plan = sellable(x.bundle ? x.bundle.planId : (body.planId || x.wantedPlanId || rec.plan?.id));
         if (!plan) return send(res, 400, { error: 'Choose one of your plans.' });
-        const cost = planCredits(plan);
+        const times = x.bundle ? clampInt(x.bundle.times, 1, 24, 1) : 1;
+        const cost = x.bundle && Number.isInteger(x.bundle.credits) ? x.bundle.credits : planCredits(plan) * times;
         if (r.credits < cost) return send(res, 402, { error: `Not enough credits: this costs ${cost} and you have ${r.credits}.` });
-        applyPlan(x.userId, rec.name, plan, 'extend');
+        for (let i = 0; i < times; i++) applyPlan(x.userId, rec.name, plan, 'extend');
         rec.trial = false;
-        creditEntry(r, -cost, 'Renewed ' + plan.name, by, { customer: rec.name, plan: plan.id });
-        x.status = 'approved'; x.decidedAt = Date.now(); x.days = null; x.message = message; x.newExpires = rec.expires; x.planName = plan.name; x.decidedBy = r.name;
+        creditEntry(r, -cost, 'Renewed ' + (x.bundle ? x.bundle.name : plan.name), by, { customer: rec.name, plan: plan.id });
+        // A customer who said they paid: the amount goes into the reseller's payment record (the coupon or offer price, else the price they set).
+        if (x.paid) {
+          const amount = (x.bundle && x.bundle.price) || (x.coupon && x.coupon.price) || Number((r.prices || {})[plan.id]) || 0;
+          if (amount > 0) store.payments = [{ id: crypto.randomBytes(5).toString('hex'), reseller: r.id, userId: x.userId, name: rec.name, at: Date.now(), amount, paid: true, method: x.paidMethod || 'Customer said paid', note: x.bundle ? x.bundle.name : '', plan: plan.name }, ...(store.payments || [])].slice(0, 5000);
+        }
+        x.status = 'approved'; x.decidedAt = Date.now(); x.days = null; x.message = message; x.newExpires = rec.expires; x.planName = x.bundle ? x.bundle.name : plan.name; x.decidedBy = r.name;
         if (x.coupon) { const cp = (r.coupons || []).find((c) => c.id === x.coupon.id); if (cp) cp.used = (cp.used || 0) + 1; }
         recordAction({ type: 'extended', userId: x.userId, name: x.name, why: `renewed by ${r.name} on ${plan.name}, now ends ${rec.expires}` });
         recordAudit(by, `Approved an extension request from ${rec.name}: renewed on ${plan.name} (${cost} credits)`);
@@ -3461,6 +3526,63 @@ async function handle(req, res) {
         try { await enforce(x.userId); } catch (e) { log('Applying', rec.name, 'failed:', e.message); }
         return send(res, 200, { ok: true, credits: r.credits, expires: rec.expires });
       }
+      // ----- Growth tools (guard 1.54.0): options, payment instructions, bundles, referral rewards -----
+      if (url.pathname === '/reseller/options' && req.method === 'GET') return send(res, 200, optsView(r));
+      if (url.pathname === '/reseller/options' && req.method === 'PUT') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        r.opts = r.opts || {};
+        for (const k of ['reminders', 'pay', 'referrals', 'bundles']) { if (typeof body[k] === 'boolean') r.opts[k] = body[k]; else if (body[k] === null) delete r.opts[k]; }
+        if (body.remindDays === null) delete r.opts.remindDays; else if (body.remindDays !== undefined) { const d = cleanDays(body.remindDays, 6); if (!d) return send(res, 400, { error: 'Pick up to 6 days, each from 1 to 60.' }); r.opts.remindDays = d; }
+        if (body.reward === null) delete r.opts.reward; else if (body.reward && typeof body.reward === 'object') r.opts.reward = cleanReward(body.reward);
+        recordAudit(by, 'Changed their renewal reminder, payment, bundle or referral settings'); saveStore();
+        return send(res, 200, optsView(r));
+      }
+      if (url.pathname === '/reseller/pay' && req.method === 'PUT') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        const text = cleanText(body.text, 300), link = String(body.url || '').trim();
+        if (link && (!/^https:\/\/[^\s]+$/i.test(link) || link.length > 200)) return send(res, 400, { error: 'The pay link must start with https:// (up to 200 characters).' });
+        r.pay = { text, url: link }; recordAudit(by, 'Changed their payment instructions'); saveStore();
+        return send(res, 200, { ok: true, pay: r.pay });
+      }
+      if (url.pathname === '/reseller/bundles' && req.method === 'GET') return send(res, 200, { bundles: (r.bundles || []).map((b) => bundleView(r, b)) });
+      if (url.pathname === '/reseller/bundles' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        if ((r.bundles || []).length >= 8) return send(res, 400, { error: 'You can keep up to 8 offers. Delete one first.' });
+        const plan = sellable(String(body.planId || ''));
+        if (!plan) return send(res, 400, { error: 'Choose one of your plans.' });
+        const name = cleanText(body.name, 40), times = Number.isInteger(Number(body.times)) && Number(body.times) >= 2 && Number(body.times) <= 24 ? Number(body.times) : 0, price = Math.round(Number(body.price) * 100) / 100;
+        if (!name) return send(res, 400, { error: 'Give the offer a name, like "12 months".' });
+        if (!times) return send(res, 400, { error: 'An offer covers 2 to 24 times the plan.' });
+        if (!Number.isFinite(price) || price < 0 || price > 100000) return send(res, 400, { error: 'Enter the price your customer pays.' });
+        let credits; if (body.credits !== undefined && body.credits !== null && body.credits !== '') { credits = clampInt(body.credits, 0, 5000, -1); if (credits < 0) return send(res, 400, { error: 'Credits must be a whole number.' }); }
+        const b = { id: crypto.randomBytes(5).toString('hex'), name, planId: plan.id, times, price, ...(credits !== undefined ? { credits } : {}), at: Date.now() };
+        r.bundles = [b, ...(r.bundles || [])]; recordAudit(by, `Made the offer ${name}`); saveStore();
+        return send(res, 200, { ok: true, bundles: r.bundles.map((x) => bundleView(r, x)) });
+      }
+      { const bm = url.pathname.match(/^\/reseller\/bundles\/([\w-]{1,32})$/);
+        if (bm && req.method === 'DELETE') {
+          const b = (r.bundles || []).find((x) => x.id === bm[1]); if (!b) return send(res, 404, { error: 'No such offer.' });
+          r.bundles = r.bundles.filter((x) => x.id !== b.id); recordAudit(by, `Deleted the offer ${b.name}`); saveStore();
+          return send(res, 200, { ok: true, bundles: r.bundles.map((x) => bundleView(r, x)) });
+        } }
+      if (url.pathname === '/reseller/referrals' && req.method === 'GET') {
+        const mineR = (store.refRewards || []).filter((x) => x.reseller === r.id);
+        return send(res, 200, { enabled: optOf(r, 'referrals'), reward: rewardOf(r), referrals: mineR.slice(0, 60).map(referralPublic), pending: mineR.filter((x) => x.status === 'pending').length });
+      }
+      { const rf = url.pathname.match(/^\/reseller\/referrals\/([\w-]{1,32})\/(reward|dismiss)$/);
+        if (rf && req.method === 'POST') {
+          const x = (store.refRewards || []).find((e) => e.id === rf[1] && e.reseller === r.id);
+          if (!x) return send(res, 404, { error: 'No such referral.' });
+          if (x.status !== 'pending') return send(res, 409, { error: `That referral was already ${x.status === 'given' ? 'rewarded' : 'dismissed'}.` });
+          let body;
+          try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+          if (rf[2] === 'dismiss') { x.status = 'dismissed'; x.decidedAt = Date.now(); recordAudit(by, `Dismissed the referral from ${x.referrerName}`); saveStore(); return send(res, 200, { ok: true }); }
+          try { const given = await giveReferralReward(r, x, body, by); saveStore(); return send(res, 200, { ok: true, given }); }
+          catch (e) { return send(res, 400, { error: e.message }); }
+        } }
       // ----- Packages (guard 1.41.0) -----
       if (url.pathname === '/reseller/packages' && req.method === 'GET') return send(res, 200, { packages: packList().map((x) => ({ id: x.id, name: x.name, count: x.categories.length })) });
       {
@@ -4146,6 +4268,8 @@ async function handle(req, res) {
     if (!me) return send(res, 401, { error: 'Not signed in' });
     const rec = store.users[me.Id];
     const friends = Object.values(store.users).filter((u) => u.referredBy === me.Id).map((u) => ({ name: u.name, at: u.referredAt || 0 }));
+    const refR = rec && rec.reseller ? resellerList()[rec.reseller] : null, managed = !!(refR && refR.status === 'active' && optOf(refR, 'referrals')), rw = managed ? rewardOf(refR) : null;
+    if (managed) return send(res, 200, { enabled: true, managed: true, by: refR.name, days: rw.type === 'days' ? rw.days : 0, reward: rw.type === 'days' ? `${rw.days} free days` : `${rw.percent}% off a renewal`, code: referralCode(me.Id, me.Name), friends: Object.values(store.users).filter((u) => u.referredBy === me.Id).map((u) => ({ name: u.name, at: u.referredAt || 0 })), earned: 0, canRedeem: false, trialLink: refR.trialLink && refR.trialLink.on ? refR.trialLink.code : '' });
     return send(res, 200, { enabled: cfg.referralDays > 0, days: cfg.referralDays, code: cfg.referralDays > 0 ? referralCode(me.Id, me.Name) : null, friends, earned: friends.length * cfg.referralDays, canRedeem: cfg.referralDays > 0 && !rec?.referredBy && !me.Policy?.IsAdministrator });
   }
   if (url.pathname === '/referral/redeem' && req.method === 'POST') {
@@ -4169,6 +4293,12 @@ async function handle(req, res) {
     const yearAgo = Date.now() - 365 * 86400000;
     if (Object.values(store.users).filter((u) => u.referredBy === refId && (u.referredAt || 0) > yearAgo).length >= cfg.referralMaxPerYear) return send(res, 409, { error: 'That code has reached its limit.' });
     mine.referredBy = refId; mine.referredAt = Date.now();
+    const refReseller = store.users[refId].reseller ? resellerList()[store.users[refId].reseller] : null;
+    if (refReseller && refReseller.status === 'active' && optOf(refReseller, 'referrals')) {
+      store.refRewards = [{ id: crypto.randomBytes(5).toString('hex'), reseller: refReseller.id, referrerId: refId, referrerName: store.users[refId].name, friendId: me.Id, friendName: me.Name, at: Date.now(), status: 'pending' }, ...(store.refRewards || [])].slice(0, 2000);
+      recordAudit('Referral', `${me.Name} used the code of ${store.users[refId].name}; ${refReseller.name} will choose the reward`); saveStore();
+      return send(res, 200, { ok: true, days: 0, managed: true, expires: mine.expires });
+    }
     const gotYou = giveDays(me.Id, cfg.referralDays, 'referral code'), gotThem = giveDays(refId, cfg.referralDays, `referral: ${me.Name} joined`);
     recordAudit('Referral', `${me.Name} used the code of ${store.users[refId].name}${gotYou ? ` (+${cfg.referralDays} days each)` : ' (no end date to extend)'}`);
     saveStore();
@@ -4666,6 +4796,19 @@ async function handle(req, res) {
       } catch (e) { return send(res, 502, { error: 'Could not change the password: ' + e.message }); }
       return send(res, 200, { ok: true, password });
     }
+  }
+
+  // What is on for every reseller (guard 1.54.0): renewal reminders, payment instructions, bundles, referral rewards. A reseller can still change it for themselves.
+  if (url.pathname === '/reseller-defaults' && req.method === 'GET') return send(res, 200, resDefaults());
+  if (url.pathname === '/reseller-defaults' && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    const d = store.resellerDefaults = store.resellerDefaults || {};
+    for (const k of ['reminders', 'pay', 'referrals', 'bundles']) if (typeof body[k] === 'boolean') d[k] = body[k];
+    if (body.remindDays !== undefined) { const days = cleanDays(body.remindDays, 6); if (!days) return send(res, 400, { error: 'Pick up to 6 days, each from 1 to 60.' }); d.remindDays = days; }
+    if (body.reward && typeof body.reward === 'object') d.reward = cleanReward(body.reward);
+    recordAudit(auditBy, 'Changed what is on for every reseller (reminders, payment instructions, bundles, referral rewards)'); saveStore();
+    return send(res, 200, resDefaults());
   }
 
   if (url.pathname === '/maintenance' && req.method === 'PUT') {
