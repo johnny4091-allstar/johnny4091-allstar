@@ -1,3 +1,4 @@
+- Fixed: the Sports tab now finds sports channels (ESPN, FOX, NBC, TNT and more) even when your provider keeps them in a group that is not named for sports, instead of saying a game is not on your channels.
 - Resellers: choose Live TV groups (like pay-per-view) to keep off your free trials, in Settings. Needs Aurora Guard 1.58.0.
 - Resellers: the Reseller panel sections are now in a menu button, and a "What's new" pop-up tells you once what changed after each update. Needs Aurora Guard 1.57.0.
 - New for resellers: a customer health list (who is buffering, quiet, owing or just ended), helpers with their own limited logins, pausing a customer until a date, scheduled renewals and messages, bulk actions, and their own business name and welcome text for their customers. Administrators choose what is on in Admin, Resellers. Needs Aurora Guard 1.56.0.
