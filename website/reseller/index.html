@@ -32,7 +32,7 @@ h1,h2,h3 { margin:0; line-height:1.15; }
 label { display:block; font-size:.78rem; font-weight:700; margin:0 0 6px; color:#e5e5e5; }
 input,select { width:100%; padding:11px 12px; border-radius:6px; border:1px solid var(--line); background:#0a1126; color:#fff; font:inherit; } input::placeholder { color:#6d78a6; }
 .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 16px; } .full { grid-column:1/-1; }
-.row { display:flex; gap:8px; } .row input { min-width:0; } .row .btn { flex:none; }
+.row { display:flex; gap:8px; flex-wrap:wrap; } .row input { min-width:0; } .row .btn { flex:none; }
 .hero { display:grid; grid-template-columns:1.3fr 1fr; gap:16px; margin-bottom:16px; }
 .credits { background:radial-gradient(70% 140% at 8% 0%,rgba(42,212,208,.2),transparent 70%),radial-gradient(60% 140% at 100% 0%,rgba(122,92,255,.3),transparent 70%),var(--bg-2); }
 .credits .n { font-size:3.4rem; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; } .credits small { color:var(--muted); }
@@ -113,10 +113,18 @@ h1 { margin:0; line-height:1.12; font-weight:800; text-wrap:balance; }
 .login-wrap .login h2 { font-size:1.5rem; }
 
 /* tabs */
-.tabs { position:sticky; top:62px; z-index:25; display:flex; gap:6px; overflow-x:auto; padding:8px; margin:0 0 20px; border-radius:16px; background:rgba(14,21,48,.92); border:1px solid var(--line); backdrop-filter:blur(10px); scrollbar-width:none; }
+.menuwrap { position:sticky; top:62px; z-index:30; margin:0 0 20px; }
+.menubtn { display:flex; align-items:center; gap:12px; width:100%; max-width:420px; padding:11px 16px; border-radius:14px; border:1px solid var(--line); background:rgba(14,21,48,.94); backdrop-filter:blur(10px); color:#fff; font:800 1rem var(--font); cursor:pointer; text-align:left; }
+.menubtn:hover { border-color:#3b4a85; } .menubtn:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+.burger { display:inline-flex; flex-direction:column; gap:4px; } .burger i { display:block; width:20px; height:2.5px; border-radius:2px; background:#fff; transition:transform .18s, opacity .18s; }
+.menuwrap.open .burger i:nth-child(1) { transform:translateY(6.5px) rotate(45deg); } .menuwrap.open .burger i:nth-child(2) { opacity:0; } .menuwrap.open .burger i:nth-child(3) { transform:translateY(-6.5px) rotate(-45deg); }
+.menulabel { flex:1; } .chev { width:9px; height:9px; border-right:2.5px solid #b9c3ea; border-bottom:2.5px solid #b9c3ea; transform:rotate(45deg) translate(-2px,-2px); transition:transform .18s; } .menuwrap.open .chev { transform:rotate(225deg); }
+.tabs { display:none; position:absolute; left:0; top:calc(100% + 8px); width:min(340px,100%); max-height:calc(100vh - 140px); overflow:auto; padding:8px; border-radius:16px; background:#0e1530; border:1px solid #3b4a85; box-shadow:0 24px 60px rgba(0,0,0,.55); flex-direction:column; gap:2px; }
+.menuwrap.open .tabs { display:flex; }
 .tabs::-webkit-scrollbar { display:none; }
-.tabbtn { flex:none; font:700 .92rem var(--font); color:#b9c3ea; background:none; border:0; padding:10px 16px; border-radius:11px; cursor:pointer; white-space:nowrap; transition:background .15s,color .15s; }
-.tabbtn:hover { background:rgba(255,255,255,.06); color:#fff; }
+.tabbtn, .menuextra { flex:none; display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; text-align:left; font:700 .98rem var(--font); color:#b9c3ea; background:none; border:0; padding:12px 14px; border-radius:11px; cursor:pointer; white-space:nowrap; transition:background .15s,color .15s; }
+.menuextra { margin-top:6px; border-top:1px solid var(--line); border-radius:0 0 11px 11px; color:#9fe8e5; } .menuextra:hover, .menuextra:focus-visible { background:rgba(255,255,255,.06); color:#fff; outline:none; }
+.tabbtn:hover, .tabbtn:focus-visible { background:rgba(255,255,255,.06); color:#fff; outline:none; }
 .tabbtn[aria-selected="true"] { background:var(--accent-grad); color:#fff; text-shadow:0 1px 2px rgba(0,0,0,.3); box-shadow:0 6px 18px rgba(79,123,255,.3); }
 .tcount { display:inline-block; min-width:20px; padding:1px 7px; margin-left:6px; border-radius:999px; background:rgba(255,255,255,.14); font-size:.72rem; font-weight:800; text-align:center; }
 .tcount.hot { background:#ff5470; color:#fff; }
@@ -153,12 +161,12 @@ input,select { border-radius:10px; padding:12px 13px; }
 @media (max-width:860px) { .login-wrap { grid-template-columns:1fr; gap:22px; min-height:0; } .kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .split { grid-template-columns:1fr; } }
 @media (max-width:560px) {
   .credchip, #out { white-space:nowrap; } .credchip { padding:6px 11px; font-size:.8rem; } .top-bar .pill { padding:.4rem .8rem; } .top-bar .pill svg { height:17px; }
-  .top-bar { padding:10px 0; } .tabs { top:56px; padding:6px; } .tabbtn { padding:9px 13px; font-size:.86rem; }
+  .top-bar { padding:10px 0; } .menuwrap { top:56px; } .menubtn { max-width:none; } .tabs { width:100%; }
   .arow { flex-wrap:wrap; } .aact { width:100%; justify-content:flex-start; padding-left:50px; }
   .cust .top { flex-wrap:wrap; } .cust .top > div:last-child { width:100%; padding-left:50px; text-align:left !important; }
   .credits .n { font-size:3.2rem; } .grid { grid-template-columns:1fr; }
 }
-@media (prefers-reduced-motion: reduce) { .btn, .tabbtn, .cust, .chip { transition:none; } }
+@media (prefers-reduced-motion: reduce) { .btn, .tabbtn, .cust, .chip, .burger i, .chev { transition:none; } }
 
 /* ---- Reseller tools ---- */
 .bulkbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px; padding:12px 14px; margin:0 0 12px; border-radius:12px; background:rgba(79,123,255,.12); border:1px solid #2f4a8f; }
@@ -180,6 +188,19 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 .legend { display:flex; gap:16px; flex-wrap:wrap; margin-top:12px; color:var(--muted); font-size:.82rem; } .lg { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:6px; } .lg.a { background:#6f6bff; } .lg.r { background:#2ad4d0; }
 .toast { position:fixed; left:50%; bottom:max(20px,env(safe-area-inset-bottom,0px)); transform:translateX(-50%); z-index:60; padding:12px 18px; border-radius:12px; background:#14264f; border:1px solid #2f4a8f; color:#fff; box-shadow:0 14px 40px rgba(0,0,0,.5); max-width:min(92vw,460px); }
 @media (max-width:560px) { .bars { gap:6px; height:180px; } .pr-in { width:92px; } }
+
+
+/* ---- What's new pop-up ---- */
+.newsback { position:fixed; inset:0; z-index:90; display:grid; place-items:center; padding:16px; background:rgba(3,6,18,.72); backdrop-filter:blur(4px); }
+.newscard { position:relative; width:min(560px,100%); max-height:calc(100vh - 32px); overflow:auto; background:linear-gradient(180deg,#121c42,#0e1530); border:1px solid #3b4a85; border-radius:18px; padding:24px; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+.newscard h2 { margin:0 0 4px; font-size:1.4rem; } .newscard .eyebrow { margin:0 0 6px; } .newsx { position:absolute; top:10px; right:12px; width:36px; height:36px; border-radius:50%; border:0; background:rgba(255,255,255,.08); color:#fff; font-size:1.3rem; cursor:pointer; } .newsx:hover { background:rgba(255,255,255,.16); }
+.newscard section { margin:16px 0 0; padding-top:14px; border-top:1px solid var(--line); } .newscard section:first-of-type { border-top:0; padding-top:0; } .newscard h3 { margin:0 0 2px; font-size:1.05rem; } .newscard .when { color:var(--dim); font-size:.8rem; margin:0 0 8px; }
+.newscard ul { margin:0; padding-left:1.2rem; display:grid; gap:8px; color:#dfe4fa; } .newscard li b { color:#fff; } .newscard .btn { margin-top:20px; width:100%; }
+/* ---- More tools (guard 1.56.0) ---- */
+.arow { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:10px 0; border-top:1px solid var(--line); } .arow:first-of-type { border-top:0; }
+.staffmode .cust .act > :not(.pw):not(.so):not(.say):not(.pbox) { display:none !important; }
+.staffmode .tools .row #bk-toggle, .staffmode #csv, .staffmode #lblchips { display:none; }
+.staffmode #plan, .staffmode label[for="plan"], .staffmode #vod, .staffmode label[for="vod"] { display:none; }
 /* ---- Reseller tools, part 2 ---- */
 .mlist { max-height:320px; overflow:auto; border:1px solid var(--line); border-radius:12px; background:#0a1126; }
 .mrow { display:flex; align-items:center; gap:12px; padding:10px 12px; border-top:1px solid var(--line); cursor:pointer; margin:0; font-weight:400; color:#fff; } .mrow:first-child { border-top:0; } .mrow input { width:auto; accent-color:#4f7bff; } .mrow > span:nth-child(2) { flex:1; min-width:0; }
@@ -219,20 +240,24 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 
   <div id="app" hidden>
     <div id="rulesbox"></div>
-    <nav class="tabs" id="tabs" role="tablist" aria-label="Reseller panel sections">
-      <button class="tabbtn" role="tab" type="button" data-pane="overview" aria-selected="true">Overview</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="add" aria-selected="false">Add customer</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="money" aria-selected="false">Money <span class="tcount hot" id="tc-money" hidden>0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="messages" aria-selected="false">Messages</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="support" aria-selected="false">Support <span class="tcount hot" id="tc-support" hidden>0</span></button>
-      <button class="tabbtn" role="tab" type="button" data-pane="reports" aria-selected="false">Reports</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="sales" aria-selected="false">Sales tools</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="guides" aria-selected="false">Guides</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
-      <button class="tabbtn" role="tab" type="button" data-pane="settings" aria-selected="false">Settings</button>
+    <div class="menuwrap" id="menuwrap">
+    <button class="menubtn" id="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="tabs"><span class="burger" aria-hidden="true"><i></i><i></i><i></i></span><span class="menulabel" id="menulabel">Overview</span><span class="tcount hot" id="menucount" hidden>0</span><span class="chev" aria-hidden="true"></span></button>
+    <nav class="tabs" id="tabs" aria-label="Reseller panel sections">
+      <button class="tabbtn" type="button" data-pane="overview" aria-selected="true">Overview</button>
+      <button class="tabbtn" type="button" data-pane="customers" aria-selected="false">Customers <span class="tcount" id="tc-customers">0</span></button>
+      <button class="tabbtn" type="button" data-pane="add" aria-selected="false">Add customer</button>
+      <button class="tabbtn" type="button" data-pane="requests" aria-selected="false">Requests <span class="tcount hot" id="tc-requests" hidden>0</span></button>
+      <button class="tabbtn" type="button" data-pane="money" aria-selected="false">Money <span class="tcount hot" id="tc-money" hidden>0</span></button>
+      <button class="tabbtn" type="button" data-pane="messages" aria-selected="false">Messages</button>
+      <button class="tabbtn" type="button" data-pane="support" aria-selected="false">Support <span class="tcount hot" id="tc-support" hidden>0</span></button>
+      <button class="tabbtn" type="button" data-pane="reports" aria-selected="false">Reports</button>
+      <button class="tabbtn" type="button" data-pane="sales" aria-selected="false">Sales tools</button>
+      <button class="tabbtn" type="button" data-pane="guides" aria-selected="false">Guides</button>
+      <button class="tabbtn" type="button" data-pane="team" aria-selected="false" id="tab-team" hidden>Sub-resellers</button>
+      <button class="tabbtn" type="button" data-pane="settings" aria-selected="false">Settings</button>
+          <button class="menuextra" type="button" id="menu-news">What's new <span class="tcount hot" id="news-dot" hidden>New</span></button>
     </nav>
+    </div>
 
     <section class="pane" data-pane="overview" id="pane-overview">
       <div class="welcome"><div><p class="eyebrow">Reseller panel</p><h1 id="welcome">Welcome back</h1><p class="sub" style="margin:4px 0 0" id="welcomesub"></p></div>
@@ -248,6 +273,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
         <div class="card" id="attn"><div class="sec-h"><h2>Needs your attention</h2><span class="sub" style="margin:0" id="attnsub"></span></div><div id="attnlist"></div></div>
         <div class="card" id="monthcard"><div class="sec-h"><h2 id="monthname">This month</h2></div><div class="mstats" id="mstats"></div></div>
       </div>
+    <div class="card" id="hl-card" hidden></div>
     <div class="card" id="fc-card"></div>
     <div class="tools"><h2>Watching now <span class="tag on" id="wcount">0</span></h2></div>
     <div class="card" id="watchcard"><p class="sub">What your customers are watching right now. It updates by itself every 20 seconds.</p><div id="watchlist" aria-live="polite"></div></div>
@@ -258,7 +284,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     <div class="tools"><h2>Your customers</h2><div class="row"><input id="q" placeholder="Search name, email or phone" style="width:220px" aria-label="Search"><button class="btn line sm" id="bk-toggle" type="button">Bulk renew</button><button class="btn line sm" id="csv" type="button">Export CSV</button></div></div>
     <div class="chips" id="chips" role="group" aria-label="Filter"></div>
     <div class="chips" id="lblchips" role="group" aria-label="Labels"></div>
-    <div class="bulkbar" id="bulkbar" hidden><label class="toggle" style="margin:0"><input type="checkbox" id="bk-all"> Select all shown</label><span id="bk-count" class="bk-count">0 selected</span><select id="bk-plan" aria-label="Plan to renew with" style="width:auto"></select><button class="btn red sm" id="bk-go" type="button" disabled>Renew selected</button><button class="btn line sm" id="bk-cancel" type="button">Cancel</button><p class="msg" id="bk-msg" role="status" hidden style="flex-basis:100%;margin:0"></p></div>
+    <div class="bulkbar" id="bulkbar" hidden><label class="toggle" style="margin:0"><input type="checkbox" id="bk-all"> Select all shown</label><span id="bk-count" class="bk-count">0 selected</span><select id="bk-act" aria-label="What to do" style="width:auto"><option value="renew">Renew</option><option value="hold">Put on hold</option><option value="release">Release</option><option value="label">Add a label</option><option value="unlabel">Remove a label</option><option value="extend">Give free days</option></select><select id="bk-plan" aria-label="Plan to renew with" style="width:auto"></select><input id="bk-arg" style="width:150px" hidden aria-label="Value"><button class="btn red sm" id="bk-go" type="button" disabled>Renew selected</button><button class="btn line sm" id="bk-cancel" type="button">Cancel</button><p class="msg" id="bk-msg" role="status" hidden style="flex-basis:100%;margin:0"></p></div>
     <div class="list" id="list" aria-live="polite"></div>
     </section>
 
@@ -311,7 +337,9 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
         <div class="mlist" id="ms-list"></div>
         <label for="ms-text" style="margin-top:14px">Message <span class="cnt" id="ms-cnt">0 / 300</span></label><textarea id="ms-text" maxlength="300" rows="3" placeholder="Write your message..."></textarea>
         <div class="chan" id="ms-tpl"></div>
+        <div class="row" style="flex-wrap:wrap;margin:12px 0 4px"><label class="toggle" style="margin:0"><input type="checkbox" id="ms-later"> Send later</label><input type="date" id="ms-date" style="width:auto" hidden aria-label="Date to send"><select id="ms-hour" style="width:auto" hidden aria-label="Hour to send"></select></div>
         <button class="btn red" id="ms-send" type="button">Send message</button><p class="msg" id="ms-msg" role="status" hidden></p></div>
+      <div class="card" id="sc-card" hidden></div>
       <div class="card"><div class="sec-h"><h2>Sent</h2></div><div id="ms-sent"><p class="sub" style="margin:0">Nothing sent yet.</p></div></div>
     </section>
 
@@ -386,6 +414,9 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     </section>
 
     <section class="pane" data-pane="settings" id="pane-settings" hidden>
+    <div class="card" id="tm-card"></div>
+    <div class="card" id="br-card"></div>
+    <div class="card" id="ot-card"></div>
     <div class="card" id="rm-card"></div>
     <div class="card" id="pay-card"></div>
     <div class="tools"><h2>Notifications</h2></div>
@@ -495,11 +526,34 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     $('chips').innerHTML = Object.keys(names).map(function (k) { return '<button class="chip" type="button" data-k="' + k + '" aria-pressed="' + (filter === k) + '">' + names[k] + ' ' + counts[k] + '</button>'; }).join('');
   }
   var PANES = ['overview', 'customers', 'add', 'requests', 'money', 'messages', 'support', 'reports', 'sales', 'guides', 'team', 'settings'], pane = 'overview';
+  // ----- the section menu
+  function menuOpen(on) {
+    $('menuwrap').classList.toggle('open', on); $('menubtn').setAttribute('aria-expanded', on ? 'true' : 'false');
+    if (on) { var cur = $('tabs').querySelector('[aria-current="page"]') || $('tabs').querySelector('.tabbtn:not([hidden])'); if (cur) cur.focus(); }
+  }
+  function menuSync() {
+    var cur = $('tabs').querySelector('[aria-current="page"]');
+    if (cur) { var c = cur.cloneNode(true); [].forEach.call(c.querySelectorAll('.tcount'), function (x) { x.remove(); }); $('menulabel').textContent = c.textContent.trim(); }
+    var n = 0; [].forEach.call($('tabs').querySelectorAll('.tcount.hot'), function (x) { if (!x.hidden && x.id !== 'news-dot' && /^\d+$/.test(x.textContent.trim())) n += Number(x.textContent); });
+    $('menucount').hidden = !n; $('menucount').textContent = n;
+  }
+  $('menubtn').addEventListener('click', function () { menuOpen(!$('menuwrap').classList.contains('open')); });
+  document.addEventListener('click', function (e) { if (!$('menuwrap').classList.contains('open')) return; if (!$('menuwrap').contains(e.target) || e.target.closest('.tabbtn, .menuextra')) menuOpen(false); });
+  $('menuwrap').addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && $('menuwrap').classList.contains('open')) { menuOpen(false); $('menubtn').focus(); return; }
+    if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && $('menuwrap').classList.contains('open')) {
+      var items = [].slice.call($('tabs').querySelectorAll('.tabbtn, .menuextra')).filter(function (x) { return !x.hidden && x.offsetParent !== null; }), i = items.indexOf(document.activeElement);
+      e.preventDefault(); (items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length] || items[0]).focus();
+    }
+  });
+  new MutationObserver(menuSync).observe($('tabs'), { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ['hidden', 'aria-current'] });
   function setPane(name, quiet) {
     if (PANES.indexOf(name) < 0 || (name === 'team' && me && !me.canAddSubs)) name = 'overview';
+    if (me && me.staff && staffPanes().indexOf(name) < 0) name = staffPanes()[0];
     pane = name;
     [].forEach.call(document.querySelectorAll('.pane'), function (el) { el.hidden = el.getAttribute('data-pane') !== name; });
-    [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { b.setAttribute('aria-selected', b.getAttribute('data-pane') === name ? 'true' : 'false'); });
+    [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { var on = b.getAttribute('data-pane') === name; b.setAttribute('aria-selected', on ? 'true' : 'false'); if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+    menuSync(); menuOpen(false);
     if (!quiet) { try { history.replaceState(null, '', '#' + name); } catch (e) { /* ignore */ } window.scrollTo(0, 0); }
     if (me) onPane(name);
   }
@@ -560,7 +614,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       var say = function (t, bad) { var n = el.querySelector('.say'); n.textContent = t; n.style.color = bad ? '#ff8d9b' : 'var(--green)'; };
       el.querySelector('.top').insertAdjacentHTML('afterbegin', avatar(c));
       if (bulk) el.querySelector('.top').insertAdjacentHTML('afterbegin', '<input type="checkbox" class="bk" tabindex="-1" aria-label="Select ' + esc(c.full || c.name) + '"' + (picked[c.id] ? ' checked' : '') + '>');
-      var firstNote = el.querySelector('.act .note'); if (firstNote) firstNote.insertAdjacentHTML('beforebegin', '<button class="btn line sm ed" type="button">Edit details</button><button class="btn line sm lb" type="button">Labels</button><button class="btn line sm pmt" type="button">Record payment</button><button class="btn line sm tlb" type="button">Timeline</button>');
+      var firstNote = el.querySelector('.act .note'); if (firstNote) firstNote.insertAdjacentHTML('beforebegin', '<button class="btn line sm ed" type="button">Edit details</button><button class="btn line sm lb" type="button">Labels</button><button class="btn line sm pmt" type="button">Record payment</button><button class="btn line sm tlb" type="button">Timeline</button><button class="btn line sm psb" type="button">Pause until...</button><button class="btn line sm srb" type="button">Renew on a date</button>');
       var top = el.querySelector('.top'), toggle = function () { if (bulk) { picked[c.id] = !picked[c.id]; render(); return; } openId = openId === c.id ? null : c.id; render(); };
       top.onclick = toggle; top.onkeydown = function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
       function act(btn, method, path, body, ok) {
@@ -919,13 +973,34 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       api('POST', '/reseller/rules/accept').then(function (j) { if (j.__status === 200) reload(); else { go.disabled = false; msg($('rulesmsg'), j.error || 'That did not work.', 'err'); } });
     };
   }
+
+  // ----- What's new pop-up (guard 1.57.0)
+  var newsShown = false;
+  function newsHtml(list) { return list.map(function (n) { return '<section><h3>' + esc(n.title) + '</h3><p class="when">' + esc(new Date(n.date + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })) + '</p><ul>' + n.items.map(function (i) { return '<li><b>' + esc(i.title) + '.</b> ' + esc(i.text) + '</li>'; }).join('') + '</ul></section>'; }).join(''); }
+  function showNews(list, mark) {
+    if (!list || !list.length || $('newsback')) return;
+    var back = document.createElement('div'); back.className = 'newsback'; back.id = 'newsback'; back.setAttribute('role', 'dialog'); back.setAttribute('aria-modal', 'true'); back.setAttribute('aria-labelledby', 'newstitle');
+    back.innerHTML = '<div class="newscard"><button class="newsx" type="button" aria-label="Close">&times;</button><p class="eyebrow">' + (mark ? 'Updated' : 'Recent changes') + '</p><h2 id="newstitle">' + (mark ? 'What\'s new in your panel' : 'What changed lately') + '</h2>' + newsHtml(list) + '<button class="btn red" type="button" id="newsgo">' + (mark ? 'Got it' : 'Close') + '</button></div>';
+    document.body.appendChild(back);
+    var prev = document.activeElement;
+    function done() { back.remove(); document.removeEventListener('keydown', key); if (prev && prev.focus) try { prev.focus(); } catch (e) { /* ignore */ } if (mark) { api('POST', '/reseller/whats-new/seen', {}).then(function () { if (me && me.whatsNew) me.whatsNew.unseen = []; $('news-dot').hidden = true; }); } }
+    function key(e) { if (e.key === 'Escape') done(); else if (e.key === 'Tab') { var f = [].slice.call(back.querySelectorAll('button')); var i = f.indexOf(document.activeElement); if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); } else if (!e.shiftKey && i === f.length - 1) { e.preventDefault(); f[0].focus(); } } }
+    document.addEventListener('keydown', key); back.querySelector('.newsx').onclick = done; $('newsgo').onclick = done; back.addEventListener('click', function (e) { if (e.target === back) done(); });
+    $('newsgo').focus();
+  }
+  $('menu-news').addEventListener('click', function () { if (me && me.whatsNew) showNews(me.whatsNew.recent, false); });
+  function maybeNews() {
+    if (!me || me.staff || !me.whatsNew) return;
+    $('news-dot').hidden = !me.whatsNew.unseen.length;
+    if (!newsShown && me.whatsNew.unseen.length && me.rules && me.rules.accepted) { newsShown = true; showNews(me.whatsNew.unseen, true); }
+  }
   function reload() {
     return api('GET', '/reseller/me').then(function (j) {
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; paintRules(); render(); loadInactive(); if (first) setPane(location.hash.replace('#', '') || 'overview', true); if (first) { startWatching(); paintSupport(); loadNotices(); } else paintWatching();
-    }).catch(function () { $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
+      var first = !watchTimer; me = j; if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); maybeNews(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
+    }).catch(function (err) { try { console.error(err); } catch (x) { /* ignore */ } $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 
   document.addEventListener('click', function (e) {
@@ -973,7 +1048,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   $('add').onclick = function () {
     var u = $('nu').value.trim(), trial = $('trial').checked, err = $('adderr');
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/.test(u)) return msg(err, 'The username must be 3 to 32 letters, numbers, dots, dashes or underscores.', 'err');
-    if (!$('plan').value) return msg(err, 'You have no plans to sell yet. Ask your provider.', 'err');
+    if (!me.staff && !$('plan').value) return msg(err, 'You have no plans to sell yet. Ask your provider.', 'err');
     var pw = $('np').value.trim(); if (pw && pw.length < 6) return msg(err, 'The password must be at least 6 characters.', 'err');
     if (busy) return; busy = true; msg(err, '', 'err'); $('add').disabled = true;
     api('POST', '/reseller/customers', { username: u, password: pw || undefined, planId: $('plan').value, trial: trial, vod: $('vod').checked, fullName: $('fn').value.trim(), email: $('em').value.trim(), phone: $('ph').value.trim(), note: $('nt').value.trim() }).then(function (j) {
@@ -1022,25 +1097,42 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   };
 
   // ===================== Reseller tools: support inbox, reports, sales tools, bulk renew =====================
-  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMessages(); else if (name === 'guides') paintGuides(); else if (name === 'add') paintImportPlans(); if (name === 'sales') { paintGrowthSales(); loadReferrals(); } if (name === 'settings') paintGrowthSettings(); }
+  function onPane(name) { if (name === 'support') loadSupport(); else if (name === 'reports') loadReports(); else if (name === 'sales') paintSales(); else if (name === 'money') loadMoney(); else if (name === 'messages') paintMessages(); else if (name === 'guides') paintGuides(); else if (name === 'add') paintImportPlans(); if (name === 'sales') { paintGrowthSales(); loadReferrals(); } if (name === 'settings') { paintGrowthSettings(); paintGrowthSettings2(); } if (name === 'messages') loadSchedule(); }
   function money(n) { return '$' + Number(n || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
   function ago(t) { var m = Math.round((Date.now() - t) / 60000); return m < 2 ? 'just now' : m < 60 ? m + ' min ago' : m < 1440 ? Math.round(m / 60) + ' h ago' : Math.round(m / 1440) + ' days ago'; }
 
   // ----- bulk renew
+  var BK_ARG = { label: 'Label (like VIP)', unlabel: 'Label to remove', extend: 'Free days (1 to 31)' };
   function bulkUi() {
-    $('bulkbar').hidden = !bulk; $('bk-toggle').textContent = bulk ? 'Done' : 'Bulk renew';
+    $('bulkbar').hidden = !bulk; $('bk-toggle').textContent = bulk ? 'Done' : 'Bulk actions';
     if (!bulk) return;
+    var act = $('bk-act').value, sched = !(me.opts && me.opts.scheduling === false);
+    [].forEach.call($('bk-act').options, function (o) { o.hidden = o.value !== 'renew' && !sched; });
+    if (!sched && act !== 'renew') { $('bk-act').value = act = 'renew'; }
+    $('bk-plan').hidden = act !== 'renew'; $('bk-arg').hidden = !BK_ARG[act]; if (BK_ARG[act]) $('bk-arg').placeholder = BK_ARG[act];
     var ids = Object.keys(picked).filter(function (k) { return picked[k]; }), plan = (me.plans || []).filter(function (p) { return p.id === $('bk-plan').value; })[0], cost = plan ? plan.credits * ids.length : 0;
-    $('bk-count').textContent = ids.length + ' selected' + (ids.length && plan ? ' · ' + cost + ' credits (you have ' + me.credits + ')' : '');
-    $('bk-go').disabled = !ids.length || !plan || cost > me.credits;
+    $('bk-count').textContent = ids.length + ' selected' + (act === 'renew' && ids.length && plan ? ' · ' + cost + ' credits (you have ' + me.credits + ')' : '');
+    $('bk-go').textContent = { renew: 'Renew selected', hold: 'Put selected on hold', release: 'Release selected', label: 'Add the label', unlabel: 'Remove the label', extend: 'Give the free days' }[act];
+    $('bk-go').disabled = !ids.length || (act === 'renew' && (!plan || cost > me.credits)) || (BK_ARG[act] && !$('bk-arg').value.trim());
     $('bk-all').checked = lastRows.length > 0 && lastRows.every(function (c) { return picked[c.id]; });
   }
+  $('bk-act').onchange = bulkUi; $('bk-arg').oninput = bulkUi;
   $('bk-toggle').onclick = function () { bulk = !bulk; picked = {}; if (bulk) { var keep = $('bk-plan').value; $('bk-plan').innerHTML = planOptions(); if (keep) $('bk-plan').value = keep; } msg($('bk-msg'), '', ''); render(); };
   $('bk-cancel').onclick = function () { bulk = false; picked = {}; render(); };
   $('bk-plan').onchange = bulkUi;
   $('bk-all').onchange = function () { var on = this.checked; lastRows.forEach(function (c) { picked[c.id] = on; }); render(); };
   $('bk-go').onclick = function () {
     var ids = Object.keys(picked).filter(function (k) { return picked[k]; }); if (!ids.length || busy) return;
+    var act = $('bk-act').value;
+    if (act !== 'renew') {
+      busy = true; $('bk-go').disabled = true; msg($('bk-msg'), 'Working...', '');
+      api('POST', '/reseller/bulk', { ids: ids, action: act, label: act === 'label' || act === 'unlabel' ? $('bk-arg').value.trim() : undefined, days: act === 'extend' ? Number($('bk-arg').value) : undefined }).then(function (j) {
+        busy = false;
+        if (j.__status !== 200) { msg($('bk-msg'), j.error || 'That did not work.', 'err'); bulkUi(); return; }
+        bulk = false; picked = {}; $('bk-arg').value = ''; reload().then(function () { msg($('bk-msg'), '', ''); }); toastMsg('Done for ' + j.done + ' customer' + (j.done === 1 ? '' : 's') + (j.failed ? ', ' + j.failed + ' could not be changed.' : '.'));
+      }).catch(function () { busy = false; msg($('bk-msg'), 'Could not reach Aurora.', 'err'); bulkUi(); });
+      return;
+    }
     busy = true; $('bk-go').disabled = true; msg($('bk-msg'), 'Renewing...', '');
     api('POST', '/reseller/renew-many', { ids: ids, planId: $('bk-plan').value }).then(function (j) {
       busy = false;
@@ -1277,9 +1369,11 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     if (!ids.length) return msg(m, 'Choose at least one customer.', 'err'); if (!text) return msg(m, 'Write the message first.', 'err');
     if (ids.length > 40) return msg(m, 'You can send to up to 40 customers at a time.', 'err');
     var b = $('ms-send'); b.disabled = true;
-    api('POST', '/reseller/messages', { ids: ids, text: text }).then(function (j) {
+    var later = $('ms-later').checked;
+    if (later && !$('ms-date').value) { b.disabled = false; return msg(m, 'Pick the date to send it.', 'err'); }
+    (later ? api('POST', '/reseller/schedule', { type: 'message', ids: ids, text: text, date: $('ms-date').value, hour: Number($('ms-hour').value) }) : api('POST', '/reseller/messages', { ids: ids, text: text })).then(function (j) {
       b.disabled = false; if (j.__status !== 200) return msg(m, j.error || 'That did not work.', 'err');
-      msg(m, 'Sent to ' + j.sent + ' customer' + (j.sent === 1 ? '' : 's') + '.', 'ok'); $('ms-text').value = ''; $('ms-cnt').textContent = '0 / 300'; msgPick = {}; paintMessages();
+      msg(m, later ? 'Scheduled for ' + fmt($('ms-date').value) + '.' : 'Sent to ' + j.sent + ' customer' + (j.sent === 1 ? '' : 's') + '.', 'ok'); $('ms-text').value = ''; $('ms-cnt').textContent = '0 / 300'; msgPick = {}; paintMessages(); loadSchedule();
     }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); });
   };
 
@@ -1455,6 +1549,130 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       api('POST', '/reseller/referrals/' + encodeURIComponent(rid) + '/' + (give ? 'reward' : 'dismiss'), give ? { both: row.querySelector('.rf-both').checked } : {}).then(function (j) {
         b.disabled = false; if (j.__status !== 200) return msg($('rf-msg'), oldG(j), 'err'); loadReferrals();
       }).catch(function () { b.disabled = false; });
+    }
+  });
+
+  // ===================== More tools (guard 1.56.0): customer health, helpers, scheduled changes, branding =====================
+  function oldH(j) { return j.__status === 404 ? 'Update Aurora Guard to 1.56.0 to use this.' : (j.error || 'That did not work.'); }
+  function on(k) { return !(me && me.opts && me.opts[k] === false); }
+  // ----- a helper (staff) sees a smaller panel
+  function staffPanes() { var p = (me && me.perms) || {}, a = []; if (p.view) a.push('customers'); if (p.trials) a.push('add'); if (p.tickets) a.push('support'); return a.length ? a : ['customers']; }
+  function applyStaff() {
+    document.body.classList.add('staffmode');
+    var ok = staffPanes();
+    [].forEach.call(document.querySelectorAll('.tabbtn'), function (b) { b.hidden = ok.indexOf(b.getAttribute('data-pane')) < 0; });
+    $('credchip').hidden = true; $('trial').checked = true; $('trial').disabled = true;
+    $('trialnote').textContent = 'Helpers can only make free trials.';
+    if (ok.indexOf(pane) < 0) setPane(ok[0], true);
+  }
+  // ----- customer health
+  var HL_TXT = { overdue: 'Hi! Your payment for Aurora is still open. Reply here if you need help paying.', expired: 'Hi! Your Aurora plan ended recently. Reply here when you want to renew.', buffering: 'Hi! I noticed Aurora has been buffering for you. Please restart the app and your router. If it keeps happening, reply and I will help.', quiet: 'Hi! We have not seen you on Aurora lately. Is everything OK? Reply if you need any help.' };
+  var HL_TAG = { overdue: 'exp', expired: 'exp', buffering: 'soon', quiet: 'hold' }, hlData = null, hlAll = false;
+  function loadHealth() {
+    if (!on('health')) { $('hl-card').hidden = true; return; }
+    api('GET', '/reseller/health').then(function (j) { if (j.__status === 409) { setTimeout(loadHealth, 800); return; } hlData = j.__status === 200 ? j.customers : null; if (j.__status === 200) paintHealth(); else $('hl-card').hidden = true; }).catch(function () { /* old guard */ });
+  }
+  function paintHealth() {
+    var box = $('hl-card'); if (!hlData) return;
+    box.hidden = false;
+    var rows = hlAll ? hlData : hlData.slice(0, 6);
+    box.innerHTML = '<div class="sec-h"><h2>Customer health</h2><span class="sub" style="margin:0">' + (hlData.length ? hlData.length + ' to look at' : 'All good') + '</span></div>' +
+      (hlData.length ? rows.map(function (c) { return '<div class="arow" data-hid="' + esc(c.id) + '"><div><b>' + esc(c.full || c.name) + '</b> ' + c.issues.map(function (i) { return '<span class="tag ' + HL_TAG[i.kind] + '">' + esc(i.text) + '</span>'; }).join(' ') + '</div><div class="row"><button class="btn line sm hl-msg" type="button">Message</button><button class="btn line sm hl-open" type="button">Open</button></div></div>'; }).join('') +
+        (hlData.length > 6 ? '<button class="btn line sm" id="hl-more" type="button" style="margin-top:10px">' + (hlAll ? 'Show fewer' : 'Show all ' + hlData.length) + '</button>' : '') : '<p class="sub" style="margin:0">Nobody is buffering, quiet, owing money or just ended.</p>');
+  }
+  $('hl-card').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'hl-more') { hlAll = !hlAll; paintHealth(); return; }
+    var row = b.closest('[data-hid]'); if (!row) return; var id = row.getAttribute('data-hid'), c = hlData.filter(function (x) { return x.id === id; })[0];
+    if (b.classList.contains('hl-open')) { openId = id; setPane('customers'); render(); }
+    else if (b.classList.contains('hl-msg')) { msgPick = {}; msgPick[id] = true; setPane('messages'); $('ms-text').value = HL_TXT[c.issues[0].kind] || ''; $('ms-cnt').textContent = $('ms-text').value.length + ' / 300'; paintMsgList(); }
+  });
+  // ----- pause until a date, and schedule a renewal (from a customer's row)
+  function tomorrow(n) { var d = new Date(); d.setDate(d.getDate() + (n || 1)); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('.psb, .srb'); if (!b) return;
+    var el = b.closest('.cust'), pbox = el.querySelector('.pbox'), id = null;
+    var c = (me.customers || []).filter(function (x) { return x.id === openId; })[0];
+    if (!c) return; id = c.id;
+    if (!on('scheduling')) { pbox.hidden = false; pbox.setAttribute('data-kind', 'x'); pbox.innerHTML = '<p class="meta">Scheduling is switched off for your account.</p>'; return; }
+    var kind = b.classList.contains('psb') ? 'ps' : 'sr';
+    if (!pbox.hidden && pbox.getAttribute('data-kind') === kind) { pbox.hidden = true; return; }
+    pbox.hidden = false; pbox.setAttribute('data-kind', kind);
+    if (kind === 'ps') pbox.innerHTML = '<strong>Pause ' + esc(c.full || c.name) + '</strong><p class="meta">Their login is switched off now and comes back by itself on the date you pick, for a holiday for example.</p><div class="row"><input type="date" class="ps-date" min="' + tomorrow(1) + '" aria-label="Back on"><button class="btn red sm ps-go" type="button">Pause</button></div><label class="toggle" style="margin-top:8px"><input type="checkbox" class="ps-keep" checked> Add the paused days back to their end date</label><p class="meta ps-msg"></p>';
+    else pbox.innerHTML = '<strong>Renew ' + esc(c.full || c.name) + ' on a date</strong><p class="meta">Aurora renews them that day and uses your credits then. If you are short of credits that day, it skips it and tells you.</p><div class="row"><select class="sr-plan" aria-label="Plan">' + planOptions() + '</select><input type="date" class="sr-date" min="' + tomorrow(0) + '" aria-label="Date"><button class="btn red sm sr-go" type="button">Schedule</button></div><p class="meta sr-msg"></p>';
+    if (kind === 'sr' && c.planId) pbox.querySelector('.sr-plan').value = c.planId;
+    var go = pbox.querySelector('.ps-go, .sr-go');
+    go.onclick = function () {
+      var m = pbox.querySelector('.ps-msg, .sr-msg'); go.disabled = true;
+      var call = kind === 'ps' ? api('POST', '/reseller/customers/' + encodeURIComponent(id) + '/hold', { hold: true, until: pbox.querySelector('.ps-date').value, keepTime: pbox.querySelector('.ps-keep').checked }) : api('POST', '/reseller/schedule', { type: 'renew', userId: id, planId: pbox.querySelector('.sr-plan').value, date: pbox.querySelector('.sr-date').value });
+      call.then(function (j) { go.disabled = false; if (j.__status !== 200) { m.style.color = '#ff8d9b'; m.textContent = oldH(j); return; } m.style.color = 'var(--green)'; m.textContent = kind === 'ps' ? 'Paused.' : 'Scheduled. See it under Messages.'; if (kind === 'ps') reload(); }).catch(function () { go.disabled = false; m.textContent = 'Could not reach Aurora.'; });
+    };
+  });
+  // ----- the scheduled list (Messages)
+  function loadSchedule() {
+    var box = $('sc-card'); if (!on('scheduling')) { box.hidden = true; return; }
+    $('ms-later').parentNode.hidden = false;
+    api('GET', '/reseller/schedule').then(function (j) {
+      if (j.__status === 409) { setTimeout(loadSchedule, 800); return; }
+      if (j.__status !== 200) { box.hidden = true; $('ms-later').parentNode.hidden = j.__status === 404; return; }
+      box.hidden = !(j.items.length || j.pauses.length);
+      var st = { pending: 'Waiting', done: 'Done', skipped: 'Skipped' };
+      box.innerHTML = '<div class="sec-h"><h2>Scheduled</h2></div>' +
+        (j.pauses || []).map(function (x) { return '<div class="wrow"><b>' + esc(x.name) + '</b> is paused <span class="meta">until ' + esc(fmt(x.until)) + (x.keepTime ? ' (paused days are added back)' : '') + '</span></div>'; }).join('') +
+        (j.items || []).map(function (x) { return '<div class="wrow" data-sid="' + esc(x.id) + '"><b>' + (x.type === 'renew' ? 'Renew ' + esc(x.customer) + ' on ' + esc(x.planName) : 'Message to ' + x.count + ' customer' + (x.count === 1 ? '' : 's')) + '</b> <span class="meta">' + esc(fmt(x.date)) + (x.hour != null ? ' at ' + x.hour + ':00' : '') + '</span> <span class="tag ' + (x.status === 'pending' ? 'soon' : x.status === 'done' ? 'on' : 'exp') + '">' + st[x.status] + '</span>' + (x.type === 'message' ? '<div class="meta">' + esc(x.text) + '</div>' : '') + (x.result ? '<div class="meta">' + esc(x.result) + '</div>' : '') + (x.status === 'pending' ? '<div style="margin-top:6px"><button class="btn line sm danger sc-del" type="button">Cancel</button></div>' : '') + '</div>'; }).join('');
+    }).catch(function () { box.hidden = true; });
+  }
+  $('sc-card').addEventListener('click', function (e) { var b = e.target.closest('.sc-del'); if (!b) return; var id = b.closest('[data-sid]').getAttribute('data-sid'); api('DELETE', '/reseller/schedule/' + encodeURIComponent(id)).then(loadSchedule); });
+  $('ms-later').addEventListener('change', function () { $('ms-date').hidden = $('ms-hour').hidden = !this.checked; if (this.checked && !$('ms-date').value) $('ms-date').value = tomorrow(1); if (!$('ms-hour').options.length) { var h = ''; for (var i = 6; i <= 22; i++) h += '<option value="' + i + '"' + (i === 9 ? ' selected' : '') + '>' + (i % 12 || 12) + ':00 ' + (i < 12 ? 'am' : 'pm') + '</option>'; $('ms-hour').innerHTML = h; } });
+  $('ms-date').min = tomorrow(0);
+  // ----- Settings: helpers, branding, optional tools
+  var staffData = null, newStaff = null;
+  function paintGrowthSettings2() {
+    if (!me || me.staff) return;
+    var o = me.opts || {}, br = me.brand || {};
+    $('br-card').hidden = o.branding === false;
+    $('br-card').innerHTML = '<h2>Your name and welcome text</h2><p class="sub">Customers see your business name and this welcome text on your trial sign-up page and on their account page, instead of Aurora\'s.</p>' +
+      '<label for="br-name">Business name</label><input id="br-name" maxlength="40" value="' + esc(br.name || '') + '" placeholder="Opsco TV"><label for="br-welcome" style="margin-top:12px">Welcome text <span style="font-weight:400;color:var(--dim)">(optional)</span></label><textarea id="br-welcome" rows="3" maxlength="300" placeholder="Welcome! Reply here if you need any help.">' + esc(br.welcome || '') + '</textarea>' +
+      '<div class="row" style="margin-top:12px"><button class="btn red" id="br-save" type="button">Save</button></div><p class="msg" id="br-msg" role="status" hidden></p>';
+    $('ot-card').innerHTML = '<h2>Optional tools</h2><p class="sub">Switch off the tools you do not want. Your provider sets what is on to start with.</p>' +
+      [['health', 'Customer health list on the Overview'], ['scheduling', 'Scheduling, pausing and bulk actions'], ['staff', 'Helpers'], ['branding', 'Your name and welcome text on customer pages']].map(function (t) { return '<label class="mrow" style="border:0;padding:6px 0"><input type="checkbox" class="ot" data-k="' + t[0] + '"' + (o[t[0]] !== false ? ' checked' : '') + '><span>' + t[1] + '</span></label>'; }).join('') +
+      '<div class="row" style="margin-top:10px"><button class="btn red" id="ot-save" type="button">Save</button></div><p class="msg" id="ot-msg" role="status" hidden></p>';
+    paintStaff();
+    if (o.staff !== false) api('GET', '/reseller/staff').then(function (j) { if (j.__status === 409) { setTimeout(paintGrowthSettings2, 800); return; } if (j.__status === 200) { staffData = j; paintStaff(); } }).catch(function () { /* old guard */ });
+  }
+  var PERM_NAMES = { view: 'See customers', tickets: 'Answer support', passwords: 'Reset passwords and sign out devices', trials: 'Add free trials' };
+  function permBoxes(perms, cls) { return Object.keys(PERM_NAMES).map(function (k) { return '<label class="toggle" style="margin:2px 12px 2px 0"><input type="checkbox" class="' + cls + '" data-p="' + k + '"' + (perms && perms[k] ? ' checked' : '') + '> ' + PERM_NAMES[k] + '</label>'; }).join(''); }
+  function paintStaff() {
+    var box = $('tm-card'); if (!me) return;
+    if ((me.opts || {}).staff === false) { box.innerHTML = '<h2>Helpers</h2><p class="sub" style="margin:0">Helpers are switched off for your account.</p>'; return; }
+    var list = (staffData && staffData.staff) || me.helpers || [];
+    box.innerHTML = '<h2>Helpers</h2><p class="sub">Give a helper their own login to answer your customers\' messages, reset passwords or add free trials. They never see your credits, prices, payments or settings.</p>' +
+      (newStaff ? '<div class="callout" style="border-color:var(--green)"><div><b>' + esc(newStaff.name) + ' is ready.</b> Send them this login, the password shows only now:<br>Username: <b>' + esc(newStaff.user) + '</b> · Password: <b>' + esc(newStaff.pw) + '</b></div><button class="btn line sm" id="tm-copy" type="button">Copy</button></div>' : '') +
+      (list.length ? list.map(function (x) { return '<div class="wrow" data-sid="' + esc(x.id) + '"><b>' + esc(x.name) + '</b> <span class="meta">' + esc(x.userName) + '</span>' + (x.status === 'off' ? ' <span class="tag hold">Off</span>' : '') + '<div style="margin-top:6px">' + permBoxes(x.perms, 'tm-p') + '</div><div class="row" style="margin-top:8px;flex-wrap:wrap"><button class="btn line sm tm-save" type="button">Save</button><button class="btn line sm tm-off" type="button">' + (x.status === 'off' ? 'Switch on' : 'Switch off') + '</button><button class="btn line sm tm-pw" type="button">New password</button><button class="btn line sm danger tm-del" type="button">Remove</button></div></div>'; }).join('') : '<p class="meta">No helpers yet.</p>') +
+      '<h3 style="margin:18px 0 8px;font-size:1rem">Add a helper</h3><div class="grid"><div><label for="tm-name">Name</label><input id="tm-name" maxlength="60" placeholder="Hana"></div><div><label for="tm-user">Login name</label><input id="tm-user" maxlength="32" autocomplete="off" placeholder="hana_helper"></div></div>' +
+      '<div style="margin-top:8px">' + permBoxes({ view: true, tickets: true }, 'tm-np') + '</div><div class="row" style="margin-top:10px"><button class="btn red" id="tm-add" type="button">Add helper</button></div><p class="msg" id="tm-msg" role="status" hidden></p>';
+  }
+  function permsOf(root, cls) { var o = {}; [].forEach.call(root.querySelectorAll('.' + cls), function (c) { o[c.getAttribute('data-p')] = c.checked; }); return o; }
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'br-save') { var m = $('br-msg'); b.disabled = true; api('PUT', '/reseller/brand', { name: $('br-name').value.trim(), welcome: $('br-welcome').value.trim() }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(m, oldH(j), 'err'); me.brand = j.brand; msg(m, 'Saved.', 'ok'); }).catch(function () { b.disabled = false; msg(m, 'Could not reach Aurora.', 'err'); }); }
+    else if (b.id === 'ot-save') {
+      var om = $('ot-msg'), body = {}; [].forEach.call(document.querySelectorAll('.ot'), function (c) { body[c.getAttribute('data-k')] = c.checked; }); b.disabled = true;
+      api('PUT', '/reseller/options', body).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg(om, oldH(j), 'err'); me.opts = j; paintGrowthSettings2(); msg($('ot-msg'), 'Saved.', 'ok'); loadHealth(); }).catch(function () { b.disabled = false; msg(om, 'Could not reach Aurora.', 'err'); });
+    } else if (b.id === 'tm-add') {
+      var tm = $('tm-msg'); b.disabled = true;
+      api('POST', '/reseller/staff', { name: $('tm-name').value.trim(), userName: $('tm-user').value.trim(), perms: permsOf($('tm-card'), 'tm-np') }).then(function (j) {
+        b.disabled = false; if (j.__status !== 200) return msg(tm, oldH(j), 'err');
+        newStaff = { name: $('tm-name').value.trim(), user: $('tm-user').value.trim(), pw: j.password }; staffData = { staff: j.staff }; paintStaff();
+      }).catch(function () { b.disabled = false; msg(tm, 'Could not reach Aurora.', 'err'); });
+    } else if (b.id === 'tm-copy') { copyText('Aurora helper login\nUsername: ' + newStaff.user + '\nPassword: ' + newStaff.pw + '\nSign in at ' + location.origin + location.pathname).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select and copy'; }); }
+    else if (b.closest('#tm-card [data-sid]')) {
+      var row = b.closest('[data-sid]'), id = row.getAttribute('data-sid'), x = ((staffData && staffData.staff) || []).filter(function (y) { return y.id === id; })[0];
+      var done = function (j) { if (j.__status !== 200) return msg($('tm-msg') || document.createElement('p'), oldH(j), 'err'); if (j.staff) { staffData = { staff: j.staff }; } if (j.password) newStaff = { name: x.name, user: x.userName, pw: j.password }; paintStaff(); };
+      if (b.classList.contains('tm-save')) api('PUT', '/reseller/staff/' + encodeURIComponent(id), { perms: permsOf(row, 'tm-p') }).then(done);
+      else if (b.classList.contains('tm-off')) api('PUT', '/reseller/staff/' + encodeURIComponent(id), { status: x.status === 'off' ? 'active' : 'off' }).then(done);
+      else if (b.classList.contains('tm-pw')) { if (confirm('Make a new password for ' + x.name + '?')) api('POST', '/reseller/staff/' + encodeURIComponent(id) + '/password', {}).then(done); }
+      else if (b.classList.contains('tm-del')) { if (confirm('Remove ' + x.name + '? Their login stops working.')) { newStaff = null; api('DELETE', '/reseller/staff/' + encodeURIComponent(id)).then(done); } }
     }
   });
   if (session && session.token) { show(true); reload(); } else show(false);
