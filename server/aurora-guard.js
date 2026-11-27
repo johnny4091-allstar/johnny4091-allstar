@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.60.1';
+const VERSION = '1.60.2';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1197,7 +1197,7 @@ async function inboxFor(me) {
   const now = Date.now(), items = [];
   for (const a of store.announcements || []) {
     if (a.expires && a.expires < now) continue;
-    if (!audienceOk(a, me.Id)) continue;
+    if (!audienceOk(a, me.Id) && !(me.Policy?.IsAdministrator && !a.byReseller)) continue; // an administrator sees every announcement the provider sent, whoever it was for
     items.push({ id: 'ann:' + a.id, type: 'announcement', level: a.level, title: a.text, text: 'From your provider', at: a.at });
   }
   for (const m of (store.directMsgs || []).filter((x) => x.userId === me.Id && now - x.at < 30 * 86400000).slice(0, 5)) items.push({ id: 'dm:' + m.id, type: 'message', level: 'info', title: m.text, text: 'From ' + (m.from || 'your provider'), at: m.at });

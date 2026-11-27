@@ -8264,7 +8264,7 @@
   // ---------- Notifications, announcements, help, referrals and stats (Aurora Guard 1.11.0) ----------
   let inboxState = { items: [], unread: 0, banners: [], ok: false };
   let inboxTimer = null;
-  const annTimers = new Map();
+  const annTimers = new Map(), tvGoneAnn = new Set();
   const dismissedAnn = () => { try { return new Set(JSON.parse(store.get('ef.annDismissed') || '[]')); } catch { return new Set(); } };
   function paintBell() {
     const b = $('#bell-btn'), badge = $('#bell-badge');
@@ -8278,13 +8278,15 @@
   function paintBanners() {
     const el = $('#announce');
     if (!el) return;
-    const gone = dismissedAnn();
+    const gone = nav.tv ? tvGoneAnn : dismissedAnn();
     // Warnings and outages stick: customers can't dismiss them (they go when they expire or the admin removes them). Info notices can be dismissed.
-    const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && !isAdmin();
+    // (On a TV there is no close button to press, so an administrator's warnings stay too.)
+    const sticky = (a) => (a.level === 'warn' || a.level === 'bad') && (!isAdmin() || nav.tv);
     const rank = (a) => (a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2);
     const list = (inboxState.banners || []).filter((a) => sticky(a) || !gone.has(a.id)).sort((a, b) => rank(a) - rank(b)).slice(0, nav.tv ? 1 : resellerOnly() ? 4 : 2); // (a reseller has no bell to see the rest in)
     // A remote can't press the ✕, so on a TV an info notice goes by itself after a while (warnings and outages stay).
-    if (nav.tv) for (const a of list) if (!sticky(a) && !annTimers.has(a.id)) annTimers.set(a.id, setTimeout(() => { const g = dismissedAnn(); g.add(a.id); store.set('ef.annDismissed', JSON.stringify([...g].slice(-50))); paintBanners(); }, 20000));
+    // On a TV an information notice goes by itself after 45 seconds, and comes back the next time Aurora is opened (it is not remembered).
+    if (nav.tv) for (const a of list) if (!sticky(a) && !annTimers.has(a.id)) annTimers.set(a.id, setTimeout(() => { tvGoneAnn.add(a.id); paintBanners(); }, 45000));
     el.classList.toggle('hidden', !list.length || kidsOn());
     el.innerHTML = list.map((a) => `<div class="ann ${esc(a.level)}"><span class="ann-ic">${a.level === 'bad' ? '⛔' : a.level === 'warn' ? '⚠️' : 'ℹ️'}</span><span class="ann-tx">${esc(a.text)}</span>${sticky(a) ? '' : `<button class="ann-x" data-ann="${esc(a.id)}" aria-label="Dismiss">&times;</button>`}</div>`).join('');
     document.documentElement.style.setProperty('--ann-h', list.length && !el.classList.contains('hidden') ? (el.offsetHeight + 8) + 'px' : '0px');
