@@ -820,10 +820,63 @@
     $('#main').classList.toggle('hidden', name !== 'main');
   }
 
+  // ----- A reseller's code on the sign-in screen (guard 1.60.0) -----
+  // The customer types the code their reseller gave them; the sign-in screen then shows the reseller's name, welcome and contact details
+  // before anyone has signed in. The code is public by design: it only reveals what the reseller shows their customers.
+  const RESELLER_CODE_KEY = 'ef.resellerCode';
+  const RESELLER_CODE_RE = /^[A-Z2-9]{8}$/;
+  async function lookupResellerCode(code) {
+    const res = await fetch(`${guardUrl.replace(/\/+$/, '')}/brand/info?code=${encodeURIComponent(code)}`, { cache: 'no-store', signal: timeoutSignal(8000) });
+    if (!res.ok) throw new Error('lookup ' + res.status);
+    return res.json();
+  }
+  function paintSetupBrand(info) {
+    const box = $('#setup-brand'); if (!box) return;
+    if (!info?.valid) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+    const s = info.support || {}, wa = String(s.whatsapp || '').replace(/\D/g, '');
+    const help = wa.length >= 7 ? `Need help? ${nav.tv ? 'WhatsApp ' + esc(s.whatsapp) : `<a href="https://wa.me/${wa}" target="_blank" rel="noopener">WhatsApp ${esc(s.whatsapp)}</a>`}` : s.email ? `Need help? ${esc(s.email)}` : s.phone ? `Need help? Call ${esc(s.phone)}` : '';
+    box.innerHTML = `<span class="sb-mk">${esc((Array.from(info.name || 'A')[0] || 'A').toUpperCase())}</span><div class="sb-tx"><strong>${esc(info.name || '')}</strong>${info.welcome ? `<span>${esc(info.welcome)}</span>` : ''}${help ? `<span>${help}</span>` : ''}</div>`;
+    box.classList.remove('hidden');
+  }
+  async function applyResellerCode(raw, { silent = false } = {}) {
+    const code = String(raw || '').trim().toUpperCase().replace(/\s+/g, '');
+    const msg = $('#setup-code-msg');
+    const say = (t, bad) => { if (silent) return; msg.textContent = t; msg.classList.toggle('hidden', !t); msg.classList.toggle('bad', !!bad); };
+    if (!RESELLER_CODE_RE.test(code)) { say('A reseller code has 8 letters and numbers.', true); return false; }
+    say('Checking…');
+    try {
+      const info = await lookupResellerCode(code);
+      if (!info.valid) { say("That code isn't right. Check it with your reseller.", true); return false; }
+      store.set(RESELLER_CODE_KEY, code);
+      paintSetupBrand(info);
+      $('#setup-code-row').classList.add('hidden');
+      $('#setup-code-toggle').textContent = 'Not your reseller? Remove the code';
+      $('#setup-code-toggle').dataset.on = '1';
+      say('');
+      return true;
+    } catch { say("Couldn't check the code. Check your internet connection and try again.", true); return false; }
+  }
+  function clearResellerCode() {
+    store.del(RESELLER_CODE_KEY);
+    paintSetupBrand(null);
+    $('#setup-code-toggle').textContent = 'Have a code from your reseller?';
+    delete $('#setup-code-toggle').dataset.on;
+  }
+  function setupCodeUi() {
+    $('#setup-code-toggle').addEventListener('click', () => {
+      if ($('#setup-code-toggle').dataset.on) { clearResellerCode(); return; }
+      const row = $('#setup-code-row'); row.classList.toggle('hidden');
+      if (!row.classList.contains('hidden')) $('#setup-code-input').focus();
+    });
+    $('#setup-code-apply').addEventListener('click', () => applyResellerCode($('#setup-code-input').value));
+    $('#setup-code-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyResellerCode($('#setup-code-input').value); } });
+  }
+
   function showSetup(errorMsg) {
     closeModal();
     showScreen('setup');
     hideSplash();
+    { const saved = store.get(RESELLER_CODE_KEY); if (saved && RESELLER_CODE_RE.test(saved)) applyResellerCode(saved, { silent: true }); }
     $('#setup-password').value = '';
     const err = $('#setup-error');
     err.textContent = errorMsg || '';
@@ -9188,6 +9241,7 @@
       const pgUrl = d.pageCode ? `${SITE}account/?r=${d.pageCode}` : '';
       $('[data-s-pg]', root).innerHTML = `<h2>Your customer page</h2>
         <p class="muted">A page with your name on it. When your customers open this link they see your business name, your welcome text and how to reach you, on the sign-in page (where they see when their plan ends and ask to renew) and on the setup guide. Set your name and contact details in Settings.</p>
+        ${d.pageCode ? `<p class="muted">Their app can use it too: on the sign-in screen they choose <strong>Have a code from your reseller?</strong> and type <strong>${esc(d.pageCode)}</strong>.</p>` : ''}
         ${pgUrl ? `<input type="text" class="st-note-input" data-s-pgurl readonly value="${esc(pgUrl)}" aria-label="Your customer page link"><div class="m-actions"><button class="btn btn-white" data-s-pgcopy>Copy link</button><a class="btn btn-gray" href="${esc(pgUrl)}" target="_blank" rel="noopener">Open it</a></div>` : ''}
         <div class="m-actions"><button class="btn ${pgUrl ? 'btn-gray' : 'btn-red'}" data-s-pgmake>${pgUrl ? 'Make a new link' : 'Create my customer page'}</button></div><div class="live-result" data-s-pgmsg></div>`;
       $('[data-s-pr]', root).innerHTML = `<h2>Your prices</h2><p class="muted">What you charge your customers. Private, only you see it. It powers your income report and price list.</p>
@@ -12635,12 +12689,14 @@
   }
 
   function setupUi() {
+    setupCodeUi();
     $('#setup-form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const btn = $('button[type="submit"]', e.target);
       btn.disabled = true; btn.textContent = 'Connecting…';
       try {
         const user = await signIn($('#setup-username').value.trim(), $('#setup-password').value);
+        store.del(RESELLER_CODE_KEY); // from here on the reseller's brand comes from the account itself
         await selectUser(user, { fresh: true });
       } catch (err) {
         showSetup(connectionErrorMessage(err));

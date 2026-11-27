@@ -93,6 +93,7 @@ h2 { margin:22px 0 8px; font-size:1.25rem; } a { color:#9fe8e5; }
     var tx = document.createElement('div'), b = document.createElement('b'), sm = document.createElement('small');
     b.textContent = i.name || ''; sm.textContent = i.welcome || ''; tx.appendChild(b); if (i.welcome) tx.appendChild(sm);
     if (help) { var h = document.createElement('small'); h.innerHTML = help; tx.appendChild(h); }
+    var cs = document.createElement('small'); cs.style.marginTop = '6px'; cs.textContent = 'Using the Aurora app? On its sign-in screen choose "Have a code from your reseller?" and type ' + code + '.'; tx.appendChild(cs);
     box.appendChild(mk); box.appendChild(tx); bar.parentNode.insertBefore(box, bar.nextSibling);
     try { document.title = i.name + ' · ' + document.title; } catch (e) { /* ignore */ }
   }).catch(function () { /* the plain page is fine */ });
