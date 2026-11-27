@@ -92,6 +92,11 @@ details.card[open] > summary { margin-bottom:12px; }
 @media (max-width:460px) { .hero-in { grid-template-columns:1fr; justify-items:center; text-align:center; } .facts { justify-content:center; } .ring { width:112px; height:112px; } }
 .wrap { padding-bottom:110px; }
 @media (max-width:420px) { .nums { grid-template-columns:1fr 1fr; } }
+
+.announce { display:flex; flex-direction:column; gap:8px; margin:0 0 16px; }
+.announce .ann { display:flex; align-items:flex-start; gap:10px; padding:11px 14px; border-radius:12px; border:1px solid #3b4a85; background:rgba(79,123,255,.14); color:#fff; font-size:.95rem; line-height:1.4; }
+.announce .ann.warn { border-color:rgba(255,209,102,.6); background:rgba(255,209,102,.12); } .announce .ann.bad { border-color:rgba(255,120,135,.65); background:rgba(255,77,94,.14); }
+.announce .ann-tx { flex:1; min-width:0; overflow-wrap:anywhere; } .announce .ann-x { flex:none; background:none; border:0; color:#cfd6f5; font-size:1.3rem; line-height:1; cursor:pointer; padding:0 4px; }
 </style>
 <style>
 .brandhead { display:flex; align-items:center; gap:14px; margin:6px 0 20px; padding:14px 16px; border-radius:14px; border:1px solid #27346a; background:linear-gradient(100deg,rgba(58,42,138,.55),rgba(13,20,49,.9)); }
@@ -120,6 +125,7 @@ details.card[open] > summary { margin-bottom:12px; }
   </section>
 
   <section id="app" hidden>
+    <div class="announce" id="announce" hidden></div>
     <div class="card" id="brandcard" hidden><h2 id="brandname" style="margin:0 0 6px"></h2><p class="hint" id="brandwelcome" style="margin:0"></p></div>
     <div class="note" id="pausednote" hidden style="margin-bottom:14px"></div>
     <section class="hero" id="hero" aria-live="polite">
@@ -372,9 +378,31 @@ details.card[open] > summary { margin-bottom:12px; }
       if (a.__status !== 200) { out(a.error || 'Could not load your account.'); return; }
       if (a.admin) { out('Administrator accounts have no plan to show here. Use the Admin page instead.'); return; }
       acct = a;
-      paintStatus(); paintRenew(); paintHelp(); loadDevices(); loadMessages(); loadWeek(); loadReferral(); loadSupport(); paintApps();
+      paintStatus(); paintRenew(); paintHelp(); loadAnnounce(); loadDevices(); loadMessages(); loadWeek(); loadReferral(); loadSupport(); paintApps();
     }).catch(function () { out('Could not reach Aurora. Check your connection.'); });
   }
+
+  // ----- Announcements from the provider (and from a reseller to their customers), shown at the top like in the app.
+  // Warnings and outages stay until they expire or are removed; plain information can be closed.
+  var annTimer = null;
+  function annGone() { try { return JSON.parse(localStorage.getItem('aurora.annDismissed') || '[]'); } catch (e) { return []; } }
+  function annHide(id) { try { var g = annGone(); if (g.indexOf(id) < 0) g.push(id); localStorage.setItem('aurora.annDismissed', JSON.stringify(g.slice(-50))); } catch (e) { /* private window */ } }
+  function paintAnnounce(list) {
+    var box = $('announce'); if (!box) return;
+    var gone = annGone(), rank = function (a) { return a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2; };
+    var shown = (list || []).filter(function (a) { return a.level === 'warn' || a.level === 'bad' || gone.indexOf(a.id) < 0; }).sort(function (a, b) { return rank(a) - rank(b); }).slice(0, 4);
+    box.hidden = !shown.length;
+    box.innerHTML = shown.map(function (a) {
+      var sticky = a.level === 'warn' || a.level === 'bad';
+      return '<div class="ann ' + esc(a.level || 'info') + '" role="' + (sticky ? 'alert' : 'status') + '"><span aria-hidden="true">' + (a.level === 'bad' ? '\u26D4' : a.level === 'warn' ? '\u26A0\uFE0F' : '\u2139\uFE0F') + '</span><span class="ann-tx">' + esc(a.text) + '</span>' + (sticky ? '' : '<button class="ann-x" type="button" data-ann="' + esc(a.id) + '" aria-label="Close this notice">\u00D7</button>') + '</div>';
+    }).join('');
+  }
+  function loadAnnounce() {
+    if (annTimer) clearTimeout(annTimer);
+    api('GET', '/inbox').then(function (j) { if (j.__status === 200) paintAnnounce(j.banners || []); else if (j.__status === 401) return; }).catch(function () { /* an older Guard: no banners */ });
+    annTimer = setTimeout(loadAnnounce, 120000);
+  }
+  document.addEventListener('click', function (e) { var x = e.target.closest && e.target.closest('[data-ann]'); if (x) { annHide(x.getAttribute('data-ann')); var p = x.closest('.ann'); if (p) p.remove(); var box = $('announce'); if (box && !box.children.length) box.hidden = true; } });
   function mins(m) { m = Math.round(m || 0); return m >= 60 ? Math.floor(m / 60) + ' h ' + (m % 60) + ' min' : m + ' min'; }
   function loadMessages() {
     api('GET', '/inbox').then(function (j) {

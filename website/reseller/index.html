@@ -132,6 +132,10 @@ h1 { margin:0; line-height:1.12; font-weight:800; text-wrap:balance; }
 /* overview */
 .welcome { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-end; gap:14px; margin:0 0 18px; } .welcome h1 { font-size:clamp(1.6rem,4.5vw,2.3rem); }
 .hero .credits { border-color:rgba(42,212,208,.3); } .credits .n { font-size:4rem; background:linear-gradient(100deg,#fff,#9fe8e5); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.announce { display:flex; flex-direction:column; gap:8px; margin:0 0 16px; }
+.announce .ann { display:flex; align-items:flex-start; gap:10px; padding:11px 14px; border-radius:12px; border:1px solid #3b4a85; background:rgba(79,123,255,.14); color:#fff; font-size:.95rem; line-height:1.4; }
+.announce .ann.warn { border-color:rgba(255,209,102,.6); background:rgba(255,209,102,.12); } .announce .ann.bad { border-color:rgba(255,120,135,.65); background:rgba(255,77,94,.14); }
+.announce .ann-tx { flex:1; min-width:0; overflow-wrap:anywhere; } .announce .ann-x { flex:none; background:none; border:0; color:#cfd6f5; font-size:1.3rem; line-height:1; cursor:pointer; padding:0 4px; }
 .pulse { margin:0 0 16px; border-radius:16px; border:1px solid var(--line); background:linear-gradient(180deg,#101a45,var(--bg-2) 60%); padding:16px 18px 18px; }
 .pl-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; } .pl-head b { font-size:1.05rem; letter-spacing:.02em; }
 .pl-live { display:inline-flex; align-items:center; gap:8px; font-size:.85rem; color:#cfd6f5; } .pl-live i { width:9px; height:9px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(70,211,105,.6); animation:plp 1.8s infinite; }
@@ -251,6 +255,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 
   <div id="app" hidden>
     <div id="rulesbox"></div>
+    <div class="announce" id="announce" hidden></div>
     <div class="menuwrap" id="menuwrap">
     <button class="menubtn" id="menubtn" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="tabs"><span class="burger" aria-hidden="true"><i></i><i></i><i></i></span><span class="menulabel" id="menulabel">Overview</span><span class="tcount hot" id="menucount" hidden>0</span><span class="chev" aria-hidden="true"></span></button>
     <nav class="tabs" id="tabs" aria-label="Reseller panel sections">
@@ -622,6 +627,27 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   }
   function waDigits(phone) { var d = String(phone || '').replace(/\D/g, ''); if (d.indexOf('00') === 0) d = d.slice(2); return d.length >= 7 ? d : ''; }
   function waUrl(c) { var d = waDigits(c.phone); return d ? 'https://wa.me/' + d + '?text=' + encodeURIComponent(renewalMessage(c.full || c.name, c.expires, c)) : ''; }
+  // ----- Announcements from the provider (and from a reseller to their customers), shown at the top like in the app.
+  // Warnings and outages stay until they expire or are removed; plain information can be closed.
+  var annTimer = null;
+  function annGone() { try { return JSON.parse(localStorage.getItem('aurora.annDismissed') || '[]'); } catch (e) { return []; } }
+  function annHide(id) { try { var g = annGone(); if (g.indexOf(id) < 0) g.push(id); localStorage.setItem('aurora.annDismissed', JSON.stringify(g.slice(-50))); } catch (e) { /* private window */ } }
+  function paintAnnounce(list) {
+    var box = $('announce'); if (!box) return;
+    var gone = annGone(), rank = function (a) { return a.level === 'bad' ? 0 : a.level === 'warn' ? 1 : 2; };
+    var shown = (list || []).filter(function (a) { return a.level === 'warn' || a.level === 'bad' || gone.indexOf(a.id) < 0; }).sort(function (a, b) { return rank(a) - rank(b); }).slice(0, 4);
+    box.hidden = !shown.length;
+    box.innerHTML = shown.map(function (a) {
+      var sticky = a.level === 'warn' || a.level === 'bad';
+      return '<div class="ann ' + esc(a.level || 'info') + '" role="' + (sticky ? 'alert' : 'status') + '"><span aria-hidden="true">' + (a.level === 'bad' ? '\u26D4' : a.level === 'warn' ? '\u26A0\uFE0F' : '\u2139\uFE0F') + '</span><span class="ann-tx">' + esc(a.text) + '</span>' + (sticky ? '' : '<button class="ann-x" type="button" data-ann="' + esc(a.id) + '" aria-label="Close this notice">\u00D7</button>') + '</div>';
+    }).join('');
+  }
+  function loadAnnounce() {
+    if (annTimer) clearTimeout(annTimer);
+    api('GET', '/inbox').then(function (j) { if (j.__status === 200) paintAnnounce(j.banners || []); else if (j.__status === 401) return; }).catch(function () { /* an older Guard: no banners */ });
+    annTimer = setTimeout(loadAnnounce, 120000);
+  }
+  document.addEventListener('click', function (e) { var x = e.target.closest && e.target.closest('[data-ann]'); if (x) { annHide(x.getAttribute('data-ann')); var p = x.closest('.ann'); if (p) p.remove(); var box = $('announce'); if (box && !box.children.length) box.hidden = true; } });
   function paintDash() {
     var cs = me.customers || [], n = function (k) { return cs.filter(function (c) { return state(c) === k; }).length; };
     var first = String(me.name || '').split(/\s+/)[0] || 'there', h = new Date().getHours();
@@ -1062,7 +1088,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); loadPulse(); maybeNews(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
+      var first = !watchTimer; me = j; if (first) loadAnnounce(); if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); loadPulse(); maybeNews(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
     }).catch(function (err) { try { console.error(err); } catch (x) { /* ignore */ } $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 
