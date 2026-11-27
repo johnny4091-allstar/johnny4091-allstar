@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.58.1';
+const VERSION = '1.60.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -599,6 +599,12 @@ const RESELLER_RULES_DATE = '2026-11-26';
 // What is new in the reseller panel (guard 1.57.0). Newest first. A reseller sees a pop-up once for the releases they have not seen yet (up to 3),
 // and can open the recent list again from the menu. Add a new entry on top (a new id, in date order) with every release that changes the panel.
 const RESELLER_NEWS = [
+  { id: '2026-11-27c', date: '2026-11-27', title: 'Your own customer page', items: [
+    { title: 'A page with your name on it', text: 'In Sales tools, get your customer page link. When your customers open it they see your business name, welcome text and how to reach you on the sign-in and setup pages.' } ] },
+  { id: '2026-11-27b', date: '2026-11-27', title: 'Pulse, and your name on your customers\' Home', items: [
+    { title: 'Pulse', text: 'The top of Overview now shows who is watching right now, your income this month with the last 7 days, your active customers and how long your credits will last.' },
+    { title: 'One-tap WhatsApp reminders', text: 'In "Needs renewing", customers with a phone number get a WhatsApp button that opens a message already written in your own words. You tap Send.' },
+    { title: 'Your customers\' Home', text: 'Customers now see your name and welcome text at the top of Home, a game that is on or about to start, how many days their plan has left with a Renew button, and your offers.' } ] },
   { id: '2026-11-27', date: '2026-11-27', title: 'Keep channels off free trials', items: [
     { title: 'Hide channel groups from trials', text: 'In Settings, pick the Live TV groups (like pay-per-view) that your free trials should not see. They apply to new trials and the trials running now, and go away when the customer buys a plan.' } ] },
   { id: '2026-11-26b', date: '2026-11-26', title: 'A tidier panel and this pop-up', items: [
@@ -831,6 +837,8 @@ async function runSchedules() {
 const trialCapOf = (r) => (r && r.trialsUnlimited ? Infinity : cfg.resellerTrialsPerDay);
 const trialLinkState = (r) => { const t = r.trialLink || {}; return { on: !!t.on, code: t.code || '', made: t.made || 0, today: trialsTodayOf(r), limit: r.trialsUnlimited ? null : cfg.resellerTrialsPerDay, unlimited: !!r.trialsUnlimited }; };
 const trialResellerByCode = (code) => { const c = String(code || '').trim().toUpperCase(); if (!/^[A-Z2-9]{8}$/.test(c)) return null; return Object.values(resellerList()).find((r) => r.status === 'active' && r.trialLink && r.trialLink.on && r.trialLink.code === c && (cfg.resellerRulesRequired === false || rulesOk(r))) || null; };
+// A reseller's customer page (guard 1.60.0): aurora-streaming.org/account/?r=CODE shows their name, welcome text and contact details to their own customers.
+const brandResellerByCode = (code) => { const c = String(code || '').trim().toUpperCase(); if (!/^[A-Z2-9]{8}$/.test(c)) return null; return Object.values(resellerList()).find((r) => r.status === 'active' && r.pageCode === c) || null; };
 const newTrialCode = () => { const A = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; let c = ''; const b = crypto.randomBytes(8); for (let i = 0; i < 8; i++) c += A[b[i] % A.length]; return c; };
 const monthKey = (t) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'); };
 const warnActive = (r) => (r.warnings || []).filter((w) => !w.expires || w.expires > Date.now());
@@ -3504,6 +3512,14 @@ async function handle(req, res) {
     });
   }
   // A reseller's free-trial link (guard 1.50.0). Public, so it is limited: the reseller's own daily trials, a few per internet address, one per email.
+  if (url.pathname === '/brand/info' && req.method === 'GET') {
+    if (overLimit('brand-info', ip, 120, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
+    const r = brandResellerByCode(url.searchParams.get('code'));
+    if (!r) return send(res, 200, { valid: false });
+    const sup = supportOfReseller(r.id) || {}, branded = optOf(r, 'branding') && r.brand && r.brand.name;
+    return send(res, 200, { valid: true, name: branded ? r.brand.name : (sup.name || r.name), welcome: branded && r.brand.welcome ? r.brand.welcome : '',
+      support: { name: sup.name || '', whatsapp: sup.whatsapp || '', phone: sup.phone || '', email: sup.email || '', note: sup.note || '' } });
+  }
   if (url.pathname === '/trial/info' && req.method === 'GET') {
     if (overLimit('trial-info', ip, 60, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
     const r = trialResellerByCode(url.searchParams.get('code'));
@@ -3657,7 +3673,7 @@ async function handle(req, res) {
       const up = r.parent ? resellerList()[r.parent] : null;
       const subs = subsOf(r).map((x) => ({ id: x.id, name: x.name, userName: x.userName, contact: x.contact || '', credits: x.credits, status: x.status, created: x.created, low: x.credits <= cfg.resellerLowCredits,
         customers: Object.values(store.users).filter((u) => u.reseller === x.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), whatsNew: newsFor(r), opts: optsView(r), brand: r.brand || { name: '', welcome: '' }, trialHide: Array.isArray(r.trialHide) ? r.trialHide : [], helpers: (r.staff || []).map(staffPublic), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
+      return send(res, 200, { reseller: true, name: r.name, rules: { version: RESELLER_RULES_VERSION, accepted: rulesOk(r), at: r.rules ? r.rules.at : 0, required: cfg.resellerRulesRequired !== false, updated: RESELLER_RULES_DATE, previous: !!(r.rules && r.rules.v && r.rules.v !== RESELLER_RULES_VERSION), changes: RESELLER_RULES_CHANGES }, warnings: warnPublic(r), warningsMax: cfg.resellerWarningsMax, prices: r.prices || {}, creditCost: r.creditCost || 0, templates: r.templates || {}, trialLink: trialLinkState(r), whatsNew: newsFor(r), opts: optsView(r), brand: r.brand || { name: '', welcome: '' }, pageCode: r.pageCode || '', trialHide: Array.isArray(r.trialHide) ? r.trialHide : [], helpers: (r.staff || []).map(staffPublic), pay: r.pay || { text: '', url: '' }, bundles: (r.bundles || []).map((b) => bundleView(r, b)), referralsPending: (store.refRewards || []).filter((x) => x.reseller === r.id && x.status === 'pending').length, ticketsOpen: (store.tickets || []).filter((t) => t.status === 'open' && store.users[t.userId] && store.users[t.userId].reseller === r.id).length, credits: r.credits, low: r.credits <= cfg.resellerLowCredits, trialsLeft: r.trialsUnlimited ? null : Math.max(0, cfg.resellerTrialsPerDay - trialsToday), trialsUnlimited: !!r.trialsUnlimited, trialsPerDay: cfg.resellerTrialsPerDay,
         parent: up ? up.name : '', canAddSubs: !r.parent, subs, notify: notifyPublic(r), support: r.support || null,
         extensions: (() => {
           const planName = (id) => ((store.plans || []).find((p) => p.id === id) || {}).name || '';
@@ -4419,6 +4435,13 @@ async function handle(req, res) {
         for (const k of ['welcome', 'reminder', 'ending', 'expired']) { const v = cleanText(body[k], 600); if (v) t[k] = v; }
         r.templates = t; recordAudit(by, 'Updated their message templates'); saveStore();
         return send(res, 200, { ok: true, templates: t });
+      }
+      if (url.pathname === '/reseller/page-link' && req.method === 'POST') {
+        let body;
+        try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+        if (body.regenerate === true || !r.pageCode) r.pageCode = newTrialCode();
+        recordAudit(by, body.regenerate === true ? 'Made a new customer page link' : 'Made their customer page link'); saveStore();
+        return send(res, 200, { ok: true, pageCode: r.pageCode });
       }
       if (url.pathname === '/reseller/trial-link' && req.method === 'POST') {
         let body;
