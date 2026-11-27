@@ -402,6 +402,13 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.60.0
+
+A reseller's own customer page. In Sales tools the reseller gets a link like `aurora-streaming.org/account/?r=ABCD2345`. The account sign-in page and the setup guide, opened from that link, show the reseller's business name, welcome text and contact details. The code is private to the reseller (they can make a new one) and only shows what the reseller already shows their customers.
+
+- `POST /reseller/page-link` (`{ regenerate: true }` for a new code) returns `{ pageCode }`; `GET /reseller/me` includes `pageCode`.
+- `GET /brand/info?code=` is public and rate-limited: `{ valid, name, welcome, support }`.
+
 ## 1.59.0
 
 The "What's new" pop-up for resellers now announces Pulse (the live strip at the top of Overview, with one-tap WhatsApp reminders) and the new customer Home. The Pulse and Home changes themselves are in the app and the website; this release only carries the announcement.

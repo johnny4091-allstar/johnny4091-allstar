@@ -37,6 +37,12 @@ details { background:var(--bg-2); border:1px solid var(--line); border-radius:14
 .dev { display:none; } .dev:target { display:block; }
 h2 { margin:22px 0 8px; font-size:1.25rem; } a { color:#9fe8e5; }
 </style>
+<style>
+.brandhead { display:flex; align-items:center; gap:14px; margin:6px 0 20px; padding:14px 16px; border-radius:14px; border:1px solid #27346a; background:linear-gradient(100deg,rgba(58,42,138,.55),rgba(13,20,49,.9)); }
+.brandhead .mk { flex:none; width:44px; height:44px; border-radius:12px; background:linear-gradient(135deg,#ffc861,#ff7a45); color:#2a1200; font-weight:800; font-size:1.3rem; display:grid; place-items:center; }
+.brandhead b { display:block; font-size:1.2rem; line-height:1.2; } .brandhead small { display:block; color:#b9c3ea; font-size:.9rem; margin-top:2px; overflow-wrap:anywhere; }
+.brandhead a { color:#7ee2a8; font-weight:700; }
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -66,6 +72,30 @@ h2 { margin:22px 0 8px; font-size:1.25rem; } a { color:#9fe8e5; }
   if (C.webAppUrl) document.getElementById('webapp').href = C.webAppUrl;
   function sel() { var h = (location.hash || '#firetv').slice(1), ok = document.getElementById(h); if (!ok || !ok.classList.contains('dev')) h = 'firetv'; [].forEach.call(document.querySelectorAll('.dev'), function (e) { e.style.display = e.id === h ? 'block' : 'none'; }); [].forEach.call(document.querySelectorAll('.tabs a'), function (a) { a.classList.toggle('on', a.getAttribute('href') === '#' + h); }); }
   window.addEventListener('hashchange', sel); sel();
+})();
+</script>
+<script>
+// A reseller's own customer page (aurora-streaming.org/account/?r=CODE): shows their name, welcome and how to reach them.
+(function () {
+  var C = window.AURORA_SITE || {}, G = String(C.guardUrl || '').replace(/\/+$/, ''), code = '';
+  try { code = (new URLSearchParams(location.search).get('r') || sessionStorage.getItem('aurora.brand') || '').toUpperCase(); } catch (e) { /* no storage */ }
+  if (!G || !/^[A-Z2-9]{8}$/.test(code)) return;
+  fetch(G + '/brand/info?code=' + code).then(function (r) { return r.json(); }).then(function (i) {
+    if (!i || !i.valid) return;
+    try { sessionStorage.setItem('aurora.brand', code); } catch (e) { /* ignore */ }
+    var bar = document.querySelector('.wrap .bar'); if (!bar) return;
+    var s = i.support || {}, wa = String(s.whatsapp || '').replace(/\D/g, ''), help = '';
+    if (wa.length >= 7) help = 'Need help? <a href="https://wa.me/' + wa + '" target="_blank" rel="noopener">WhatsApp ' + String(s.whatsapp).replace(/[<>&"]/g, '') + '</a>';
+    else if (s.email) help = 'Need help? ' + String(s.email).replace(/[<>&"]/g, '');
+    else if (s.phone) help = 'Need help? Call ' + String(s.phone).replace(/[<>&"]/g, '');
+    var box = document.createElement('div'); box.className = 'brandhead';
+    var mk = document.createElement('span'); mk.className = 'mk'; mk.textContent = (Array.from(i.name || 'A')[0] || 'A').toUpperCase();
+    var tx = document.createElement('div'), b = document.createElement('b'), sm = document.createElement('small');
+    b.textContent = i.name || ''; sm.textContent = i.welcome || ''; tx.appendChild(b); if (i.welcome) tx.appendChild(sm);
+    if (help) { var h = document.createElement('small'); h.innerHTML = help; tx.appendChild(h); }
+    box.appendChild(mk); box.appendChild(tx); bar.parentNode.insertBefore(box, bar.nextSibling);
+    try { document.title = i.name + ' · ' + document.title; } catch (e) { /* ignore */ }
+  }).catch(function () { /* the plain page is fine */ });
 })();
 </script>
 </body>

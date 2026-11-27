@@ -1,3 +1,4 @@
+- New for resellers: your own customer page. In Sales tools, copy a link that shows your business name, welcome and contact details to your customers on the sign-in and setup pages. Needs Aurora Guard 1.60.0.
 - New for customers: Home now starts with a Tonight section: your reseller's name and welcome, a game that is on or about to start (a team you follow first), how many days your plan has left with a Renew button, and your reseller's offers.
 - New for resellers: Pulse at the top of Overview (watching now, income, customers, credits) and one-tap WhatsApp reminders for customers who are ending. Needs Aurora Guard 1.59.0 for the announcement.
 - Fixed: the Sports tab now finds sports channels (ESPN, FOX, NBC, TNT and more) even when your provider keeps them in a group that is not named for sports, instead of saying a game is not on your channels.

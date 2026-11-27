@@ -8659,6 +8659,7 @@
         <div class="m-actions"><button class="btn btn-gray" data-st-copy>Copy credit statement</button><button class="btn btn-gray" data-st-dl>Download .csv</button></div></section>
       <section class="admin-card" data-rp="reports" hidden><h2>Your activity <small>newest first</small></h2><div class="admin-list" data-rp-activity><div class="spinner"></div></div></section>
       <section class="admin-card" data-rp="sales" hidden data-s-tl></section>
+      <section class="admin-card" data-rp="sales" hidden data-s-pg></section>
       <section class="admin-card" data-rp="sales" hidden data-s-pr></section>
       <section class="admin-card" data-rp="sales" hidden data-s-pl></section>
       <section class="admin-card" data-rp="sales" hidden data-s-cp></section>
@@ -9182,6 +9183,11 @@
         ${url ? `<input type="text" class="st-note-input" data-s-url readonly value="${esc(url)}" aria-label="Your trial link"><div class="m-actions"><button class="btn btn-white" data-s-urlcopy>Copy link</button></div>` : ''}
         <p class="muted">${tl.made || 0} trials started with your link · ${tl.today || 0} ${tl.unlimited ? 'started today' : `of ${tl.limit || 5} daily trials used today`}</p>
         <div class="m-actions"><button class="btn ${tl.on ? 'btn-gray' : 'btn-red'}" data-s-tlon>${tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')}</button>${tl.code ? '<button class="btn btn-gray" data-s-tlnew>Make a new link</button>' : ''}</div><div class="live-result" data-s-tlmsg></div>`;
+      const pgUrl = d.pageCode ? `${SITE}account/?r=${d.pageCode}` : '';
+      $('[data-s-pg]', root).innerHTML = `<h2>Your customer page</h2>
+        <p class="muted">A page with your name on it. When your customers open this link they see your business name, your welcome text and how to reach you, on the sign-in page (where they see when their plan ends and ask to renew) and on the setup guide. Set your name and contact details in Settings.</p>
+        ${pgUrl ? `<input type="text" class="st-note-input" data-s-pgurl readonly value="${esc(pgUrl)}" aria-label="Your customer page link"><div class="m-actions"><button class="btn btn-white" data-s-pgcopy>Copy link</button><a class="btn btn-gray" href="${esc(pgUrl)}" target="_blank" rel="noopener">Open it</a></div>` : ''}
+        <div class="m-actions"><button class="btn ${pgUrl ? 'btn-gray' : 'btn-red'}" data-s-pgmake>${pgUrl ? 'Make a new link' : 'Create my customer page'}</button></div><div class="live-result" data-s-pgmsg></div>`;
       $('[data-s-pr]', root).innerHTML = `<h2>Your prices</h2><p class="muted">What you charge your customers. Private, only you see it. It powers your income report and price list.</p>
         ${d.plans.length ? d.plans.map((p) => `<div class="admin-row"><div class="admin-row-main"><strong>${esc(p.name)}</strong><div class="muted">You pay ${esc(creditsWord(p.credits))} <span data-s-m="${esc(p.id)}"></span></div></div><div class="plan-actions"><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" placeholder="Price" data-s-price="${esc(p.id)}" value="${pr[p.id] != null ? pr[p.id] : ''}" aria-label="Price for ${esc(p.name)}" style="width:7rem"></div></div>`).join('') : '<p class="muted">You have no plans to sell yet.</p>'}
         <label class="admin-field"><span>What you pay for one credit (optional, to see profit)</span><input type="number" class="st-note-input" min="0" step="0.01" inputmode="decimal" data-s-cc placeholder="e.g. 8.00" value="${d.creditCost || ''}"></label>
@@ -9196,6 +9202,13 @@
     root.addEventListener('click', async (e) => {
       const b = e.target.closest('button'); if (!b || !b.closest('[data-rp="sales"]')) return;
       if (b.matches('[data-s-urlcopy]')) copyText($('[data-s-url]', root).value, $('[data-s-url]', root));
+      else if (b.matches('[data-s-pgcopy]')) copyText($('[data-s-pgurl]', root).value, $('[data-s-pgurl]', root));
+      else if (b.matches('[data-s-pgmake]')) {
+        if (d.pageCode && !(await confirmAction('Make a new link?', 'The old link stops working straight away.', 'Make a new link'))) return;
+        b.disabled = true;
+        try { const r = await guard('/reseller/page-link', { method: 'POST', params: { userId: state.userId }, body: { regenerate: !!d.pageCode } }); d.pageCode = r.pageCode; paintSales(); }
+        catch (err) { b.disabled = false; say2('[data-s-pgmsg]', oldGuard(err, 'the customer page'), 'bad'); }
+      }
       else if (b.matches('[data-s-plcopy]')) copyText($('[data-s-pltext]', root).value, $('[data-s-pltext]', root));
       else if (b.matches('[data-s-tlon], [data-s-tlnew]')) {
         const neu = b.matches('[data-s-tlnew]');

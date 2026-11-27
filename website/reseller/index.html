@@ -393,6 +393,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
 
     <section class="pane" data-pane="sales" id="pane-sales" hidden>
       <div class="card" id="tl-card"></div>
+      <div class="card" id="pg-card"></div>
       <div class="card" id="pr-card"></div>
       <div class="card" id="pl-card"></div>
       <div class="card" id="bn-card"></div>
@@ -1287,6 +1288,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     expired: 'Hi {name}, your Aurora plan ended on {date}. Reply here to renew and get back to watching.'
   };
   function trialUrl(code) { return new URL('../trial/?r=' + code, location.href).href; }
+  function pageUrl(code) { return new URL('../account/?r=' + code, location.href).href; }
   function paintSales() {
     loadCoupons();
     var tl = me.trialLink || {}, plans = me.plans || [], pr = me.prices || {}, tp = me.templates || {};
@@ -1295,6 +1297,10 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       (tl.code ? '<div class="code"><input id="tl-url" readonly value="' + esc(trialUrl(tl.code)) + '" aria-label="Your trial link"><button class="btn gray sm" id="tl-copy" type="button">Copy</button></div>' : '') +
       '<p class="meta" style="margin:8px 0 12px">' + (tl.made || 0) + ' trials started with your link · ' + (tl.today || 0) + (tl.unlimited ? ' started today' : ' of ' + (tl.limit || 5) + ' daily trials used today') + '</p>' +
       '<div class="row" style="flex-wrap:wrap"><button class="btn ' + (tl.on ? 'line' : 'red') + '" id="tl-on" type="button">' + (tl.on ? 'Switch off' : (tl.code ? 'Switch on' : 'Create my trial link')) + '</button>' + (tl.code ? '<button class="btn line" id="tl-new" type="button">Make a new link</button>' : '') + '</div><p class="msg" id="tl-msg" role="status" hidden></p>';
+    var pc = me.pageCode || '';
+    $('pg-card').innerHTML = '<div class="sec-h"><h2>Your customer page</h2></div><p class="sub">A page with your name on it. When your customers open this link they see your business name, your welcome text and how to reach you, on the sign-in page (where they see when their plan ends and ask to renew) and on the setup guide. Set your name and contact details in Settings.</p>' +
+      (pc ? '<div class="code"><input id="pg-url" readonly value="' + esc(pageUrl(pc)) + '" aria-label="Your customer page link"><button class="btn gray sm" id="pg-copy" type="button">Copy</button></div>' : '') +
+      '<div class="row" style="flex-wrap:wrap;margin-top:10px"><button class="btn ' + (pc ? 'line' : 'red') + '" id="pg-make" type="button">' + (pc ? 'Make a new link' : 'Create my customer page') + '</button>' + (pc ? '<a class="btn line" href="' + esc(pageUrl(pc)) + '" target="_blank" rel="noopener">Open it</a>' : '') + '</div><p class="msg" id="pg-msg" role="status" hidden></p>';
     $('pr-card').innerHTML = '<div class="sec-h"><h2>Your prices</h2></div><p class="sub">What you charge your customers. This is private, only you see it. It powers your income report and price list.</p>' +
       (plans.length ? '<div class="scroll"><table class="tbl"><tr><th>Plan</th><th>You pay</th><th>You charge</th><th>Margin</th></tr>' + plans.map(function (p) { return '<tr><td><b>' + esc(p.name) + '</b></td><td>' + p.credits + (p.credits === 1 ? ' credit' : ' credits') + '</td><td><input class="pr-in" data-id="' + esc(p.id) + '" type="number" min="0" step="0.01" inputmode="decimal" placeholder="0.00" value="' + (pr[p.id] != null ? pr[p.id] : '') + '" aria-label="Price for ' + esc(p.name) + '"></td><td class="pr-m" data-id="' + esc(p.id) + '"></td></tr>'; }).join('') + '</table></div>' : '<p class="sub">You have no plans to sell yet.</p>') +
       '<div class="grid" style="margin-top:14px"><div><label for="pr-cc">What you pay for one credit <span style="font-weight:400;color:var(--dim)">(optional, for profit)</span></label><input id="pr-cc" type="number" min="0" step="0.01" inputmode="decimal" placeholder="e.g. 8.00" value="' + (me.creditCost || '') + '"></div></div>' +
@@ -1324,6 +1330,12 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   document.getElementById('pane-sales').addEventListener('input', function (e) { if (e.target.classList.contains('pr-in') || e.target.id === 'pr-cc') paintMargins(); });
   document.getElementById('pane-sales').addEventListener('click', function (e) {
     var b = e.target.closest('button'); if (!b) return;
+    if (b.id === 'pg-copy') { copyText($('pg-url').value).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select it'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }); return; }
+    if (b.id === 'pg-make') {
+      if (me.pageCode && !confirm('Make a new link? The old one stops working straight away.')) return;
+      b.disabled = true; api('POST', '/reseller/page-link', { regenerate: !!me.pageCode }).then(function (j) { b.disabled = false; if (j.__status !== 200) return msg($('pg-msg'), j.error || 'That did not work.', 'err'); me.pageCode = j.pageCode; paintSales(); }).catch(function () { b.disabled = false; msg($('pg-msg'), 'Could not reach Aurora.', 'err'); });
+      return;
+    }
     if (b.id === 'tl-copy') { copyText($('tl-url').value).then(function (ok) { b.textContent = ok ? 'Copied' : 'Select it'; setTimeout(function () { b.textContent = 'Copy'; }, 1500); }); }
     else if (b.id === 'tl-on' || b.id === 'tl-new') {
       if (b.id === 'tl-new' && !confirm('Make a new link? The old one stops working straight away.')) return;
