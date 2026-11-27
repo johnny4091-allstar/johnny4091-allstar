@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.60.1
+
+The customer account page's "Your devices" no longer fails with "Can't reach the Aurora server right now" when Emby is slow to answer the per-person device question: it asks for the whole list instead and, if that fails too, shows the devices signed in right now. The real reason is written to the Guard log. "New this week" no longer lists download folders and release names (UNPACK_..., Show.S04E02.1080p...).
+
 ## 1.60.0
 
 A reseller's own customer page. In Sales tools the reseller gets a link like `aurora-streaming.org/account/?r=ABCD2345`. The account sign-in page and the setup guide, opened from that link, show the reseller's business name, welcome text and contact details. The code is private to the reseller (they can make a new one) and only shows what the reseller already shows their customers.

@@ -45,7 +45,7 @@ label.f { display:block; font-size:.8rem; font-weight:700; color:#e5e5e5; margin
 .contact { display:grid; gap:6px; } .contact a { color:var(--accent); }
 .empty { color:var(--muted); padding:8px 0; }
 .msg-i { padding:11px 0; border-top:1px solid var(--line); } .msg-i:first-of-type { border-top:0; }
-.msg-i b { display:block; } .msg-i span { color:var(--muted); font-size:.86rem; } .msg-i.unread b::before { content:''; display:inline-block; width:8px; height:8px; margin-right:8px; border-radius:50%; background:var(--accent); }
+.msg-i b { display:block; overflow-wrap:anywhere; } .msg-i span { overflow-wrap:anywhere; } .msg-i span { color:var(--muted); font-size:.86rem; } .msg-i.unread b::before { content:''; display:inline-block; width:8px; height:8px; margin-right:8px; border-radius:50%; background:var(--accent); }
 .msg-i.warn b { color:var(--amber); } .msg-i.bad b { color:var(--red); }
 .nums { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:12px 0 4px; } .nums .stat b { font-size:1.35rem; }
 .top3 { margin:10px 0 0; padding:0; list-style:none; } .top3 li { display:flex; justify-content:space-between; gap:10px; padding:7px 0; border-top:1px solid var(--line); font-size:.92rem; } .top3 li span { color:var(--muted); white-space:nowrap; }
@@ -364,7 +364,7 @@ details.card[open] > summary { margin-bottom:12px; }
   function loadDevices() {
     api('GET', '/account/devices').then(function (j) {
       if (j.__status === 404) { $('devs').innerHTML = '<div class="empty">Device details are not available yet. Please try again later.</div>'; return; }
-      if (j.__status !== 200) { $('devs').innerHTML = '<div class="empty">' + esc(j.error || 'Could not load your devices.') + '</div>'; return; }
+      if (j.__status !== 200) { $('devs').innerHTML = '<div class="empty">' + esc(j.error || 'Could not load your devices.') + ' <button class="btn line" id="devretry" type="button" style="margin-top:10px">Try again</button></div>'; var rb = $('devretry'); if (rb) rb.onclick = function () { $('devs').innerHTML = '<div class="empty">Loading...</div>'; loadDevices(); }; return; }
       var list = j.devices || [];
       $('devhint').textContent = list.length ? 'Signing out a device frees its spot. You can sign in again on it any time.' : '';
       $('devs').innerHTML = list.map(function (d) {
