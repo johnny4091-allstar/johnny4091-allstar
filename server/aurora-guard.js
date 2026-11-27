@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.60.0';
+const VERSION = '1.60.1';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1186,7 +1186,9 @@ async function newTitlesNote() {
   try {
     const r = await emby('GET', '/Items', { query: { Recursive: 'true', SortBy: 'DateCreated', SortOrder: 'Descending', IncludeItemTypes: 'Movie,Series', Limit: 30, Fields: 'DateCreated' } });
     const week = Date.now() - 7 * 86400000;
-    const fresh = (r?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > week);
+    // Download folders and release names (UNPACK_Show.S01E02.1080p...) are not titles a customer wants to read.
+    const rawName = (n) => /^_?unpack_/i.test(String(n)) || (!/\s/.test(String(n)) && (String(n).match(/\./g) || []).length >= 3);
+    const fresh = (r?.Items || []).filter((i) => Date.parse(i.DateCreated || 0) > week && !rawName(i.Name));
     newTitlesCache = { at: Date.now(), n: fresh.length, text: fresh.slice(0, 3).map((i) => i.Name).join(', '), newest: fresh[0] ? Date.parse(fresh[0].DateCreated) : 0 };
   } catch { /* no list: no notice */ }
   return newTitlesCache;
@@ -3298,7 +3300,25 @@ async function handle(req, res) {
     if (!me) return send(res, 401, { error: 'Not signed in' });
     if (overLimit('acct-dev', me.Id, 60, 3600000)) return send(res, 429, { error: 'Too many tries. Please wait a while and try again.' });
     let list = [];
-    try { const d = await emby('GET', '/Devices', { query: { UserId: me.Id } }); list = ((d && d.Items) || []).filter((x) => x.Id !== 'aurora-guard' && (!x.LastUserId || x.LastUserId === me.Id)); } catch (e) { return send(res, 502, { error: "Can't reach the Aurora server right now." }); }
+    // Emby's device list can be slow or refuse the per-user question on a server with many devices, so a second way is tried (the whole
+    // list, then picked through) and the reason is written to the log instead of being thrown away (guard 1.60.1).
+    const mine = (d) => ((d && d.Items) || []).filter((x) => x.Id !== 'aurora-guard' && (!x.LastUserId || x.LastUserId === me.Id));
+    try { list = mine(await emby('GET', '/Devices', { query: { UserId: me.Id } })); }
+    catch (e1) {
+      log('The device list for', me.Name, 'failed (', e1.message, '); trying the whole list');
+      try { list = mine(await emby('GET', '/Devices')); }
+      catch (e2) {
+        log('The whole device list failed too:', e2.message);
+        if (req.method === 'GET') {
+          // Last resort for looking: the devices that are signed in right now come from the sessions.
+          try {
+            const seen = new Map();
+            for (const x of (await sessionsShared()) || []) if (x.UserId === me.Id && x.DeviceId && x.DeviceId !== 'aurora-guard' && !seen.has(x.DeviceId)) seen.set(x.DeviceId, { Id: x.DeviceId, Name: x.DeviceName, AppName: x.Client, DateLastActivity: x.LastActivityDate });
+            list = [...seen.values()];
+          } catch (e3) { return send(res, 502, { error: "Aurora could not read the device list just now. Please try again in a minute." }); }
+        } else return send(res, 502, { error: "Aurora could not read the device list just now. Please try again in a minute." });
+      }
+    }
     if (req.method === 'GET') {
       const live = activeByUser(await sessionsShared()).get(me.Id);
       return send(res, 200, { devices: list.map((x) => ({ id: x.Id, name: x.Name || 'Device', app: x.AppName || '', last: x.DateLastActivity || '', active: !!(live && live.has(x.Id)) })).sort((a, b) => String(b.last).localeCompare(String(a.last))).slice(0, 30) });
