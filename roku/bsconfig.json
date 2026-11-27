@@ -1,0 +1,8 @@
+{
+  "rootDir": ".",
+  "files": ["manifest", "source/**/*", "components/**/*", "images/**/*"],
+  "stagingDir": "build/staging",
+  "retainStagingDir": false,
+  "createPackage": false,
+  "autoImportComponentScript": false
+}

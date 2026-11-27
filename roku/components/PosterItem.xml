@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="PosterItem" extends="Group">
+  <interface>
+    <field id="itemContent" type="node" onChange="contentChanged" />
+    <field id="width" type="float" alias="frame.width" />
+    <field id="height" type="float" alias="frame.height" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/PosterItem.brs" />
+  <children>
+    <Rectangle id="frame" width="240" height="420" color="0x00000000" />
+    <Poster id="poster" width="240" height="360" loadDisplayMode="scaleToFit" loadingBitmapUri="pkg:/images/poster_blank.png" failedBitmapUri="pkg:/images/poster_blank.png" />
+    <Rectangle id="bar" translation="[0,352]" width="240" height="8" color="0x000000AA" visible="false" />
+    <Rectangle id="barFill" translation="[0,352]" width="0" height="8" color="0x4F7BFFFF" visible="false" />
+    <Label id="title" translation="[0,368]" width="240" height="52" wrap="true" maxLines="2" font="font:SmallSystemFont" color="0xE5E5E5FF" />
+  </children>
+</component>

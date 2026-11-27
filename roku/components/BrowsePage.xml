@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="BrowsePage" extends="Group">
+  <interface>
+    <field id="kind" type="string" onChange="onKind" />
+    <field id="itemSelected" type="assocarray" alwaysNotify="true" />
+    <function name="refresh" />
+    <function name="focusContent" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/BrowsePage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Label id="sortLabel" translation="[72,0]" width="1776" color="0xB9C3EAFF" font="font:SmallSystemFont" />
+    <MarkupGrid id="grid" translation="[60,50]" itemComponentName="PosterItem" numColumns="7" numRows="2" itemSize="[240,420]" itemSpacing="[28,24]"
+                drawFocusFeedback="true" vertFocusAnimationStyle="floatingFocus" visible="false" />
+    <Label id="status" translation="[72,90]" width="1700" wrap="true" color="0xB9C3EAFF" font="font:MediumSystemFont" text="Loading..." />
+  </children>
+</component>

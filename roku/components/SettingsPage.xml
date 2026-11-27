@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="SettingsPage" extends="Group">
+  <interface>
+    <field id="signOutRequested" type="boolean" alwaysNotify="true" />
+    <function name="refresh" />
+    <function name="focusContent" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/SettingsPage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Label id="who" translation="[100,10]" width="1500" color="0xFFFFFFFF" font="font:MediumBoldSystemFont" />
+    <Label id="server" translation="[100,70]" width="1500" color="0xB9C3EAFF" font="font:SmallSystemFont" />
+    <Label id="version" translation="[100,110]" width="1500" color="0xB9C3EAFF" font="font:SmallSystemFont" />
+    <ButtonGroup id="buttons" translation="[100,190]" layoutDirection="vert" buttonSelected="0" />
+  </children>
+</component>

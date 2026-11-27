@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="MainScene" extends="Scene">
+  <script type="text/brightscript" uri="pkg:/components/MainScene.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Rectangle id="bg" width="1920" height="1080" color="0x070C1CFF" />
+    <Group id="shell">
+      <Label id="logo" translation="[72,44]" text="A U R O R A" color="0xFFFFFFFF" font="font:MediumBoldSystemFont" />
+      <Rectangle id="navHi" translation="[0,0]" width="0" height="0" color="0x4F7BFFFF" visible="false" />
+      <Group id="navItems" translation="[470,34]" />
+      <Group id="pageHost" translation="[0,130]" />
+    </Group>
+    <Group id="overlay" />
+  </children>
+</component>

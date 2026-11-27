@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="SearchPage" extends="Group">
+  <interface>
+    <field id="itemSelected" type="assocarray" alwaysNotify="true" />
+    <function name="refresh" />
+    <function name="focusContent" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/SearchPage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Label id="hint" translation="[72,0]" width="700" color="0xB9C3EAFF" font="font:SmallSystemFont" text="Type to search movies and TV shows" />
+    <Keyboard id="keyboard" translation="[72,50]" />
+    <MarkupGrid id="grid" translation="[720,50]" itemComponentName="PosterItem" numColumns="4" numRows="2" itemSize="[240,420]" itemSpacing="[28,24]" drawFocusFeedback="true" visible="false" />
+    <Label id="status" translation="[720,90]" width="1100" wrap="true" color="0xB9C3EAFF" font="font:MediumSystemFont" text="" />
+    <Timer id="debounce" duration="0.7" repeat="false" />
+  </children>
+</component>
