@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.60.2
+
+An administrator now sees every announcement the provider sent, also the ones aimed at one plan or one reseller (before, only the ones for everyone). On the TV app, announcements work better: warnings and outages stay up for an administrator too (there is no close button on a remote), and an information notice stays 45 seconds instead of 20 and comes back the next time Aurora opens.
+
 ## 1.60.1
 
 The customer account page's "Your devices" no longer fails with "Can't reach the Aurora server right now" when Emby is slow to answer the per-person device question: it asks for the whole list instead and, if that fails too, shows the devices signed in right now. The real reason is written to the Guard log. "New this week" no longer lists download folders and release names (UNPACK_..., Show.S04E02.1080p...).
