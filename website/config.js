@@ -12,6 +12,7 @@ window.AURORA_SITE = {
   webAppUrl: 'https://aurora-streaming.org/app/',
   // The Windows installer. Leave blank to hide that card.
   winUrl: 'https://aurora-streaming.org/windows',
+  rokuUrl: 'https://aurora-streaming.org/roku',
   // How to reach you (an email address or a phone number). Leave blank to hide the "Questions?" box.
   contact: '',
 };

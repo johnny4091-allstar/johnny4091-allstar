@@ -203,7 +203,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
       <h1>Where streaming <span>is possible</span></h1>
       <p class="lead">Movies, shows and live TV in one app, made to feel like the best streaming services. Sign in on your phone, your TV or a web browser and pick up exactly where you stopped.</p>
       <div class="actions"><a class="btn btn-red" href="#signup">Start free trial</a><a class="btn btn-gray" href="#app">Get the app</a></div>
-      <div class="devices"><span>Android phones</span><span>Android and Google TV</span><span>Windows</span><span>Web browser</span></div>
+      <div class="devices"><span>Android phones</span><span>Android and Google TV</span><span>Windows</span><span>Roku</span><span>Web browser</span></div>
     </div>
     <div class="hero-art">
       <img class="art-desk" src="assets/img/shot-home.jpg" width="1280" height="720" alt="The Aurora home screen with a featured movie and rows of titles to continue watching" fetchpriority="high">
@@ -382,6 +382,18 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
         </ol>
         <a class="btn btn-red" id="winlink" href="/windows" rel="noopener">Download for Windows</a>
       </div>
+      <div class="panel" id="rokupanel">
+        <span class="tag">Roku</span>
+        <h3>Aurora for Roku (early version)</h3>
+        <p class="sub2">Movies and TV shows on your Roku. Live TV is coming. For now it is installed through the Roku's developer mode.</p>
+        <ol class="steps">
+          <li>On the Roku press <strong>Home 3 times, Up 2 times, then Right, Left, Right, Left, Right</strong>. Choose <strong>Enable installer</strong> and note its password and IP address.</li>
+          <li>Download the file below. On a computer on the same Wi-Fi open <strong>http://</strong> and the Roku's IP address, sign in as <strong>rokudev</strong>, then Upload and Install the file.</li>
+          <li>Open Aurora on the Roku and sign in.</li>
+        </ol>
+        <a class="btn btn-red" id="rokulink" href="/roku" rel="noopener">Download for Roku</a>
+        <p class="small">Step by step with pictures of each screen: <a href="/setup/#roku">Roku setup guide</a>.</p>
+      </div>
       <div class="panel" id="webcard" hidden>
         <span class="tag">Web browser</span>
         <h3>Watch on a computer</h3>
@@ -439,6 +451,7 @@ footer { padding-block: 36px 52px; color: var(--dim); font-size: .85rem; display
   if (C.apkUrl) $('apk').href = C.apkUrl;
   if (C.testflightUrl) $('testflight').href = C.testflightUrl; else if (C.testflightUrl === '') $('iospanel').hidden = true;
   if (C.winUrl) $('winlink').href = C.winUrl; else if (C.winUrl === '') $('winpanel').hidden = true;
+  if (C.rokuUrl) $('rokulink').href = C.rokuUrl; else if (C.rokuUrl === '') $('rokupanel').hidden = true;
   if (C.webAppUrl) { $('weblink').href = C.webAppUrl; $('webcard').hidden = false; }
   if (C.contact) { $('ask').hidden = false; $('contact').textContent = 'Contact: ' + C.contact; }
 
