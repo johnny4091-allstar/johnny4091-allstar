@@ -1,3 +1,4 @@
+- New: if your reseller gave you a code, choose "Have a code from your reseller?" on the sign-in screen and type it. The sign-in screen then shows your reseller's name, welcome and how to reach them. Needs Aurora Guard 1.60.0.
 - Fixed: a movie that played for some people but showed "Playback failed: The browser could not play this file" for others now plays. When a browser or the Windows app can't play a file as it is, Aurora asks the server to convert it automatically.
 - New for resellers: your own customer page. In Sales tools, copy a link that shows your business name, welcome and contact details to your customers on the sign-in and setup pages. Needs Aurora Guard 1.60.0.
 - New for customers: Home now starts with a Tonight section: your reseller's name and welcome, a game that is on or about to start (a team you follow first), how many days your plan has left with a Renew button, and your reseller's offers.
