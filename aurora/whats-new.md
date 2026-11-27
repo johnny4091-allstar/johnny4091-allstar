@@ -1,3 +1,4 @@
+- New for resellers: the Live TV button on a customer switches Live TV off or on for them (website and app). Needs Aurora Guard 1.62.0.
 - New for administrators: switch Live TV off for one account (Admin, Users, the account's page). That account no longer sees Live TV and can't stream it. Needs Aurora Guard 1.61.0.
 - Fixed: on the TV, an administrator's warnings and outage notices now stay on screen, and information notices stay 45 seconds and return the next time Aurora opens. Administrators also see every announcement, including ones aimed at one plan or reseller. Needs Aurora Guard 1.60.2 for the second part.
 - New: if your reseller gave you a code, choose "Have a code from your reseller?" on the sign-in screen and type it. The sign-in screen then shows your reseller's name, welcome and how to reach them. Needs Aurora Guard 1.60.0.

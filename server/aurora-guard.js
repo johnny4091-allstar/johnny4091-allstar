@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.61.0';
+const VERSION = '1.62.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -599,6 +599,8 @@ const RESELLER_RULES_DATE = '2026-11-26';
 // What is new in the reseller panel (guard 1.57.0). Newest first. A reseller sees a pop-up once for the releases they have not seen yet (up to 3),
 // and can open the recent list again from the menu. Add a new entry on top (a new id, in date order) with every release that changes the panel.
 const RESELLER_NEWS = [
+  { id: '2026-11-28', date: '2026-11-28', title: 'Live TV on or off for a customer', items: [
+    { title: 'Live TV switch', text: 'Open a customer and use the Live TV button to switch Live TV off or on for them. They keep their movies and shows. If your provider switched it off for a customer, you will see that and can ask them to switch it on.' } ] },
   { id: '2026-11-27c', date: '2026-11-27', title: 'Your own customer page', items: [
     { title: 'A page with your name on it', text: 'In Sales tools, get your customer page link. When your customers open it they see your business name, welcome text and how to reach you on the sign-in and setup pages.' } ] },
   { id: '2026-11-27b', date: '2026-11-27', title: 'Pulse, and your name on your customers\' Home', items: [
@@ -866,7 +868,7 @@ function supportOfReseller(id) {
 function publicCustomer(id, rec, devices) {
   const c = rec.contact || {};
   return { id, name: rec.name, full: c.full || '', email: c.email || '', phone: c.phone || '', note: c.note || '', planId: rec.plan?.id || null, planName: rec.plan ? (rec.trial ? 'Free trial' : rec.plan.name) : '',
-    trial: !!rec.trial, vod: !!rec.vod, adult: !!rec.adult, cats: Array.isArray(rec.categories) ? rec.categories.length : null, catsCustom: !!rec.catsCustom, packs: Array.isArray(rec.packs) ? rec.packs : [], hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
+    trial: !!rec.trial, vod: !!rec.vod, live: !(rec.noLive || rec.noLiveRes), liveLocked: !!rec.noLive, adult: !!rec.adult, cats: Array.isArray(rec.categories) ? rec.categories.length : null, catsCustom: !!rec.catsCustom, packs: Array.isArray(rec.packs) ? rec.packs : [], hold: !!rec.hold, expires: rec.expires || null, daysLeft: rec.expires ? daysUntil(rec.expires) : null, expired: isExpired(rec), devices: devices ? devices.size : 0, created: rec.created || null,
     labels: cleanLabels(rec.labels), remind: cleanDays(rec.remind), remindDefault: remindDefault(),
     discount: rec.discount && !rec.discount.usedAt ? `${rec.discount.code} (${discountLabel(rec.discount)})` : '' };
 }
@@ -1026,7 +1028,7 @@ async function relayRoute(req, res, url, token) {
   const me = await userOfToken(tok, url.searchParams.get('userId'));
   if (!me) return send(res, 401, { error: 'Not signed in' });
   if (!me.Policy?.IsAdministrator && isExpired(store.users[me.Id])) return send(res, 403, { error: 'This account has expired.' });
-  if (!me.Policy?.IsAdministrator && store.users[me.Id]?.noLive) return send(res, 403, { error: 'Live TV is not switched on for this account.' });
+  if (!me.Policy?.IsAdministrator && (store.users[me.Id]?.noLive || store.users[me.Id]?.noLiveRes)) return send(res, 403, { error: 'Live TV is not switched on for this account.' });
   const target = String(url.searchParams.get('u') || '').slice(0, 4000), sig = String(url.searchParams.get('s') || '');
   if (!/^https?:\/\//i.test(target)) return send(res, 400, { error: 'No address given.' });
   const signed = !!sig && sig === relaySign(target), key = relayHostKey(target);
@@ -3283,7 +3285,7 @@ async function handle(req, res) {
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
-      live: !rec?.noLive, // Live TV is on unless the administrator switched it off for this account (guard 1.61.0)
+      live: !(rec?.noLive || rec?.noLiveRes), // Live TV is on unless the administrator, or the customer's reseller, switched it off (guard 1.61.0, 1.62.0)
       mod: !!rec?.mod && !me.Policy?.IsAdministrator, // a moderator (guard 1.27.0)
       support: rec && rec.reseller ? supportOfReseller(rec.reseller) : null, // the reseller's contact details for Help (guard 1.33.0)
       pay: rec && rec.reseller ? payOf(resellerList()[rec.reseller]) : null, // how to pay the reseller (guard 1.54.0)
@@ -4474,7 +4476,7 @@ async function handle(req, res) {
         recordAudit(by, `${t.on ? 'Switched on' : 'Switched off'} their free-trial link${body.regenerate === true ? ' (new code)' : ''}`); saveStore();
         return send(res, 200, { ok: true, trialLink: trialLinkState(r) });
       }
-      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|adult|remind|quality|devices|device-remove|details))?$/);
+      const cm = url.pathname.match(/^\/reseller\/customers\/([\w-]{1,64})(?:\/(renew|password|signout|hold|vod|live|adult|remind|quality|devices|device-remove|details))?$/);
       if (cm) {
         const id = cm[1], act = cm[2];
         if (!owns(id)) return send(res, 404, { error: 'No such customer.' });
@@ -4512,6 +4514,14 @@ async function handle(req, res) {
           return send(res, 200, { ok: true });
         }
         // The provider's movies and TV shows for this customer (a reseller can always switch it).
+        // Live TV on or off for one of this reseller's customers (guard 1.62.0). If the administrator switched it off, the reseller can't switch it back on.
+        if (act === 'live' && req.method === 'POST') {
+          if (rec.noLive) return send(res, 403, { error: 'Your provider switched Live TV off for this customer. Ask them to switch it on.' });
+          if (body.on === true) delete rec.noLiveRes; else rec.noLiveRes = true;
+          rec.updated = Date.now();
+          recordAudit(by, `${rec.noLiveRes ? 'Switched off' : 'Switched on'} Live TV for ${rec.name}`); saveStore();
+          return send(res, 200, { ok: true, live: !(rec.noLive || rec.noLiveRes) });
+        }
         if (act === 'vod' && req.method === 'POST') {
           rec.vod = body.on === true; rec.updated = Date.now();
           recordAudit(by, `${rec.vod ? 'Switched on' : 'Switched off'} provider movies and TV for ${rec.name}`); saveStore();
