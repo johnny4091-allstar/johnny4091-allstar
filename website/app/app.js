@@ -11881,6 +11881,12 @@
       console.error(e);
       const same = player.item?.Id === rawItem.Id;
       playLog.add({ kind: rawItem.Type === 'TvChannel' ? 'live-failed' : 'failed', title: itemTitle(same ? player.item : rawItem), itemId: rawItem.Id, method: same ? player.playMethod || '' : '', error: String(e.message || e).slice(0, 200) });
+      // A browser (or the Windows app) can say yes to a file's codecs and then fail on the file itself: 10-bit video, HEVC, AC-3 sound.
+      // Ask the server to convert it, once, instead of leaving the viewer on an error. It plays for everyone, not only on this one's device.
+      if (!forceTranscode && !useNativePlayer() && rawItem.Type !== 'TvChannel' && !player.isLive && player.playMethod !== 'Transcode' && /could not play/i.test(String(e.message))) {
+        appLog.add('warn', `"${rawItem.Name}" would not play as it is here; asking the server to convert it`);
+        return startPlayItem(rawItem, { startTicks, audioIndex, subtitleIndex, forceTranscode: true, auto: true });
+      }
       status.innerHTML = `<p>Playback failed: ${esc(e.message)}</p><button class="btn btn-white" id="player-err-back">Go Back</button>`;
       $('#player-err-back').addEventListener('click', closePlayer);
       if (nav.on) focusEl($('#player-err-back'));
