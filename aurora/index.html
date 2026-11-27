@@ -29,6 +29,7 @@
   <section id="setup" class="screen hidden">
     <div class="setup-card">
       <div class="logo big"><svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 -6 776 112" fill="none" stroke="#fff" stroke-width="14" stroke-linejoin="miter" stroke-miterlimit="10" role="img" aria-label="Aurora"><path d="M7.0 100 L51.0 15.4 L95.0 100 M155.0 0 V57.0 A36 36 0 0 0 227.0 57.0 V0 M287.0 100 V7.0 H317.0 A24.5 24.5 0 0 1 317.0 56.0 H287.0 M319.0 56.0 L351.0 100 M411.0 50 A43.0 43.0 0 1 0 497.0 50 A43.0 43.0 0 1 0 411.0 50 Z M557.0 100 V7.0 H587.0 A24.5 24.5 0 0 1 587.0 56.0 H557.0 M589.0 56.0 L621.0 100 M681.0 100 L725.0 15.4 L769.0 100"/></svg></div>
+      <div id="setup-brand" class="setup-brand hidden"></div>
       <h1 id="setup-title">Sign In</h1>
       <div id="account-tiles" class="account-tiles hidden"></div>
       <h2 id="setup-form-title" class="setup-subtitle hidden">Sign in as someone else</h2>
@@ -42,6 +43,14 @@
         <p id="setup-error" class="error hidden"></p>
         <button class="btn btn-red btn-block" type="submit">Sign In</button>
       </form>
+      <div id="setup-code" class="setup-code">
+        <button type="button" id="setup-code-toggle" class="setup-code-toggle">Have a code from your reseller?</button>
+        <div id="setup-code-row" class="setup-code-row hidden">
+          <input id="setup-code-input" type="text" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Reseller code" aria-label="Reseller code">
+          <button type="button" id="setup-code-apply" class="btn btn-gray">Apply</button>
+        </div>
+        <p id="setup-code-msg" class="setup-code-msg hidden" role="status"></p>
+      </div>
       <p class="hint">Sign in using the same username and password you created when you set up your account. Your sign-in details are stored only on this device.</p>
     </div>
   </section>
