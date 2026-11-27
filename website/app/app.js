@@ -5610,7 +5610,7 @@
 
   // ---------- Settings ----------
   // Device settings live in this browser/app; language and subtitle choices are saved to the Emby account.
-  const PREF_DEFAULTS = { guidePreview: 'on', splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', subColor: 'white', subEdge: 'shadow', allowShots: 'off', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on' };
+  const PREF_DEFAULTS = { guidePreview: 'on', splashSound: 'on', autoplay: 'on', stillWatching: 'on', subSize: 'm', subBg: 'semi', subColor: 'white', subEdge: 'shadow', allowShots: 'off', player: 'aurora', liveBuffer: 'medium', appLock: 'off', showsAsIs: 'on', ffmpeg: 'on', skipGuess: 'on', theme: 'aurora', menuSide: 'off' };
   // Playback settings the admin set for everyone (Admin → Playback). A value set there wins over the viewer's own.
   const PLAYBACK_PREFS = 'aurora-playback';
   let playbackCfg = (() => { try { return JSON.parse(store.get('ef.playbackCfg') || '{}') || {}; } catch { return {}; } })();
@@ -5619,6 +5619,36 @@
   const stallSeconds = () => Number(playbackCfg.stallSeconds) || 0; // 0 = the player's own default
   const getPref = (key) => lockedPref(key) || store.get('ef.pref.' + key) || PREF_DEFAULTS[key];
   const setPref = (key, value) => store.set('ef.pref.' + key, value);
+
+  // ---------- Themes and the TV side menu (Settings > Appearance) ----------
+  const THEMES = [['aurora', 'Aurora (blue and violet)', '#070c1c'], ['midnight', 'Midnight (black and silver)', '#000000'], ['ember', 'Ember (dark red and orange)', '#160a07'], ['emerald', 'Emerald (deep green)', '#061512']];
+  function applyTheme() {
+    const t = THEMES.find((x) => x[0] === getPref('theme')) || THEMES[0];
+    const root = document.documentElement;
+    if (t[0] === 'aurora') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', t[0]);
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t[2]);
+  }
+  const NAV_ICONS = {
+    home: '<path d="M12 3 3 10.5V21h6v-6h6v6h6V10.5L12 3Z"/>',
+    tv: '<path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-5v2h2v1H7v-1h2v-2H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1Zm1 2v8h14V7H5Z"/>',
+    movies: '<path d="M4 4h16v16H4V4Zm2 2v2h2V6H6Zm10 0v2h2V6h-2ZM6 10v4h12v-4H6Zm0 6v2h2v-2H6Zm10 0v2h2v-2h-2Z"/>',
+    mylist: '<path d="m12 21-1.5-1.3C5.4 15.1 2 12 2 8.2 2 5.1 4.4 3 7.2 3c1.9 0 3.8 1 4.8 2.6C13 4 14.900 3 16.800 3 19.600 3 22 5.100 22 8.200c0 3.800-3.400 6.900-8.500 11.500L12 21Z"/>',
+    livetv: '<path d="M9 3 12 6l3-3 1 1-3 3h6a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h6L8 4l1-1Zm-4 6v10h14V9H5Z"/>',
+    requests: '<path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/>',
+  };
+  applyTheme();
+  function decorateNav() {
+    document.querySelectorAll('#nav .nav-links a[data-route]').forEach((a) => {
+      if (a.querySelector('.nav-ico')) return;
+      a.innerHTML = `<svg class="nav-ico" viewBox="0 0 24 24" width="26" height="26" fill="currentColor" aria-hidden="true">${NAV_ICONS[a.dataset.route] || ''}</svg><span class="nav-txt">${a.textContent.trim()}</span>`;
+    });
+  }
+  // The side menu is for TVs only: a slim rail on the left that opens when the remote reaches it.
+  function applyMenuSide() {
+    const on = !!nav.tv && getPref('menuSide') === 'on';
+    document.documentElement.classList.toggle('menu-side', on);
+    if (on) decorateNav();
+  }
 
   const SUB_SIZES = { s: ['Small', '1.2rem'], m: ['Medium', '1.6rem'], l: ['Large', '2.2rem'], xl: ['Extra large', '2.8rem'] };
   const SUB_COLORS = { white: ['White', '#fff'], yellow: ['Yellow', '#ffe066'], cyan: ['Cyan', '#7ee8ff'], green: ['Green', '#9dff9a'] };
@@ -5970,6 +6000,11 @@
         ${settingRow('PIN', store.get('ef.kids.pin') ? 'Needed to leave Kids mode.' : 'Not set yet. You choose one when you turn Kids mode on.', '<button class="btn btn-gray" data-kids-pin>' + (store.get('ef.kids.pin') ? 'Change PIN' : 'Set PIN') + '</button>')}
       </section>
       <section class="settings-section">
+        <h2>Appearance <small>This device</small></h2>
+        ${settingRow('Theme', 'The colours of the whole app. Pictures and posters keep their own colours.', selectHtml('theme', THEMES.map((t) => [t[0], t[1]]), getPref('theme')))}
+        ${nav.tv ? settingRow('Menu', 'Put the menu in a slim bar down the left side, or along the top.', selectHtml('menuSide', [['off', 'Along the top'], ['on', 'Down the left side']], getPref('menuSide'))) : ''}
+      </section>
+      <section class="settings-section">
         <h2>Playback <small>This device</small></h2>
         ${settingRow('Sound when Aurora opens', 'Play the Aurora intro sound with the opening animation.', selectHtml('splashSound', [['on', 'On'], ['off', 'Off']], getPref('splashSound')))}
         ${settingRow('Auto-play next episode', 'Count down and start the next episode when the credits roll.', selectHtml('autoplay', [['on', 'On'], ['off', 'Off']], getPref('autoplay')))}
@@ -6046,6 +6081,8 @@
           } else { sel.value = 'on'; if (await kidsLeave()) sel.value = 'off'; }
         })(); break;
         case 'allowShots': setPref('allowShots', v); syncAppLock(); toast('Saved', 1500); break;
+        case 'theme': setPref('theme', v); applyTheme(); toast('Saved', 1500); break;
+        case 'menuSide': setPref('menuSide', v); applyMenuSide(); toast('Saved', 1500); break;
         default: setPref(sel.dataset.setting, v); applySubtitleStyle(); if (sel.dataset.setting === 'appLock') syncAppLock(); toast('Saved', 1500);
       }
     });
@@ -12941,7 +12978,15 @@
       const same = cands.filter((c) => c.el.closest('[data-nav-zone]') === zone);
       if (same.length || (!zone && cur.closest('.card'))) cands.splice(0, cands.length, ...same);
     }
+    // The side menu is a column of its own: up and down stay in it, and stepping left into it lands on the section you are in.
+    const side = document.documentElement.classList.contains('menu-side');
+    if (side && vertical && cur.closest('#nav')) { const inNav = cands.filter((c) => c.el.closest('#nav')); cands.splice(0, cands.length, ...inNav); }
     let best = null;
+    if (side && dir === 'left' && !cur.closest('#nav')) {
+      const act = document.querySelector('#nav .nav-links a.active') || document.querySelector('#nav .nav-links a:not(.hidden)');
+      if (act && cands.some((c) => c.el.closest('#nav')) && !cands.some((c) => !c.el.closest('#nav'))) best = { el: act };
+    }
+    if (best) { /* chosen above */ } else
     if (vertical) {
       // Go to the nearest line of items first, then the one most in line with the current item.
       const nearest = Math.min(...cands.map((c) => c.primary));
@@ -13182,6 +13227,7 @@
       nav.tv = true;
       document.documentElement.classList.add('tv');
       enableNav();
+      applyMenuSide();
     }
   }
 

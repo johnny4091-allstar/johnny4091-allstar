@@ -1,3 +1,4 @@
+- New: pick a theme in Settings, Appearance: Aurora, Midnight (black and silver), Ember (dark red and orange) or Emerald (deep green). On Android TV you can also move the menu to a slim bar down the left side; it opens when you move the remote onto it.
 - New for resellers: the Live TV button on a customer switches Live TV off or on for them (website and app). Needs Aurora Guard 1.62.0.
 - New for administrators: switch Live TV off for one account (Admin, Users, the account's page). That account no longer sees Live TV and can't stream it. Needs Aurora Guard 1.61.0.
 - Fixed: on the TV, an administrator's warnings and outage notices now stay on screen, and information notices stay 45 seconds and return the next time Aurora opens. Administrators also see every announcement, including ones aimed at one plan or reseller. Needs Aurora Guard 1.60.2 for the second part.
