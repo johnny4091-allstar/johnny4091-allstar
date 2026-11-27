@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.60.2';
+const VERSION = '1.61.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -1026,6 +1026,7 @@ async function relayRoute(req, res, url, token) {
   const me = await userOfToken(tok, url.searchParams.get('userId'));
   if (!me) return send(res, 401, { error: 'Not signed in' });
   if (!me.Policy?.IsAdministrator && isExpired(store.users[me.Id])) return send(res, 403, { error: 'This account has expired.' });
+  if (!me.Policy?.IsAdministrator && store.users[me.Id]?.noLive) return send(res, 403, { error: 'Live TV is not switched on for this account.' });
   const target = String(url.searchParams.get('u') || '').slice(0, 4000), sig = String(url.searchParams.get('s') || '');
   if (!/^https?:\/\//i.test(target)) return send(res, 400, { error: 'No address given.' });
   const signed = !!sig && sig === relaySign(target), key = relayHostKey(target);
@@ -3282,6 +3283,7 @@ async function handle(req, res) {
       plan: rec?.plan ? { name: rec.plan.name, connections: rec.plan.connections, length: rec.plan.length, unit: rec.plan.unit } : null,
       categories: rec?.categories || null, // the Live TV categories this account may see (null: all of them)
       vod: !!rec?.vod || !!resellerOfUser(me.Id), // the provider's movies and TV shows (resellers always have it)
+      live: !rec?.noLive, // Live TV is on unless the administrator switched it off for this account (guard 1.61.0)
       mod: !!rec?.mod && !me.Policy?.IsAdministrator, // a moderator (guard 1.27.0)
       support: rec && rec.reseller ? supportOfReseller(rec.reseller) : null, // the reseller's contact details for Help (guard 1.33.0)
       pay: rec && rec.reseller ? payOf(resellerList()[rec.reseller]) : null, // how to pay the reseller (guard 1.54.0)
@@ -5510,6 +5512,20 @@ async function handle(req, res) {
     return send(res, 200, { ok: true, applied, record: store.users[m[1]], disabled: !!fresh.Policy?.IsDisabled, disabledByGuard: !!store.disabledByGuard[m[1]] });
   }
   // The provider's movies and TV shows: one customer, or everyone at once ({ on: true | false }).
+  // Live TV for one account (guard 1.61.0): on for everyone unless the administrator switches it off for that account.
+  const lvm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/live$/);
+  if (lvm && req.method === 'PUT') {
+    let body;
+    try { body = await readBody(req); } catch (e) { return send(res, 400, { error: e.message }); }
+    let user;
+    try { user = await emby('GET', `/Users/${lvm[1]}`); } catch (e) { return send(res, e.status === 404 ? 404 : 502, { error: e.status === 404 ? 'No such user' : e.message }); }
+    if (user.Policy?.IsAdministrator) return send(res, 400, { error: 'Administrators always have Live TV.' });
+    const rec = store.users[lvm[1]] || (store.users[lvm[1]] = { limit: cfg.defaultLimit, expires: null, name: user.Name, updated: Date.now() });
+    if (body.on === true) delete rec.noLive; else rec.noLive = true;
+    rec.updated = Date.now();
+    recordAudit(auditBy, `${rec.noLive ? 'Switched off' : 'Switched on'} Live TV for ${user.Name}`); saveStore();
+    return send(res, 200, { ok: true, live: !rec.noLive });
+  }
   const vm = url.pathname.match(/^\/limits\/([\w-]{1,64})\/vod$/);
   if (vm && req.method === 'PUT') {
     let body;
