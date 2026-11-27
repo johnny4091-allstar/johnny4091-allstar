@@ -2190,7 +2190,20 @@
   // Emby server (display preferences), so each customer's app picks it up when they sign in.
   const IPTV_PREFS = { id: 'aurora-livetv', client: 'aurora' };
   const iptv = { config: null, lists: new Map(), epg: new Map(), all: null, guide: null, guideLoad: null, catNames: new Map() };
-  const iptvOn = (cfg = iptv.config) => !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
+  // Live TV can be switched off for one account (Admin, Users). Aurora Guard says so; the answer is kept on the device so the
+  // Live TV menu and rows are already gone the next time the app opens. The Guard also refuses the streams, whatever the app does.
+  const liveBlockedFlags = {};
+  const liveBlockedKey = () => 'ef.noLive.' + state.userId;
+  function isLiveBlocked() { return state.userId in liveBlockedFlags ? liveBlockedFlags[state.userId] : store.get(liveBlockedKey()) === '1'; }
+  function setLiveBlocked(on) {
+    const was = isLiveBlocked();
+    liveBlockedFlags[state.userId] = !!on;
+    try { store.set(liveBlockedKey(), on ? '1' : '0'); } catch { /* ignore */ }
+    if (was === !!on) return;
+    $$('[data-route="livetv"]').forEach((a) => a.classList.toggle('hidden', !showLiveLink()));
+    if (on && /^#\/(livetv|mylist)/.test(location.hash)) location.hash = '#/home';
+  }
+  const iptvOn = (cfg = iptv.config) => !isLiveBlocked() && !!cfg && ((cfg.type === 'm3u' && cfg.m3uUrl) || (cfg.type === 'xtream' && cfg.server && cfg.username));
   const showLiveLink = () => (kidsOn() ? iptvOn() : hasLiveTv() || iptvOn());
 
   function iptvLocalKey() { return 'ef.iptv.' + state.userId; }
@@ -2559,6 +2572,7 @@
       const a = await guard('/account', { params: { userId: state.userId }, quick: true });
       applyPlanCategories(a.admin ? null : a.categories); applyAdultFlag(a);
       setProviderAllowed(!a.admin && !!a.vod);
+      setLiveBlocked(!a.admin && a.live === false);
     } catch { /* keep what is known */ }
   }
 
@@ -4380,7 +4394,7 @@
   const GUIDE_PX_PER_MIN = 6;
   const live = { channelIds: [], tunedId: null }; // tunedId: the channel being watched or switched to
 
-  const hasLiveTv = () => state.views.some((v) => v.CollectionType === 'livetv');
+  const hasLiveTv = () => !isLiveBlocked() && state.views.some((v) => v.CollectionType === 'livetv');
   // Emby dates can carry 7 fractional digits; trim to milliseconds for Date.parse.
   const parseDate = (s) => (s ? new Date(String(s).replace(/(\.\d{3})\d+/, '$1')) : null);
   const clock = (d) => d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
@@ -5676,6 +5690,7 @@
       if (!isCurrent() || !section.isConnected) return;
       applyPlanCategories(a.admin ? null : a.categories); applyAdultFlag(a);
       setProviderAllowed(!a.admin && !!a.vod);
+      setLiveBlocked(!a.admin && a.live === false);
       if (a.admin) { box.innerHTML = settingRow('Account', 'Administrator: no device limit and no end date.', '<span class="setting-value">Administrator</span>'); return; }
       const n = a.limit, devWord = n === 1 ? 'device' : 'devices';
       const soon = a.daysLeft != null && a.daysLeft <= 7;
@@ -10180,6 +10195,12 @@
         <p class="muted">Sets their device limit, end date and Live TV categories, switches the account back on if it had expired, and adds a line to the subscription history.</p>
         <div class="live-result" data-plan-result></div>` : '<p class="muted">No plans to choose from yet. Add them in Admin → Plans.</p>'}
       </section>` : ''}
+      ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
+        <h2>Live TV</h2>
+        <label class="admin-check"><input type="checkbox" data-live${lim?.noLive ? '' : ' checked'}> Let ${esc(user.Name)} watch Live TV</label>
+        <p class="muted">When this is off, the Live TV menu and rows are gone for this account, and Aurora Guard refuses their Live TV streams. Movies and shows are not affected. Saved straight away.</p>
+        <div class="live-result" data-live-result></div>
+      </section>` : ''}
       ${guardEnabled && !guardError && !exempt && iptvOn() && iptv.config?.type === 'xtream' ? `<section class="admin-card">
         <h2>Provider movies and TV</h2>
         <label class="admin-check"><input type="checkbox" data-vod${lim?.vod ? ' checked' : ''}> Let ${esc(user.Name)} watch the provider's movies and TV shows</label>
@@ -10308,6 +10329,12 @@
       const t = $('[data-remind-text]', body).value;
       if (await copyText(t)) say('[data-remind-result]', 'Copied. Paste it into your message.', 'good');
       else say('[data-remind-result]', 'Could not copy here. Select the text above and copy it.', 'bad');
+    });
+    $('[data-live]', body)?.addEventListener('change', async (ev) => {
+      const on = ev.target.checked; ev.target.disabled = true;
+      try { await guard(`/limits/${userId}/live`, { method: 'PUT', body: { on } }); say('[data-live-result]', on ? 'Live TV is on for this account.' : 'Live TV is off for this account.', 'good'); }
+      catch (e) { ev.target.checked = !on; say('[data-live-result]', e.status === 404 ? 'Update Aurora Guard to 1.61.0 first.' : esc(e.message), 'bad'); }
+      ev.target.disabled = false;
     });
     $('[data-vod]', body)?.addEventListener('change', async (ev) => {
       const on = ev.target.checked; ev.target.disabled = true;

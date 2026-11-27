@@ -402,6 +402,12 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.61.0
+
+Live TV can be switched off for one account. Admin, Users, the account's page: **Live TV**, "Let (name) watch Live TV". It is on for everyone by default. When it is off, the Live TV menu and rows are gone for that account in the apps, Aurora Guard refuses that account's Live TV streams (`/relay`), and `GET /account` says `live: false`. Movies and shows are not affected. Administrators always have Live TV.
+
+- `PUT /limits/:id/live` with `{ on: true | false }` (administrator).
+
 ## 1.60.2
 
 An administrator now sees every announcement the provider sent, also the ones aimed at one plan or one reseller (before, only the ones for everyone). On the TV app, announcements work better: warnings and outages stay up for an administrator too (there is no close button on a remote), and an information notice stays 45 seconds instead of 20 and comes back the next time Aurora opens.
