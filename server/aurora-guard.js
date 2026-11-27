@@ -61,7 +61,7 @@ if (SUPERVISED_CHILD) {
   setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 5000).unref();
 }
 
-const VERSION = '1.58.1';
+const VERSION = '1.59.0';
 const DIR = __dirname;
 const CONFIG_FILE = process.env.AURORA_GUARD_CONFIG || path.join(DIR, 'config.json');
 
@@ -599,6 +599,10 @@ const RESELLER_RULES_DATE = '2026-11-26';
 // What is new in the reseller panel (guard 1.57.0). Newest first. A reseller sees a pop-up once for the releases they have not seen yet (up to 3),
 // and can open the recent list again from the menu. Add a new entry on top (a new id, in date order) with every release that changes the panel.
 const RESELLER_NEWS = [
+  { id: '2026-11-27b', date: '2026-11-27', title: 'Pulse, and your name on your customers\' Home', items: [
+    { title: 'Pulse', text: 'The top of Overview now shows who is watching right now, your income this month with the last 7 days, your active customers and how long your credits will last.' },
+    { title: 'One-tap WhatsApp reminders', text: 'In "Needs renewing", customers with a phone number get a WhatsApp button that opens a message already written in your own words. You tap Send.' },
+    { title: 'Your customers\' Home', text: 'Customers now see your name and welcome text at the top of Home, a game that is on or about to start, how many days their plan has left with a Renew button, and your offers.' } ] },
   { id: '2026-11-27', date: '2026-11-27', title: 'Keep channels off free trials', items: [
     { title: 'Hide channel groups from trials', text: 'In Settings, pick the Live TV groups (like pay-per-view) that your free trials should not see. They apply to new trials and the trials running now, and go away when the customer buys a plan.' } ] },
   { id: '2026-11-26b', date: '2026-11-26', title: 'A tidier panel and this pop-up', items: [

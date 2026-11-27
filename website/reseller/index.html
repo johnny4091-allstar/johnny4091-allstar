@@ -132,6 +132,17 @@ h1 { margin:0; line-height:1.12; font-weight:800; text-wrap:balance; }
 /* overview */
 .welcome { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:flex-end; gap:14px; margin:0 0 18px; } .welcome h1 { font-size:clamp(1.6rem,4.5vw,2.3rem); }
 .hero .credits { border-color:rgba(42,212,208,.3); } .credits .n { font-size:4rem; background:linear-gradient(100deg,#fff,#9fe8e5); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.pulse { margin:0 0 16px; border-radius:16px; border:1px solid var(--line); background:linear-gradient(180deg,#101a45,var(--bg-2) 60%); padding:16px 18px 18px; }
+.pl-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; } .pl-head b { font-size:1.05rem; letter-spacing:.02em; }
+.pl-live { display:inline-flex; align-items:center; gap:8px; font-size:.85rem; color:#cfd6f5; } .pl-live i { width:9px; height:9px; border-radius:50%; background:var(--green); box-shadow:0 0 0 0 rgba(70,211,105,.6); animation:plp 1.8s infinite; }
+@keyframes plp { 0%,100% { box-shadow:0 0 0 0 rgba(70,211,105,.55); } 70% { box-shadow:0 0 0 8px rgba(70,211,105,0); } } @media (prefers-reduced-motion:reduce) { .pl-live i { animation:none; } }
+.pl-tiles { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.pl-t { border-radius:12px; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.1); padding:12px 14px; min-width:0; }
+.pl-t small { display:block; color:var(--muted); font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; font-weight:700; }
+.pl-t b { display:block; font-size:1.7rem; line-height:1.15; font-weight:800; margin:2px 0; } .pl-t span { font-size:.8rem; color:var(--muted); } .pl-t span.up { color:var(--green); } .pl-t.warn b { color:var(--amber); }
+.pl-bars { display:flex; align-items:flex-end; gap:3px; height:22px; margin-top:6px; } .pl-bars i { flex:1; min-height:2px; border-radius:2px; background:linear-gradient(0deg,#4f7bff,#18b6d6); }
+.btn.wa { background:#25d366; color:#052b13; text-decoration:none; text-shadow:none; }
+@media (max-width:760px) { .pl-tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:0 0 16px; }
 .kpi { padding:16px 18px; border-radius:14px; background:var(--bg-2); border:1px solid var(--line); position:relative; overflow:hidden; }
 .kpi::before { content:''; position:absolute; left:0; top:0; bottom:0; width:4px; background:#3b4a85; } .kpi.good::before { background:var(--green); } .kpi.warn::before { background:var(--amber); } .kpi.bad::before { background:#ff5470; }
@@ -262,6 +273,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     <section class="pane" data-pane="overview" id="pane-overview">
       <div class="welcome"><div><p class="eyebrow">Reseller panel</p><h1 id="welcome">Welcome back</h1><p class="sub" style="margin:4px 0 0" id="welcomesub"></p></div>
         <button class="btn red" type="button" data-go="add">+ Add a customer</button></div>
+    <div class="pulse" id="pulse" hidden></div>
     <div class="hero">
       <div class="card credits"><small>Signed in as <b id="who"></b> · Your credits</small><div class="n" id="cr">0</div><small>1 credit = 1 connection for 1 month</small><div><span class="low" id="low" hidden>Running low</span></div></div>
       <div class="card" id="askcard"><h2>Need more credits?</h2><p class="sub">Send a request to your provider.</p>
@@ -561,6 +573,54 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   function initials(n) { var p = String(n || '?').trim().split(/[\s_.-]+/).filter(Boolean); return ((p[0] || '?').charAt(0) + (p.length > 1 ? p[1].charAt(0) : '')).toUpperCase(); }
   function hue(n) { var h = 0, t = String(n || ''); for (var i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) % 360; return h; }
   function avatar(c) { var nm = c.full || c.name; return '<span class="av" style="background:linear-gradient(135deg,hsl(' + hue(nm) + ' 70% 45%),hsl(' + ((hue(nm) + 50) % 360) + ' 70% 38%))" aria-hidden="true">' + esc(initials(nm)) + '</span>'; }
+
+  // ----- Pulse: the live strip at the top of Overview (watching now, money, customers, credits) -----
+  var pulseMoney = null, pulseWeeks = null, pulseHealthN = null;
+  function paintPulseLive() {
+    var el = $('pl-watch'); if (!el) return;
+    var n = Object.keys(watching).length;
+    el.textContent = n === 0 ? 'Nobody watching right now' : n + (n === 1 ? ' customer' : ' customers') + ' watching now';
+  }
+  function dollars(n) { n = Number(n) || 0; return '$' + (Math.abs(n - Math.round(n)) < 0.005 ? Math.round(n).toLocaleString() : n.toFixed(2)); }
+  function paintPulse() {
+    var box = $('pulse'); if (!box || !me || me.staff) return;
+    var cs = me.customers || [], weekAgo = Date.now() - 7 * 86400000;
+    var fresh = cs.filter(function (c) { return c.created && c.created > weekAgo; }).length;
+    var active = cs.filter(function (c) { return !c.hold && !c.expired; }).length;
+    var needN = cs.filter(function (c) { return !c.hold && (c.expired || (c.daysLeft != null && c.daysLeft <= 7)); }).length; // the same people as the list below
+    var m = pulseMoney, bars = '';
+    if (m) { var mx = Math.max.apply(null, m.days.concat([1])); bars = '<div class="pl-bars" aria-hidden="true">' + m.days.map(function (v) { return '<i style="height:' + Math.max(8, Math.round(v / mx * 100)) + '%"></i>'; }).join('') + '</div>'; }
+    box.hidden = false;
+    box.innerHTML = '<div class="pl-head"><b>Pulse</b><span class="pl-live"><i></i><span id="pl-watch"></span></span></div><div class="pl-tiles">' +
+      '<div class="pl-t"><small>Income this month</small><b>' + (m ? dollars(m.paid) : '-') + '</b><span>' + (m && m.owed > 0 ? dollars(m.owed) + ' still owed' : m ? 'all paid up' : 'loading') + '</span>' + bars + '</div>' +
+      '<div class="pl-t"><small>Active customers</small><b>' + active + '</b><span class="' + (fresh ? 'up' : '') + '">' + (fresh ? '+' + fresh + ' new this week' : 'none new this week') + '</span></div>' +
+      '<div class="pl-t"><small>Credits left</small><b>' + me.credits + '</b><span>' + (pulseWeeks == null ? (me.low ? 'running low' : 'available') : 'about ' + pulseWeeks + (pulseWeeks === 1 ? ' week' : ' weeks') + ' at your pace') + '</span></div>' +
+      '<div class="pl-t' + (needN ? ' warn' : '') + '"><small>Needs attention</small><b>' + needN + '</b><span>' + (needN ? 'see the list below' : 'all good') + '</span></div></div>';
+    paintPulseLive();
+  }
+  // The Guard answers one request at a time for each reseller, so a busy answer (409) is tried again a moment later.
+  function pulseGet(path, done, tries) {
+    api('GET', path).then(function (j) { if (j.__status === 409 && (tries || 0) < 6) { setTimeout(function () { pulseGet(path, done, (tries || 0) + 1); }, 700 + Math.random() * 500); return; } done(j); }).catch(function () { /* an older Guard */ });
+  }
+  function loadPulse() {
+    if (!me || me.staff) return;
+    var now = new Date(), key = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2);
+    pulseGet('/reseller/payments?months=1', function (j) {
+      if (j.__status !== 200) return;
+      var days = [0, 0, 0, 0, 0, 0, 0], start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime();
+      (j.payments || []).forEach(function (x) { if (x.at >= start) { var d = Math.min(6, Math.floor((x.at - start) / 86400000)); days[d] += Number(x.amount) || 0; } });
+      var cur = (j.months || []).filter(function (x) { return x.key === key; })[0] || { paid: 0, unpaid: 0 };
+      pulseMoney = { paid: cur.paid, owed: cur.unpaid, days: days }; paintPulse();
+    });
+    pulseGet('/reseller/ledger', function (j) {
+      if (j.__status !== 200) return;
+      var since = Date.now() - 28 * 86400000, spent = 0;
+      (j.ledger || []).forEach(function (e) { if (e.at >= since && e.delta < 0) spent += -e.delta; });
+      pulseWeeks = spent > 0 ? Math.max(1, Math.round(me.credits / (spent / 4))) : null; paintPulse();
+    });
+  }
+  function waDigits(phone) { var d = String(phone || '').replace(/\D/g, ''); if (d.indexOf('00') === 0) d = d.slice(2); return d.length >= 7 ? d : ''; }
+  function waUrl(c) { var d = waDigits(c.phone); return d ? 'https://wa.me/' + d + '?text=' + encodeURIComponent(renewalMessage(c.full || c.name, c.expires, c)) : ''; }
   function paintDash() {
     var cs = me.customers || [], n = function (k) { return cs.filter(function (c) { return state(c) === k; }).length; };
     var first = String(me.name || '').split(/\s+/)[0] || 'there', h = new Date().getHours();
@@ -576,14 +636,14 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     $('attnlist').innerHTML = attn.length ? attn.slice(0, 6).map(function (c) {
       var s = state(c), when = c.expired ? 'Ended ' + fmt(c.expires) : c.daysLeft === 0 ? 'Ends today' : c.daysLeft === 1 ? 'Ends tomorrow' : 'Ends in ' + c.daysLeft + ' days';
       return '<div class="arow" data-id="' + esc(c.id) + '">' + avatar(c) + '<div class="ainfo"><b>' + esc(c.full || c.name) + '</b><span class="tag ' + s + '">' + label[s] + '</span><small>' + esc(when) + (c.planName ? ' · ' + esc(c.planName) : '') + '</small></div>' +
-        '<div class="aact"><button class="btn red sm" type="button" data-a="open">Renew</button><button class="btn line sm" type="button" data-a="copy">Copy reminder</button></div></div>';
+        '<div class="aact"><button class="btn red sm" type="button" data-a="open">Renew</button>' + (waUrl(c) ? '<a class="btn wa sm" href="' + esc(waUrl(c)) + '" target="_blank" rel="noopener" data-a="wa">WhatsApp</a>' : '') + '<button class="btn line sm" type="button" data-a="copy">Copy reminder</button></div></div>';
     }).join('') + (attn.length > 6 ? '<p class="sub" style="margin:10px 0 0">and ' + (attn.length - 6) + ' more in Customers.</p>' : '') : '<div class="goodnews"><b>All caught up</b><span>No one is ending in the next 7 days.</span></div>';
     var r = me.report;
     $('monthcard').hidden = !r;
     if (r) { $('monthname').textContent = r.month; $('mstats').innerHTML = [['Added', r.added], ['Renewed', r.renewed], ['Credits used', r.used]].map(function (x) { return '<div><b>' + x[1] + '</b><small>' + x[0] + '</small></div>'; }).join(''); }
     var pend = ((me.extensions && me.extensions.pending) || []).length + (me.request ? 0 : 0);
     $('tc-customers').textContent = cs.length; $('tc-requests').hidden = !pend; $('tc-requests').textContent = pend;
-    $('tab-team').hidden = !me.canAddSubs; paintForecast();
+    $('tab-team').hidden = !me.canAddSubs; paintForecast(); paintPulse();
     $('pm-cust') && !$('pm-cust').options.length && fillCustSelect($('pm-cust'));
     var tko = me.ticketsOpen || 0; $('tc-support').hidden = !tko; $('tc-support').textContent = tko;
     $('noreq').hidden = !!pend || !$('extsec').hidden;
@@ -895,6 +955,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
   function nameOf(id) { var c = (me && me.customers || []).filter(function (x) { return x.id === id; })[0]; return c ? (c.full || c.name) : 'Customer'; }
   function paintWatching() {
     watching = {}; watchList.forEach(function (w) { (watching[w.userId] = watching[w.userId] || []).push(w); });
+    paintPulseLive();
     var ids = Object.keys(watching), box = $('watchlist');
     $('wcount').textContent = watchList.length;
     box.innerHTML = ids.length ? ids.map(function (id) {
@@ -1000,7 +1061,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
       if (j.__status === 401) return out('Your sign-in ended. Please sign in again.');
       if (j.__status !== 200 || !j.reseller) return out(j.error || 'This account is not a reseller.');
       if (j.suspended) return out('This reseller account is suspended. Contact your provider.');
-      var first = !watchTimer; me = j; if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); maybeNews(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
+      var first = !watchTimer; me = j; if (me.staff) applyStaff(); paintRules(); render(); if (me.staff) applyStaff(); else { loadInactive(); loadHealth(); loadPulse(); maybeNews(); } if (first) setPane(me.staff ? staffPanes()[0] : (location.hash.replace('#', '') || 'overview'), true); if (first && !me.staff) { startWatching(); paintSupport(); loadNotices(); } else if (!me.staff) paintWatching();
     }).catch(function (err) { try { console.error(err); } catch (x) { /* ignore */ } $('list').innerHTML = '<div class="empty">Could not reach Aurora. Check your connection.</div>'; });
   }
 
@@ -1008,6 +1069,7 @@ textarea { width:100%; padding:11px 12px; border-radius:10px; border:1px solid v
     var tb = e.target.closest('.tabbtn'); if (tb) { setPane(tb.getAttribute('data-pane')); return; }
     var go = e.target.closest('[data-go]'); if (go) { setPane(go.getAttribute('data-go')); return; }
     var b = e.target.closest('#attnlist [data-a]'); if (!b || !me) return;
+    if (b.getAttribute('data-a') === 'wa') return; // the WhatsApp link opens by itself
     var id = b.closest('.arow').getAttribute('data-id'), c = (me.customers || []).filter(function (x) { return x.id === id; })[0]; if (!c) return;
     if (b.getAttribute('data-a') === 'copy') { var t = renewalMessage(c.full || c.name, c.expires, c); copyText(t).then(function (ok) { b.textContent = ok ? 'Copied' : 'Copy failed'; setTimeout(function () { b.textContent = 'Copy reminder'; }, 1800); }); return; }
     filter = 'all'; $('q').value = ''; openId = id; setPane('customers'); render();

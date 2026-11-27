@@ -402,6 +402,10 @@ The admin chooses which customers can browse and play the TV provider's movies a
 - `POST /vod/all` skips administrators and resellers, and creates no record when turning it off.
 - A reseller trial made on a plan that includes the provider's titles gets them.
 
+## 1.59.0
+
+The "What's new" pop-up for resellers now announces Pulse (the live strip at the top of Overview, with one-tap WhatsApp reminders) and the new customer Home. The Pulse and Home changes themselves are in the app and the website; this release only carries the announcement.
+
 ## 1.58.1
 
 Security fix: the Live TV relay no longer opens addresses on your home network for a provider that a customer typed into their own settings. Before, any signed-in customer could point their own provider at the router, Emby or another device in the house and read the answer through the relay. Only providers the administrator set up (the main provider, backups and added channels) may be on a private address now; a customer's own provider must be on the internet. Update the Guard from Admin, Server.

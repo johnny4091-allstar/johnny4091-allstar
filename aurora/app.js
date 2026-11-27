@@ -8540,6 +8540,15 @@
       const vals = { name: first, username: c.name || '', date, days: c.daysLeft == null ? '' : String(Math.max(0, c.daysLeft)), plan: c.planName || extra.plan || '', password: extra.password || '' };
       return String(t).replace(/\{(name|username|date|days|plan|password)\}/g, (_, k) => vals[k]);
     };
+    // One-tap reminders: the customer's number, and the reseller's own wording (their templates) or a plain note, in a WhatsApp link.
+    const waDigits = (phone) => { let t = String(phone || '').replace(/\D/g, ''); if (t.startsWith('00')) t = t.slice(2); return t.length >= 7 ? t : ''; };
+    const reminderText = (c) => {
+      const tpl = c.expired ? d.templates?.expired : (c.daysLeft != null && c.daysLeft <= 3 ? (d.templates?.ending || d.templates?.reminder) : d.templates?.reminder);
+      if (tpl) return fillTpl(tpl, c);
+      const first = (c.full || c.name).split(' ')[0];
+      return c.expired ? `Hi ${first}, your Aurora has ended. Want me to renew it?` : `Hi ${first}, your Aurora ends ${c.daysLeft <= 0 ? 'today' : c.daysLeft === 1 ? 'tomorrow' : 'in ' + c.daysLeft + ' days'}. Want me to renew it?`;
+    };
+    const waLink = (c) => { const t = waDigits(c.phone); return t ? 'https://wa.me/' + t + '?text=' + encodeURIComponent(reminderText(c)) : ''; };
     const welcomeText = (c, pw) => (d.templates && d.templates.welcome ? fillTpl(d.templates.welcome, c, { password: pw }) : welcomeTextDefault(c, pw));
     const welcomeTextDefault = (c, pw) => `Welcome to Aurora${c.full ? ', ' + c.full.split(' ')[0] : ''}!\n\nApp: Aurora (Android / TV / web)\nServer: ${state.server.replace(/^https?:\/\//, '')}\nUsername: ${c.name}\nPassword: ${pw}\nPlan: ${c.planName}${c.expires ? ' · ends ' + fmtDay(c.expires) : ''}\n\nNeed help? Reply to this message.`;
     // One clear status for each customer.
@@ -8593,6 +8602,7 @@
         <button class="res-menuextra" role="menuitem" data-rnews>What's new <span class="pill hidden" data-rnews-dot>New</span></button>
       </div></div>
       <div class="plan-form hidden" data-form></div>
+      <section class="res-pulse" data-rp="overview" data-pulse hidden></section>
       <section class="res-hero" data-rp="overview"><div class="res-credits"><span class="res-label">Your credits</span><span class="res-big">${d.credits}</span><span class="res-sub${d.low ? ' res-low' : ''}">${d.low ? 'Running low: ask your provider for more' : 'available'}${d.request ? ` · request for ${esc(creditsWord(d.request.amount))} waiting` : ''}</span></div>
         <div class="res-actions"><button class="btn btn-white" data-new>New customer</button>${d.request ? '' : '<button class="btn btn-gray" data-ask>Request credits</button>'}</div></section>
       <div class="plan-form hidden" data-askform data-rp="overview"></div>
@@ -8604,7 +8614,7 @@
         ${statTile('Expired', gone, held ? `${held} on hold` : '')}
       </div>
       ${need.length ? `<section class="admin-card" data-rp="overview"><h2>Needs renewing <small>Ending within a week, or already ended</small></h2>
-        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div></label>`).join('')}</div>
+        <div class="admin-list" data-need>${need.map((c) => `<label class="admin-row need-row"><input type="checkbox" data-n="${esc(c.id)}" checked><div class="admin-row-main"><strong>${esc(c.full || c.name)}</strong> <span class="pill ${statusOf(c).cls}">${esc(leftText(c))}</span><div class="muted">${esc(c.name)} · ${esc(c.planName || 'No plan')}</div></div>${waLink(c) ? `<a class="btn btn-gray res-wa" href="${esc(waLink(c))}" target="_blank" rel="noopener">WhatsApp</a>` : ''}</label>`).join('')}</div>
         <div class="m-actions"><button class="btn btn-white" data-bulk>Renew selected</button><button class="btn btn-gray" data-msgs>Copy reminder messages</button></div><div class="live-result" data-bulkresult></div></section>` : ''}
       <section class="admin-card" data-rp="settings"><h2>Notice for your customers</h2>
         <p class="muted">It shows at the top of the app for your customers only, for as long as you choose. Good for maintenance, price changes or new channels.</p>
@@ -8987,6 +8997,7 @@
       watching = {}; for (const w of list) (watching[w.userId] ||= []).push(w);
       const box = $('[data-watchlist]', root); if (!box) return;
       $('[data-wcount]', root).textContent = list.length;
+      paintPulseLive();
       const ids = Object.keys(watching);
       box.innerHTML = ids.length ? ids.map((id) => { const c = d.customers.find((x) => x.id === id); return `<div class="admin-row"><div class="admin-row-main"><strong>${esc(c ? c.full || c.name : 'Customer')}</strong><div class="res-now">${nowText(id)}</div></div></div>`; }).join('') : '<p class="muted">Nobody is watching right now.</p>';
       $$('[data-now]', root).forEach((n) => { n.innerHTML = nowText(n.dataset.now); });
@@ -9207,6 +9218,42 @@
 
     // ===== Reseller tools, part 2 (guard 1.51.0): forecast, money, messages, guides, labels, inactive, import, coupons =====
     const gq = (path, opts = {}) => guard(path, { ...opts, params: { userId: state.userId, ...(opts.params || {}) } });
+    // ----- Pulse: the live strip at the top of Overview (watching now, income, customers, credits) -----
+    let pulseMoney = null, pulseWeeks = null;
+    function paintPulseLive() {
+      const el = $('[data-pl-watch]', root); if (!el) return;
+      const n = Object.keys(watching).length;
+      el.textContent = n === 0 ? 'Nobody watching right now' : `${n} ${n === 1 ? 'customer' : 'customers'} watching now`;
+    }
+    const dollars = (n) => { n = Number(n) || 0; return '$' + (Math.abs(n - Math.round(n)) < 0.005 ? Math.round(n).toLocaleString() : n.toFixed(2)); };
+    function paintPulse() {
+      const box = $('[data-pulse]', root); if (!box) return;
+      const weekAgo = Date.now() - 7 * 86400000, fresh = d.customers.filter((c) => c.created && c.created > weekAgo).length;
+      const active = d.customers.filter((c) => !c.hold && !c.expired).length, m = pulseMoney;
+      const bars = m ? `<div class="pl-bars" aria-hidden="true">${m.days.map((v) => `<i style="height:${Math.max(8, Math.round(v / Math.max(1, ...m.days) * 100))}%"></i>`).join('')}</div>` : '';
+      box.hidden = false;
+      box.innerHTML = `<div class="pl-head"><strong>Pulse</strong><span class="pl-live"><i></i><span data-pl-watch></span></span></div><div class="pl-tiles">
+        <div class="pl-t"><small>Income this month</small><b>${m ? dollars(m.paid) : '-'}</b><span>${m && m.owed > 0 ? dollars(m.owed) + ' still owed' : m ? 'all paid up' : 'loading'}</span>${bars}</div>
+        <div class="pl-t"><small>Active customers</small><b>${active}</b><span class="${fresh ? 'up' : ''}">${fresh ? '+' + fresh + ' new this week' : 'none new this week'}</span></div>
+        <div class="pl-t"><small>Credits left</small><b>${d.credits}</b><span>${pulseWeeks == null ? (d.low ? 'running low' : 'available') : 'about ' + pulseWeeks + (pulseWeeks === 1 ? ' week' : ' weeks') + ' at your pace'}</span></div>
+        <div class="pl-t${need.length ? ' warn' : ''}"><small>Needs attention</small><b>${need.length}</b><span>${need.length ? 'see the list below' : 'all good'}</span></div></div>`;
+      paintPulseLive();
+    }
+    async function loadPulse() {
+      const now = new Date(), key = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+      try {
+        const j = await retry409(() => gq('/reseller/payments', { params: { months: 1 } }));
+        const days = [0, 0, 0, 0, 0, 0, 0], start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime();
+        for (const x of j.payments || []) if (x.at >= start) days[Math.min(6, Math.floor((x.at - start) / 86400000))] += Number(x.amount) || 0;
+        const cur = (j.months || []).find((x) => x.key === key) || { paid: 0, unpaid: 0 };
+        pulseMoney = { paid: cur.paid, owed: cur.unpaid, days }; paintPulse();
+      } catch { /* an older Guard: the tile stays on its placeholder */ }
+      try {
+        const j = await retry409(() => gq('/reseller/ledger')), since = Date.now() - 28 * 86400000;
+        let spent = 0; for (const e of j.ledger || []) if (e.at >= since && e.delta < 0) spent += -e.delta;
+        pulseWeeks = spent > 0 ? Math.max(1, Math.round(d.credits / (spent / 4))) : null; paintPulse();
+      } catch { /* ignore */ }
+    }
     const retry409 = async (fn, tries = 4) => { for (let i = 0; ; i++) { try { return await fn(); } catch (e) { if (e.status !== 409 || i >= tries) throw e; await new Promise((r) => setTimeout(r, 800)); } } };
     function paintLbl() {
       const all = {}; d.customers.forEach((c) => (c.labels || []).forEach((l) => { all[l] = (all[l] || 0) + 1; }));
@@ -9486,6 +9533,7 @@
       else { msPick = { [id]: true }; setRp('messages'); $('[data-ms-text]', root).value = HL_TXT[c.issues[0].kind] || ''; paintMsList(); }
     });
     loadHealth();
+    paintPulse(); loadPulse();
     // bulk actions on the customers shown
     const paintBulkCard = () => {
       const box = $('[data-bulkcard]', root); if (!box) return; box.hidden = !gwOn('scheduling');

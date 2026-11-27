@@ -2177,3 +2177,17 @@ html.tv .tm-preview { width: 320px; }
 .tn-bar { width: 100%; height: 5px; border-radius: 3px; background: rgba(255,255,255,.18); overflow: hidden; } .tn-bar i { display: block; height: 100%; background: #ffc861; border-radius: 3px; }
 .tn-plan.warn { border-color: rgba(255,209,102,.55); }
 .tn-offer { background: linear-gradient(100deg, #3b2a86, #7a3dbd 60%, #c24a8a); border: 0; } .tn-offer p, .tn-offer .tn-k { color: rgba(255,255,255,.85); }
+
+/* ----- Reseller Pulse ----- */
+.res-pulse { margin: 0 0 1rem; border-radius: 16px; border: 1px solid #27346a; background: linear-gradient(180deg, #101a45, #0d1431 70%); padding: .9rem 1rem 1rem; }
+.pl-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; margin-bottom: .7rem; }
+.pl-live { display: inline-flex; align-items: center; gap: .45rem; font-size: .82rem; color: #cfd6f5; } .pl-live i { width: .55rem; height: .55rem; border-radius: 50%; background: #46d369; animation: plp 1.8s infinite; }
+@keyframes plp { 0%,100% { box-shadow: 0 0 0 0 rgba(70,211,105,.55); } 70% { box-shadow: 0 0 0 .45rem rgba(70,211,105,0); } } @media (prefers-reduced-motion: reduce) { .pl-live i { animation: none; } }
+.pl-tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
+@media (min-width: 900px) { .pl-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.pl-t { border-radius: 12px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); padding: .65rem .8rem; min-width: 0; }
+.pl-t small { display: block; color: #aab5e0; font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }
+.pl-t b { display: block; font-size: 1.55rem; line-height: 1.15; margin: .1rem 0; } .pl-t span { font-size: .78rem; color: #aab5e0; } .pl-t span.up { color: #46d369; } .pl-t.warn b { color: #ffd479; }
+.pl-bars { display: flex; align-items: flex-end; gap: 3px; height: 22px; margin-top: .35rem; } .pl-bars i { flex: 1; min-height: 2px; border-radius: 2px; background: linear-gradient(0deg, #4f7bff, #18b6d6); }
+.res-wa { background: #25d366 !important; color: #052b13 !important; text-decoration: none; flex: none; padding: .35rem .7rem; font-size: .8rem; align-self: center; }
+.need-row { align-items: center; }
