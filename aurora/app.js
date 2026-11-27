@@ -8846,7 +8846,7 @@
         </div>
         <label class="admin-field"><span>Note</span><input type="text" data-f="note" maxlength="300" value="${esc(c.note)}"></label>
         <div class="m-actions"><button class="btn btn-red" data-save>Save</button><button class="btn btn-gray" data-pw>Reset password</button><button class="btn btn-gray" data-out>Sign out devices</button><button class="btn btn-gray" data-hold>${c.hold ? 'Release hold' : 'Put on hold'}</button><button class="btn btn-gray" data-cancel>Close</button></div>
-        <div class="m-actions"><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button><button class="btn btn-gray" data-cg>Channels: ${c.cats == null ? 'all' : c.cats}</button></div><div class="res-extra hidden" data-extra></div>
+        <div class="m-actions"><button class="btn btn-gray" data-live-sw title="${c.liveLocked ? 'Your provider switched Live TV off for this customer' : 'Live TV on or off for this customer'}">Live TV: ${c.live === false ? 'Off' : 'On'}${c.liveLocked ? ' (by your provider)' : ''}</button><button class="btn btn-gray" data-pq>Playback quality</button><button class="btn btn-gray" data-dev>Devices</button><button class="btn btn-gray" data-cg>Channels: ${c.cats == null ? 'all' : c.cats}</button></div><div class="res-extra hidden" data-extra></div>
         <div class="m-actions"><button class="btn btn-gray" data-lb>Labels${(c.labels || []).length ? ': ' + esc(c.labels.join(', ')) : ''}</button><button class="btn btn-gray" data-pzx>Pause until...</button><button class="btn btn-gray" data-srx>Renew on a date</button><button class="btn btn-gray" data-pmt>Record payment</button><button class="btn btn-gray" data-tlx>Timeline</button></div>
         <div class="m-actions res-danger"><button class="btn btn-gray" data-del>Delete this customer</button></div><div class="live-result" data-result></div>`;
       $('[data-cancel]', form).addEventListener('click', closeForm);
@@ -8986,6 +8986,12 @@
         const putOn = !c.hold;
         if (putOn && !(await confirmAction(`Put ${c.full || c.name} on hold?`, 'They are signed out and can\'t sign in until you release them. Their end date keeps running.', 'Put on hold'))) return;
         try { await guard(path('/hold'), { method: 'POST', params: { userId: state.userId }, body: { hold: putOn } }); toast(putOn ? 'On hold' : 'Released', 2500); reload(); } catch (e) { say(esc(e.message), 'bad'); }
+      });
+      $('[data-live-sw]', form).addEventListener('click', async () => {
+        if (c.liveLocked) { say('Your provider switched Live TV off for this customer. Ask them to switch it on.', 'bad'); return; }
+        const next = c.live === false;
+        if (!next && !(await confirmAction(`Switch Live TV off for ${c.full || c.name}?`, 'The Live TV menu and rows disappear for them and their Live TV streams stop. Movies and shows keep working.', 'Switch off'))) return;
+        try { await guard(path('/live'), { method: 'POST', params: { userId: state.userId }, body: { on: next } }); toast(next ? 'Live TV is on' : 'Live TV is off', 2500); reload(); } catch (e) { say(e.status === 404 ? 'Update Aurora Guard to 1.62.0 first.' : esc(e.message), 'bad'); }
       });
       $('[data-del]', form).addEventListener('click', async () => {
         if (!(await confirmAction(`Delete ${c.full || c.name} for good?`, `The account ${c.name} and their watch history are removed. Credits are not refunded. This can't be undone.`, 'Delete customer'))) return;
@@ -10198,7 +10204,7 @@
       ${guardEnabled && !guardError && !exempt ? `<section class="admin-card">
         <h2>Live TV</h2>
         <label class="admin-check"><input type="checkbox" data-live${lim?.noLive ? '' : ' checked'}> Let ${esc(user.Name)} watch Live TV</label>
-        <p class="muted">When this is off, the Live TV menu and rows are gone for this account, and Aurora Guard refuses their Live TV streams. Movies and shows are not affected. Saved straight away.</p>
+        <p class="muted">When this is off, the Live TV menu and rows are gone for this account, and Aurora Guard refuses their Live TV streams. Movies and shows are not affected. Saved straight away.${lim?.noLiveRes ? ' Their reseller has also switched Live TV off for them.' : ''}</p>
         <div class="live-result" data-live-result></div>
       </section>` : ''}
       ${guardEnabled && !guardError && !exempt && iptvOn() && iptv.config?.type === 'xtream' ? `<section class="admin-card">
