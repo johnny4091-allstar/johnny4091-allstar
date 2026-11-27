@@ -1,0 +1,66 @@
+name: Build Aurora for Roku
+
+# Checks the Roku channel with the BrighterScript compiler (it finds mistakes a Roku would only show on screen) and packs it into
+# Aurora-Roku.zip. The zip is what you install on a Roku in developer mode, or upload to the Roku developer dashboard for a private channel.
+on:
+  push:
+    paths:
+      - 'roku/**'
+      - '.github/workflows/aurora-roku.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Same numbering as the other apps: it only ever goes up.
+      - name: Set version
+        run: |
+          CODE=$((${{ github.run_number }} + 100))
+          echo "VERSION_CODE=$CODE" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=1.$((CODE / 50)).$((CODE % 50))" >> "$GITHUB_ENV"
+
+      - name: Check the channel
+        working-directory: roku
+        run: |
+          npm install --no-save --no-audit --no-fund brighterscript@0.69.13
+          npx bsc --project bsconfig.json
+
+      - name: Pack the channel
+        run: node tools/build-roku.js "$VERSION_NAME" "$VERSION_CODE"
+
+      - name: Check what was built
+        run: |
+          ls -la roku/dist
+          unzip -l roku/dist/Aurora-Roku.zip | grep -E "manifest|source/main.brs|components/MainScene.brs"
+
+      - name: Write release notes
+        run: |
+          {
+            echo "## Aurora for Roku"
+            echo "Download **Aurora-Roku.zip** below. Install it on a Roku in developer mode (see roku/README.md in the code), or upload it to the Roku developer dashboard to make a private channel."
+            echo
+            echo "Version ${VERSION_NAME}, build ${VERSION_CODE}."
+          } > roku-notes.md
+
+      - name: Publish the newest Roku file
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: aurora-roku
+          name: Aurora for Roku (newest)
+          target_commitish: ${{ github.sha }}
+          make_latest: false
+          files: roku/dist/Aurora-Roku.zip
+          body_path: roku-notes.md

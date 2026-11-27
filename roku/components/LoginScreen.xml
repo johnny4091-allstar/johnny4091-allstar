@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="LoginScreen" extends="Group">
+  <interface>
+    <field id="signedIn" type="boolean" alwaysNotify="true" />
+    <function name="start" />
+    <function name="resume" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/LoginScreen.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Rectangle width="1920" height="1080" color="0x070C1CFF" />
+    <Label id="logo" translation="[0,150]" width="1920" horizAlign="center" text="A U R O R A" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+    <Label id="sub" translation="[0,230]" width="1920" horizAlign="center" text="Sign in with the username and password you were given" font="font:SmallSystemFont" color="0xB9C3EAFF" />
+    <ButtonGroup id="buttons" translation="[620,330]" layoutDirection="vert" minWidth="680" maxWidth="680" />
+    <Label id="message" translation="[420,760]" width="1080" horizAlign="center" wrap="true" font="font:SmallSystemFont" color="0xFF7A7AFF" />
+  </children>
+</component>

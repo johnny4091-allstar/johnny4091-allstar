@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="PlayerScreen" extends="Group">
+  <interface>
+    <field id="request" type="assocarray" />
+    <field id="close" type="boolean" alwaysNotify="true" />
+    <function name="start" />
+    <function name="resume" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/PlayerScreen.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Rectangle width="1920" height="1080" color="0x000000FF" />
+    <Video id="video" width="1920" height="1080" />
+    <Label id="message" translation="[0,500]" width="1920" horizAlign="center" font="font:MediumSystemFont" color="0xFFFFFFFF" text="Starting..." />
+    <Timer id="progressTimer" duration="10" repeat="true" />
+  </children>
+</component>

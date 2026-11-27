@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="DetailsScreen" extends="Group">
+  <interface>
+    <field id="itemId" type="string" />
+    <field id="itemType" type="string" />
+    <field id="close" type="boolean" alwaysNotify="true" />
+    <field id="playRequest" type="assocarray" alwaysNotify="true" />
+    <function name="start" />
+    <function name="resume" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/DetailsScreen.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <Rectangle width="1920" height="1080" color="0x070C1CFF" />
+    <Poster id="backdrop" translation="[0,0]" width="1920" height="1080" opacity="0.22" loadDisplayMode="scaleToZoom" />
+    <Poster id="poster" translation="[120,110]" width="400" height="600" loadDisplayMode="scaleToFit" loadingBitmapUri="pkg:/images/poster_blank.png" failedBitmapUri="pkg:/images/poster_blank.png" />
+    <Label id="title" translation="[600,100]" width="1200" wrap="true" maxLines="2" font="font:LargeBoldSystemFont" color="0xFFFFFFFF" />
+    <Label id="meta" translation="[600,215]" width="1200" font="font:SmallSystemFont" color="0xB9C3EAFF" />
+    <Label id="overview" translation="[600,265]" width="1180" height="230" wrap="true" lineSpacing="6" font="font:SmallSystemFont" color="0xE5E5E5FF" />
+    <ButtonGroup id="buttons" translation="[600,520]" layoutDirection="horiz" horizAlignment="left" itemSpacings="[16]" />
+    <Label id="seasonsTitle" translation="[120,740]" font="font:SmallBoldSystemFont" color="0xB9C3EAFF" text="Seasons" visible="false" />
+    <LabelList id="seasons" translation="[120,785]" itemSize="[420,50]" numRows="5" visible="false" />
+    <Label id="episodesTitle" translation="[600,740]" font="font:SmallBoldSystemFont" color="0xB9C3EAFF" text="Episodes" visible="false" />
+    <LabelList id="episodes" translation="[600,785]" itemSize="[1200,50]" numRows="5" visible="false" />
+    <Label id="status" translation="[600,520]" width="1100" font="font:SmallSystemFont" color="0xB9C3EAFF" text="Loading..." />
+  </children>
+</component>

@@ -8,3 +8,6 @@ server/data/
 *.jks
 keystore.properties
 android/lite/web/
+roku/dist/
+roku/build/
+roku/node_modules/

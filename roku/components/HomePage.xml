@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<component name="HomePage" extends="Group">
+  <interface>
+    <field id="itemSelected" type="assocarray" alwaysNotify="true" />
+    <function name="refresh" />
+    <function name="focusContent" />
+  </interface>
+  <script type="text/brightscript" uri="pkg:/components/HomePage.brs" />
+  <script type="text/brightscript" uri="pkg:/source/Common.brs" />
+  <children>
+    <RowList id="rows" translation="[60,0]" itemComponentName="PosterItem" itemSize="[1800,470]" itemSpacing="[0,10]"
+             rowItemSize="[[240,420]]" rowItemSpacing="[[28,0]]" rowHeights="[420]" rowLabelOffset="[[0,10]]" showRowLabel="[true]"
+             focusXOffset="[0]" rowFocusAnimationStyle="floatingFocus" numRows="2" visible="false" />
+    <Label id="status" translation="[72,60]" width="1700" wrap="true" color="0xB9C3EAFF" font="font:MediumSystemFont" text="Loading..." />
+  </children>
+</component>
