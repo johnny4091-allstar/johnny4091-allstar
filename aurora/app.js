@@ -1189,10 +1189,7 @@
     if (!isCurrent() || a.admin) return;
     const r = a.request, recent = r?.decidedAt && Date.now() - r.decidedAt < 3 * 86400000;
     let id, cls = '', html;
-    if (a.expires && !a.expired && a.daysLeft != null && a.daysLeft <= 7) {
-      id = 'ends:' + a.expires; cls = 'warn';
-      html = `<strong>${a.daysLeft <= 0 ? 'Your plan ends today' : a.daysLeft === 1 ? 'Your plan ends tomorrow' : `Your plan ends in ${a.daysLeft} days`}</strong> <span>${esc(fmtDay(a.expires))}.${a.canRequest ? ' Tap to ask for more time.' : ''}</span>`;
-    } else if (r?.status === 'approved' && recent) {
+    if (r?.status === 'approved' && recent) {
       id = 'ok:' + r.id; cls = 'good';
       html = `<strong>Your extension was approved</strong> <span>${r.newExpires ? `Access now runs until ${esc(fmtDay(r.newExpires))}.` : ''}</span>`;
     } else if (r?.status === 'denied' && recent) {
@@ -1208,13 +1205,86 @@
     rows.prepend(box);
   }
 
+  // ---------- Tonight: the top of Home ----------
+  // A greeting, the reseller's own name and welcome (when they set one), a game that is on or about to start (a team you follow first),
+  // how long the plan has left with a Renew button, and the reseller's offer. Everything but the greeting comes from Aurora Guard and
+  // the sports feed, and simply is not shown when there is nothing to say.
+  async function tonight(rows, isCurrent) {
+    if (kidsOn()) return;
+    const box = document.createElement('section');
+    box.className = 'tonight';
+    box.innerHTML = `<div class="tn-head"><div class="tn-brand" data-tn-brand hidden></div>
+      <div class="tn-greet">${esc(greeting())}${profile?.name ? `, <b>${esc(profile.name)}</b>` : ''}</div><div class="tn-welcome" data-tn-welcome hidden></div></div>
+      <div class="tn-tiles" data-tn-tiles hidden></div>`;
+    rows.prepend(box);
+    const tiles = $('[data-tn-tiles]', box);
+    const addTile = (html, first) => { const d = document.createElement('div'); d.className = html.cls; d.innerHTML = html.body; tiles.hidden = false; if (first) tiles.prepend(d); else tiles.appendChild(d); return d; };
+    if (!guardEnabled) return;
+    tonightGame(box, tiles, addTile, isCurrent);
+    let a;
+    try { a = await guard('/account', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    if (!isCurrent() || !box.isConnected || a.admin) return;
+    if (a.brand?.name) {
+      const b = $('[data-tn-brand]', box); b.hidden = false;
+      b.innerHTML = `<span class="tn-mk">${esc(Array.from(a.brand.name)[0] || 'A').toUpperCase()}</span><span class="tn-bn">${esc(a.brand.name)}</span><span class="tn-pw">powered by Aurora</span>`;
+      if (a.brand.welcome) { const w = $('[data-tn-welcome]', box); w.hidden = false; w.textContent = a.brand.welcome; }
+    }
+    if (a.expires && !a.expired && a.daysLeft != null && a.daysLeft <= 30) {
+      const total = a.plan ? (a.plan.unit === 'day' ? a.plan.length : a.plan.length * 30) || 30 : 30;
+      const pct = Math.max(4, Math.min(100, Math.round((a.daysLeft / Math.max(total, a.daysLeft, 1)) * 100)));
+      const soon = a.daysLeft <= 7, pending = a.request?.status === 'pending';
+      addTile({ cls: `tn-tile tn-plan${soon ? ' warn' : ''}`, body: `<div class="tn-k">Your plan</div>
+        <h3>${a.daysLeft <= 0 ? 'Ends today' : a.daysLeft === 1 ? '1 day left' : a.daysLeft + ' days left'}</h3>
+        <div class="tn-bar"><i style="width:${pct}%"></i></div><p>${esc(fmtDay(a.expires))}${pending ? ' · extension requested' : ''}</p>
+        <a class="btn ${soon ? 'btn-red' : 'btn-gray'}" href="#/settings">${pending ? 'See my request' : a.canRequest ? 'Renew' : 'My plan'}</a>` });
+    }
+    const offers = (a.canRequest && Array.isArray(a.bundles) ? a.bundles : []).slice().sort((x, y) => (y.times || 0) - (x.times || 0));
+    if (offers.length) {
+      const o = offers[0];
+      addTile({ cls: 'tn-tile tn-offer', body: `<div class="tn-k">Offer${a.brand?.name ? ' from ' + esc(a.brand.name) : ''}</div><h3>${esc(o.name)}</h3>
+        <p>${esc(money(o.price))}${o.planName ? ' · ' + esc(o.planName) : ''}</p><a class="btn btn-white" href="#/settings">See offer</a>` });
+    }
+  }
+
+  let tonightCfgTried = '';
+  async function tonightGame(box, tiles, addTile, isCurrent) {
+    // The Live TV settings may still be on their way when Home first draws: ask once per sign-in.
+    if (!iptvOn() && tonightCfgTried !== state.userId) { tonightCfgTried = state.userId; await refreshIptvConfig(); }
+    if (!iptvOn() || !isCurrent()) return;
+    let feed;
+    try { feed = await guard('/sports/games', { params: { userId: state.userId }, quick: true }); } catch { return; }
+    const now = Date.now();
+    const near = (g) => g.state === 'in' || (g.state === 'pre' && g.start > now - 600000 && g.start - now < 75 * 60000);
+    if (!feed?.enabled || !isCurrent() || !(feed.games || []).some(near)) return; // nothing on or starting soon: do not load the channels at all
+    let S;
+    try {
+      if (!sports.loading || Date.now() - sports.at > 5 * 60000) { sports.at = Date.now(); sports.loading = sportsLoad(); sports.loading.catch(() => { sports.loading = null; }); }
+      S = await sports.loading;
+    } catch { return; }
+    if (!isCurrent() || !box.isConnected) return;
+    const cards = sportsCards(S).filter((c) => c.kind === 'feed' && c.chans.length && (c.state === 'in' || (c.start > now - 600000 && c.start - now < 75 * 60000)));
+    if (!cards.length) return;
+    const myTeams = profile?.teams || [];
+    const mine = (c) => c.teams.some((t) => myTeams.some((m) => m.lg === t.lg && String(m.id) === String(t.id)));
+    const pick = cards.find(mine) || cards.find((c) => hasReminder(c.key)) || cards.find((c) => c.state === 'in') || cards[0];
+    const live = pick.state === 'in', ch = pick.chans[0];
+    const el = addTile({ cls: 'tn-tile tn-game', body: `<div class="tn-pill${live ? ' live' : ''}">${live ? '<i class="tn-dot"></i>LIVE' : 'Starts ' + esc(untilText(pick.start))}</div>
+      <h3>${esc(pick.title)}</h3><p>${esc(pick.leagueName || pick.league || 'Sports')} · ${esc(ch.name)}${mine(pick) ? ' · Your team plays' : ''}</p>
+      <div class="tn-actions"><button class="btn btn-red" data-tn-watch>▶ ${live ? 'Watch live' : 'Watch'}</button>${live ? '' : `<button class="btn btn-gray" data-tn-bell>${hasReminder(pick.key) ? '✓ Reminder set' : '🔔 Remind me'}</button>`}</div>` }, true);
+    $('[data-tn-watch]', el).addEventListener('click', () => {
+      const at = S.channels.findIndex((x) => x.id === ch.id && x.name === ch.name);
+      playIptv(S.channels, at < 0 ? 0 : at, 'Sports');
+    });
+    $('[data-tn-bell]', el)?.addEventListener('click', (e) => { toggleReminder(pick); e.currentTarget.textContent = hasReminder(pick.key) ? '✓ Reminder set' : '🔔 Remind me'; });
+  }
+
   function renderHome(page, isCurrent) {
     renderHero(page, { IncludeItemTypes: 'Movie,Series' });
     const rows = document.createElement('div');
     rows.className = 'rows';
     page.appendChild(rows);
     homeNotice(rows, isCurrent);
-    if (profile?.name && !kidsOn()) rows.insertAdjacentHTML('afterbegin', `<div class="home-greet">${esc(greeting())}, <b>${esc(profile.name)}</b></div>`);
+    tonight(rows, isCurrent);
 
     const add = (title, loader, opts) => addRow(rows, title, loader, { isCurrent, ...opts });
 
